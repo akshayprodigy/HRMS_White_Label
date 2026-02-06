@@ -1,0 +1,71 @@
+services:
+  db:
+    image: mariadb:11.4
+    container_name: unitederp-db
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-unitederp}
+      MARIADB_USER: ${DB_USER:-unitederp}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-unitederp}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: unitederp-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DATABASE_URL: mysql+pymysql://${DB_USER:-unitederp}:${DB_PASSWORD:-unitederp}@db:3306/${DB_NAME:-unitederp}
+      # Cookies should be secure in production behind HTTPS
+      REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-true}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: unitederp-frontend
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8
+    container_name: unitederp-caddy
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+
+volumes:
+  mariadb_data:
+  caddy_data:
+  caddy_config:
