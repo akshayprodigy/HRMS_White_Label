@@ -1,49 +1,51 @@
+name: erp-united-exploration-dev
+
 services:
   db:
-    image: mariadb:11.4
-    container_name: unitederp-db
-    restart: unless-stopped
+    image: mariadb:11
+    restart: always
     environment:
-      MARIADB_DATABASE: ${DB_NAME:-unitederp}
-      MARIADB_USER: ${DB_USER:-unitederp}
-      MARIADB_PASSWORD: ${DB_PASSWORD:-unitederp}
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+      MARIADB_DATABASE: erp_db
+      MARIADB_USER: erp_user
+      MARIADB_PASSWORD: erp_password
+      MARIADB_ROOT_PASSWORD: root_password
     ports:
       - "3306:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: unitederp-backend
-    restart: unless-stopped
-    environment:
-      DB_HOST: db
-      DB_PORT: 3306
-      DATABASE_URL: mysql+pymysql://${DB_USER:-unitederp}:${DB_PASSWORD:-unitederp}@db:3306/${DB_NAME:-unitederp}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
-      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
-      REFRESH_COOKIE_NAME: ${REFRESH_COOKIE_NAME:-refresh_token}
-      REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-false}
-      REFRESH_COOKIE_SAMESITE: ${REFRESH_COOKIE_SAMESITE:-lax}
-      REFRESH_COOKIE_PATH: ${REFRESH_COOKIE_PATH:-/}
-    ports:
-      - "8000:8000"
     volumes:
       - ./backend:/app
+      - uploads_data:/app/uploads
+    environment:
+      - MARIADB_SERVER=db
+      - MARIADB_USER=erp_user
+      - MARIADB_PASSWORD=erp_password
+      - MARIADB_DB=erp_db
+      - BACKEND_CORS_ORIGINS=["http://localhost:5173", "http://localhost"]
+    ports:
+      - "8001:8000"
     depends_on:
-      db:
-        condition: service_healthy
+      - db
+    command: ["sh", "/app/scripts/dev_start.sh"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
 
 volumes:
   mariadb_data:
+  uploads_data:

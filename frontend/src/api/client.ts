@@ -1,43 +1,63 @@
-import { refresh } from './auth';
-import { getAccessToken, setAccessToken } from '../auth/token';
+import axios, { InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
 
-export type ApiError = {
-  status: number;
-  message: string;
+const client = axios.create({
+  baseURL: '/api/v1',
+});
+
+export { client };
+
+let accessToken: string | null = null;
+
+export const setAccessToken = (token: string | null) => {
+  accessToken = token;
 };
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const doFetch = async (): Promise<Response> => {
-    const token = getAccessToken();
-    return fetch(path, {
-      ...init,
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(init?.headers ?? {}),
-      },
-    });
-  };
+client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  if (accessToken && config.headers) {
+    config.headers.Authorization = `Bearer ${accessToken}`;
+  }
+  return config;
+});
 
-  let resp = await doFetch();
-
-  if (resp.status === 401) {
-    try {
-      const refreshed = await refresh();
-      setAccessToken(refreshed.access_token);
-      resp = await doFetch();
-    } catch {
-      // fall through and raise the original 401 below
+client.interceptors.response.use(
+  (response: AxiosResponse) => response,
+  async (error: AxiosError) => {
+    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    
+    // If the error is 401 and we haven't retried yet
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+      originalRequest._retry = true;
+      const refreshToken = localStorage.getItem('refresh_token');
+      
+      if (refreshToken) {
+        try {
+          // Use a fresh axios instance to avoid interceptor loops
+          const res = await axios.post('/api/v1/auth/refresh', { 
+            refresh_token: refreshToken 
+          });
+          
+          const newAccessToken = res.data.access_token;
+          const newRefreshToken = res.data.refresh_token;
+          
+          accessToken = newAccessToken;
+          localStorage.setItem('refresh_token', newRefreshToken);
+          
+          if (originalRequest.headers) {
+            originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+          }
+          
+          return client(originalRequest);
+        } catch (refreshError: any) {
+          console.error("Token refresh failed:", refreshError);
+          localStorage.removeItem('refresh_token');
+          // If refresh fails, we should clear everything and let the application 401/403 flow handle logout
+          accessToken = null;
+        }
+      }
     }
+    
+    return Promise.reject(error);
   }
+);
 
-  if (!resp.ok) {
-    throw {
-      status: resp.status,
-      message: await resp.text(),
-    } satisfies ApiError;
-  }
-
-  return (await resp.json()) as T;
-}
+export default client;

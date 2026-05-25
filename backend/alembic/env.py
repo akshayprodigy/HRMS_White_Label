@@ -1,28 +1,59 @@
-from __future__ import annotations
+# pyright: reportMissingImports=false
 
+import asyncio
+from typing import Any, cast
 from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config, pool
-
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
-from app.core.config import get_settings
-from app.db.base import Base
 
+from app.core.config import settings
+from app.db.base_class import Base
+# Import all models for autogenerate
+from app.models.user import User, Role, Permission  # noqa: F401
+from app.models.employee import Employee  # noqa: F401
+from app.models.employee_document import EmployeeDocument  # noqa: F401
+from app.models.attendance import Attendance  # noqa: F401
+from app.models.audit import AuditLog  # noqa: F401
+from app.models.timesheet import TimeEntry  # noqa: F401
+from app.models.project import Project, ProjectMember  # noqa: F401
+from app.models.task import (  # noqa: F401
+    Task,
+    Subtask,
+    TaskComment,
+    TaskAttachment,
+    TaskCompletionRequest,
+    TaskCompletionDocument,
+)
+from app.models.leave import (  # noqa: F401
+    LeaveType,
+    LeaveBalanceLedger,
+    LeaveRequest,
+)
+from app.models.approval import ApprovalItem, ApprovalStep  # noqa: F401
+from app.models.onboarding import OnboardingProcess, OnboardingTask  # noqa: F401
+from app.models.recruitment import ManpowerRequisition, Applicant  # noqa: F401  fmt: skip
+from app.models.payroll import PayrollRun, PayrollLine, Payslip  # noqa: F401
+from app.models.notification import Notification  # noqa: F401
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
 config = context.config
 
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# add your model's MetaData object here
+# for 'autogenerate' support
 target_metadata = Base.metadata
 
 
-def _get_database_url() -> str:
-    settings = get_settings()
-    return settings.sqlalchemy_database_url
-
-
 def run_migrations_offline() -> None:
-    url = _get_database_url()
+    """Run migrations in 'offline' mode."""
+    url = settings.SQLALCHEMY_DATABASE_URI
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -34,29 +65,32 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = _get_database_url()
+def do_run_migrations(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
 
-    connectable = engine_from_config(
-        configuration,
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_migrations_online() -> None:
+    """Run migrations in 'online' mode."""
+    configuration = config.get_section(config.config_ini_section)
+    if configuration is None:
+        configuration = {}
+    configuration["sqlalchemy.url"] = settings.SQLALCHEMY_DATABASE_URI
+    connectable = async_engine_from_config(
+        cast(dict[str, Any], configuration),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            compare_server_default=True,
-        )
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
 
-        with context.begin_transaction():
-            context.run_migrations()
+    await connectable.dispose()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    asyncio.run(run_migrations_online())

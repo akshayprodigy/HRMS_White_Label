@@ -1,88 +1,56 @@
-.PHONY: help env db-up backend-up up down logs migrate backend-install backend-lint backend-format backend-test frontend-install frontend-dev frontend-lint frontend-format prod-up prod-down prod-logs prod-bootstrap-admin
-
-PY ?= python3
-NPM ?= npm
-DC ?= docker compose
+.PHONY: help build up down restart logs migrate test shell ui-test up-prod down-prod logs-prod seed-departments
 
 help:
-	@echo "Targets:"
-	@echo "  env             Create .env from .env.example if missing"
-	@echo "  up              Start db + backend (Docker Compose)"
-	@echo "  db-up           Start only MariaDB"
-	@echo "  backend-up      Start only backend (depends on db)"
-	@echo "  migrate         Run Alembic migrations inside backend container"
-	@echo "  down            Stop containers"
-	@echo "  logs            Tail compose logs"
-	@echo "  backend-install Install backend dev deps (local venv)"
-	@echo "  backend-lint    Ruff lint backend"
-	@echo "  backend-format  Ruff format backend"
-	@echo "  backend-test    Run backend pytest"
-	@echo "  frontend-install Install frontend deps"
-	@echo "  frontend-dev     Run Vite dev server"
-	@echo "  frontend-lint    ESLint frontend"
-	@echo "  frontend-format  Prettier format frontend"
-	@echo "  prod-up          Start production stack (db+backend+frontend+caddy)"
-	@echo "  prod-down        Stop production stack"
-	@echo "  prod-logs        Tail production stack logs"
-	@echo "  prod-bootstrap-admin Bootstrap admin in production backend"
+	@echo "Available commands:"
+	@echo "  build    - Build docker images"
+	@echo "  up       - Start the development stack (rebuild)"
+	@echo "  down     - Stop the development stack"
+	@echo "  restart  - Restart the development stack"
+	@echo "  logs     - Tail docker logs"
+	@echo "  migrate  - Run database migrations"
+	@echo "  seed-departments - Seed master departments (Engineering, HR, Accounts, …)"
+	@echo "  test     - Run backend tests"
+	@echo "  ui-test  - Run UI tests (visible browser)"
+	@echo "  shell    - Open a shell in the backend container"
+	@echo "  up-prod  - Start the production stack (rebuild)"
+	@echo "  down-prod- Stop the production stack"
+	@echo "  logs-prod- Tail production logs"
 
-env:
-	@test -f .env || cp .env.example .env
+build:
+	docker compose build
 
-db-up: env
-	@$(DC) up -d db
-
-backend-up: env
-	@$(DC) up -d --build backend
-
-up: env
-	@$(DC) up -d --build db backend
+up:
+	docker compose up -d --build
 
 down:
-	@$(DC) down
+	docker compose down
+
+restart:
+	docker compose restart
 
 logs:
-	@$(DC) logs -f
+	docker compose logs -f
 
 migrate:
-	@$(DC) exec backend alembic upgrade head
+	docker compose exec backend alembic upgrade head
 
-backend-install:
-	@cd backend && $(PY) -m pip install -r requirements-dev.txt
+seed-departments:
+	docker compose exec backend python -m scripts.seed_departments
 
-backend-lint:
-	@cd backend && ruff check .
+test:
+	docker compose exec backend pytest
 
-backend-format:
-	@cd backend && ruff format .
+ui-test:
+	bash scripts/run_ui_tests.sh
 
-backend-test:
-	@cd backend && $(PY) -m pytest
+shell:
+	docker compose exec backend /bin/bash
 
-frontend-install:
-	@cd frontend && $(NPM) install
+up-prod:
+	docker compose -f docker-compose.prod.yml up -d --build
 
-frontend-dev:
-	@cd frontend && $(NPM) run dev
+down-prod:
+	docker compose -f docker-compose.prod.yml down
 
-frontend-lint:
-	@cd frontend && $(NPM) run lint
-
-frontend-format:
-	@cd frontend && $(NPM) run format
-
-prod-up: env
-	@$(DC) -f docker-compose.prod.yml up -d --build
-
-prod-down:
-	@$(DC) -f docker-compose.prod.yml down
-
-prod-logs:
-	@$(DC) -f docker-compose.prod.yml logs -f
-
-prod-bootstrap-admin:
-	@$(DC) -f docker-compose.prod.yml exec \
-		-e BOOTSTRAP_ADMIN_EMAIL=$${BOOTSTRAP_ADMIN_EMAIL} \
-		-e BOOTSTRAP_ADMIN_PASSWORD=$${BOOTSTRAP_ADMIN_PASSWORD} \
-		-e BOOTSTRAP_ADMIN_ROLE=$${BOOTSTRAP_ADMIN_ROLE:-admin} \
-		backend python -m app.scripts.bootstrap_admin
+logs-prod:
+	docker compose -f docker-compose.prod.yml logs -f

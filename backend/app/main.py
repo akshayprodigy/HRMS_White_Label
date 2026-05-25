@@ -1,30 +1,33 @@
-from __future__ import annotations
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.api.v1.router import api_v1_router
-from app.core.config import get_settings
-from app.core.middleware.request_id import RequestIdMiddleware
-
+from app.api.v1.api import api_router
+from app.core.config import settings
+from app.core.logging import setup_logging
+from app.core.exceptions import setup_exception_handlers
+from app.middleware.request_id import RequestIdMiddleware
+from app import models # Force all models to be registered
 
 def create_app() -> FastAPI:
-    settings = get_settings()
-
-    app = FastAPI(title="United Exploration ERP API")
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+    setup_logging()
+    app = FastAPI(
+        title=settings.PROJECT_NAME,
+        openapi_url=f"{settings.API_V1_STR}/openapi.json"
     )
 
+    # Middleware
     app.add_middleware(RequestIdMiddleware)
 
-    app.include_router(api_v1_router, prefix=settings.api_v1_prefix)
+    # Set all CORS enabled origins
+    if settings.BACKEND_CORS_ORIGINS:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    setup_exception_handlers(app)
+    app.include_router(api_router, prefix=settings.API_V1_STR)
+
     return app
-
-
-app = create_app()

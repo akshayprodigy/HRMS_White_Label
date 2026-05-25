@@ -1,0 +1,17 @@
+services:
+  frontend:
+    # Local production-like run without real TLS certs.
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NGINX_CONF: nginx.local.conf
+    ports:
+      - "8088:80"
+    # Avoid depending on host certs in local mode.
+    volumes: []
+
+  # Optional: expose backend locally for debugging (not required for Nginx->backend).
+  backend:
+    ports: []

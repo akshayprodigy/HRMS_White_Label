@@ -1,62 +1,82 @@
-from __future__ import annotations
-
-import os
-from functools import lru_cache
-from typing import Literal
-
-from pydantic import computed_field
+from typing import List, Union
+from pydantic import AnyHttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    environment: str = "local"
-    api_v1_prefix: str = "/api/v1"
-    # Comma-separated string in env, e.g. "http://localhost:5173"
-    cors_origins: str = "http://localhost:5173"
+    API_V1_STR: str = "/api/v1"
+    PROJECT_NAME: str = "ERP United"
+    LOG_LEVEL: str = "INFO"
+    
+    SECRET_KEY: str = "secret-key-change-me-in-production"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30  # 30 days
+    
+    # BACKEND_CORS_ORIGINS is a JSON-formatted list of strings
+    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
 
-    db_host: str = "localhost"
-    db_port: int = 3306
-    db_name: str = "unitederp"
-    db_user: str = "unitederp"
-    db_password: str = ""
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(
+        cls, v: Union[str, List[str]]
+    ) -> Union[List[str], str]:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",")]
+        elif isinstance(v, (list, str)):
+            return v
+        raise ValueError(v)
 
-    # Optional override (recommended in Docker/CI):
-    database_url: str | None = None
+    MARIADB_SERVER: str = "db"
+    MARIADB_USER: str = "erp_user"
+    MARIADB_PASSWORD: str = "erp_password"
+    MARIADB_DB: str = "erp_db"
+    MARIADB_PORT: int = 3306
 
-    jwt_secret_key: str = ""
-    jwt_algorithm: str = "HS256"
-    access_token_minutes: int = 15
-    refresh_token_days: int = 30
+    # File uploads (Lead/Opportunity documents)
+    LEAD_DOCUMENTS_DIR: str = "/app/uploads/leads"
+    # Default: 25 MiB per file
+    LEAD_DOCUMENT_MAX_BYTES: int = 25 * 1024 * 1024
 
-    refresh_cookie_name: str = "refresh_token"
-    refresh_cookie_secure: bool = False
-    refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
-    refresh_cookie_path: str = "/"
+    # File uploads (Task completion evidence)
+    TASK_COMPLETION_DOCS_DIR: str = "/app/uploads/task-completion"
+    TASK_COMPLETION_DOC_MAX_BYTES: int = 25 * 1024 * 1024
 
-    @property
-    def cors_origins_list(self) -> list[str]:
-        return [v.strip() for v in self.cors_origins.split(",") if v.strip()]
+    # File uploads (HR Policy documents)
+    POLICY_DOCUMENTS_DIR: str = "/app/uploads/policies"
+    POLICY_DOCUMENT_MAX_BYTES: int = 25 * 1024 * 1024
 
-    @computed_field  # type: ignore[misc]
-    @property
-    def sqlalchemy_database_url(self) -> str:
-        if self.database_url:
-            return self.database_url
+    # File uploads (Employee joining documents)
+    EMPLOYEE_DOCUMENTS_DIR: str = "/app/uploads/employee-documents"
+    EMPLOYEE_DOCUMENT_MAX_BYTES: int = 25 * 1024 * 1024
 
-        user = self.db_user
-        password = self.db_password
-        host = self.db_host
-        port = self.db_port
-        name = self.db_name
-        return f"mysql+pymysql://{user}:{password}@{host}:{port}/{name}"
+    # File uploads (User avatars)
+    AVATAR_DIR: str = "/app/uploads/avatars"
+    AVATAR_MAX_BYTES: int = 5 * 1024 * 1024
 
-    model_config = SettingsConfigDict(
-        env_file=os.getenv("ENV_FILE", ".env"),
-        env_nested_delimiter="__",
-        extra="ignore",
-    )
+    # File uploads (Leave attachments — medical certs, etc.)
+    LEAVE_ATTACHMENTS_DIR: str = "/app/uploads/leave-attachments"
+    LEAVE_ATTACHMENT_MAX_BYTES: int = 10 * 1024 * 1024
+
+    # File uploads (Project documents — workorder, contracts, etc.)
+    PROJECT_DOCUMENTS_DIR: str = "/app/uploads/project-documents"
+    PROJECT_DOCUMENT_MAX_BYTES: int = 25 * 1024 * 1024
+
+    SQLALCHEMY_DATABASE_URI: str | None = None
+
+    @field_validator("SQLALCHEMY_DATABASE_URI", mode="before")
+    @classmethod
+    def assemble_db_connection(cls, v: str | None, info) -> str:
+        if isinstance(v, str):
+            return v
+        user = info.data.get("MARIADB_USER")
+        password = info.data.get("MARIADB_PASSWORD")
+        server = info.data.get("MARIADB_SERVER")
+        port = info.data.get("MARIADB_PORT")
+        db = info.data.get("MARIADB_DB")
+        return f"mysql+aiomysql://{user}:{password}@{server}:{port}/{db}"
+
+    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env")
 
 
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
+settings = Settings()

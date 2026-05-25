@@ -21,5 +21,29 @@ node_modules/
 dist/
 .vite/
 
+# TypeScript build cache
+*.tsbuildinfo
+
 # OS
 .DS_Store
+
+# Editor / IDE / AI
+.claude/
+.vscode/
+.idea/
+
+# Local temp / outputs
+.tmp/
+test-results/
+playwright-report/
+*.log
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+
+# Local token / scratch files
+token.txt
+*.token
+scratch/

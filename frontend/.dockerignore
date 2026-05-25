@@ -1,6 +1,16 @@
-node_modules/
-dist/
-.vscode/
-.idea/
+# Dockerignore for ERP and United Exploration
+node_modules
+dist
+.git
+__pycache__
+*.pyc
 .env
-.env.*
+.DS_Store
+.mypy_cache
+.pytest_cache
+.vscode
+*.log
+backend/static
+backend/alembic/versions/__pycache__
+frontend/dist
+frontend/node_modules
