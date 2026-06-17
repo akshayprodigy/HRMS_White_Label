@@ -181,6 +181,7 @@ async def seed_demo_roles():
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
+            db_perms["employee leave write"],
             db_perms["leave approve"],
             db_perms["employee time read"],
             db_perms["project write"],
@@ -193,6 +194,7 @@ async def seed_demo_roles():
         ]
         db_roles["Super Admin"].permissions = [
             db_perms["admin access"],
+            db_perms["employee leave write"],
             db_perms["lead estimate approve"],
         ]
         db_roles["Business Developer"].permissions = [
@@ -207,11 +209,14 @@ async def seed_demo_roles():
             db_perms["bd estimate write"],
             db_perms["bd convert to project"],
             db_perms["bd report view"],
+            db_perms["employee leave read"],
+            db_perms["employee leave write"],
             db_perms["employee time read"],
             db_perms["employee time write"]
         ]
         db_roles["CEO"].permissions = [
             db_perms["employee leave read"],
+            db_perms["employee leave write"],
             db_perms["employee time read"],
             db_perms["hr employee read"],
             db_perms["hr payroll view"],
@@ -223,11 +228,14 @@ async def seed_demo_roles():
         ]
         db_roles["DEPT_HEAD"].permissions = [
             db_perms["employee leave read"],
+            db_perms["employee leave write"],
             db_perms["employee time read"],
             db_perms["recruitment read"],
             db_perms["recruitment write"]
         ]
         db_roles["RECRUITER"].permissions = [
+            db_perms["employee leave read"],
+            db_perms["employee leave write"],
             db_perms["hr employee read"],
             db_perms["recruitment read"],
             db_perms["recruitment write"],
@@ -242,6 +250,7 @@ async def seed_demo_roles():
             db_perms["bd bid review read"],
             db_perms["executive report view"],
             db_perms["employee leave read"],
+            db_perms["employee leave write"],
             db_perms["employee time read"],
             db_perms["hr employee read"],
         ]
@@ -256,6 +265,8 @@ async def seed_demo_roles():
             db_perms["lead estimate approve"],
             db_perms["bd report view"],
             db_perms["bd convert to project"],
+            db_perms["employee leave read"],
+            db_perms["employee leave write"],
         ]
 
         # 3. Define Demo Users
