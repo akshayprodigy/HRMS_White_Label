@@ -78,6 +78,8 @@ export const ENDPOINTS = {
     DEPARTMENT_DETAIL: (id: number) => `/admin/departments/${id}`,
     FUNCTIONAL_AREAS: '/admin/functional-areas',
     FUNCTIONAL_AREA_DETAIL: (id: number) => `/admin/functional-areas/${id}`,
+    FUNCTIONAL_AREA_TEMPLATE: '/admin/functional-areas/template',
+    FUNCTIONAL_AREA_BULK_UPLOAD: '/admin/functional-areas/bulk-upload',
     BID_LINE_ITEMS: '/admin/bid-line-items',
     BID_LINE_ITEM_DETAIL: (id: number | string) => `/admin/bid-line-items/${id}`,
     REQUIRED_DOCS: '/admin/required-documents',

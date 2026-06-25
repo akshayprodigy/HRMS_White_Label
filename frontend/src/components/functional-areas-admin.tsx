@@ -1,5 +1,18 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Edit2, Trash2, Power, Search, RefreshCw } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Plus,
+  Edit2,
+  Trash2,
+  Power,
+  Search,
+  RefreshCw,
+  Download,
+  Upload,
+  FileSpreadsheet,
+  CheckCircle2,
+  AlertCircle,
+  XCircle,
+} from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner@2.0.3';
 import { client } from '../api/client';
@@ -35,6 +48,14 @@ export const FunctionalAreasAdmin: React.FC = () => {
   const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<FunctionalArea | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkFile, setBulkFile] = useState<File | null>(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState<
+    { created: number; skipped: number; failed: number; errors: string[] } | null
+  >(null);
+  const [downloadingTemplate, setDownloadingTemplate] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const fetchItems = async () => {
     setLoading(true);
@@ -115,6 +136,84 @@ export const FunctionalAreasAdmin: React.FC = () => {
     }
   };
 
+  const downloadTemplate = async () => {
+    setDownloadingTemplate(true);
+    try {
+      const res = await client.get(
+        ENDPOINTS.ADMIN.FUNCTIONAL_AREA_TEMPLATE,
+        { responseType: 'blob' },
+      );
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'functional_areas_template.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success('Template downloaded');
+    } catch (e: any) {
+      toast.error(errMsg(e, 'Failed to download template'));
+    } finally {
+      setDownloadingTemplate(false);
+    }
+  };
+
+  const openBulk = () => {
+    setBulkFile(null);
+    setBulkResult(null);
+    setBulkOpen(true);
+  };
+
+  const onPickBulkFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null;
+    setBulkFile(f);
+    setBulkResult(null);
+  };
+
+  const submitBulk = async () => {
+    if (!bulkFile) {
+      toast.error('Choose an Excel file first');
+      return;
+    }
+    setBulkUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', bulkFile);
+      const res = await client.post(
+        ENDPOINTS.ADMIN.FUNCTIONAL_AREA_BULK_UPLOAD,
+        fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      );
+      setBulkResult(res.data);
+      const { created, skipped, failed } = res.data || {};
+      if (failed > 0) {
+        toast.error(
+          `Upload finished: ${created} created, ${skipped} skipped, ${failed} failed`,
+        );
+      } else {
+        toast.success(
+          `Upload finished: ${created} created, ${skipped} skipped`,
+        );
+      }
+      fetchItems();
+    } catch (e: any) {
+      toast.error(errMsg(e, 'Bulk upload failed'));
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
+  const closeBulk = () => {
+    setBulkOpen(false);
+    setBulkFile(null);
+    setBulkResult(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     try {
@@ -159,6 +258,25 @@ export const FunctionalAreasAdmin: React.FC = () => {
             />
             Show Inactive
           </label>
+          <Button
+            onClick={downloadTemplate}
+            isLoading={downloadingTemplate}
+            variant="ghost"
+            className="h-10 border border-slate-200 bg-white text-[#0F172A] hover:bg-slate-50 font-black uppercase text-[10px] tracking-widest"
+            title="Download a sample Excel template for bulk upload"
+          >
+            <Download size={14} className="mr-1.5" />
+            Template
+          </Button>
+          <Button
+            onClick={openBulk}
+            variant="ghost"
+            className="h-10 border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 font-black uppercase text-[10px] tracking-widest"
+            title="Upload an Excel file to add many functional areas at once"
+          >
+            <Upload size={14} className="mr-1.5" />
+            Bulk Upload
+          </Button>
           <Button
             onClick={openCreate}
             className="h-10 bg-blue-600 hover:bg-blue-700 text-white font-black uppercase text-[10px] tracking-widest"
@@ -319,6 +437,161 @@ export const FunctionalAreasAdmin: React.FC = () => {
             >
               {editing ? 'Update' : 'Create'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkOpen} onOpenChange={(o) => (o ? setBulkOpen(true) : closeBulk())}>
+        <DialogContent className="max-w-xl p-0 overflow-hidden">
+          <div className="bg-blue-600 px-6 py-5 text-white">
+            <DialogTitle className="text-lg font-black uppercase tracking-tight flex items-center gap-2">
+              <Upload size={18} />
+              Bulk Upload Functional Areas
+            </DialogTitle>
+            <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest mt-1">
+              Excel (.xlsx) · Columns: Code, Name, Is Active
+            </p>
+          </div>
+          <div className="p-6 space-y-5 max-h-[60vh] overflow-y-auto">
+            <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+              <div className="flex items-start gap-3">
+                <FileSpreadsheet className="text-blue-600 mt-0.5" size={18} />
+                <div className="flex-1">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">
+                    Don't have a template?
+                  </div>
+                  <p className="text-[11px] text-slate-600 mt-1">
+                    Download the sample sheet — it has the right columns, example rows,
+                    and an Instructions tab.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={downloadTemplate}
+                    disabled={downloadingTemplate}
+                    className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-blue-700 hover:underline disabled:opacity-50"
+                  >
+                    <Download size={12} />
+                    {downloadingTemplate ? 'Downloading…' : 'Download template'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">
+                Excel File
+              </label>
+              <label
+                htmlFor="fa-bulk-file"
+                className={cn(
+                  'mt-1.5 flex flex-col items-center justify-center gap-2 px-6 py-8',
+                  'border-2 border-dashed rounded-xl cursor-pointer transition-colors',
+                  bulkFile
+                    ? 'border-emerald-300 bg-emerald-50/40'
+                    : 'border-slate-200 hover:border-blue-300 bg-slate-50/40 hover:bg-blue-50/40',
+                )}
+              >
+                {bulkFile ? (
+                  <>
+                    <CheckCircle2 className="text-emerald-600" size={28} />
+                    <div className="text-sm font-black text-[#0F172A] break-all text-center">
+                      {bulkFile.name}
+                    </div>
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                      {(bulkFile.size / 1024).toFixed(1)} KB · click to change
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="text-slate-400" size={28} />
+                    <div className="text-sm font-black text-[#0F172A]">
+                      Click to choose an Excel file
+                    </div>
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                      .xlsx or .xls
+                    </div>
+                  </>
+                )}
+                <input
+                  id="fa-bulk-file"
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  onChange={onPickBulkFile}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {bulkResult && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-center">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-emerald-700">
+                      Created
+                    </div>
+                    <div className="text-2xl font-black text-emerald-700 tabular-nums">
+                      {bulkResult.created}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-slate-600">
+                      Skipped
+                    </div>
+                    <div className="text-2xl font-black text-slate-600 tabular-nums">
+                      {bulkResult.skipped}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-3 text-center">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-rose-700">
+                      Failed
+                    </div>
+                    <div className="text-2xl font-black text-rose-700 tabular-nums">
+                      {bulkResult.failed}
+                    </div>
+                  </div>
+                </div>
+                {bulkResult.errors.length > 0 && (
+                  <div className="rounded-xl border border-rose-100 bg-rose-50/40 p-3 max-h-48 overflow-y-auto">
+                    <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-rose-700 mb-2">
+                      <AlertCircle size={12} />
+                      Errors ({bulkResult.errors.length})
+                    </div>
+                    <ul className="space-y-1">
+                      {bulkResult.errors.map((err, i) => (
+                        <li
+                          key={i}
+                          className="text-[11px] text-rose-800 flex items-start gap-1.5"
+                        >
+                          <XCircle size={11} className="mt-0.5 flex-shrink-0" />
+                          <span className="break-all">{err}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="px-6 py-4 bg-slate-50 border-t border-slate-100">
+            <Button
+              variant="ghost"
+              onClick={closeBulk}
+              className="text-[10px] font-black uppercase tracking-widest"
+            >
+              {bulkResult ? 'Done' : 'Cancel'}
+            </Button>
+            {!bulkResult && (
+              <Button
+                onClick={submitBulk}
+                isLoading={bulkUploading}
+                disabled={!bulkFile}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase tracking-widest"
+              >
+                <Upload size={12} className="mr-1.5" />
+                Upload
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

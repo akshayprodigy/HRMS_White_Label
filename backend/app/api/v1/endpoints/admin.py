@@ -1,7 +1,12 @@
 from app.models.project import Project
 from app.schemas.project import ProjectRead
+import io
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import pandas as pd
+from fastapi import (
+    APIRouter, Depends, File, HTTPException, Query, UploadFile, status,
+)
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, update as sql_update, func
 from sqlalchemy.orm import selectinload
@@ -280,6 +285,155 @@ async def delete_functional_area(
     await db.delete(db_obj)
     await db.commit()
     return None
+
+
+@router.get("/functional-areas/template")
+async def download_functional_area_template(
+    current_user: User = Depends(deps.check_permissions([ADMIN_ACCESS])),
+) -> StreamingResponse:
+    """Download a sample XLSX template for bulk upload of functional areas.
+
+    Includes a few example rows and an 'Instructions' sheet. The same column
+    headers the bulk-upload endpoint expects: Code, Name, Is Active.
+    """
+    columns = ["Code", "Name", "Is Active"]
+    examples = [
+        ["OVRS", "Overseas Projects", "Yes"],
+        ["NMET", "NMET", "Yes"],
+        ["SUR", "Survey", "Yes"],
+    ]
+    df = pd.DataFrame(examples, columns=columns)
+
+    instructions = pd.DataFrame({
+        "Instructions": [
+            "1. Code: short uppercase identifier (max 20 chars). Required, unique.",
+            "2. Name: full display name (max 200 chars). Required, unique.",
+            "3. Is Active: 'Yes' or 'No' (or leave blank — defaults to Yes).",
+            "4. Existing codes are skipped (idempotent re-uploads are safe).",
+            "5. Codes are auto-uppercased; names are trimmed of surrounding whitespace.",
+            "6. Rows with missing Code or Name are reported as errors, not silently dropped.",
+        ]
+    })
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Functional Areas")
+        instructions.to_excel(writer, index=False, sheet_name="Instructions")
+    buffer.seek(0)
+
+    headers = {
+        "Content-Disposition": (
+            'attachment; filename="functional_areas_template.xlsx"'
+        )
+    }
+    return StreamingResponse(
+        buffer,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers=headers,
+    )
+
+
+@router.post("/functional-areas/bulk-upload")
+async def bulk_upload_functional_areas(
+    *,
+    db: deps.DBDep,
+    file: UploadFile = File(...),
+    current_user: User = Depends(deps.check_permissions([ADMIN_ACCESS])),
+) -> Any:
+    """Bulk-upload functional areas from an XLSX file.
+
+    Returns {created, skipped, failed, errors[]}. Rows whose code already
+    exists are counted as 'skipped' (idempotent), not errors.
+    """
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file format. Please upload an Excel (.xlsx) file.",
+        )
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents), sheet_name=0)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400, detail=f"Failed to read Excel file: {e}"
+        )
+
+    if "Code" not in df.columns or "Name" not in df.columns:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing required columns. Expected: 'Code', 'Name' (and optionally 'Is Active').",
+        )
+
+    existing = (await db.execute(select(FunctionalArea))).scalars().all()
+    by_code = {fa.code: fa for fa in existing}
+    by_name = {fa.name: fa for fa in existing}
+
+    created = 0
+    skipped = 0
+    failed = 0
+    errors: List[str] = []
+
+    for idx, row in df.iterrows():
+        sheet_row = int(idx) + 2  # account for header row in user-facing message
+        raw_code = row.get("Code")
+        raw_name = row.get("Name")
+        raw_active = row.get("Is Active") if "Is Active" in df.columns else None
+
+        if pd.isna(raw_code) and pd.isna(raw_name):
+            continue  # blank row — silently skip
+
+        code = str(raw_code).strip().upper() if not pd.isna(raw_code) else ""
+        name = str(raw_name).strip() if not pd.isna(raw_name) else ""
+
+        if not code or not name:
+            failed += 1
+            errors.append(
+                f"Row {sheet_row}: Code and Name are required"
+            )
+            continue
+        if len(code) > 20:
+            failed += 1
+            errors.append(f"Row {sheet_row}: Code '{code}' exceeds 20 chars")
+            continue
+        if len(name) > 200:
+            failed += 1
+            errors.append(f"Row {sheet_row}: Name '{name}' exceeds 200 chars")
+            continue
+
+        if code in by_code:
+            skipped += 1
+            continue
+        if name in by_name:
+            failed += 1
+            errors.append(
+                f"Row {sheet_row}: Name '{name}' already used by code "
+                f"'{by_name[name].code}'"
+            )
+            continue
+
+        if pd.isna(raw_active) or str(raw_active).strip() == "":
+            is_active = True
+        else:
+            is_active = str(raw_active).strip().lower() in (
+                "yes", "y", "true", "1", "active",
+            )
+
+        fa = FunctionalArea(code=code, name=name, is_active=is_active)
+        db.add(fa)
+        by_code[code] = fa
+        by_name[name] = fa
+        created += 1
+
+    await db.commit()
+    return {
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "errors": errors,
+    }
 
 
 @router.post("/leave-types", response_model=LeaveTypeRead)
