@@ -47,6 +47,11 @@ from .revision import (
     SalaryRevision, RevisionCycle,
     RevisionType, RevisionStatus, CycleStatus,
 )
+from .statutory import (
+    EmployerIdentifier, StatutoryConfig, PTStateSlab,
+    EmployeeStatutoryDetail, StatutoryFiling,
+    StatutoryStream, FilingStatus,
+)
 
 __all__ = [
     "Department",
@@ -112,4 +117,9 @@ __all__ = [
     "Grade",
     "SalaryRevision",
     "RevisionCycle",
+    "EmployerIdentifier",
+    "StatutoryConfig",
+    "PTStateSlab",
+    "EmployeeStatutoryDetail",
+    "StatutoryFiling",
 ]

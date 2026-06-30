@@ -51,6 +51,10 @@ import { DesignationGradeAdmin } from './components/designation-grade-admin';
 import { SalaryRevisionsView } from './components/salary-revisions';
 import { RevisionCyclesView } from './components/revision-cycles';
 import { MyRevisionsView } from './components/my-revisions';
+import { StatutoryConfigAdmin } from './components/statutory-config-admin';
+import { StatutoryFilingsView } from './components/statutory-filings';
+import { StatutoryReconciliationView } from './components/statutory-reconciliation';
+import { ComplianceDashboardView } from './components/compliance-dashboard';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -439,6 +443,14 @@ const App = () => {
         return <RevisionCyclesView />;
       case 'my-revisions':
         return <MyRevisionsView />;
+      case 'statutory-config':
+        return <StatutoryConfigAdmin />;
+      case 'statutory-filings':
+        return <StatutoryFilingsView />;
+      case 'statutory-reconciliation':
+        return <StatutoryReconciliationView />;
+      case 'compliance-dashboard':
+        return <ComplianceDashboardView />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -500,6 +512,10 @@ const App = () => {
       'salary-revisions': 'Salary Revisions',
       'revision-cycles': 'Revision Cycles',
       'my-revisions': 'My Revisions',
+      'statutory-config': 'Statutory Configuration',
+      'statutory-filings': 'Statutory Filings',
+      'statutory-reconciliation': 'Statutory Reconciliation',
+      'compliance-dashboard': 'Compliance Dashboard',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

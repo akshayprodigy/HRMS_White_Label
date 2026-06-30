@@ -452,6 +452,30 @@ export const Sidebar = ({
         "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
       ],
     },
+    {
+      id: "compliance-dashboard",
+      label: "Compliance Dashboard",
+      icon: ShieldCheck,
+      roles: ["hr", "admin", "super admin", "ceo"],
+    },
+    {
+      id: "statutory-filings",
+      label: "Statutory Filings",
+      icon: ScrollText,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "statutory-reconciliation",
+      label: "Statutory Reconciliation",
+      icon: FileCheck,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "statutory-config",
+      label: "Statutory Configuration",
+      icon: Shield,
+      roles: ["hr", "admin", "super admin"],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

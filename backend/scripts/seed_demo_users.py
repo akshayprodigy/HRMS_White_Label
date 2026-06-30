@@ -115,6 +115,9 @@ async def seed_demo_roles():
             {"name": "revision approve hr", "description": "Approve PROMOTION revisions (HR / CEO authority)"},
             {"name": "revision apply", "description": "Manually apply an approved revision (HR)"},
             {"name": "revision view all", "description": "View all employees' compensation history"},
+            {"name": "statutory config write", "description": "Manage PF/ESIC config + employer + PT slabs"},
+            {"name": "statutory generate", "description": "Generate PF ECR / ESIC / PT exports + update filing status"},
+            {"name": "statutory view", "description": "View statutory filings, reconciliation + compliance dashboard"},
         ]
         
         db_perms = {}
@@ -202,6 +205,9 @@ async def seed_demo_roles():
             db_perms["revision approve hr"],
             db_perms["revision apply"],
             db_perms["revision view all"],
+            db_perms["statutory config write"],
+            db_perms["statutory generate"],
+            db_perms["statutory view"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -238,6 +244,9 @@ async def seed_demo_roles():
             db_perms["revision approve hr"],
             db_perms["revision apply"],
             db_perms["revision view all"],
+            db_perms["statutory config write"],
+            db_perms["statutory generate"],
+            db_perms["statutory view"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
@@ -270,6 +279,8 @@ async def seed_demo_roles():
             # CEO authorises promotions.
             db_perms["revision approve hr"],
             db_perms["revision view all"],
+            # CEO oversees compliance posture.
+            db_perms["statutory view"],
         ]
         db_roles["DEPT_HEAD"].permissions = [
             db_perms["employee leave read"],
