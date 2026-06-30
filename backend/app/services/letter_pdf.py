@@ -718,6 +718,97 @@ def generate_relieving_letter(data: Dict[str, Any]) -> bytes:
 
 
 # Registry for easy lookup
+def generate_form16_part_b(data: Dict[str, Any]) -> bytes:
+    """Form 16 Part B (employer-issued statement of salary, deductions
+    and TDS).
+
+    Part A comes from TRACES — we do not generate it; the caller uploads
+    it separately and the API stitches the two for issuance.
+    """
+    lc = LetterCanvas()
+    ref = data.get("reference_number", "")
+    dt = _fmt_date(data.get("date"))
+    fy = data.get("fy", "")
+    name = data.get("employee_name", "_______________")
+    emp_code = data.get("employee_code", "")
+    pan = data.get("pan", "_______________")
+    designation = data.get("designation", "")
+    tan = data.get("employer_tan", "")
+    employer_pan = data.get("employer_pan", "")
+
+    lc.field_row("Ref:", ref)
+    lc.field_row("Date:", dt)
+    lc.spacer()
+    lc.title("FORM 16 — PART B")
+    lc.subtitle(f"Financial Year: 20{fy}")
+    lc.spacer()
+
+    lc.heading("Employee Details")
+    lc.field_row("Name:", name)
+    lc.field_row("Employee Code:", emp_code)
+    lc.field_row("PAN:", pan)
+    if designation:
+        lc.field_row("Designation:", designation)
+    lc.spacer(3 * mm)
+
+    lc.heading("Employer Details")
+    lc.field_row("Name:", COMPANY_NAME)
+    lc.field_row("TAN:", tan)
+    if employer_pan:
+        lc.field_row("PAN:", employer_pan)
+    lc.spacer(3 * mm)
+
+    if data.get("missing_pan_flag"):
+        lc.text(
+            "*** WARNING: Employee PAN is missing. Form 16 cannot be "
+            "issued without a valid PAN. ***",
+            bold=True,
+        )
+        lc.spacer(3 * mm)
+
+    lc.heading("Salary & Tax Computation (Annual)")
+    rows = [
+        ("Gross Salary", data.get("gross_salary_annual")),
+        ("(+) Previous Employer Income", data.get("previous_employer_income")),
+        ("(+) Other Income", data.get("other_income")),
+        ("(-) HRA Exemption u/s 10(13A)", data.get("hra_exemption")),
+        ("(-) Standard Deduction u/s 16", data.get("standard_deduction")),
+        ("(-) Chapter VI-A Deductions", data.get("chapter_via_deductions")),
+        ("Taxable Income", data.get("taxable_income")),
+        ("Tax on Total Income", data.get("tax_on_slabs")),
+        ("(-) Rebate u/s 87A", data.get("rebate_87a")),
+        ("(+) Surcharge", data.get("surcharge")),
+        ("(+) Health & Education Cess", data.get("cess")),
+        ("Total Tax Liability", data.get("total_tax")),
+        ("(-) TDS Deducted (Current Employer)", data.get("ytd_tds")),
+        ("(-) TDS by Previous Employer", data.get("previous_employer_tds")),
+        ("Net Tax Payable / (Refundable)", data.get("net_tax_payable")),
+    ]
+    for label, value in rows:
+        if value is None:
+            continue
+        try:
+            disp = f"Rs. {float(value):,.2f}"
+        except (TypeError, ValueError):
+            disp = str(value)
+        lc.field_row(label + ":", disp)
+    lc.spacer(3 * mm)
+
+    lc.heading("Tax Regime")
+    lc.field_row("Regime:", str(data.get("regime", "new")).upper())
+    lc.spacer(3 * mm)
+
+    lc.text(
+        "I, the responsible person of the deductor, certify that the above "
+        "information is true, complete and correct and is based on the books "
+        "of accounts, documents, TDS statements and other available records."
+    )
+    lc.spacer(3 * mm)
+    lc.signature_block()
+
+    return lc.finalize()
+
+
 LETTER_GENERATORS = {
     "offer_letter": generate_offer_letter,
     "appointment_letter": generate_appointment_letter,
@@ -726,6 +817,7 @@ LETTER_GENERATORS = {
     "relieving_letter": generate_relieving_letter,
     "promotion_letter": generate_promotion_letter,
     "salary_revision_letter": generate_salary_revision_letter,
+    "form16_part_b": generate_form16_part_b,
 }
 
 

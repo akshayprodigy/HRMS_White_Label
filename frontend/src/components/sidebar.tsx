@@ -476,6 +476,45 @@ export const Sidebar = ({
       icon: Shield,
       roles: ["hr", "admin", "super admin"],
     },
+    {
+      id: "my-tax-declaration",
+      label: "My Tax Declaration",
+      icon: FileText,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "super admin",
+        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
+      ],
+    },
+    {
+      id: "tax-declaration-queue",
+      label: "Tax Declaration Queue",
+      icon: FileCheck,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "tds-reconciliation",
+      label: "TDS Reconciliation",
+      icon: BarChart3,
+      roles: ["hr", "admin", "super admin", "ceo"],
+    },
+    {
+      id: "form16-workspace",
+      label: "Form 16 + 24Q",
+      icon: FileSignature,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "gratuity-dashboard",
+      label: "Gratuity Liability",
+      icon: Banknote,
+      roles: ["hr", "admin", "super admin", "ceo"],
+    },
+    {
+      id: "tax-config",
+      label: "Tax Configuration",
+      icon: Settings,
+      roles: ["hr", "admin", "super admin"],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

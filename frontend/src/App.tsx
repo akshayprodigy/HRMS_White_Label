@@ -55,6 +55,12 @@ import { StatutoryConfigAdmin } from './components/statutory-config-admin';
 import { StatutoryFilingsView } from './components/statutory-filings';
 import { StatutoryReconciliationView } from './components/statutory-reconciliation';
 import { ComplianceDashboardView } from './components/compliance-dashboard';
+import { TaxConfigAdmin } from './components/tax-config-admin';
+import { MyTaxDeclarationView } from './components/my-tax-declaration';
+import { TaxDeclarationQueue } from './components/tax-declaration-queue';
+import { TDSReconciliationView } from './components/tds-reconciliation';
+import { Form16Workspace } from './components/form16-workspace';
+import { GratuityDashboardView } from './components/gratuity-dashboard';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -451,6 +457,18 @@ const App = () => {
         return <StatutoryReconciliationView />;
       case 'compliance-dashboard':
         return <ComplianceDashboardView />;
+      case 'tax-config':
+        return <TaxConfigAdmin />;
+      case 'my-tax-declaration':
+        return <MyTaxDeclarationView />;
+      case 'tax-declaration-queue':
+        return <TaxDeclarationQueue />;
+      case 'tds-reconciliation':
+        return <TDSReconciliationView />;
+      case 'form16-workspace':
+        return <Form16Workspace />;
+      case 'gratuity-dashboard':
+        return <GratuityDashboardView />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -516,6 +534,12 @@ const App = () => {
       'statutory-filings': 'Statutory Filings',
       'statutory-reconciliation': 'Statutory Reconciliation',
       'compliance-dashboard': 'Compliance Dashboard',
+      'tax-config': 'Tax Configuration',
+      'my-tax-declaration': 'My Tax Declaration',
+      'tax-declaration-queue': 'Tax Declaration Queue',
+      'tds-reconciliation': 'TDS Reconciliation',
+      'form16-workspace': 'Form 16 + Form 24Q',
+      'gratuity-dashboard': 'Gratuity Liability',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

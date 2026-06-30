@@ -52,6 +52,13 @@ from .statutory import (
     EmployeeStatutoryDetail, StatutoryFiling,
     StatutoryStream, FilingStatus,
 )
+from .tax import (
+    TaxSlabConfig, SectionLimitConfig, GratuityConfig,
+    EmployeeTaxDeclaration, Form16Record, Form24QExport,
+    GratuityComputation,
+    TaxRegime, DeclarationStatus, Form16Status, Form24QStatus,
+    GratuityStatus,
+)
 
 __all__ = [
     "Department",
@@ -122,4 +129,11 @@ __all__ = [
     "PTStateSlab",
     "EmployeeStatutoryDetail",
     "StatutoryFiling",
+    "TaxSlabConfig",
+    "SectionLimitConfig",
+    "GratuityConfig",
+    "EmployeeTaxDeclaration",
+    "Form16Record",
+    "Form24QExport",
+    "GratuityComputation",
 ]
