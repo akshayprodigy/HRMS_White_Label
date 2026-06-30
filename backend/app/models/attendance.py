@@ -58,6 +58,48 @@ class Attendance(Base):
         String(32), nullable=True, index=True
     )
 
+    # Geo-fencing fields (Step 3). All nullable so employees without any
+    # geo configuration behave exactly as today.
+    is_mock_location: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    matched_fence_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("geofence_location.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    distance_to_fence_meters: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    geo_flag: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True
+    )
+    # Same as geo fields above but captured at PUNCH-OUT. The original
+    # latitude/longitude/accuracy columns store the punch-IN location.
+    punch_out_latitude: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    punch_out_longitude: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    punch_out_accuracy: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    punch_out_is_mock: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    punch_out_matched_fence_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("geofence_location.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    punch_out_distance_to_fence_meters: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    punch_out_geo_flag: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
+
     user: Mapped["User"] = relationship("User", back_populates="attendances")
 
 

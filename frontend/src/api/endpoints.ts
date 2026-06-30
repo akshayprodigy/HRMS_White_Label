@@ -98,6 +98,15 @@ export const ENDPOINTS = {
     MY_CURRENT: '/shifts/my/current',
     MY_HISTORY: '/shifts/my/history',
   },
+  GEO: {
+    FENCES: '/geo/fences',
+    FENCE_DETAIL: (id: number) => `/geo/fences/${id}`,
+    EMPLOYEES: '/geo/employees',
+    EMPLOYEE_DETAIL: (userId: number) => `/geo/employees/${userId}`,
+    EMPLOYEE_TOGGLE: (userId: number) => `/geo/employees/${userId}/toggle`,
+    EMPLOYEES_BULK: '/geo/employees/bulk',
+    MY_EFFECTIVE: '/geo/my/effective',
+  },
   LEAVE: {
     BALANCES: '/leave/balances',
     TYPES: '/leave/types',

@@ -35,6 +35,9 @@ from .project_document import ProjectDocument
 from .comp_off import CompOffAccrual
 from .functional_area import FunctionalArea
 from .shift import ShiftTemplate, EmployeeShiftAssignment
+from .geofence import (
+    GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
+)
 
 __all__ = [
     "Department",
@@ -89,4 +92,7 @@ __all__ = [
     "FunctionalArea",
     "ShiftTemplate",
     "EmployeeShiftAssignment",
+    "GeoFenceLocation",
+    "EmployeeGeoConfig",
+    "EmployeeGeoFenceLink",
 ]

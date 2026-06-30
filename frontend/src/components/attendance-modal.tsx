@@ -101,15 +101,35 @@ export const AttendanceModal = ({ onSuccess }: AttendanceModalProps) => {
         latitude: coords?.lat,
         longitude: coords?.lng,
         accuracy: coords?.accuracy,
+        // Browser cannot reliably detect mock-location; defaults to false.
+        // The mobile client populates this from device APIs.
+        is_mock_location: false,
         captured_at: new Date().toISOString()
       });
-      
+
       localStorage.setItem('last_attendance_type', type);
       localStorage.setItem('last_attendance_location', coords?.address || 'Verified Coordinates');
       localStorage.setItem('last_attendance_time', new Date().toISOString());
       onSuccess();
     } catch (err: any) {
-      setError(err.response?.data?.error?.message || "Internal Protocol Error: Attendance marking failed.");
+      // STRICT geo rejection: backend returns 422 with a structured
+      // detail body: { error, message, nearest_fence_name, distance_to_fence_meters }.
+      // Surface a precise, human message so the user knows what to do.
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail;
+      if (status === 422 && detail && typeof detail === 'object') {
+        const msg = detail.message
+          || (detail.nearest_fence_name && detail.distance_to_fence_meters != null
+            ? `You're ${Math.round(detail.distance_to_fence_meters)}m from ${detail.nearest_fence_name}. Move closer to punch in.`
+            : 'Punch rejected by geo policy.');
+        setError(msg);
+      } else {
+        setError(
+          err.response?.data?.error?.message
+          || (typeof err.response?.data?.detail === 'string' ? err.response.data.detail : null)
+          || "Internal Protocol Error: Attendance marking failed."
+        );
+      }
     } finally {
       setIsLoading(false);
     }

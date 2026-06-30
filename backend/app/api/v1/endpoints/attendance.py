@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
@@ -10,8 +10,17 @@ from app.models.audit import AuditLog
 from app.models.hr import HolidayCalendar
 from app.models.comp_off import CompOffAccrual
 from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
+from app.models.geofence import (
+    EmployeeGeoConfig, EmployeeGeoFenceLink, GeoFenceLocation,
+)
+from app.models.notification import Notification
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
-from app.models.user import Role
+from app.models.user import Role, User as UserModel
+from app.services.geofence import (
+    EnforcementMode,
+    GeoDecision,
+    evaluate_punch,
+)
 from app.services.shift_resolver import (
     DEFAULT_EARLY_IN_BUFFER,
     AttributionFlag,
@@ -23,6 +32,7 @@ from app.schemas.attendance import (
     AttendanceToday,
     AttendanceHRRead
 )
+from app.schemas.geofence import GeoRejectionDetail
 
 
 router = APIRouter()
@@ -36,6 +46,124 @@ class PunchOutBody(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     accuracy: Optional[float] = None
+    is_mock_location: Optional[bool] = False
+
+
+# --- geo helpers --------------------------------------------------------
+
+
+async def _load_geo_config_with_fences(
+    db, user_id: int
+):
+    """Return (geo_enabled, EnforcementMode, [active fences]) for the user.
+
+    Returns (False, STRICT, []) when no config exists. Callers can then
+    rely on the resolver's no-fence backward-compat path to short-circuit.
+    """
+    stmt = (
+        select(EmployeeGeoConfig)
+        .where(EmployeeGeoConfig.user_id == user_id)
+        .options(
+            selectinload(EmployeeGeoConfig.fences)
+            .selectinload(EmployeeGeoFenceLink.fence),
+        )
+    )
+    cfg = (await db.execute(stmt)).scalars().first()
+    if cfg is None:
+        return False, EnforcementMode.STRICT, []
+
+    mode = (
+        EnforcementMode.STRICT
+        if cfg.enforcement_mode == EnforcementMode.STRICT.value
+        else EnforcementMode.ALLOW_WITH_FLAG
+    )
+    fences = [
+        link.fence
+        for link in cfg.fences
+        if link.fence is not None and link.fence.is_active
+    ]
+    return cfg.geo_enabled, mode, fences
+
+
+def _build_rejection(decision: GeoDecision, fences) -> HTTPException:
+    """Wrap a STRICT-rejection decision into a 422 with a structured body."""
+    detail = GeoRejectionDetail(
+        error=decision.reason_code or "OUTSIDE_GEOFENCE",
+        message=decision.reason or "Punch rejected by geo policy.",
+        nearest_fence_id=(
+            decision.matched_fence.id
+            if decision.matched_fence is not None else None
+        ),
+        nearest_fence_name=(
+            decision.matched_fence.name
+            if decision.matched_fence is not None else None
+        ),
+        distance_to_fence_meters=decision.distance_m,
+        allowed_fence_ids=[f.id for f in fences],
+    )
+    return HTTPException(
+        status_code=422,
+        detail=detail.model_dump(),
+    )
+
+
+async def _notify_geo_flag(
+    db,
+    *,
+    employee: "UserModel",
+    attendance_id: int,
+    decision: GeoDecision,
+    when: str,  # 'punch_in' | 'punch_out'
+) -> None:
+    """In-app notification to manager + every HR user when a geo flag is set.
+
+    Best-effort — failures are swallowed; never block a punch on
+    notification delivery.
+    """
+    if decision.geo_flag is None:
+        return
+    title = f"Geo-flagged attendance ({decision.geo_flag.value})"
+    distance_part = (
+        f" {int(round(decision.distance_m))}m from "
+        f"{decision.matched_fence.name}"
+        if decision.matched_fence is not None
+        and decision.distance_m is not None
+        else ""
+    )
+    message = (
+        f"{employee.full_name or employee.email} {when.replace('_', '-')}: "
+        f"{decision.reason or decision.geo_flag.value}.{distance_part}"
+    )
+
+    recipient_ids: set[int] = set()
+    if getattr(employee, "manager_id", None):
+        recipient_ids.add(int(employee.manager_id))
+
+    hr_role = (await db.execute(
+        select(Role).where(Role.name == "HR")
+    )).scalars().first()
+    if hr_role is not None:
+        # Find users who have the HR role assigned.
+        hr_users = (await db.execute(
+            select(UserModel)
+            .join(UserModel.roles)
+            .where(Role.id == hr_role.id, UserModel.is_active.is_(True))
+        )).scalars().all()
+        for u in hr_users:
+            recipient_ids.add(int(u.id))
+
+    # Don't ping the employee themselves about their own flag.
+    recipient_ids.discard(int(employee.id))
+
+    for uid in recipient_ids:
+        db.add(Notification(
+            user_id=uid,
+            title=title,
+            message=message,
+            type="warning",
+            resource_type="attendance",
+            resource_id=str(attendance_id),
+        ))
 
 
 # --- shift lookup helpers -----------------------------------------------
@@ -293,6 +421,48 @@ async def mark_attendance(
     if existing:
         return existing
 
+    # Geo-fencing decision. If the employee has no config or
+    # geo_enabled=False, this returns clean / allowed=True so the
+    # legacy punch flow is unaffected.
+    is_mock = bool(getattr(attendance_in, "is_mock_location", False))
+    geo_enabled, mode, allowed_fences = await _load_geo_config_with_fences(
+        db, current_user.id
+    )
+    decision = evaluate_punch(
+        punch_lat=attendance_in.latitude,
+        punch_lng=attendance_in.longitude,
+        accuracy_m=attendance_in.accuracy,
+        is_mock_location=is_mock,
+        fences=allowed_fences,
+        enforcement_mode=mode,
+        geo_enabled=geo_enabled,
+    )
+
+    if not decision.allowed:
+        # STRICT rejection — audit and return structured error. NO row
+        # is created.
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="STRICT_GEO_REJECT_PUNCH_IN",
+            resource_type="attendance",
+            resource_id="-",
+            ip_address=request.client.host if request.client else None,
+            details={
+                "reason_code": decision.reason_code,
+                "reason": decision.reason,
+                "distance_to_fence_meters": decision.distance_m,
+                "nearest_fence_id": (
+                    decision.matched_fence.id
+                    if decision.matched_fence else None
+                ),
+                "is_mock_location": is_mock,
+                "punch_latitude": attendance_in.latitude,
+                "punch_longitude": attendance_in.longitude,
+            },
+        ))
+        await db.commit()
+        raise _build_rejection(decision, allowed_fences)
+
     db_obj = Attendance(
         user_id=current_user.id,
         mode=attendance_in.mode,
@@ -305,6 +475,12 @@ async def mark_attendance(
         shift_template_id=shift_id,
         is_cross_midnight=is_cross_midnight,
         attribution_flag=flag,
+        is_mock_location=is_mock,
+        matched_fence_id=(
+            decision.matched_fence.id if decision.matched_fence else None
+        ),
+        distance_to_fence_meters=decision.distance_m,
+        geo_flag=decision.geo_flag.value if decision.geo_flag else None,
     )
     db.add(db_obj)
     await db.flush()
@@ -322,8 +498,39 @@ async def mark_attendance(
             "shift_template_id": shift_id,
             "is_cross_midnight": is_cross_midnight,
             "attribution_flag": flag,
+            "geo_flag": db_obj.geo_flag,
+            "matched_fence_id": db_obj.matched_fence_id,
+            "distance_to_fence_meters": db_obj.distance_to_fence_meters,
+            "is_mock_location": is_mock,
         },
     ))
+
+    # Manager + HR notification on any geo flag. Mock-location attempts
+    # get their own dedicated audit row in addition to the geo audit.
+    if is_mock:
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="MOCK_LOCATION_PUNCH_IN",
+            resource_type="attendance",
+            resource_id=str(db_obj.id),
+            ip_address=request.client.host if request.client else None,
+            details={
+                "latitude": attendance_in.latitude,
+                "longitude": attendance_in.longitude,
+            },
+        ))
+    if db_obj.geo_flag is not None:
+        try:
+            await _notify_geo_flag(
+                db,
+                employee=current_user,
+                attendance_id=db_obj.id,
+                decision=decision,
+                when="punch_in",
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
+
     await db.commit()
     await db.refresh(db_obj)
     return db_obj
@@ -348,9 +555,8 @@ async def punch_out(
     400 if no open record can be found (i.e. the user hasn't punched in
     for the relevant shift).
     400 if the matched record is already punched out (duplicate clock-out).
+    422 if STRICT geo policy rejects the punch-out location.
     """
-    from fastapi import HTTPException
-
     now = datetime.now(timezone.utc)
     attendance = await _find_open_record_for_punch_out(
         db, current_user.id, now
@@ -368,7 +574,57 @@ async def punch_out(
             detail="You have already punched out for the current shift.",
         )
 
+    # Geo evaluation for the punch-out coords. Mirrors the punch-in path.
+    out_lat = body.latitude if body is not None else None
+    out_lng = body.longitude if body is not None else None
+    out_acc = body.accuracy if body is not None else None
+    out_is_mock = bool(body.is_mock_location) if body is not None else False
+    geo_enabled, mode, allowed_fences = await _load_geo_config_with_fences(
+        db, current_user.id
+    )
+    out_decision = evaluate_punch(
+        punch_lat=out_lat,
+        punch_lng=out_lng,
+        accuracy_m=out_acc,
+        is_mock_location=out_is_mock,
+        fences=allowed_fences,
+        enforcement_mode=mode,
+        geo_enabled=geo_enabled,
+    )
+    if not out_decision.allowed:
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="STRICT_GEO_REJECT_PUNCH_OUT",
+            resource_type="attendance",
+            resource_id=str(attendance.id),
+            ip_address=request.client.host if request.client else None,
+            details={
+                "reason_code": out_decision.reason_code,
+                "reason": out_decision.reason,
+                "distance_to_fence_meters": out_decision.distance_m,
+                "nearest_fence_id": (
+                    out_decision.matched_fence.id
+                    if out_decision.matched_fence else None
+                ),
+                "is_mock_location": out_is_mock,
+            },
+        ))
+        await db.commit()
+        raise _build_rejection(out_decision, allowed_fences)
+
     attendance.punch_out_time = now
+    attendance.punch_out_latitude = out_lat
+    attendance.punch_out_longitude = out_lng
+    attendance.punch_out_accuracy = out_acc
+    attendance.punch_out_is_mock = out_is_mock
+    attendance.punch_out_matched_fence_id = (
+        out_decision.matched_fence.id
+        if out_decision.matched_fence else None
+    )
+    attendance.punch_out_distance_to_fence_meters = out_decision.distance_m
+    attendance.punch_out_geo_flag = (
+        out_decision.geo_flag.value if out_decision.geo_flag else None
+    )
 
     # If the punch-out lands far outside the expected window for this
     # record's shift, surface that to HR via the flag (without
@@ -389,14 +645,17 @@ async def punch_out(
         if attendance.work_date else None,
         "is_cross_midnight": attendance.is_cross_midnight,
         "attribution_flag": attendance.attribution_flag,
+        "punch_out_geo_flag": attendance.punch_out_geo_flag,
+        "punch_out_matched_fence_id": attendance.punch_out_matched_fence_id,
+        "punch_out_distance_to_fence_meters":
+            attendance.punch_out_distance_to_fence_meters,
+        "punch_out_is_mock": out_is_mock,
     }
-    if body is not None and (
-        body.latitude is not None or body.longitude is not None
-    ):
+    if out_lat is not None or out_lng is not None:
         audit_details["geo"] = {
-            "latitude": body.latitude,
-            "longitude": body.longitude,
-            "accuracy": body.accuracy,
+            "latitude": out_lat,
+            "longitude": out_lng,
+            "accuracy": out_acc,
         }
     db.add(AuditLog(
         user_id=current_user.id,
@@ -406,6 +665,30 @@ async def punch_out(
         ip_address=request.client.host if request.client else None,
         details=audit_details,
     ))
+
+    if out_is_mock:
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="MOCK_LOCATION_PUNCH_OUT",
+            resource_type="attendance",
+            resource_id=str(attendance.id),
+            ip_address=request.client.host if request.client else None,
+            details={
+                "latitude": out_lat,
+                "longitude": out_lng,
+            },
+        ))
+    if attendance.punch_out_geo_flag is not None:
+        try:
+            await _notify_geo_flag(
+                db,
+                employee=current_user,
+                attendance_id=attendance.id,
+                decision=out_decision,
+                when="punch_out",
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     # Comp-off trigger — uses attendance.work_date (logical date), so an
     # overnight shift that starts on a holiday will accrue correctly even
@@ -559,29 +842,67 @@ async def get_flagged_attendance(
     date_to: Optional[date] = Query(default=None),
     flag: Optional[str] = Query(
         default=None,
-        description="Filter to a single flag: no_shift / outside_window / ambiguous",
+        description=(
+            "Filter to a single SHIFT-attribution flag: "
+            "no_shift / outside_window / ambiguous"
+        ),
+    ),
+    geo_flag: Optional[str] = Query(
+        default=None,
+        description=(
+            "Filter to a single GEO flag: outside_geofence / "
+            "mock_location / low_accuracy. Matched against either the "
+            "punch-in geo_flag or the punch-out geo_flag."
+        ),
+    ),
+    flag_kind: Optional[str] = Query(
+        default=None,
+        description=(
+            "When set to 'attribution', only rows with attribution_flag != "
+            "NULL are returned. When 'geo', only rows with a geo_flag on "
+            "either punch are returned. Default = either."
+        ),
     ),
     current_user: deps.CurrentUser = deps.check_permissions(["hr employee read"]),
 ):
-    """HR review queue: attendance records the resolver wasn't confident
-    about. Use this to find rows that need a correction request.
+    """HR review queue: attendance records the system wasn't confident
+    about — either the shift resolver (attribution_flag) or the geo
+    layer (geo_flag / punch_out_geo_flag).
     """
     today = datetime.now(timezone.utc).date()
     range_start = date_from or (today - timedelta(days=30))
     range_end = date_to or today
+
+    # OR across both dimensions by default. flag_kind narrows.
+    attribution_present = Attendance.attribution_flag.is_not(None)
+    geo_present = or_(
+        Attendance.geo_flag.is_not(None),
+        Attendance.punch_out_geo_flag.is_not(None),
+    )
+    if flag_kind == "attribution":
+        flag_condition = attribution_present
+    elif flag_kind == "geo":
+        flag_condition = geo_present
+    else:
+        flag_condition = or_(attribution_present, geo_present)
 
     query = (
         select(Attendance)
         .where(
             Attendance.work_date >= range_start,
             Attendance.work_date <= range_end,
-            Attendance.attribution_flag.is_not(None),
+            flag_condition,
         )
         .options(selectinload(Attendance.user))
         .order_by(Attendance.work_date.desc(), Attendance.captured_at.desc())
     )
     if flag is not None:
         query = query.where(Attendance.attribution_flag == flag)
+    if geo_flag is not None:
+        query = query.where(or_(
+            Attendance.geo_flag == geo_flag,
+            Attendance.punch_out_geo_flag == geo_flag,
+        ))
 
     rows = list((await db.execute(query)).scalars().all())
 
@@ -593,6 +914,17 @@ async def get_flagged_attendance(
         )).scalars().all())
         shift_name_by_id = {t.id: t.name for t in tpls}
 
+    fence_ids = (
+        {r.matched_fence_id for r in rows if r.matched_fence_id}
+        | {r.punch_out_matched_fence_id for r in rows if r.punch_out_matched_fence_id}
+    )
+    fence_name_by_id: dict[int, str] = {}
+    if fence_ids:
+        fences = list((await db.execute(
+            select(GeoFenceLocation).where(GeoFenceLocation.id.in_(fence_ids))
+        )).scalars().all())
+        fence_name_by_id = {f.id: f.name for f in fences}
+
     output = []
     for att in rows:
         read = AttendanceHRRead.model_validate(att)
@@ -601,6 +933,14 @@ async def get_flagged_attendance(
         if att.shift_template_id is not None:
             read.shift_template_name = shift_name_by_id.get(
                 att.shift_template_id
+            )
+        if att.matched_fence_id is not None:
+            read.matched_fence_name = fence_name_by_id.get(
+                att.matched_fence_id
+            )
+        if att.punch_out_matched_fence_id is not None:
+            read.punch_out_matched_fence_name = fence_name_by_id.get(
+                att.punch_out_matched_fence_id
             )
         output.append(read)
     return output

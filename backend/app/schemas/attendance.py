@@ -13,6 +13,9 @@ class AttendanceBase(BaseModel):
 
 class AttendanceMark(AttendanceBase):
     captured_at: Optional[datetime] = None
+    # Device-reported flag set by the mobile/web client. Untrusted by
+    # design — only the resolver decides what to do with it.
+    is_mock_location: Optional[bool] = False
 
 
 class AttendanceRead(AttendanceBase):
@@ -30,6 +33,19 @@ class AttendanceRead(AttendanceBase):
     is_cross_midnight: bool = False
     attribution_flag: Optional[str] = None
 
+    # Geo-fencing snapshot at punch-in. punch_out_* mirror them.
+    is_mock_location: bool = False
+    matched_fence_id: Optional[int] = None
+    distance_to_fence_meters: Optional[float] = None
+    geo_flag: Optional[str] = None
+    punch_out_latitude: Optional[float] = None
+    punch_out_longitude: Optional[float] = None
+    punch_out_accuracy: Optional[float] = None
+    punch_out_is_mock: bool = False
+    punch_out_matched_fence_id: Optional[int] = None
+    punch_out_distance_to_fence_meters: Optional[float] = None
+    punch_out_geo_flag: Optional[str] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -37,6 +53,8 @@ class AttendanceHRRead(AttendanceRead):
     user_name: Optional[str] = None
     user_email: Optional[str] = None
     shift_template_name: Optional[str] = None
+    matched_fence_name: Optional[str] = None
+    punch_out_matched_fence_name: Optional[str] = None
 
 
 class AttendanceToday(BaseModel):

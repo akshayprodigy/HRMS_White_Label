@@ -7,6 +7,9 @@ import {
   Calendar,
   Filter,
   CheckCircle2,
+  MapPin,
+  Smartphone,
+  Crosshair,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner@2.0.3';
@@ -25,6 +28,19 @@ interface FlaggedRecord {
   shift_template_name?: string | null;
   is_cross_midnight: boolean;
   attribution_flag: string | null;
+  // Geo (Step 3)
+  geo_flag: string | null;
+  is_mock_location: boolean;
+  matched_fence_id: number | null;
+  matched_fence_name?: string | null;
+  distance_to_fence_meters: number | null;
+  accuracy: number | null;
+  punch_out_geo_flag: string | null;
+  punch_out_is_mock: boolean;
+  punch_out_matched_fence_id: number | null;
+  punch_out_matched_fence_name?: string | null;
+  punch_out_distance_to_fence_meters: number | null;
+  punch_out_accuracy: number | null;
 }
 
 const FLAG_META: Record<
@@ -48,6 +64,30 @@ const FLAG_META: Record<
     tone: 'bg-rose-100 text-rose-800',
     description:
       'Punch matched more than one shift window. The resolver picked the nearer one.',
+  },
+};
+
+const GEO_FLAG_META: Record<
+  string,
+  { label: string; tone: string; description: string; icon: any }
+> = {
+  outside_geofence: {
+    label: 'Outside Fence',
+    tone: 'bg-amber-100 text-amber-800',
+    description: 'Punched outside every allowed fence (ALLOW_WITH_FLAG accepted).',
+    icon: MapPin,
+  },
+  mock_location: {
+    label: 'Mock Location',
+    tone: 'bg-rose-100 text-rose-800',
+    description: 'Device reported a fake-GPS reading.',
+    icon: Smartphone,
+  },
+  low_accuracy: {
+    label: 'Low Accuracy',
+    tone: 'bg-slate-100 text-slate-700',
+    description: 'GPS fix was poor (>100m).',
+    icon: Crosshair,
   },
 };
 
@@ -88,6 +128,10 @@ export const AttendanceFlaggedReview: React.FC = () => {
   const [dateFrom, setDateFrom] = useState(daysAgo(30));
   const [dateTo, setDateTo] = useState(toISODate(new Date()));
   const [flagFilter, setFlagFilter] = useState<string>('');
+  const [geoFlagFilter, setGeoFlagFilter] = useState<string>('');
+  const [flagKind, setFlagKind] = useState<'all' | 'attribution' | 'geo'>(
+    'all',
+  );
   const [search, setSearch] = useState('');
 
   const fetchItems = async () => {
@@ -95,6 +139,8 @@ export const AttendanceFlaggedReview: React.FC = () => {
     try {
       const params: any = { date_from: dateFrom, date_to: dateTo };
       if (flagFilter) params.flag = flagFilter;
+      if (geoFlagFilter) params.geo_flag = geoFlagFilter;
+      if (flagKind !== 'all') params.flag_kind = flagKind;
       const res = await client.get(ENDPOINTS.ATTENDANCE.FLAGGED, { params });
       setItems(res.data || []);
     } catch (e: any) {
@@ -107,7 +153,7 @@ export const AttendanceFlaggedReview: React.FC = () => {
   useEffect(() => {
     fetchItems();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFrom, dateTo, flagFilter]);
+  }, [dateFrom, dateTo, flagFilter, geoFlagFilter, flagKind]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -126,6 +172,16 @@ export const AttendanceFlaggedReview: React.FC = () => {
       if (i.attribution_flag && i.attribution_flag in c) {
         (c as any)[i.attribution_flag] += 1;
       }
+    });
+    return c;
+  }, [items]);
+
+  const geoCounts = useMemo(() => {
+    const c = { outside_geofence: 0, mock_location: 0, low_accuracy: 0 };
+    items.forEach((i) => {
+      [i.geo_flag, i.punch_out_geo_flag].forEach((g) => {
+        if (g && g in c) (c as any)[g] += 1;
+      });
     });
     return c;
   }, [items]);
@@ -154,35 +210,93 @@ export const AttendanceFlaggedReview: React.FC = () => {
         </div>
       </div>
 
-      {/* Count tiles */}
-      <div className="grid grid-cols-3 gap-3">
-        {(['no_shift', 'outside_window', 'ambiguous'] as const).map((k) => (
-          <Card
+      {/* Flag-kind toggle */}
+      <div className="flex gap-2">
+        {(['all', 'attribution', 'geo'] as const).map((k) => (
+          <button
             key={k}
-            className="p-4 border-slate-200 flex items-center justify-between"
+            type="button"
+            onClick={() => setFlagKind(k)}
+            className={cn(
+              'px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest border transition-colors',
+              flagKind === k
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300',
+            )}
           >
-            <div>
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-                {FLAG_META[k].label}
-              </div>
-              <div className="text-3xl font-black text-[#0F172A] tabular-nums mt-1">
-                {counts[k as keyof typeof counts]}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setFlagFilter(flagFilter === k ? '' : k)}
-              className={cn(
-                'text-[9px] font-black uppercase tracking-widest px-2.5 py-1.5 rounded-lg transition-colors',
-                flagFilter === k
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
-              )}
-            >
-              {flagFilter === k ? 'Showing' : 'Show'}
-            </button>
-          </Card>
+            {k === 'all' ? 'Both Dimensions' : k === 'attribution' ? 'Shift Attribution' : 'Geo'}
+          </button>
         ))}
+      </div>
+
+      {/* Attribution count tiles */}
+      <div>
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+          Shift Attribution
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          {(['no_shift', 'outside_window', 'ambiguous'] as const).map((k) => (
+            <Card key={k} className="p-4 border-slate-200 flex items-center justify-between">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  {FLAG_META[k].label}
+                </div>
+                <div className="text-3xl font-black text-[#0F172A] tabular-nums mt-1">
+                  {counts[k as keyof typeof counts]}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFlagFilter(flagFilter === k ? '' : k)}
+                className={cn(
+                  'text-[9px] font-black uppercase tracking-widest px-2.5 py-1.5 rounded-lg transition-colors',
+                  flagFilter === k
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                )}
+              >
+                {flagFilter === k ? 'Showing' : 'Show'}
+              </button>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* Geo count tiles */}
+      <div>
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+          Geo Fencing
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          {(['outside_geofence', 'mock_location', 'low_accuracy'] as const).map((k) => {
+            const meta = GEO_FLAG_META[k];
+            const Icon = meta.icon;
+            return (
+              <Card key={k} className="p-4 border-slate-200 flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 inline-flex items-center gap-1">
+                    <Icon size={11} /> {meta.label}
+                  </div>
+                  <div className="text-3xl font-black text-[#0F172A] tabular-nums mt-1">
+                    {geoCounts[k as keyof typeof geoCounts]}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGeoFlagFilter(geoFlagFilter === k ? '' : k)}
+                  className={cn(
+                    'text-[9px] font-black uppercase tracking-widest px-2.5 py-1.5 rounded-lg transition-colors',
+                    geoFlagFilter === k
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                  )}
+                >
+                  {geoFlagFilter === k ? 'Showing' : 'Show'}
+                </button>
+              </Card>
+            );
+          })}
+        </div>
       </div>
 
       <Card className="p-0 border-slate-200 overflow-hidden bg-white">
@@ -265,7 +379,10 @@ export const AttendanceFlaggedReview: React.FC = () => {
                     Punches
                   </th>
                   <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                    Flag
+                    Shift Flag
+                  </th>
+                  <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                    Geo
                   </th>
                 </tr>
               </thead>
@@ -324,6 +441,66 @@ export const AttendanceFlaggedReview: React.FC = () => {
                             OK
                           </Badge>
                         )}
+                      </td>
+                      <td className="px-6 py-3">
+                        <div className="space-y-1">
+                          {(['in', 'out'] as const).map((side) => {
+                            const flag = side === 'in' ? r.geo_flag : r.punch_out_geo_flag;
+                            const fenceName =
+                              side === 'in'
+                                ? r.matched_fence_name
+                                : r.punch_out_matched_fence_name;
+                            const distance =
+                              side === 'in'
+                                ? r.distance_to_fence_meters
+                                : r.punch_out_distance_to_fence_meters;
+                            const acc =
+                              side === 'in' ? r.accuracy : r.punch_out_accuracy;
+                            const mock =
+                              side === 'in' ? r.is_mock_location : r.punch_out_is_mock;
+                            if (!flag && !mock && fenceName == null && distance == null) {
+                              return null;
+                            }
+                            const gMeta = flag ? GEO_FLAG_META[flag] : null;
+                            const Icon = gMeta?.icon ?? MapPin;
+                            return (
+                              <div key={side} className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[8px] font-black uppercase tracking-widest text-slate-400 w-6">
+                                  {side === 'in' ? 'IN' : 'OUT'}
+                                </span>
+                                {gMeta && (
+                                  <span
+                                    className={cn(
+                                      'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest',
+                                      gMeta.tone,
+                                    )}
+                                    title={gMeta.description}
+                                  >
+                                    <Icon size={9} /> {gMeta.label}
+                                  </span>
+                                )}
+                                {fenceName && distance != null && (
+                                  <span className="text-[10px] font-bold text-slate-600 tabular-nums">
+                                    {Math.round(distance)}m · {fenceName}
+                                  </span>
+                                )}
+                                {acc != null && (
+                                  <span className="text-[9px] font-bold text-slate-400 tabular-nums">
+                                    ±{Math.round(acc)}m
+                                  </span>
+                                )}
+                                {mock && !gMeta && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest bg-rose-100 text-rose-800">
+                                    <Smartphone size={9} /> Mock
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {!r.geo_flag && !r.punch_out_geo_flag && !r.is_mock_location && !r.punch_out_is_mock && (
+                            <span className="text-[10px] text-slate-300 font-bold">—</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

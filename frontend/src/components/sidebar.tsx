@@ -156,6 +156,18 @@ export const Sidebar = ({
       roles: ["hr", "super admin"],
     },
     {
+      id: "geo-fences",
+      label: "Geo Fences",
+      icon: Shield,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "employee-geo",
+      label: "Employee Geo Assign",
+      icon: Shield,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
       id: "hr-reports",
       label: "Enterprise Analytics",
       icon: BarChart3,

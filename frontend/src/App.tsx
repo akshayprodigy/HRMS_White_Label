@@ -41,6 +41,8 @@ import { FunctionalAreasAdmin } from './components/functional-areas-admin';
 import { ShiftTemplatesAdmin } from './components/shift-templates-admin';
 import { EmployeeShiftAssignmentsView } from './components/employee-shift-assignments';
 import { AttendanceFlaggedReview } from './components/attendance-flagged-review';
+import { GeoFenceLocationsAdmin } from './components/geofence-locations-admin';
+import { EmployeeGeoAssignments } from './components/employee-geo-assignments';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -409,6 +411,10 @@ const App = () => {
         return <EmployeeShiftAssignmentsView />;
       case 'hr-attendance-review':
         return <AttendanceFlaggedReview />;
+      case 'geo-fences':
+        return <GeoFenceLocationsAdmin />;
+      case 'employee-geo':
+        return <EmployeeGeoAssignments />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -460,6 +466,8 @@ const App = () => {
       'shift-templates': 'Shift Templates',
       'shift-assignments': 'Shift Assignments',
       'hr-attendance-review': 'Attendance Review Queue',
+      'geo-fences': 'Geo-Fence Locations',
+      'employee-geo': 'Employee Geo-Fence Assignment',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

@@ -105,6 +105,7 @@ async def seed_demo_roles():
             {"name": "coo dashboard view", "description": "Access COO operations hub dashboard"},
             {"name": "shift template write", "description": "Create/Update/Delete shift templates"},
             {"name": "shift assign", "description": "Assign shifts to employees (single + bulk)"},
+            {"name": "geo fence write", "description": "Manage geo-fence locations and per-employee allowlist/mode"},
         ]
         
         db_perms = {}
@@ -182,6 +183,7 @@ async def seed_demo_roles():
             db_perms["recruitment approve"],
             db_perms["shift template write"],
             db_perms["shift assign"],
+            db_perms["geo fence write"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -203,6 +205,7 @@ async def seed_demo_roles():
             db_perms["lead estimate approve"],
             db_perms["shift template write"],
             db_perms["shift assign"],
+            db_perms["geo fence write"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],

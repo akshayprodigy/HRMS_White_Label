@@ -307,8 +307,20 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
       // No auto-logout — let the user keep browsing their day's summary.
       // The Punch Out button auto-disables via onPunchedOut().
     } catch (err: any) {
+      const status = err?.response?.status;
       const detail = err?.response?.data?.detail;
-      const msg = typeof detail === 'string' ? detail : (err?.message || 'Punch-out failed');
+      // STRICT geo rejection -> 422 with structured detail.
+      let msg: string;
+      if (status === 422 && detail && typeof detail === 'object') {
+        msg = detail.message
+          || (detail.nearest_fence_name && detail.distance_to_fence_meters != null
+            ? `You're ${Math.round(detail.distance_to_fence_meters)}m from ${detail.nearest_fence_name}. Move closer to punch out.`
+            : 'Punch-out rejected by geo policy.');
+      } else if (typeof detail === 'string') {
+        msg = detail;
+      } else {
+        msg = err?.message || 'Punch-out failed';
+      }
       toast.error(msg);
     } finally {
       setPunchOutBusy(false);

@@ -6,7 +6,7 @@ from app.api.v1.endpoints import (
     approvals, notifications, reports, bd, recruitment,
     onboarding, clients, bd_bid_tasks, bd_lead_documents,
     admin_bid_line_items, bd_bid_line_items, exit_management,
-    salary_advance, shifts,
+    salary_advance, shifts, geofence,
 )
 
 api_router = APIRouter()
@@ -143,4 +143,12 @@ api_router.include_router(
     prefix="/shifts",
     tags=["shifts"],
     dependencies=[Depends(deps.verify_attendance)],
+)
+# Geofence routes intentionally NOT attendance-gated: the punch UI calls
+# /geo/my/effective BEFORE punching in, so requiring punched-in to read
+# the rules would be a chicken-and-egg lock-out.
+api_router.include_router(
+    geofence.router,
+    prefix="/geo",
+    tags=["geofence"],
 )
