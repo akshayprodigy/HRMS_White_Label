@@ -14,6 +14,7 @@ export const ENDPOINTS = {
     PUNCH_OUT: '/attendance/punch-out',
     TODAY: '/attendance/today',
     ALL: '/attendance/all',
+    FLAGGED: '/attendance/flagged',
   },
   TIMESHEET: {
     TIMER_STATUS: '/timesheets/timer/status',

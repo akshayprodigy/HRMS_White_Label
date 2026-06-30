@@ -150,6 +150,12 @@ export const Sidebar = ({
       roles: ["super admin", "ceo"],
     },
     {
+      id: "hr-attendance-review",
+      label: "Attendance Review",
+      icon: Clock,
+      roles: ["hr", "super admin"],
+    },
+    {
       id: "hr-reports",
       label: "Enterprise Analytics",
       icon: BarChart3,

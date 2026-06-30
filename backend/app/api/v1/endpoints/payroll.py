@@ -150,11 +150,14 @@ async def check_attendance_before_lock(
     month_start = date(run.year, run.month, 1)
     month_end = date(run.year, run.month, cal.monthrange(run.year, run.month)[1])
 
-    # Get distinct user_ids that have attendance in the period
+    # Get distinct user_ids that have attendance in the period. Filter by
+    # LOGICAL work_date (set by the shift-aware resolver) so a night shift
+    # starting on Jun 30 23:00 and ending Jul 1 07:00 is counted in JUNE
+    # payroll, not July. captured_at would mis-route that record to July.
     att_q = select(Attendance.user_id.distinct()).where(
         and_(
-            func.date(Attendance.captured_at) >= month_start,
-            func.date(Attendance.captured_at) <= month_end,
+            Attendance.work_date >= month_start,
+            Attendance.work_date <= month_end,
         )
     )
     users_with_att = set((await db.execute(att_q)).scalars().all())

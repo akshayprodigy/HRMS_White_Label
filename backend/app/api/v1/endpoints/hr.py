@@ -2018,11 +2018,26 @@ async def attendance_correction_action(
     
     if obj_in.status == CorrectionStatus.APPROVED:
         # Update or create attendance record
+        work_date_change = None
         if corr.attendance_id:
             attendance = await db.get(Attendance, corr.attendance_id)
             if attendance:
                 attendance.mode = corr.requested_mode
                 attendance.remarks = corr.requested_remarks
+                # Apply optional work_date retag: this is the shift-aware
+                # correction path. Old work_date is captured in the audit
+                # log so HR can undo if needed.
+                if corr.requested_work_date is not None and (
+                    attendance.work_date != corr.requested_work_date
+                ):
+                    work_date_change = {
+                        "from": attendance.work_date.isoformat()
+                        if attendance.work_date else None,
+                        "to": corr.requested_work_date.isoformat(),
+                    }
+                    attendance.work_date = corr.requested_work_date
+                    # Clear the flag — HR has explicitly retagged this row.
+                    attendance.attribution_flag = None
                 db.add(attendance)
         else:
             # Create new attendance record
@@ -2030,20 +2045,27 @@ async def attendance_correction_action(
             captured_at = datetime.combine(
                 corr.date, time(9, 0), tzinfo=timezone.utc
             )
+            # New record: trust the work_date from the correction request if
+            # provided; otherwise fall back to the calendar date in `date`.
+            new_work_date = corr.requested_work_date or corr.date
             attendance = Attendance(
                 user_id=corr.user_id,
                 mode=corr.requested_mode,
                 remarks=corr.requested_remarks,
-                captured_at=captured_at
+                captured_at=captured_at,
+                work_date=new_work_date,
             )
             db.add(attendance)
             await db.flush()
             corr.attendance_id = attendance.id
 
+        audit_details = {"status": obj_in.status, "user_id": corr.user_id}
+        if work_date_change is not None:
+            audit_details["work_date_change"] = work_date_change
         await log_audit(
             db, current_user.id, "APPROVE_ATTENDANCE_CORRECTION",
             "attendance_correction", str(corr_id),
-            {"status": obj_in.status, "user_id": corr.user_id},
+            audit_details,
             request
         )
     else:

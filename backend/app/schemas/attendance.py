@@ -22,12 +22,21 @@ class AttendanceRead(AttendanceBase):
     punch_out_time: Optional[datetime] = None
     created_at: datetime
 
+    # Shift-aware fields. work_date is the primary date for queries
+    # and reporting; the calendar date of captured_at may differ for
+    # overnight shifts.
+    work_date: Optional[date] = None
+    shift_template_id: Optional[int] = None
+    is_cross_midnight: bool = False
+    attribution_flag: Optional[str] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
 class AttendanceHRRead(AttendanceRead):
     user_name: Optional[str] = None
     user_email: Optional[str] = None
+    shift_template_name: Optional[str] = None
 
 
 class AttendanceToday(BaseModel):
@@ -38,6 +47,9 @@ class AttendanceToday(BaseModel):
 class AttendanceCorrectionBase(BaseModel):
     attendance_id: Optional[int] = None
     date: date
+    # Optional: when set, the approver will retag the attendance record
+    # to this work_date. None = unchanged from existing record.
+    requested_work_date: Optional[date] = None
     requested_mode: str
     requested_remarks: Optional[str] = None
     reason: str

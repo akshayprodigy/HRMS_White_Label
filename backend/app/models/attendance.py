@@ -1,11 +1,21 @@
 from datetime import datetime, timezone, date as pydate
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, Integer, ForeignKey, Float, DateTime, Text, Date
+from sqlalchemy import (
+    Boolean, String, Integer, ForeignKey, Float, DateTime, Text, Date,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base_class import Base
 
 if TYPE_CHECKING:
     from .user import User
+
+
+class AttendanceAttributionFlag:
+    """Values mirrored from app.services.shift_resolver.AttributionFlag.
+    Kept here as a constant set so model code doesn't import the service."""
+    NO_SHIFT = "no_shift"
+    OUTSIDE_WINDOW = "outside_window"
+    AMBIGUOUS = "ambiguous"
 
 
 class Attendance(Base):
@@ -26,6 +36,26 @@ class Attendance(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    # Shift-aware attribution fields (added with 24x7 shift engine).
+    # work_date is the LOGICAL date used for payroll and reporting; for an
+    # overnight shift starting on D it stays D even when punches happen on
+    # D+1. shift_template_id is a snapshot of the shift evaluated against.
+    work_date: Mapped[pydate] = mapped_column(
+        Date, nullable=False, index=True,
+        default=lambda: datetime.now(timezone.utc).date(),
+    )
+    shift_template_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("shift_template.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    is_cross_midnight: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    attribution_flag: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True
     )
 
     user: Mapped["User"] = relationship("User", back_populates="attendances")
@@ -50,6 +80,11 @@ class AttendanceCorrectionRequest(Base):
         Integer, ForeignKey("user.id", ondelete="CASCADE"), index=True
     )
     date: Mapped[pydate] = mapped_column(Date, nullable=False)
+    # Optional shift-aware override: when set, the approver retags the
+    # underlying attendance record to this logical work_date.
+    requested_work_date: Mapped[Optional[pydate]] = mapped_column(
+        Date, nullable=True
+    )
     requested_mode: Mapped[str] = mapped_column(String(50))
     requested_remarks: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
