@@ -43,6 +43,10 @@ import { EmployeeShiftAssignmentsView } from './components/employee-shift-assign
 import { AttendanceFlaggedReview } from './components/attendance-flagged-review';
 import { GeoFenceLocationsAdmin } from './components/geofence-locations-admin';
 import { EmployeeGeoAssignments } from './components/employee-geo-assignments';
+import { OvertimeRulesAdmin } from './components/overtime-rules-admin';
+import { NightAllowanceRulesAdmin } from './components/night-allowance-rules-admin';
+import { OvertimeApprovalQueue } from './components/overtime-approval-queue';
+import { MyOvertimeView } from './components/my-overtime';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -415,6 +419,14 @@ const App = () => {
         return <GeoFenceLocationsAdmin />;
       case 'employee-geo':
         return <EmployeeGeoAssignments />;
+      case 'overtime-rules':
+        return <OvertimeRulesAdmin />;
+      case 'night-allowance-rules':
+        return <NightAllowanceRulesAdmin />;
+      case 'overtime-approvals':
+        return <OvertimeApprovalQueue />;
+      case 'my-overtime':
+        return <MyOvertimeView />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -468,6 +480,10 @@ const App = () => {
       'hr-attendance-review': 'Attendance Review Queue',
       'geo-fences': 'Geo-Fence Locations',
       'employee-geo': 'Employee Geo-Fence Assignment',
+      'overtime-rules': 'Overtime Rules',
+      'night-allowance-rules': 'Night-Shift Allowance Rules',
+      'overtime-approvals': 'Overtime Approvals',
+      'my-overtime': 'My Overtime & Allowance',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

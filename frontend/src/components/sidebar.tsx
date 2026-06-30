@@ -29,6 +29,8 @@ import {
   Banknote,
   Network,
   ScrollText,
+  Moon,
+  Timer,
 } from "lucide-react";
 import { cn } from "./ui-elements";
 import logoImg from "figma:asset/cffb70cda3aa408edd2d37bc7e7cdc4b08a0118e.png";
@@ -395,6 +397,33 @@ export const Sidebar = ({
       label: "Shift Assignments",
       icon: Shield,
       roles: ["hr", "pm", "dept_head", "admin", "super admin"],
+    },
+    {
+      id: "overtime-rules",
+      label: "Overtime Rules",
+      icon: Timer,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "night-allowance-rules",
+      label: "Night Allowance Rules",
+      icon: Moon,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "overtime-approvals",
+      label: "Overtime Approvals",
+      icon: Timer,
+      roles: ["hr", "pm", "dept_head", "admin", "super admin"],
+    },
+    {
+      id: "my-overtime",
+      label: "My Overtime",
+      icon: Timer,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "super admin",
+        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
+      ],
     },
   ];
 

@@ -38,6 +38,10 @@ from .shift import ShiftTemplate, EmployeeShiftAssignment
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
 )
+from .overtime import (
+    OvertimeRule, NightShiftAllowanceRule,
+    OvertimeEntry, NightAllowanceEntry,
+)
 
 __all__ = [
     "Department",
@@ -95,4 +99,8 @@ __all__ = [
     "GeoFenceLocation",
     "EmployeeGeoConfig",
     "EmployeeGeoFenceLink",
+    "OvertimeRule",
+    "NightShiftAllowanceRule",
+    "OvertimeEntry",
+    "NightAllowanceEntry",
 ]

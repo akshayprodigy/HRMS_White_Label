@@ -16,6 +16,9 @@ from app.models.salary_advance import (
 )
 from app.services.salary_calculator import calculate_salary, calculate_salary_contractual
 from app.models.audit import AuditLog
+from app.models.overtime import (
+    OvertimeEntry, NightAllowanceEntry, OvertimeStatus,
+)
 from app.schemas.payroll import (
     PayrollRunCreate, PayrollRunRead, PayrollLineRead, PayrollLineUpdate,
     PayrollDashboard, PayrollActionResponse
@@ -277,11 +280,49 @@ async def generate_draft(
     total_gross = 0.0
     total_net = 0.0
     
+    start_of_month = date(run.year, run.month, 1)
+    end_of_month = date(run.year, run.month, num_days)
+
+    # Pull OT + night-allowance for the period in ONE SHOT and group by user.
+    # We filter on payroll_run_id IS NULL so already-finalized entries are
+    # never double-counted. The `work_date` boundary respects the shift
+    # engine's overnight-spanning rule (Jun 30 night shift → June payroll).
+    ot_rows = (await db.execute(
+        select(OvertimeEntry).where(
+            and_(
+                OvertimeEntry.work_date >= start_of_month,
+                OvertimeEntry.work_date <= end_of_month,
+                OvertimeEntry.payroll_run_id.is_(None),
+                OvertimeEntry.status.in_([
+                    OvertimeStatus.APPROVED,
+                    OvertimeStatus.AUTO_APPROVED,
+                ]),
+            )
+        )
+    )).scalars().all()
+    ot_by_user: dict[int, list[OvertimeEntry]] = {}
+    for r in ot_rows:
+        ot_by_user.setdefault(r.user_id, []).append(r)
+
+    night_rows = (await db.execute(
+        select(NightAllowanceEntry).where(
+            and_(
+                NightAllowanceEntry.work_date >= start_of_month,
+                NightAllowanceEntry.work_date <= end_of_month,
+                NightAllowanceEntry.payroll_run_id.is_(None),
+            )
+        )
+    )).scalars().all()
+    night_by_user: dict[int, list[NightAllowanceEntry]] = {}
+    for r in night_rows:
+        night_by_user.setdefault(r.user_id, []).append(r)
+
+    injected_ot_users = 0
+    injected_night_users = 0
+
     for emp in employees:
         # Calculate LOP days from unpaid leaves
         # Find approved leave requests in this month
-        start_of_month = date(run.year, run.month, 1)
-        end_of_month = date(run.year, run.month, num_days)
         
         leaves_res = await db.execute(
             select(LeaveRequest).join(LeaveType).where(
@@ -337,8 +378,30 @@ async def generate_draft(
                 voluntary_pf=vpf,
             )
 
-        gross = breakdown["total_actual_earnings"]
-        net = breakdown["net_salary"]
+        # OT + night-allowance injection — aggregated from the pre-computed
+        # entries for this employee for this work-month. Each entry has
+        # work_date inside [start_of_month, end_of_month] (already filtered),
+        # so the month-boundary rule (overnight shift starting Jun 30 →
+        # June payroll) is respected automatically. Entries with a
+        # payroll_run_id were filtered out, so double-counting on
+        # re-generate is impossible.
+        emp_ot_entries = ot_by_user.get(emp.user_id, [])
+        emp_night_entries = night_by_user.get(emp.user_id, [])
+
+        ot_amount = round(sum(e.ot_amount for e in emp_ot_entries), 2)
+        ot_minutes = sum(e.ot_minutes for e in emp_ot_entries)
+        night_amount = round(
+            sum(e.amount for e in emp_night_entries), 2
+        )
+        night_minutes = sum(e.night_minutes for e in emp_night_entries)
+
+        if ot_amount > 0:
+            injected_ot_users += 1
+        if night_amount > 0:
+            injected_night_users += 1
+
+        gross = breakdown["total_actual_earnings"] + ot_amount + night_amount
+        net = breakdown["net_salary"] + ot_amount + night_amount
 
         # Auto-recover active salary advances
         advance_deduction = 0.0
@@ -397,6 +460,10 @@ async def generate_draft(
                 "total_fixed_earnings": breakdown["total_fixed_earnings"],
                 "arrear": 0.0,
                 "incentive": 0.0,
+                "overtime": ot_amount,
+                "overtime_minutes": ot_minutes,
+                "night_allowance": night_amount,
+                "night_minutes": night_minutes,
             },
             deductions={
                 "employee_esi": breakdown["employee_esi"],
@@ -417,6 +484,16 @@ async def generate_draft(
         total_gross += gross
         total_net += net
 
+        # Stamp injected OT + night entries so they can never be picked
+        # up by a future generate_draft. This is the no-double-count
+        # guarantee. If the run is later DELETED (re-draft scenario), the
+        # FK is ondelete=SET NULL, so the entries become candidates
+        # again.
+        for e in emp_ot_entries:
+            e.payroll_run_id = run_id
+        for e in emp_night_entries:
+            e.payroll_run_id = run_id
+
     run.status = PayrollRunStatus.DRAFT_GENERATED
     run.total_gross = total_gross
     run.total_net = total_net
@@ -425,7 +502,17 @@ async def generate_draft(
         db, current_user.id, "GENERATE_DRAFT", "payroll_run",
         str(run_id), {
             "period": f"{run.month}/{run.year}",
-            "line_count": len(employees)
+            "line_count": len(employees),
+            "ot_users_injected": injected_ot_users,
+            "ot_entries_injected": len(ot_rows),
+            "ot_total_amount": round(
+                sum(e.ot_amount for e in ot_rows), 2
+            ),
+            "night_users_injected": injected_night_users,
+            "night_entries_injected": len(night_rows),
+            "night_total_amount": round(
+                sum(e.amount for e in night_rows), 2
+            ),
         },
         request
     )
@@ -619,18 +706,27 @@ async def update_payroll_line(
     old_gross = line.gross_pay
     old_net = line.net_pay
 
+    # Preserve OT + night allowance already injected at generate_draft.
+    # The line editor only touches arrear/incentive/guest_house/tds.
+    existing_allow = line.allowances or {}
+    prev_ot = float(existing_allow.get("overtime", 0.0))
+    prev_night = float(existing_allow.get("night_allowance", 0.0))
+
     line.arrear = new_arrear
     line.incentive = new_incentive
-    line.gross_pay = breakdown["total_actual_earnings"]
-    line.net_pay = breakdown["net_salary"]
+    line.gross_pay = (
+        breakdown["total_actual_earnings"] + prev_ot + prev_night
+    )
+    line.net_pay = breakdown["net_salary"] + prev_ot + prev_night
     line.allowances = {
-        **(line.allowances or {}),
+        **existing_allow,
         "arrear": new_arrear,
         "incentive": new_incentive,
         "basic_salary_actual": breakdown["basic_salary_actual"],
         "conveyance_actual": breakdown["conveyance_actual"],
         "hra_actual": breakdown["hra_actual"],
         "other_allowance_actual": breakdown["other_allowance_actual"],
+        # overtime/night already in existing_allow — carried via spread.
     }
     line.deductions = {
         **(line.deductions or {}),
@@ -647,9 +743,9 @@ async def update_payroll_line(
         "esic_applicable": breakdown["esic_applicable"],
     }
 
-    # Update run totals using old values
-    run.total_gross = run.total_gross - old_gross + breakdown["total_actual_earnings"]
-    run.total_net = run.total_net - old_net + breakdown["net_salary"]
+    # Update run totals using old values (line totals already include OT/night).
+    run.total_gross = run.total_gross - old_gross + line.gross_pay
+    run.total_net = run.total_net - old_net + line.net_pay
 
     user_res = await db.execute(select(User).where(User.id == line.user_id))
     user = user_res.scalar_one_or_none()

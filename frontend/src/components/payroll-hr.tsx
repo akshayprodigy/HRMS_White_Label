@@ -697,6 +697,34 @@ export const PayrollHR = () => {
                                )}
                              </div>
 
+                             {/* OT + Night allowance injected from shift-engine entries (read-only) */}
+                             {(al.overtime || 0) > 0 && (
+                               <div className="flex justify-between text-xs items-center">
+                                 <span className="text-slate-500 font-bold">
+                                   Overtime
+                                   {al.overtime_minutes ? (
+                                     <span className="text-[9px] text-slate-400 font-normal ml-1">
+                                       ({Math.round(al.overtime_minutes / 60 * 10) / 10}h)
+                                     </span>
+                                   ) : null}
+                                 </span>
+                                 <span className="font-black text-purple-700">{fmt(al.overtime)}</span>
+                               </div>
+                             )}
+                             {(al.night_allowance || 0) > 0 && (
+                               <div className="flex justify-between text-xs items-center">
+                                 <span className="text-slate-500 font-bold">
+                                   Night Allowance
+                                   {al.night_minutes ? (
+                                     <span className="text-[9px] text-slate-400 font-normal ml-1">
+                                       ({Math.round(al.night_minutes / 60 * 10) / 10}h)
+                                     </span>
+                                   ) : null}
+                                 </span>
+                                 <span className="font-black text-indigo-700">{fmt(al.night_allowance)}</span>
+                               </div>
+                             )}
+
                              <div className="flex justify-between text-xs pt-1 border-t border-slate-100 mt-1">
                                <span className="font-black text-slate-700 uppercase text-[9px] tracking-widest">Total Gross</span>
                                <span className="font-black text-slate-900">₹{Math.round(line.gross_pay).toLocaleString('en-IN')}</span>

@@ -106,6 +106,9 @@ async def seed_demo_roles():
             {"name": "shift template write", "description": "Create/Update/Delete shift templates"},
             {"name": "shift assign", "description": "Assign shifts to employees (single + bulk)"},
             {"name": "geo fence write", "description": "Manage geo-fence locations and per-employee allowlist/mode"},
+            {"name": "overtime rule write", "description": "Manage OT + night-shift allowance rules, run recompute"},
+            {"name": "overtime approve", "description": "Approve/reject employee OT entries"},
+            {"name": "overtime view all", "description": "View OT/night entries across all employees"},
         ]
         
         db_perms = {}
@@ -184,6 +187,9 @@ async def seed_demo_roles():
             db_perms["shift template write"],
             db_perms["shift assign"],
             db_perms["geo fence write"],
+            db_perms["overtime rule write"],
+            db_perms["overtime approve"],
+            db_perms["overtime view all"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -198,6 +204,8 @@ async def seed_demo_roles():
             db_perms["bd estimate read"],
             db_perms["bd estimate write"],
             db_perms["shift assign"],
+            # PM approves OT for their team via the centralised inbox.
+            db_perms["overtime approve"],
         ]
         db_roles["Super Admin"].permissions = [
             db_perms["admin access"],
@@ -206,6 +214,9 @@ async def seed_demo_roles():
             db_perms["shift template write"],
             db_perms["shift assign"],
             db_perms["geo fence write"],
+            db_perms["overtime rule write"],
+            db_perms["overtime approve"],
+            db_perms["overtime view all"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
@@ -243,6 +254,7 @@ async def seed_demo_roles():
             db_perms["recruitment read"],
             db_perms["recruitment write"],
             db_perms["shift assign"],
+            db_perms["overtime approve"],
         ]
         db_roles["RECRUITER"].permissions = [
             db_perms["employee leave read"],
