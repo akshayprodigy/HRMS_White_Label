@@ -425,6 +425,33 @@ export const Sidebar = ({
         "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
       ],
     },
+    {
+      id: "designations",
+      label: "Designations & Grades",
+      icon: Network,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "salary-revisions",
+      label: "Salary Revisions",
+      icon: Trophy,
+      roles: ["hr", "pm", "dept head", "admin", "super admin", "ceo"],
+    },
+    {
+      id: "revision-cycles",
+      label: "Revision Cycles",
+      icon: BarChart3,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "my-revisions",
+      label: "My Revisions",
+      icon: Trophy,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "super admin",
+        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
+      ],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

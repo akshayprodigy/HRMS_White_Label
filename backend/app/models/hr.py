@@ -67,6 +67,8 @@ class LetterType:
     CONFIRMATION = "confirmation_letter"
     RELEASE = "release_experience_order"
     RELIEVING = "relieving_letter"
+    PROMOTION = "promotion_letter"
+    SALARY_REVISION = "salary_revision_letter"
 
 
 class EmployeeLetter(Base):

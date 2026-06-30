@@ -42,6 +42,11 @@ from .overtime import (
     OvertimeRule, NightShiftAllowanceRule,
     OvertimeEntry, NightAllowanceEntry,
 )
+from .designation import Designation, Grade
+from .revision import (
+    SalaryRevision, RevisionCycle,
+    RevisionType, RevisionStatus, CycleStatus,
+)
 
 __all__ = [
     "Department",
@@ -103,4 +108,8 @@ __all__ = [
     "NightShiftAllowanceRule",
     "OvertimeEntry",
     "NightAllowanceEntry",
+    "Designation",
+    "Grade",
+    "SalaryRevision",
+    "RevisionCycle",
 ]

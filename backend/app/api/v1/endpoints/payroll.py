@@ -19,6 +19,10 @@ from app.models.audit import AuditLog
 from app.models.overtime import (
     OvertimeEntry, NightAllowanceEntry, OvertimeStatus,
 )
+from app.models.revision import SalaryRevision, RevisionStatus
+from app.services.revisions import (
+    effective_components_for_month, compute_arrears_for_revision,
+)
 from app.schemas.payroll import (
     PayrollRunCreate, PayrollRunRead, PayrollLineRead, PayrollLineUpdate,
     PayrollDashboard, PayrollActionResponse
@@ -319,6 +323,18 @@ async def generate_draft(
 
     injected_ot_users = 0
     injected_night_users = 0
+    injected_arrear_users = 0
+
+    # Pull every APPLIED revision in one shot so we can do
+    # effective-component selection + arrear computation without N+1.
+    rev_q = (await db.execute(
+        select(SalaryRevision).where(
+            SalaryRevision.status == RevisionStatus.APPLIED
+        )
+    )).scalars().all()
+    revs_by_emp: dict[int, list[SalaryRevision]] = {}
+    for r in rev_q:
+        revs_by_emp.setdefault(r.employee_id, []).append(r)
 
     for emp in employees:
         # Calculate LOP days from unpaid leaves
@@ -348,12 +364,37 @@ async def generate_draft(
             lop_days += days
         
         payable_days = max(0.0, float(num_days) - lop_days)
-        base_salary = emp.salary or 0.0
 
-        # Resolve salary components (auto-calculate from basic if not set)
-        ca = emp.conveyance_allowance if emp.conveyance_allowance is not None else round(base_salary * 0.30)
-        hra_val = emp.hra if emp.hra is not None else round(base_salary * 0.50)
-        other_val = emp.other_allowance if emp.other_allowance is not None else round(base_salary * 0.20)
+        # Effective components for THIS payroll month. If an APPLIED
+        # revision is in effect (effective_from inside the month or
+        # earlier), its NEW components govern; otherwise we fall back
+        # to the employee master. This is the no-regression contract:
+        # employees with zero revisions are unaffected.
+        emp_master_basic = float(emp.salary or 0.0)
+        emp_master_ca = float(
+            emp.conveyance_allowance if emp.conveyance_allowance is not None
+            else round(emp_master_basic * 0.30)
+        )
+        emp_master_hra = float(
+            emp.hra if emp.hra is not None
+            else round(emp_master_basic * 0.50)
+        )
+        emp_master_other = float(
+            emp.other_allowance if emp.other_allowance is not None
+            else round(emp_master_basic * 0.20)
+        )
+        eff = effective_components_for_month(
+            employee_basic=emp_master_basic,
+            employee_conveyance=emp_master_ca,
+            employee_hra=emp_master_hra,
+            employee_other_allowance=emp_master_other,
+            revisions=revs_by_emp.get(emp.id, []),
+            year=run.year, month=run.month,
+        )
+        base_salary = eff.basic
+        ca = eff.conveyance
+        hra_val = eff.hra
+        other_val = eff.other_allowance
         esic = emp.esic_applicable or False
         vpf = emp.voluntary_pf or 0.0
         is_contractual = (emp.employment_type or "permanent") in ("contractual", "advisor")
@@ -400,8 +441,43 @@ async def generate_draft(
         if night_amount > 0:
             injected_night_users += 1
 
-        gross = breakdown["total_actual_earnings"] + ot_amount + night_amount
-        net = breakdown["net_salary"] + ot_amount + night_amount
+        # Arrears for back-dated APPLIED revisions whose effective_from
+        # falls in a past payroll month and that have not been paid yet
+        # (arrears_run_id IS NULL). Per ARREAR_BASIS, amount =
+        # (new_monthly_gross - old_monthly_gross) * months_owed. Once
+        # injected, the revision's arrears_run_id is stamped so a
+        # re-generate (after run delete) is the only way to re-fire,
+        # and finalized runs are never retro-edited.
+        arrears_amount = 0.0
+        arrears_meta: list[dict] = []
+        for r in revs_by_emp.get(emp.id, []):
+            a = compute_arrears_for_revision(
+                revision=r, draft_year=run.year, draft_month=run.month,
+            )
+            if a is None:
+                continue
+            arrears_amount += a.amount
+            r.arrears_run_id = run_id
+            r.arrears_amount = a.amount
+            r.arrears_months = a.months_owed
+            arrears_meta.append({
+                "revision_id": a.revision_id,
+                "months": a.months_owed,
+                "monthly_delta": a.monthly_delta,
+                "amount": a.amount,
+            })
+        arrears_amount = round(arrears_amount, 2)
+        if arrears_amount > 0:
+            injected_arrear_users += 1
+
+        gross = (
+            breakdown["total_actual_earnings"]
+            + ot_amount + night_amount + arrears_amount
+        )
+        net = (
+            breakdown["net_salary"]
+            + ot_amount + night_amount + arrears_amount
+        )
 
         # Auto-recover active salary advances
         advance_deduction = 0.0
@@ -443,7 +519,11 @@ async def generate_draft(
             base_salary=base_salary,
             payable_days=payable_days,
             lop_days=lop_days,
-            arrear=0.0,
+            # Pre-fill arrear with the auto-computed back-dated revision
+            # delta; HR can still bump it in the line editor (any extra
+            # one-off arrear). The revision-derived portion is reflected
+            # separately in `allowances.revision_arrears` for audit.
+            arrear=arrears_amount,
             incentive=0.0,
             gross_pay=gross,
             net_pay=net,
@@ -458,12 +538,17 @@ async def generate_draft(
                 "other_allowance_actual": breakdown["other_allowance_actual"],
                 "basic_salary_actual": breakdown["basic_salary_actual"],
                 "total_fixed_earnings": breakdown["total_fixed_earnings"],
-                "arrear": 0.0,
+                "arrear": arrears_amount,
                 "incentive": 0.0,
                 "overtime": ot_amount,
                 "overtime_minutes": ot_minutes,
                 "night_allowance": night_amount,
                 "night_minutes": night_minutes,
+                # Provenance of the auto-populated arrear so HR can
+                # tell revision-arrears apart from any manual top-up.
+                "revision_arrears": arrears_amount,
+                "revision_arrears_detail": arrears_meta,
+                "effective_components_source": eff.source,
             },
             deductions={
                 "employee_esi": breakdown["employee_esi"],
@@ -513,6 +598,7 @@ async def generate_draft(
             "night_total_amount": round(
                 sum(e.amount for e in night_rows), 2
             ),
+            "arrear_users_injected": injected_arrear_users,
         },
         request
     )

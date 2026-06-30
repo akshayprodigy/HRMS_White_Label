@@ -28,7 +28,21 @@ class Employee(Base):
     )
     
     department: Mapped[str] = mapped_column(String(100), index=True)
+    # Legacy free-text columns. Kept during the designation/grade master
+    # transition so existing payslips, letters and reports keep working
+    # while HR cleans up unmatched rows. The canonical truth is
+    # designation_id / grade_id below.
     designation: Mapped[str] = mapped_column(String(100), index=True)
+    designation_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("designation.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    grade_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("grade.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     date_of_joining: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), default=EmployeeStatus.ACTIVE, index=True

@@ -109,6 +109,12 @@ async def seed_demo_roles():
             {"name": "overtime rule write", "description": "Manage OT + night-shift allowance rules, run recompute"},
             {"name": "overtime approve", "description": "Approve/reject employee OT entries"},
             {"name": "overtime view all", "description": "View OT/night entries across all employees"},
+            {"name": "designation master write", "description": "Manage Designation + Grade master"},
+            {"name": "revision write", "description": "Create / edit / submit salary revisions"},
+            {"name": "revision approve", "description": "Approve non-promotion revisions (mgr/dept-head/HR)"},
+            {"name": "revision approve hr", "description": "Approve PROMOTION revisions (HR / CEO authority)"},
+            {"name": "revision apply", "description": "Manually apply an approved revision (HR)"},
+            {"name": "revision view all", "description": "View all employees' compensation history"},
         ]
         
         db_perms = {}
@@ -190,6 +196,12 @@ async def seed_demo_roles():
             db_perms["overtime rule write"],
             db_perms["overtime approve"],
             db_perms["overtime view all"],
+            db_perms["designation master write"],
+            db_perms["revision write"],
+            db_perms["revision approve"],
+            db_perms["revision approve hr"],
+            db_perms["revision apply"],
+            db_perms["revision view all"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -206,6 +218,9 @@ async def seed_demo_roles():
             db_perms["shift assign"],
             # PM approves OT for their team via the centralised inbox.
             db_perms["overtime approve"],
+            # PM is step-1 approver on non-promotion revisions.
+            db_perms["revision approve"],
+            db_perms["revision view all"],
         ]
         db_roles["Super Admin"].permissions = [
             db_perms["admin access"],
@@ -217,6 +232,12 @@ async def seed_demo_roles():
             db_perms["overtime rule write"],
             db_perms["overtime approve"],
             db_perms["overtime view all"],
+            db_perms["designation master write"],
+            db_perms["revision write"],
+            db_perms["revision approve"],
+            db_perms["revision approve hr"],
+            db_perms["revision apply"],
+            db_perms["revision view all"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
@@ -245,7 +266,10 @@ async def seed_demo_roles():
             db_perms["executive report view"],
             db_perms["lead estimate approve"],
             db_perms["recruitment read"],
-            db_perms["recruitment approve"]
+            db_perms["recruitment approve"],
+            # CEO authorises promotions.
+            db_perms["revision approve hr"],
+            db_perms["revision view all"],
         ]
         db_roles["DEPT_HEAD"].permissions = [
             db_perms["employee leave read"],
@@ -255,6 +279,7 @@ async def seed_demo_roles():
             db_perms["recruitment write"],
             db_perms["shift assign"],
             db_perms["overtime approve"],
+            db_perms["revision approve"],
         ]
         db_roles["RECRUITER"].permissions = [
             db_perms["employee leave read"],

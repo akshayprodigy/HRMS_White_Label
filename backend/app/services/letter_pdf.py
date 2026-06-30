@@ -493,6 +493,181 @@ def generate_release_experience_order(data: Dict[str, Any]) -> bytes:
     return lc.finalize()
 
 
+def _fmt_money(v: Any) -> str:
+    try:
+        return f"Rs. {float(v):,.2f}"
+    except (TypeError, ValueError):
+        return str(v) if v not in (None, "") else "_______________"
+
+
+def generate_promotion_letter(data: Dict[str, Any]) -> bytes:
+    lc = LetterCanvas()
+    ref = data.get("reference_number", "")
+    dt = _fmt_date(data.get("date"))
+    name = data.get("employee_name", "_______________")
+    emp_id = data.get("employee_code", "")
+    old_designation = data.get("old_designation", "_______________")
+    new_designation = data.get("new_designation", "_______________")
+    old_grade = data.get("old_grade", "")
+    new_grade = data.get("new_grade", "")
+    department = data.get("department", "")
+    effective_date = _fmt_date(data.get("effective_date"))
+    old_ctc = _fmt_money(data.get("old_ctc"))
+    new_ctc = _fmt_money(data.get("new_ctc"))
+
+    lc.field_row("Ref:", ref)
+    lc.field_row("Date:", dt)
+    lc.spacer()
+    lc.text(f"To, {name}")
+    if emp_id:
+        lc.text(f"Employee Code: {emp_id}")
+    if department:
+        lc.text(f"Department: {department}")
+    lc.spacer()
+
+    lc.title("LETTER OF PROMOTION")
+    lc.spacer()
+
+    lc.text(f"Dear {name},")
+    lc.spacer(3 * mm)
+    lc.text(
+        "In recognition of your performance, contribution and continued "
+        f"commitment to {COMPANY_NAME}, we are pleased to promote you "
+        f"from the position of \"{old_designation}\" to "
+        f"\"{new_designation}\""
+        + (f" (Grade {new_grade})" if new_grade else "")
+        + f" with effect from {effective_date}."
+    )
+    lc.spacer(3 * mm)
+
+    lc.heading("Position Details")
+    lc.field_row("Previous Designation:", old_designation)
+    if old_grade:
+        lc.field_row("Previous Grade:", old_grade)
+    lc.field_row("New Designation:", new_designation)
+    if new_grade:
+        lc.field_row("New Grade:", new_grade)
+    lc.field_row("Effective From:", effective_date)
+    lc.spacer(3 * mm)
+
+    lc.heading("Revised Compensation")
+    lc.field_row("Previous Annual CTC:", old_ctc)
+    lc.field_row("Revised Annual CTC:", new_ctc)
+    hike_amt = data.get("hike_amount")
+    hike_pct = data.get("hike_percent")
+    if hike_amt is not None:
+        lc.field_row("Hike Amount:", _fmt_money(hike_amt))
+    if hike_pct is not None:
+        try:
+            lc.field_row("Hike Percentage:", f"{float(hike_pct):.2f}%")
+        except (TypeError, ValueError):
+            pass
+    lc.spacer(3 * mm)
+    lc.text(
+        "The detailed salary structure is available with HR and will "
+        "reflect in your payslip from the next applicable payroll cycle. "
+        "All other terms and conditions of your employment shall remain "
+        "unchanged."
+    )
+    lc.spacer(3 * mm)
+    lc.text(
+        "We trust that you will accept the additional responsibility "
+        "associated with this promotion and continue contributing with "
+        "the same dedication."
+    )
+    lc.spacer(3 * mm)
+    lc.text("Congratulations and best wishes!")
+
+    lc.signature_block()
+    return lc.finalize()
+
+
+def generate_salary_revision_letter(data: Dict[str, Any]) -> bytes:
+    lc = LetterCanvas()
+    ref = data.get("reference_number", "")
+    dt = _fmt_date(data.get("date"))
+    name = data.get("employee_name", "_______________")
+    emp_id = data.get("employee_code", "")
+    designation = data.get("designation", "")
+    department = data.get("department", "")
+    effective_date = _fmt_date(data.get("effective_date"))
+    old_ctc = _fmt_money(data.get("old_ctc"))
+    new_ctc = _fmt_money(data.get("new_ctc"))
+    revision_type = (data.get("revision_type") or "increment").title()
+
+    lc.field_row("Ref:", ref)
+    lc.field_row("Date:", dt)
+    lc.spacer()
+    lc.text(f"To, {name}")
+    if emp_id:
+        lc.text(f"Employee Code: {emp_id}")
+    if designation:
+        lc.text(f"Designation: {designation}")
+    if department:
+        lc.text(f"Department: {department}")
+    lc.spacer()
+
+    lc.title("SALARY REVISION LETTER")
+    lc.subtitle(f"({revision_type})")
+    lc.spacer()
+
+    lc.text(f"Dear {name},")
+    lc.spacer(3 * mm)
+    lc.text(
+        f"In recognition of your performance and contribution to "
+        f"{COMPANY_NAME}, we are pleased to inform you that your "
+        f"compensation has been revised with effect from {effective_date}."
+    )
+    lc.spacer(3 * mm)
+
+    lc.heading("Revised Compensation")
+    lc.field_row("Previous Annual CTC:", old_ctc)
+    lc.field_row("Revised Annual CTC:", new_ctc)
+    hike_amt = data.get("hike_amount")
+    hike_pct = data.get("hike_percent")
+    if hike_amt is not None:
+        lc.field_row("Increment Amount:", _fmt_money(hike_amt))
+    if hike_pct is not None:
+        try:
+            lc.field_row("Increment Percentage:", f"{float(hike_pct):.2f}%")
+        except (TypeError, ValueError):
+            pass
+    lc.field_row("Effective From:", effective_date)
+    lc.spacer(3 * mm)
+
+    # Component breakdown when supplied
+    new_basic = data.get("new_basic")
+    new_hra = data.get("new_hra")
+    new_conv = data.get("new_conveyance")
+    new_other = data.get("new_other_allowance")
+    if any(v is not None for v in (new_basic, new_hra, new_conv, new_other)):
+        lc.heading("Revised Salary Components (Monthly)")
+        if new_basic is not None:
+            lc.field_row("Basic:", _fmt_money(new_basic))
+        if new_hra is not None:
+            lc.field_row("HRA:", _fmt_money(new_hra))
+        if new_conv is not None:
+            lc.field_row("Conveyance:", _fmt_money(new_conv))
+        if new_other is not None:
+            lc.field_row("Other Allowance:", _fmt_money(new_other))
+        lc.spacer(3 * mm)
+
+    lc.text(
+        "The revised salary will reflect in your payslip from the next "
+        "applicable payroll cycle. Any back-dated portion will be paid "
+        "as arrears in the same payslip. All other terms of your "
+        "employment shall remain unchanged."
+    )
+    lc.spacer(3 * mm)
+    lc.text(
+        "We value your contribution and look forward to your continued "
+        "association with the company."
+    )
+
+    lc.signature_block()
+    return lc.finalize()
+
+
 def generate_relieving_letter(data: Dict[str, Any]) -> bytes:
     lc = LetterCanvas()
     ref = data.get("reference_number", "")
@@ -549,6 +724,8 @@ LETTER_GENERATORS = {
     "confirmation_letter": generate_confirmation_letter,
     "release_experience_order": generate_release_experience_order,
     "relieving_letter": generate_relieving_letter,
+    "promotion_letter": generate_promotion_letter,
+    "salary_revision_letter": generate_salary_revision_letter,
 }
 
 

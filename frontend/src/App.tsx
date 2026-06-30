@@ -47,6 +47,10 @@ import { OvertimeRulesAdmin } from './components/overtime-rules-admin';
 import { NightAllowanceRulesAdmin } from './components/night-allowance-rules-admin';
 import { OvertimeApprovalQueue } from './components/overtime-approval-queue';
 import { MyOvertimeView } from './components/my-overtime';
+import { DesignationGradeAdmin } from './components/designation-grade-admin';
+import { SalaryRevisionsView } from './components/salary-revisions';
+import { RevisionCyclesView } from './components/revision-cycles';
+import { MyRevisionsView } from './components/my-revisions';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -427,6 +431,14 @@ const App = () => {
         return <OvertimeApprovalQueue />;
       case 'my-overtime':
         return <MyOvertimeView />;
+      case 'designations':
+        return <DesignationGradeAdmin />;
+      case 'salary-revisions':
+        return <SalaryRevisionsView />;
+      case 'revision-cycles':
+        return <RevisionCyclesView />;
+      case 'my-revisions':
+        return <MyRevisionsView />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -484,6 +496,10 @@ const App = () => {
       'night-allowance-rules': 'Night-Shift Allowance Rules',
       'overtime-approvals': 'Overtime Approvals',
       'my-overtime': 'My Overtime & Allowance',
+      'designations': 'Designations & Grades',
+      'salary-revisions': 'Salary Revisions',
+      'revision-cycles': 'Revision Cycles',
+      'my-revisions': 'My Revisions',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',
