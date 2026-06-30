@@ -366,6 +366,18 @@ export const Sidebar = ({
       icon: Shield,
       roles: ["admin", "super admin"],
     },
+    {
+      id: "shift-templates",
+      label: "Shift Templates",
+      icon: Shield,
+      roles: ["hr", "admin", "super admin"],
+    },
+    {
+      id: "shift-assignments",
+      label: "Shift Assignments",
+      icon: Shield,
+      roles: ["hr", "pm", "dept_head", "admin", "super admin"],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

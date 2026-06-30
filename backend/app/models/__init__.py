@@ -34,6 +34,7 @@ from .employee_asset import EmployeeAsset
 from .project_document import ProjectDocument
 from .comp_off import CompOffAccrual
 from .functional_area import FunctionalArea
+from .shift import ShiftTemplate, EmployeeShiftAssignment
 
 __all__ = [
     "Department",
@@ -86,4 +87,6 @@ __all__ = [
     "ProjectDocument",
     "CompOffAccrual",
     "FunctionalArea",
+    "ShiftTemplate",
+    "EmployeeShiftAssignment",
 ]

@@ -6,7 +6,7 @@ from app.api.v1.endpoints import (
     approvals, notifications, reports, bd, recruitment,
     onboarding, clients, bd_bid_tasks, bd_lead_documents,
     admin_bid_line_items, bd_bid_line_items, exit_management,
-    salary_advance
+    salary_advance, shifts,
 )
 
 api_router = APIRouter()
@@ -136,5 +136,11 @@ api_router.include_router(
     salary_advance.router,
     prefix="/hr/salary",
     tags=["salary-advance"],
+    dependencies=[Depends(deps.verify_attendance)],
+)
+api_router.include_router(
+    shifts.router,
+    prefix="/shifts",
+    tags=["shifts"],
     dependencies=[Depends(deps.verify_attendance)],
 )

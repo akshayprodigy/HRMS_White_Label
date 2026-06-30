@@ -38,6 +38,8 @@ import { AuditLogView } from './components/audit-log-view';
 import { PolicyView } from './components/policy-view';
 import { HolidayManagement } from './components/holiday-management';
 import { FunctionalAreasAdmin } from './components/functional-areas-admin';
+import { ShiftTemplatesAdmin } from './components/shift-templates-admin';
+import { EmployeeShiftAssignmentsView } from './components/employee-shift-assignments';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -400,6 +402,10 @@ const App = () => {
         return <AdminView />;
       case 'functional-areas':
         return <FunctionalAreasAdmin />;
+      case 'shift-templates':
+        return <ShiftTemplatesAdmin />;
+      case 'shift-assignments':
+        return <EmployeeShiftAssignmentsView />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -448,6 +454,8 @@ const App = () => {
       'policies': 'Policy Center',
       'admin': 'Admin Panel',
       'functional-areas': 'Functional Areas',
+      'shift-templates': 'Shift Templates',
+      'shift-assignments': 'Shift Assignments',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

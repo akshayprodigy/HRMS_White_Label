@@ -87,6 +87,16 @@ export const ENDPOINTS = {
     AUDIT_LOG: '/admin/audit-log',
     AUDIT_LOG_DISTINCT: '/admin/audit-log/distinct',
   },
+  SHIFTS: {
+    TEMPLATES: '/shifts/templates',
+    TEMPLATE_DETAIL: (id: number) => `/shifts/templates/${id}`,
+    ASSIGNMENTS: '/shifts/assignments',
+    ASSIGNMENT_DETAIL: (id: number) => `/shifts/assignments/${id}`,
+    ASSIGNMENTS_BULK: '/shifts/assignments/bulk',
+    EFFECTIVE: '/shifts/effective',
+    MY_CURRENT: '/shifts/my/current',
+    MY_HISTORY: '/shifts/my/history',
+  },
   LEAVE: {
     BALANCES: '/leave/balances',
     TYPES: '/leave/types',

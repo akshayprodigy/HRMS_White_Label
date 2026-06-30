@@ -103,6 +103,8 @@ async def seed_demo_roles():
             {"name": "recruitment approve", "description": "Approve recruitment requisitions"},
             {"name": "project coo view", "description": "View all projects across portfolio (COO)"},
             {"name": "coo dashboard view", "description": "Access COO operations hub dashboard"},
+            {"name": "shift template write", "description": "Create/Update/Delete shift templates"},
+            {"name": "shift assign", "description": "Assign shifts to employees (single + bulk)"},
         ]
         
         db_perms = {}
@@ -177,7 +179,9 @@ async def seed_demo_roles():
             db_perms["hr payroll write"],
             db_perms["recruitment read"],
             db_perms["recruitment write"],
-            db_perms["recruitment approve"]
+            db_perms["recruitment approve"],
+            db_perms["shift template write"],
+            db_perms["shift assign"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -190,12 +194,15 @@ async def seed_demo_roles():
             db_perms["bd bid review read"],
             db_perms["bd bid review write"],
             db_perms["bd estimate read"],
-            db_perms["bd estimate write"]
+            db_perms["bd estimate write"],
+            db_perms["shift assign"],
         ]
         db_roles["Super Admin"].permissions = [
             db_perms["admin access"],
             db_perms["employee leave write"],
             db_perms["lead estimate approve"],
+            db_perms["shift template write"],
+            db_perms["shift assign"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
@@ -231,7 +238,8 @@ async def seed_demo_roles():
             db_perms["employee leave write"],
             db_perms["employee time read"],
             db_perms["recruitment read"],
-            db_perms["recruitment write"]
+            db_perms["recruitment write"],
+            db_perms["shift assign"],
         ]
         db_roles["RECRUITER"].permissions = [
             db_perms["employee leave read"],

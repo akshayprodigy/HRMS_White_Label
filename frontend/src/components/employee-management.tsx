@@ -49,6 +49,7 @@ import { Input } from './ui/input';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { AssignShiftDialog } from './assign-shift-dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import type { UserRole } from '../types/erp';
 
@@ -94,6 +95,7 @@ export const EmployeeManagement = ({ userRole = 'employee' }: { userRole?: UserR
   const [editingEmp, setEditingEmp] = useState<any>(null);
   const [isBulkUploadOpen, setIsBulkUploadOpen] = useState(false);
   const [departments, setDepartments] = useState<any[]>([]);
+  const [assignShiftEmp, setAssignShiftEmp] = useState<any>(null);
 
   const [isRolesModalOpen, setIsRolesModalOpen] = useState(false);
   const [rolesTargetEmp, setRolesTargetEmp] = useState<any>(null);
@@ -857,6 +859,16 @@ export const EmployeeManagement = ({ userRole = 'employee' }: { userRole?: UserR
                           <Button
                             variant="ghost"
                             size="sm"
+                            className="h-9 w-9 p-0 rounded-lg hover:bg-blue-50 hover:shadow-sm"
+                            onClick={() => setAssignShiftEmp(emp)}
+                            aria-label={`Assign shift to ${emp.user.full_name}`}
+                            title="Assign Shift"
+                          >
+                            <Calendar size={14} className="text-blue-500" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             className="h-9 w-9 p-0 rounded-lg hover:bg-amber-50 hover:shadow-sm"
                             onClick={() => {
                               setResetPwEmp(emp);
@@ -1201,6 +1213,16 @@ export const EmployeeManagement = ({ userRole = 'employee' }: { userRole?: UserR
           </div>
         </DialogContent>
       </Dialog>
+
+      {assignShiftEmp && (
+        <AssignShiftDialog
+          open={!!assignShiftEmp}
+          onClose={() => setAssignShiftEmp(null)}
+          employeeId={assignShiftEmp.user_id || assignShiftEmp.user?.id}
+          employeeName={assignShiftEmp.user?.full_name}
+          onAssigned={() => {/* no-op: assignments not shown in this table */}}
+        />
+      )}
     </div>
   );
 };
