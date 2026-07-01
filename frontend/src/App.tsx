@@ -65,6 +65,7 @@ import { ReportsWorkspace } from './components/reports-workspace';
 import { EnrichedDashboardView } from './components/enriched-dashboard';
 import { PerformanceWorkspace } from './components/performance-workspace';
 import { ExpensesWorkspace } from './components/expenses-workspace';
+import { RoleDashboard } from './components/role-dashboard';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -77,7 +78,9 @@ const App = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>('employee');
   const [userInfo, setUserInfo] = useState<{name: string, avatar?: string} | null>(null);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // Land on the role cockpit by default. Users can still navigate to
+  // the legacy "My Workspace" dashboard from the sidebar.
+  const [activeTab, setActiveTab] = useState('role-dashboard');
   const handleSetActiveTab = (tab: string) => {
     setActiveTab(tab);
     if (tab === 'tasks') setSidebarBadges((prev) => ({ ...prev, tasks: 0 }));
@@ -481,6 +484,11 @@ const App = () => {
         return <PerformanceWorkspace />;
       case 'expenses-workspace':
         return <ExpensesWorkspace />;
+      case 'role-dashboard':
+        return <RoleDashboard onNavigate={(route, params) => {
+          setActiveTab(route);
+          void params;
+        }} />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -556,6 +564,7 @@ const App = () => {
       'enriched-dashboard': 'HR Insights',
       'performance-workspace': 'Performance Management',
       'expenses-workspace': 'Expenses, Travel & Approvals',
+      'role-dashboard': 'My Cockpit',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

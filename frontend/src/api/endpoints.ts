@@ -176,6 +176,11 @@ export const ENDPOINTS = {
     TRAVEL_RECONCILE: (id: number) =>
       `/expenses/travel/${id}/reconcile-advance`,
   },
+  DASHBOARD: {
+    ROOT: '/dashboard',
+    PENDING_COUNT: '/dashboard/pending-count',
+    WIDGET: (key: string) => `/dashboard/widget/${key}`,
+  },
   REPORTS_ENGINE: {
     CATALOG: '/reports/catalog',
     RUN: (key: string) => `/reports/run/${key}`,

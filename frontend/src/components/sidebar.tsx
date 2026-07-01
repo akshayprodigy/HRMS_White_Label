@@ -59,6 +59,16 @@ export const Sidebar = ({
   // Dashboard items
   const menuItems = [
     {
+      id: "role-dashboard",
+      label: "My Cockpit",
+      icon: LayoutDashboard,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "bd", "bd manager",
+        "dept head", "ceo", "coo", "client manager",
+        "super admin", "admin", "finance",
+      ],
+    },
+    {
       id: "dashboard",
       label: "My Workspace",
       icon: LayoutDashboard,
