@@ -751,6 +751,290 @@ async def _fetch_attrition_report(
 # ------------------ Fetcher registry ---------------------------
 
 
+async def _fetch_goal_completion(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.performance import Goal as _Goal
+    stmt = select(_Goal)
+    rows = (await db.execute(stmt)).scalars().all()
+    out_rows = []
+    for g in rows:
+        out_rows.append({
+            "owner_id": g.owner_id,
+            "title": g.title,
+            "goal_type": g.goal_type,
+            "status": g.status,
+            "latest_progress": round(g.latest_progress or 0.0, 1),
+            "latest_confidence": g.latest_confidence or "",
+            "due_date": g.due_date.isoformat() if g.due_date else "",
+        })
+    return _rep.ReportResult(
+        rows=out_rows,
+        columns=[
+            _rep.ColumnDef("owner_id", "Owner", _rep.ColumnType.INT),
+            _rep.ColumnDef("title", "Goal", _rep.ColumnType.TEXT, width=32),
+            _rep.ColumnDef("goal_type", "Type", _rep.ColumnType.TEXT),
+            _rep.ColumnDef("status", "Status", _rep.ColumnType.TEXT),
+            _rep.ColumnDef(
+                "latest_progress", "Progress %", _rep.ColumnType.PERCENT
+            ),
+            _rep.ColumnDef(
+                "latest_confidence", "RAG", _rep.ColumnType.TEXT
+            ),
+            _rep.ColumnDef("due_date", "Due", _rep.ColumnType.DATE),
+        ],
+        totals={"count": len(out_rows)},
+    )
+
+
+async def _fetch_review_cycle_progress(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.performance import ReviewInstance as _RI
+    stmt = select(_RI)
+    if f.cycle_id:
+        stmt = stmt.where(_RI.cycle_id == f.cycle_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    out = [{
+        "employee_id": r.employee_id,
+        "cycle_id": r.cycle_id,
+        "phase": r.current_phase,
+        "is_released": bool(r.is_released),
+        "computed_overall": r.computed_overall_rating,
+        "final_rating": r.final_rating,
+    } for r in rows]
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("employee_id", "Emp", _rep.ColumnType.INT),
+            _rep.ColumnDef("cycle_id", "Cycle", _rep.ColumnType.INT),
+            _rep.ColumnDef("phase", "Phase", _rep.ColumnType.TEXT),
+            _rep.ColumnDef("is_released", "Released", _rep.ColumnType.TEXT),
+            _rep.ColumnDef(
+                "computed_overall", "Computed", _rep.ColumnType.TEXT
+            ),
+            _rep.ColumnDef("final_rating", "Final", _rep.ColumnType.TEXT),
+        ],
+        totals={"count": len(out)},
+    )
+
+
+async def _fetch_rating_distribution(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.performance import ReviewInstance as _RI
+    stmt = select(_RI).where(_RI.is_released.is_(True))
+    if f.cycle_id:
+        stmt = stmt.where(_RI.cycle_id == f.cycle_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    buckets: dict = {}
+    for r in rows:
+        b = r.final_rating
+        if b is None:
+            continue
+        key = f"{round(float(b))}"
+        buckets[key] = buckets.get(key, 0) + 1
+    total = sum(buckets.values()) or 1
+    out = [
+        {
+            "bucket": k, "count": v,
+            "percent": round(100.0 * v / total, 1),
+        }
+        for k, v in sorted(buckets.items())
+    ]
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("bucket", "Rating", _rep.ColumnType.TEXT),
+            _rep.ColumnDef("count", "Count", _rep.ColumnType.INT),
+            _rep.ColumnDef("percent", "Share", _rep.ColumnType.PERCENT),
+        ],
+        totals={"total_reviewed": sum(buckets.values())},
+    )
+
+
+async def _fetch_one_on_one_coverage(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.performance import OneOnOne as _OneOnOne
+    stmt = select(_OneOnOne)
+    rows = (await db.execute(stmt)).scalars().all()
+    by_pair: dict = {}
+    for r in rows:
+        key = (r.manager_id, r.reportee_id)
+        by_pair.setdefault(key, []).append(r)
+    out = []
+    for (mgr, rep), meets in by_pair.items():
+        latest = max((m.meeting_date for m in meets if m.meeting_date),
+                     default=None)
+        out.append({
+            "manager_id": mgr, "reportee_id": rep,
+            "meeting_count": len(meets),
+            "latest_meeting": latest.isoformat() if latest else "",
+        })
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("manager_id", "Manager", _rep.ColumnType.INT),
+            _rep.ColumnDef("reportee_id", "Reportee", _rep.ColumnType.INT),
+            _rep.ColumnDef(
+                "meeting_count", "Meetings", _rep.ColumnType.INT
+            ),
+            _rep.ColumnDef(
+                "latest_meeting", "Latest", _rep.ColumnType.DATE
+            ),
+        ],
+        totals={"pairs": len(out)},
+    )
+
+
+async def _fetch_expense_by_employee(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.expense import (
+        ExpenseClaim as _EC, ExpenseClaimStatus as _ES,
+    )
+    stmt = select(_EC).where(_EC.status.in_(
+        [_ES.APPROVED, _ES.REIMBURSED, _ES.PUSHED_TO_PAYROLL]
+    ))
+    rows = (await db.execute(stmt)).scalars().all()
+    if f.start:
+        rows = [r for r in rows if r.claim_date >= f.start]
+    if f.end:
+        rows = [r for r in rows if r.claim_date <= f.end]
+    by_emp: dict = {}
+    for r in rows:
+        by_emp[r.employee_id] = by_emp.get(r.employee_id, 0) + (
+            r.total_amount_paise or 0
+        )
+    out = [
+        {"employee_id": e, "total_paise": v, "total_rupees": v / 100.0}
+        for e, v in sorted(by_emp.items())
+    ]
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("employee_id", "Emp", _rep.ColumnType.INT),
+            _rep.ColumnDef(
+                "total_paise", "Total (paise)", _rep.ColumnType.INT
+            ),
+            _rep.ColumnDef(
+                "total_rupees", "Total (₹)", _rep.ColumnType.CURRENCY
+            ),
+        ],
+        totals={"grand_total_paise": sum(by_emp.values())},
+    )
+
+
+async def _fetch_pending_reimbursements(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.expense import (
+        ExpenseClaim as _EC, ExpenseClaimStatus as _ES,
+    )
+    rows = (await db.execute(
+        select(_EC).where(_EC.status == _ES.APPROVED)
+        .order_by(_EC.claim_date)
+    )).scalars().all()
+    out = [{
+        "claim_id": r.id, "employee_id": r.employee_id,
+        "title": r.title, "claim_date": r.claim_date.isoformat(),
+        "amount_rupees": (r.total_amount_paise or 0) / 100.0,
+    } for r in rows]
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("claim_id", "Claim", _rep.ColumnType.INT),
+            _rep.ColumnDef("employee_id", "Emp", _rep.ColumnType.INT),
+            _rep.ColumnDef("title", "Title", _rep.ColumnType.TEXT),
+            _rep.ColumnDef(
+                "claim_date", "Date", _rep.ColumnType.DATE
+            ),
+            _rep.ColumnDef(
+                "amount_rupees", "Amount", _rep.ColumnType.CURRENCY
+            ),
+        ],
+        totals={"pending_count": len(out)},
+    )
+
+
+async def _fetch_out_of_policy(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.expense import ExpenseClaim as _EC
+    from sqlalchemy.orm import selectinload as _si
+    rows = (await db.execute(
+        select(_EC).options(_si(_EC.line_items))
+    )).scalars().unique().all()
+    if f.start:
+        rows = [r for r in rows if r.claim_date >= f.start]
+    if f.end:
+        rows = [r for r in rows if r.claim_date <= f.end]
+    out = []
+    for r in rows:
+        flags = [ln for ln in r.line_items if ln.is_out_of_policy]
+        if not flags:
+            continue
+        out.append({
+            "claim_id": r.id, "employee_id": r.employee_id,
+            "title": r.title,
+            "flagged_lines": len(flags),
+            "reasons": "; ".join(
+                (ln.policy_flag_reason or "") for ln in flags
+            ),
+        })
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("claim_id", "Claim", _rep.ColumnType.INT),
+            _rep.ColumnDef("employee_id", "Emp", _rep.ColumnType.INT),
+            _rep.ColumnDef("title", "Title", _rep.ColumnType.TEXT),
+            _rep.ColumnDef(
+                "flagged_lines", "Flags", _rep.ColumnType.INT
+            ),
+            _rep.ColumnDef("reasons", "Reasons", _rep.ColumnType.TEXT),
+        ],
+        totals={"flagged_claims": len(out)},
+    )
+
+
+async def _fetch_travel_advance_outstanding(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.models.expense import (
+        TravelRequest as _TR, TravelRequestStatus as _TS,
+    )
+    rows = (await db.execute(
+        select(_TR).where(_TR.status == _TS.APPROVED)
+    )).scalars().all()
+    out = []
+    for r in rows:
+        outstanding = (r.advance_paid_paise or 0)
+        if outstanding <= 0:
+            continue
+        out.append({
+            "travel_id": r.id, "employee_id": r.employee_id,
+            "purpose": r.purpose,
+            "advance_paid_rupees": outstanding / 100.0,
+            "start_date": r.start_date.isoformat(),
+        })
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("travel_id", "Trip", _rep.ColumnType.INT),
+            _rep.ColumnDef("employee_id", "Emp", _rep.ColumnType.INT),
+            _rep.ColumnDef("purpose", "Purpose", _rep.ColumnType.TEXT),
+            _rep.ColumnDef(
+                "advance_paid_rupees", "Advance", _rep.ColumnType.CURRENCY
+            ),
+            _rep.ColumnDef(
+                "start_date", "Trip start", _rep.ColumnType.DATE
+            ),
+        ],
+        totals={"open_advances": len(out)},
+    )
+
+
 _FETCHERS = {
     "muster_roll": _fetch_muster_roll,
     "late_early": _fetch_late_early,
@@ -765,6 +1049,14 @@ _FETCHERS = {
     "statutory_summary": _fetch_statutory_summary,
     "headcount_trend": _fetch_headcount_trend,
     "attrition_report": _fetch_attrition_report,
+    "goal_completion": _fetch_goal_completion,
+    "review_cycle_progress": _fetch_review_cycle_progress,
+    "rating_distribution": _fetch_rating_distribution,
+    "one_on_one_coverage": _fetch_one_on_one_coverage,
+    "expense_by_employee": _fetch_expense_by_employee,
+    "pending_reimbursements": _fetch_pending_reimbursements,
+    "out_of_policy_claims": _fetch_out_of_policy,
+    "travel_advance_outstanding": _fetch_travel_advance_outstanding,
 }
 
 _register_descriptors(_FETCHERS)

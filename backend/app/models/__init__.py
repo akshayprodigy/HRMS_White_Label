@@ -68,6 +68,16 @@ from .performance import (
     CycleStatus as PerfCycleStatus, ReviewPhase, QuestionType,
     OneOnOneCadence, ActionItemStatus,
 )
+from .approval_chain import (
+    ApprovalChain, ApprovalChainStep,
+    ChainedApprovalInstance, ChainedApprovalStepInstance,
+    ChainEntityType, ApproverType, ParallelRule, StepMode,
+    ChainedApprovalStatus, StepInstanceStatus, ApproverActionResult,
+)
+from .expense import (
+    ExpenseCategory, ExpenseClaim, ExpenseLineItem, TravelRequest,
+    ExpenseClaimStatus, TravelRequestStatus, ReimbursementMode,
+)
 
 __all__ = [
     "Department",
@@ -160,4 +170,12 @@ __all__ = [
     "CalibrationAdjustment",
     "OneOnOne",
     "OneOnOneActionItem",
+    "ApprovalChain",
+    "ApprovalChainStep",
+    "ChainedApprovalInstance",
+    "ChainedApprovalStepInstance",
+    "ExpenseCategory",
+    "ExpenseClaim",
+    "ExpenseLineItem",
+    "TravelRequest",
 ]

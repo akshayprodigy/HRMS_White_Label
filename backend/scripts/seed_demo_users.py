@@ -132,6 +132,10 @@ async def seed_demo_roles():
             {"name": "performance calibration", "description": "Run calibration sessions + adjust ratings"},
             {"name": "performance view all", "description": "View all employees' reviews + goals (HR/CEO)"},
             {"name": "performance one_on_one", "description": "Access 1:1 tracker (all managers auto-eligible; this gates HR access)"},
+            {"name": "approval chain admin", "description": "Configure the generic approval-chain builder (HR/Super Admin)"},
+            {"name": "finance approve", "description": "Finance-level approver in the generic chain engine"},
+            {"name": "finance reimburse", "description": "Mark expense claims reimbursed / push to payroll"},
+            {"name": "expense category admin", "description": "Manage expense categories + policy caps"},
         ]
         
         db_perms = {}
@@ -156,7 +160,8 @@ async def seed_demo_roles():
             {"name": "COO", "description": "Chief Operating Officer — cross-project oversight"},
             {"name": "BD MANAGER", "description": "Business Development Approval Authority"},
             {"name": "DEPT_HEAD", "description": "Departmental Management & Requisition Authority"},
-            {"name": "RECRUITER", "description": "Talent Acquisition & Pipeline Management"}
+            {"name": "RECRUITER", "description": "Talent Acquisition & Pipeline Management"},
+            {"name": "Finance", "description": "Finance-level approver + owns the reimbursement queue (distinct from HR)"}
         ]
 
         db_roles = {}
@@ -170,7 +175,8 @@ async def seed_demo_roles():
             ("COO", "Chief Operating Officer — cross-project oversight"),
             ("BD MANAGER", "Business Development Approval Authority"),
             ("DEPT_HEAD", "Departmental Management & Requisition Authority"),
-            ("RECRUITER", "Talent Acquisition & Pipeline Management")
+            ("RECRUITER", "Talent Acquisition & Pipeline Management"),
+            ("Finance", "Finance-level approver + owns the reimbursement queue (distinct from HR)")
         ]:
             result = await session.execute(
                 select(Role).where(Role.name == r_name)
@@ -236,6 +242,8 @@ async def seed_demo_roles():
             db_perms["performance calibration"],
             db_perms["performance view all"],
             db_perms["performance one_on_one"],
+            db_perms["approval chain admin"],
+            db_perms["expense category admin"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -293,6 +301,10 @@ async def seed_demo_roles():
             db_perms["performance calibration"],
             db_perms["performance view all"],
             db_perms["performance one_on_one"],
+            db_perms["approval chain admin"],
+            db_perms["expense category admin"],
+            db_perms["finance approve"],
+            db_perms["finance reimburse"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
@@ -369,6 +381,15 @@ async def seed_demo_roles():
             db_perms["employee leave write"],
             db_perms["employee time read"],
             db_perms["hr employee read"],
+        ]
+        db_roles["Finance"].permissions = [
+            db_perms["employee leave read"],
+            db_perms["employee leave write"],
+            db_perms["employee time read"],
+            db_perms["finance approve"],
+            db_perms["finance reimburse"],
+            # Finance sees payroll totals but does not run payroll.
+            db_perms["hr payroll view"],
         ]
         db_roles["BD MANAGER"].permissions = [
             db_perms["bd lead read"],

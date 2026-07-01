@@ -542,6 +542,16 @@ export const Sidebar = ({
         "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
       ],
     },
+    {
+      id: "expenses-workspace",
+      label: "Expenses & Approvals",
+      icon: Banknote,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "super admin",
+        "bd", "bd manager", "dept head", "ceo", "coo",
+        "finance",
+      ],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

@@ -27,6 +27,8 @@ class ReportCategory:
     PAYROLL = "payroll"
     STATUTORY = "statutory"
     HEADCOUNT = "headcount"
+    PERFORMANCE = "performance"
+    EXPENSE = "expense"
 
 
 @dataclass
@@ -281,6 +283,124 @@ def build_descriptors_no_fetchers() -> List[ReportDescriptor]:
             ),
             category=ReportCategory.HEADCOUNT,
             permission="report headcount",
+            filters=[dept],
+        ),
+
+        # ----- Performance -----
+        ReportDescriptor(
+            key="goal_completion",
+            name="Goal Completion by Employee",
+            description=(
+                "Per-employee latest_progress + status (achieved / "
+                "at-risk / cancelled) across a cycle. Reuses the goals "
+                "engine — never recomputes ratings."
+            ),
+            category=ReportCategory.PERFORMANCE,
+            permission="performance view all",
+            filters=[dept],
+            manager_scoped=True,
+        ),
+        ReportDescriptor(
+            key="review_cycle_progress",
+            name="Review Cycle Progress",
+            description=(
+                "For a launched cycle: who is pending self / manager / "
+                "calibration / release. Managers see only their team."
+            ),
+            category=ReportCategory.PERFORMANCE,
+            permission="performance view all",
+            filters=[
+                ReportFilterSchema(
+                    "cycle_id", "Review cycle", type="int", required=True,
+                ),
+                dept,
+            ],
+            manager_scoped=True,
+        ),
+        ReportDescriptor(
+            key="rating_distribution",
+            name="Rating Distribution (Calibration)",
+            description=(
+                "Percentage distribution across the rating scale for a "
+                "cycle — the same numbers driving the calibration board."
+            ),
+            category=ReportCategory.PERFORMANCE,
+            permission="performance calibration",
+            filters=[
+                ReportFilterSchema(
+                    "cycle_id", "Review cycle", type="int", required=True,
+                ),
+                dept,
+            ],
+        ),
+        ReportDescriptor(
+            key="one_on_one_coverage",
+            name="1:1 Coverage",
+            description=(
+                "Manager × reportee 1:1 frequency over the period. Flags "
+                "reportees who haven't met with their manager in >30 days."
+            ),
+            category=ReportCategory.PERFORMANCE,
+            permission="performance one_on_one",
+            filters=date_range + [dept],
+            manager_scoped=True,
+        ),
+
+        # ----- Expense / Finance -----
+        ReportDescriptor(
+            key="expense_by_employee",
+            name="Expenses by Employee / Department / Category",
+            description=(
+                "Approved-or-later expense claim totals grouped as "
+                "requested. Rupees at read time; paise on the wire."
+            ),
+            category=ReportCategory.EXPENSE,
+            permission="finance reimburse",
+            filters=date_range + [
+                dept,
+                ReportFilterSchema(
+                    "group_by", "Group by",
+                    type="select",
+                    options=[
+                        {"value": "employee", "label": "Employee"},
+                        {"value": "department", "label": "Department"},
+                        {"value": "category", "label": "Category"},
+                    ],
+                ),
+            ],
+            is_sensitive=True,
+        ),
+        ReportDescriptor(
+            key="pending_reimbursements",
+            name="Pending Reimbursements (Finance Queue)",
+            description=(
+                "Approved claims awaiting direct-reimbursement or "
+                "payroll injection. Ordered by claim age."
+            ),
+            category=ReportCategory.EXPENSE,
+            permission="finance reimburse",
+            filters=[dept],
+        ),
+        ReportDescriptor(
+            key="out_of_policy_claims",
+            name="Out-of-policy Expense Claims",
+            description=(
+                "Claims with warn or block-severity policy flags. Feeds "
+                "the finance quality-control review."
+            ),
+            category=ReportCategory.EXPENSE,
+            permission="finance reimburse",
+            filters=date_range + [dept],
+        ),
+        ReportDescriptor(
+            key="travel_advance_outstanding",
+            name="Travel Advance Outstanding",
+            description=(
+                "Advances paid but not yet reconciled against actuals. "
+                "Mirrors the salary-advance outstanding surface."
+            ),
+            category=ReportCategory.EXPENSE,
+            permission="finance reimburse",
             filters=[dept],
         ),
     ]

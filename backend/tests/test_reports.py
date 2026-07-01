@@ -529,4 +529,5 @@ class TestCatalog:
             ReportCategory.ATTENDANCE, ReportCategory.LEAVE,
             ReportCategory.PAYROLL, ReportCategory.STATUTORY,
             ReportCategory.HEADCOUNT,
+            ReportCategory.PERFORMANCE, ReportCategory.EXPENSE,
         }

@@ -64,6 +64,7 @@ import { GratuityDashboardView } from './components/gratuity-dashboard';
 import { ReportsWorkspace } from './components/reports-workspace';
 import { EnrichedDashboardView } from './components/enriched-dashboard';
 import { PerformanceWorkspace } from './components/performance-workspace';
+import { ExpensesWorkspace } from './components/expenses-workspace';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -478,6 +479,8 @@ const App = () => {
         return <EnrichedDashboardView />;
       case 'performance-workspace':
         return <PerformanceWorkspace />;
+      case 'expenses-workspace':
+        return <ExpensesWorkspace />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -552,6 +555,7 @@ const App = () => {
       'reports-workspace': 'Reports Catalog',
       'enriched-dashboard': 'HR Insights',
       'performance-workspace': 'Performance Management',
+      'expenses-workspace': 'Expenses, Travel & Approvals',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

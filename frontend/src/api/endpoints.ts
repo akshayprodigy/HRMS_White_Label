@@ -151,6 +151,31 @@ export const ENDPOINTS = {
 
     RATING: (userId: number) => `/performance/ratings/${userId}`,
   },
+  APPROVAL_CHAINS: {
+    LIST: '/approval-chains',
+    DETAIL: (id: number) => `/approval-chains/${id}`,
+    STEPS: (id: number) => `/approval-chains/${id}/steps`,
+    STEP_DETAIL: (id: number, stepId: number) =>
+      `/approval-chains/${id}/steps/${stepId}`,
+    PREVIEW: '/approval-chains/preview',
+    MY_QUEUE: '/approval-chains/my-queue',
+    INSTANCE: (id: number) => `/approval-chains/instances/${id}`,
+    INSTANCE_ACT: (id: number) =>
+      `/approval-chains/instances/${id}/act`,
+  },
+  EXPENSES: {
+    CATEGORIES: '/expenses/categories',
+    CATEGORY_DETAIL: (id: number) => `/expenses/categories/${id}`,
+    CLAIMS: '/expenses/claims',
+    CLAIM_SUBMIT: (id: number) => `/expenses/claims/${id}/submit`,
+    CLAIM_CANCEL: (id: number) => `/expenses/claims/${id}/cancel`,
+    CLAIM_REIMBURSE: (id: number) => `/expenses/claims/${id}/reimburse`,
+    FINANCE_QUEUE: '/expenses/finance/queue',
+    TRAVEL: '/expenses/travel',
+    TRAVEL_SUBMIT: (id: number) => `/expenses/travel/${id}/submit`,
+    TRAVEL_RECONCILE: (id: number) =>
+      `/expenses/travel/${id}/reconcile-advance`,
+  },
   REPORTS_ENGINE: {
     CATALOG: '/reports/catalog',
     RUN: (key: string) => `/reports/run/${key}`,
