@@ -588,6 +588,72 @@ export const Sidebar = ({
     item.roles.includes(role),
   );
 
+  // Section M IA: bucket the flat list into 7 logical groups. New
+  // entries automatically fall into the right bucket via the id
+  // prefix rules below — no per-entry tagging needed. Order of the
+  // groups drives sidebar render order.
+  const GROUP_ORDER = [
+    "Overview",
+    "People",
+    "Time & Attendance",
+    "Payroll & Compensation",
+    "Compliance",
+    "Performance & Reviews",
+    "Approvals & Expense",
+    "Reports & Analytics",
+    "Business Development",
+    "Admin & Plumbing",
+  ] as const;
+  type GroupName = typeof GROUP_ORDER[number];
+
+  const groupFor = (id: string): GroupName => {
+    // Order matters — first match wins.
+    if (id === "role-dashboard" || id === "dashboard") return "Overview";
+    if (id.startsWith("coo-") || id === "enriched-dashboard") return "Overview";
+    if (id === "hr-dashboard") return "Overview";
+    if (id === "hr-directory" || id === "hr-org-chart") return "People";
+    if (id === "hr-recruitment" || id === "hr-onboarding") return "People";
+    if (id === "hr-letters" || id === "profile") return "People";
+    if (id === "hr-holidays") return "People";
+    if (
+      id === "worklog" || id === "timesheet" || id === "tasks" ||
+      id === "leave" || id === "hr-leave" ||
+      id === "hr-attendance" || id === "hr-attendance-review" ||
+      id.startsWith("shift-") || id.startsWith("geo-") ||
+      id === "employee-geo" || id === "my-overtime" ||
+      id.startsWith("overtime-") || id === "night-allowance-rules"
+    ) return "Time & Attendance";
+    if (
+      id === "hr-payroll" || id === "my-payslips" || id === "hr-advances" ||
+      id === "designations" || id === "salary-revisions" ||
+      id === "revision-cycles" || id === "my-revisions"
+    ) return "Payroll & Compensation";
+    if (
+      id === "compliance-dashboard" || id.startsWith("statutory-") ||
+      id.startsWith("tax-") || id === "form16-workspace" ||
+      id === "gratuity-dashboard" || id === "my-tax-declaration" ||
+      id === "tds-reconciliation" || id === "policies"
+    ) return "Compliance";
+    if (id === "performance-workspace") return "Performance & Reviews";
+    if (
+      id === "approvals" || id === "cost-approvals" ||
+      id === "expenses-workspace"
+    ) return "Approvals & Expense";
+    if (
+      id === "hr-reports" || id === "reports-workspace"
+    ) return "Reports & Analytics";
+    if (
+      id === "bd" || id === "client-details" || id === "projects" ||
+      id === "pm-bids"
+    ) return "Business Development";
+    return "Admin & Plumbing";
+  };
+
+  const groupedItems = GROUP_ORDER.map((gn) => ({
+    name: gn,
+    items: filteredItems.filter((it) => groupFor(it.id) === gn),
+  })).filter((g) => g.items.length > 0);
+
   return (
     <motion.aside
       initial={false}
@@ -623,46 +689,62 @@ export const Sidebar = ({
       </div>
 
       <nav className="flex-1 px-4 space-y-1 mt-4 overflow-y-auto scrollbar-none">
-        {filteredItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => setActiveTab(item.id)}
-            className={cn(
-              "relative w-full flex items-center p-3 rounded-xl transition-all duration-200 group text-left",
-              activeTab === item.id
-                ? "bg-[#2563EB]/10 text-[#2563EB]"
-                : "hover:bg-slate-50 hover:text-[#0F172A]",
-            )}
-          >
-            <item.icon
-              className={cn(
-                "w-5 h-5 flex-shrink-0 transition-colors",
-                activeTab === item.id
-                  ? "text-[#2563EB]"
-                  : "text-[#64748B] group-hover:text-[#0F172A]",
-              )}
-            />
+        {groupedItems.map((g, gi) => (
+          <div key={g.name} className={gi === 0 ? "" : "mt-3"}>
             {!collapsed && (
-              <span className="ml-3 font-medium whitespace-nowrap overflow-hidden text-ellipsis flex-1">
-                {item.label}
-              </span>
+              <div
+                className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-slate-400 font-semibold"
+                aria-label={`${g.name} section`}
+              >
+                {g.name}
+              </div>
             )}
-            {badges[item.id] > 0 && (
-              collapsed ? (
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
-              ) : (
-                <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center px-1">
-                  {badges[item.id]}
-                </span>
-              )
+            {collapsed && gi > 0 && (
+              <div className="mx-3 my-2 border-t border-slate-100" />
             )}
-            {!collapsed && activeTab === item.id && !(badges[item.id] > 0) && (
-              <motion.div
-                layoutId="active-indicator"
-                className="ml-auto w-1.5 h-1.5 rounded-full bg-[#2563EB]"
-              />
-            )}
-          </button>
+            {g.items.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                aria-label={item.label}
+                className={cn(
+                  "relative w-full flex items-center p-2.5 rounded-xl transition-all duration-200 group text-left",
+                  activeTab === item.id
+                    ? "bg-[#2563EB]/10 text-[#2563EB]"
+                    : "hover:bg-slate-50 hover:text-[#0F172A]",
+                )}
+              >
+                <item.icon
+                  className={cn(
+                    "w-5 h-5 flex-shrink-0 transition-colors",
+                    activeTab === item.id
+                      ? "text-[#2563EB]"
+                      : "text-[#64748B] group-hover:text-[#0F172A]",
+                  )}
+                />
+                {!collapsed && (
+                  <span className="ml-3 font-medium whitespace-nowrap overflow-hidden text-ellipsis flex-1">
+                    {item.label}
+                  </span>
+                )}
+                {badges[item.id] > 0 && (
+                  collapsed ? (
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
+                  ) : (
+                    <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center px-1">
+                      {badges[item.id]}
+                    </span>
+                  )
+                )}
+                {!collapsed && activeTab === item.id && !(badges[item.id] > 0) && (
+                  <motion.div
+                    layoutId="active-indicator"
+                    className="ml-auto w-1.5 h-1.5 rounded-full bg-[#2563EB]"
+                  />
+                )}
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
 

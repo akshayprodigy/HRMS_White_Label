@@ -1,4 +1,4 @@
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { formatRangeLabel, type DateRange } from '../period-picker';
 import type { RosterRow, EmployeeBasic, EmployeeHeatmapDay } from './workforce-data';
 

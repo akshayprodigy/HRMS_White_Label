@@ -8,8 +8,9 @@ import pytest
 
 from app.services.approval_engine import (
     AUTO_APPROVE_BELOW_DEFAULT,
-    ChainSpec, RequestContext, StepSpec,
-    advance_state, build_plan, pick_effective_chain, validate_bands,
+    AbsenceCheck, ChainSpec, RequestContext, StepSpec,
+    advance_state, build_plan, filter_absent_approvers,
+    is_approver_absent, pick_effective_chain, validate_bands,
 )
 
 
@@ -340,3 +341,65 @@ def test_pick_ties_broken_by_highest_id():
 def test_auto_approve_below_default_is_documented():
     # Documented behaviour: default off (0).
     assert AUTO_APPROVE_BELOW_DEFAULT == 0
+
+
+# ---------------------------------------------------------------------------
+# Section M B5: skip-if-absent — is_approver_absent + filter_absent_approvers
+# ---------------------------------------------------------------------------
+
+
+def _chk(user_id, days, dates):
+    return AbsenceCheck(
+        user_id=user_id,
+        required_window_days=days,
+        attended_work_dates=frozenset(dates),
+    )
+
+
+def test_is_approver_absent_true_when_no_attendance():
+    assert is_approver_absent(_chk(1, 7, []))
+
+
+def test_is_approver_absent_false_when_any_attendance():
+    assert not is_approver_absent(_chk(1, 7, ["2026-07-01"]))
+
+
+def test_is_approver_absent_disabled_when_window_zero():
+    """window_days<=0 disables the check regardless of attendance."""
+    assert not is_approver_absent(_chk(1, 0, []))
+    assert not is_approver_absent(_chk(1, -1, []))
+
+
+def test_filter_absent_approvers_drops_only_the_absent():
+    checks = [
+        _chk(1, 7, []),                # absent
+        _chk(2, 7, ["2026-06-30"]),    # present
+        _chk(3, 7, []),                # absent
+        _chk(4, 7, ["2026-07-01", "2026-06-29"]),  # present
+    ]
+    assert filter_absent_approvers(checks) == [2, 4]
+
+
+def test_filter_absent_approvers_preserves_order():
+    checks = [
+        _chk(9, 7, ["2026-06-30"]),
+        _chk(3, 7, ["2026-06-30"]),
+        _chk(5, 7, ["2026-06-30"]),
+    ]
+    assert filter_absent_approvers(checks) == [9, 3, 5]
+
+
+def test_filter_absent_approvers_can_return_empty_list():
+    """The endpoint layer is the one that guards against stranding —
+    the pure helper faithfully returns [] when everyone is absent so
+    the endpoint can consciously decide to fall back."""
+    checks = [_chk(1, 7, []), _chk(2, 7, [])]
+    assert filter_absent_approvers(checks) == []
+
+
+def test_filter_absent_approvers_window_zero_keeps_everyone():
+    """Chain step with skip_if_absent_days=None/0 → no one drops."""
+    checks = [
+        _chk(1, 0, []), _chk(2, 0, []), _chk(3, 0, ["2026-07-01"]),
+    ]
+    assert filter_absent_approvers(checks) == [1, 2, 3]

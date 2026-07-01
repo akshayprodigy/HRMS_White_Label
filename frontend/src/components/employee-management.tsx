@@ -43,7 +43,7 @@ import {
   Star
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Input } from './ui/input';
 import { client } from '../api/client';

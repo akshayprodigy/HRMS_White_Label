@@ -15,7 +15,7 @@ import { Card, Button, Badge, Input, cn } from './ui-elements';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { ApprovalItem } from '../types/erp';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { normalizeRoleName } from '../utils/roles';
 import {
   Dialog,

@@ -15,7 +15,7 @@ import {
 import { Card, Button, Badge, cn } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { PeriodPicker, formatRangeLabel, toIsoDate, type DateRange } from '../period-picker';
 import {
   buildEmployeeHeatmap,

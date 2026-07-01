@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Edit2, Power, Search, RefreshCw, Moon } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';

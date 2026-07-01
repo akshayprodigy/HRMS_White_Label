@@ -16,28 +16,12 @@ import {
   Clock, Target, Users, Banknote, Receipt, ClipboardCheck,
   TrendingUp, Trophy, Sparkles,
 } from 'lucide-react';
-import { toast } from 'sonner@2.0.3';
-import { Card, Button, Badge, cn } from './ui-elements';
+import { toast } from 'sonner';
+import {
+  Card, Button, Badge, cn, errMsg, fmtInr, EmptyState, Loading,
+} from './ui-elements';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-const errMsg = (e: any, fb: string) => {
-  const d = e?.response?.data?.detail;
-  if (typeof d === 'string') return d;
-  if (Array.isArray(d)) return d.map((x: any) => x?.msg || JSON.stringify(x)).join('; ');
-  return e?.message || fb;
-};
-
-const fmtInr = (paise?: number | null) => {
-  if (paise == null) return '—';
-  return '₹' + (paise / 100).toLocaleString('en-IN', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  });
-};
 
 interface WidgetMeta {
   key: string;
@@ -295,9 +279,32 @@ const R = {
     </WidgetShell>;
   },
   hr_flagged_attendance(meta: WidgetMeta, p: any, drill: () => void) {
-    return <WidgetShell meta={meta} onDrill={drill}>
-      <CountTile count={p?.count || 0} label="corrections queued" tone="action" />
-    </WidgetShell>;
+    return (
+      <WidgetShell meta={meta} onDrill={drill}>
+        <CountTile
+          count={p?.count || 0}
+          label={`flagged last ${p?.window_days ?? 30}d`}
+          tone="action"
+        />
+        <div className="text-xs text-slate-500 mt-2 space-y-0.5">
+          {p?.geo_in != null && (
+            <div className="flex justify-between">
+              <span>Geo fail (punch-in)</span><span>{p.geo_in}</span>
+            </div>
+          )}
+          {p?.geo_out != null && (
+            <div className="flex justify-between">
+              <span>Geo fail (punch-out)</span><span>{p.geo_out}</span>
+            </div>
+          )}
+          {p?.attribution != null && (
+            <div className="flex justify-between">
+              <span>Attribution</span><span>{p.attribution}</span>
+            </div>
+          )}
+        </div>
+      </WidgetShell>
+    );
   },
   hr_out_of_policy_expenses(meta: WidgetMeta, p: any, drill: () => void) {
     return <WidgetShell meta={meta} onDrill={drill}>
@@ -437,6 +444,29 @@ const WIDGET_RENDERERS: Record<string, (m: WidgetMeta, p: any, drill: () => void
 // Main component
 // ---------------------------------------------------------------------------
 
+// Section M B3: persist the multi-role user's last-selected cockpit.
+// Restored on next login. The backend still validates the choice
+// against `available_dashboards` — an invalid saved value falls back
+// to the role-priority landing without user impact.
+const COCKPIT_STORAGE_KEY = 'erp:last-cockpit';
+
+const readSavedCockpit = (): string | null => {
+  try {
+    return window.localStorage.getItem(COCKPIT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const writeSavedCockpit = (v: string | null) => {
+  try {
+    if (v) window.localStorage.setItem(COCKPIT_STORAGE_KEY, v);
+    else window.localStorage.removeItem(COCKPIT_STORAGE_KEY);
+  } catch {
+    // ignore quota/privacy errors
+  }
+};
+
 export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate }) => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -450,6 +480,9 @@ export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate }) => {
       });
       setData(r.data);
       setPicked(r.data.active_dashboard);
+      // Persist only when the backend accepted our explicit ask —
+      // r.data.active_dashboard reflects post-validation reality.
+      if (dashboard) writeSavedCockpit(r.data.active_dashboard);
     } catch (e: any) {
       toast.error(errMsg(e, 'Failed to load dashboard'));
     } finally {
@@ -457,7 +490,10 @@ export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate }) => {
     }
   };
 
-  useEffect(() => { fetchIt(); }, []);
+  useEffect(() => {
+    // Restore saved cockpit on first mount.
+    fetchIt(readSavedCockpit() || undefined);
+  }, []);
 
   const grouped = useMemo(() => {
     if (!data) return { action: [], data: [], analytic: [] };
@@ -467,7 +503,7 @@ export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate }) => {
   }, [data]);
 
   if (loading || !data) {
-    return <div className="p-6 text-slate-500">Loading your cockpit…</div>;
+    return <div className="p-6"><Loading label="Loading your cockpit…" /></div>;
   }
 
   const drillFor = (meta: WidgetMeta) => () => {

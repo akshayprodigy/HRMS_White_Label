@@ -444,20 +444,46 @@ async def _wp_hr_tax_declarations_pending(db, user, posture) -> dict:
 
 
 async def _wp_hr_flagged_attendance(db, user, posture) -> dict:
-    """Attendance records the HR review queue would surface — pending
-    correction requests are the closest signal available today."""
-    from app.models.attendance import (
-        AttendanceCorrectionRequest,
+    """Real geo/attribution flag counts (Section M B1) — replaces the
+    correction-request proxy. Counts distinct attendance rows in the
+    trailing 30 days that carry a non-null flag on EITHER punch-in
+    (`geo_flag` / `attribution_flag`) or punch-out (`punch_out_geo_flag`).
+    """
+    from app.models.attendance import Attendance
+    from datetime import timedelta as _td
+
+    since = datetime.now(timezone.utc).date() - _td(days=30)
+    stmt = select(func.count(Attendance.id)).where(
+        and_(
+            Attendance.work_date >= since,
+            or_(
+                Attendance.geo_flag.isnot(None),
+                Attendance.punch_out_geo_flag.isnot(None),
+                Attendance.attribution_flag.isnot(None),
+            ),
+        )
     )
-    try:
-        rows = (await db.execute(
-            select(func.count(AttendanceCorrectionRequest.id)).where(
-                AttendanceCorrectionRequest.status == "submitted"
-            )
-        )).scalar_one() or 0
-    except Exception:
-        rows = 0
-    return {"count": int(rows)}
+    total = int((await db.execute(stmt)).scalar_one() or 0)
+
+    # Per-flag breakdown so the dashboard tile can show what dominates.
+    async def _count(col_pred):
+        return int((await db.execute(
+            select(func.count(Attendance.id)).where(and_(
+                Attendance.work_date >= since, col_pred,
+            ))
+        )).scalar_one() or 0)
+
+    geo_in = await _count(Attendance.geo_flag.isnot(None))
+    geo_out = await _count(Attendance.punch_out_geo_flag.isnot(None))
+    attrib = await _count(Attendance.attribution_flag.isnot(None))
+
+    return {
+        "count": total,
+        "geo_in": geo_in,
+        "geo_out": geo_out,
+        "attribution": attrib,
+        "window_days": 30,
+    }
 
 
 async def _wp_hr_out_of_policy_expenses(db, user, posture) -> dict:

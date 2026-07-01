@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Button, Input, Card } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 
 interface ManualEntryModalProps {
   isOpen: boolean;

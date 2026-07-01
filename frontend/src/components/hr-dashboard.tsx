@@ -24,7 +24,7 @@ import { Card, Button, Badge, cn } from './ui-elements';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, AreaChart, Area 
 } from 'recharts';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { hrApi } from '../api/hr';
 import { timesheetApi } from '../api/timesheet';
 

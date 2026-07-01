@@ -22,7 +22,7 @@ import {
   CheckCheck
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Textarea } from './ui/textarea';

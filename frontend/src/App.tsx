@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Toaster, toast } from 'sonner@2.0.3';
+import { Toaster, toast } from 'sonner';
 import { Sidebar } from './components/sidebar';
 import { Header } from './components/header';
 import { AuthView } from './components/auth-view';
@@ -352,14 +352,26 @@ const App = () => {
     };
   }, []);
 
-  // Poll for pending PM actions (badge on My Tasks)
+  // Poll for pending badges. Combines the legacy PM tasks count with
+  // the Section J dashboard-wide pending count (approvals + reviews +
+  // self-actions the user owes) so the cockpit entry shows a single
+  // total.
   useEffect(() => {
     if (!isLoggedIn) return;
     const fetchBadges = async () => {
       try {
-        const r = await client.get(ENDPOINTS.TASKS.MY_PENDING_ACTIONS_COUNT);
-        const count = r.data?.count ?? 0;
-        setSidebarBadges(count > 0 ? { tasks: count } : {});
+        const [tasksR, cockpitR] = await Promise.all([
+          client.get(ENDPOINTS.TASKS.MY_PENDING_ACTIONS_COUNT)
+            .catch(() => ({ data: { count: 0 } })),
+          client.get(ENDPOINTS.DASHBOARD.PENDING_COUNT)
+            .catch(() => ({ data: { count: 0 } })),
+        ]);
+        const next: Record<string, number> = {};
+        const taskCount = tasksR.data?.count ?? 0;
+        if (taskCount > 0) next.tasks = taskCount;
+        const cockpitCount = cockpitR.data?.count ?? 0;
+        if (cockpitCount > 0) next['role-dashboard'] = cockpitCount;
+        setSidebarBadges(next);
       } catch {
         // silently ignore
       }

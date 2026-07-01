@@ -17,7 +17,7 @@ import {
 import { Card, Button, Badge, Input, cn } from './ui-elements';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 
 interface CostChangeRequest {
   id: number;

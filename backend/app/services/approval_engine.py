@@ -349,3 +349,46 @@ def pick_effective_chain(
 
     pool = exact or org_wide or candidates
     return max(pool, key=lambda c: c.id)
+
+
+# ----------------------------------------------------------------------
+# 5. Skip-if-absent (Section M B5)
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class AbsenceCheck:
+    """Compact input for is_approver_absent():
+    - user_id                 the approver being checked
+    - required_window_days    N — the step's skip_if_absent_days
+    - attended_work_dates     set of ISO date strings (YYYY-MM-DD) the
+                              approver actually punched-in on in the
+                              past `required_window_days` days.
+    Callers pass raw attendance rows converted to date strings so this
+    helper stays DB-free and unit-testable.
+    """
+    user_id: int
+    required_window_days: int
+    attended_work_dates: frozenset
+
+
+def is_approver_absent(chk: AbsenceCheck) -> bool:
+    """Return True if the approver has ZERO attended work-dates in the
+    lookback window. `required_window_days <= 0` disables the check
+    (always False)."""
+    if chk.required_window_days <= 0:
+        return False
+    return len(chk.attended_work_dates) == 0
+
+
+def filter_absent_approvers(
+    approvers_with_attendance: Iterable[AbsenceCheck],
+) -> List[int]:
+    """Drop absent approvers from a list of candidates. Preserves order.
+    Never returns an empty result silently — the caller (endpoint layer)
+    is responsible for the 'hold for HR' fallback when everyone is out.
+    """
+    return [
+        c.user_id for c in approvers_with_attendance
+        if not is_approver_absent(c)
+    ]

@@ -34,7 +34,7 @@ import { Card, Button, Badge, TimerCard, cn } from './ui-elements';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, AreaChart, Area
 } from 'recharts';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { useTimer } from '../contexts/timer-context';

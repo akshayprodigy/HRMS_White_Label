@@ -9,18 +9,13 @@ import {
   Banknote, Bug, Play, Pause, ShieldCheck, ShieldAlert,
   Clock, RefreshCw, CheckCircle2, XCircle, Wrench,
 } from 'lucide-react';
-import { toast } from 'sonner@2.0.3';
-import { Card, Button, Badge, cn } from './ui-elements';
+import { toast } from 'sonner';
+import {
+  Card, Button, Badge, cn, errMsg, EmptyState, Loading, StatusChip,
+} from './ui-elements';
 import { Input } from './ui/input';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-
-const errMsg = (e: any, fb: string) => {
-  const d = e?.response?.data?.detail;
-  if (typeof d === 'string') return d;
-  if (Array.isArray(d)) return d.map((x: any) => x?.msg || JSON.stringify(x)).join('; ');
-  return e?.message || fb;
-};
 
 const TABS = [
   { id: 'my-bank',   label: 'My Bank Details', icon: Banknote },

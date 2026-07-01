@@ -11,19 +11,14 @@ import {
   Plus, RefreshCw, Send, Play, CheckCircle2, AlertTriangle,
   ChevronRight, TrendingUp, TrendingDown, Award,
 } from 'lucide-react';
-import { Card, Button, Badge, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import {
+  Card, Button, Badge, cn, errMsg, EmptyState, Loading, StatusChip,
+} from './ui-elements';
+import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
-
-const errMsg = (e: any, fb: string) => {
-  const d = e?.response?.data?.detail;
-  if (typeof d === 'string') return d;
-  if (Array.isArray(d)) return d.map((x: any) => x?.msg || JSON.stringify(x)).join('; ');
-  return e?.message || fb;
-};
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -32,6 +27,117 @@ const ragTone = (rag?: string) => {
   if (rag === 'amber') return 'bg-amber-100 text-amber-700 border-amber-300';
   if (rag === 'green') return 'bg-green-100 text-green-700 border-green-300';
   return 'bg-slate-100 text-slate-600 border-slate-300';
+};
+
+// ==============================================================
+// Section M B2 — Live 1:1 employee picker.
+// Loads the employee list once, filters client-side by name. Falls
+// back to a plain user-id input if the fetch fails so a broken
+// employees endpoint doesn't block scheduling a 1:1.
+// ==============================================================
+
+const EmployeePicker: React.FC<{
+  selectedUserId?: number | null;
+  onSelect: (userId: number) => void;
+  placeholder?: string;
+}> = ({ selectedUserId, onSelect, placeholder = 'Search by name…' }) => {
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [q, setQ] = useState('');
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await client.get(ENDPOINTS.HR.EMPLOYEES_WITH_USER);
+        setEmployees(r.data || []);
+      } catch {
+        setLoadFailed(true);
+      }
+    })();
+  }, []);
+
+  const selected = employees.find(
+    (e: any) => (e.user_id ?? e.user?.id) === selectedUserId,
+  );
+
+  const filtered = q
+    ? employees.filter((e: any) => {
+        const name = String(
+          e.user?.full_name || e.full_name || e.name || '',
+        ).toLowerCase();
+        const code = String(e.employee_id || '').toLowerCase();
+        const dep = String(e.department || '').toLowerCase();
+        const term = q.toLowerCase();
+        return name.includes(term) || code.includes(term) || dep.includes(term);
+      }).slice(0, 20)
+    : employees.slice(0, 20);
+
+  if (loadFailed) {
+    return (
+      <div>
+        <Input
+          type="number"
+          value={selectedUserId || ''}
+          onChange={e => onSelect(Number(e.target.value))}
+          placeholder="User ID (picker unavailable)"
+        />
+        <div className="text-[10px] text-amber-700 mt-1">
+          Employee list unavailable — enter the user id directly.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <Input
+        value={
+          open
+            ? q
+            : selected
+              ? `${selected.user?.full_name || selected.full_name} · ${selected.employee_id}`
+              : q
+        }
+        onChange={e => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        aria-label="Employee picker"
+      />
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-64 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          {filtered.length === 0 ? (
+            <div className="p-3 text-xs text-slate-400">No matches.</div>
+          ) : (
+            filtered.map((e: any) => {
+              const uid = e.user_id ?? e.user?.id;
+              const name = e.user?.full_name || e.full_name || 'Unnamed';
+              return (
+                <button
+                  key={uid}
+                  type="button"
+                  onMouseDown={ev => ev.preventDefault()}
+                  onClick={() => {
+                    onSelect(uid);
+                    setQ('');
+                    setOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 border-b last:border-b-0"
+                >
+                  <div className="font-medium text-slate-700">{name}</div>
+                  <div className="text-[11px] text-slate-500">
+                    {e.employee_id}
+                    {e.department ? ` · ${e.department}` : ''}
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ==============================================================
@@ -1233,12 +1339,11 @@ const OneOnOnesTab: React.FC = () => {
           <DialogTitle>Schedule 1:1</DialogTitle>
           <div className="space-y-3 mt-4">
             <div>
-              <label className="text-xs font-semibold text-slate-600">Reportee user ID</label>
-              <Input type="number" value={form.reportee_id || ''}
-                onChange={e => setForm({ ...form, reportee_id: Number(e.target.value) })} />
-              <div className="text-[10px] text-slate-400 mt-1">
-                Employee picker follows in a hardened build; use the user id from the directory for now.
-              </div>
+              <label className="text-xs font-semibold text-slate-600">Reportee</label>
+              <EmployeePicker
+                selectedUserId={form.reportee_id}
+                onSelect={(uid: number) => setForm({ ...form, reportee_id: uid })}
+              />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

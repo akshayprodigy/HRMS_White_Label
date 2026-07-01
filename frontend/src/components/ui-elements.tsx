@@ -117,6 +117,139 @@ export const Badge = ({
   );
 };
 
+// ---------------------------------------------------------------------------
+// Section M shared primitives — extracted from ~25 duplicated call sites so
+// every workspace renders the same visual for the same intent.
+// ---------------------------------------------------------------------------
+
+/** Normalize any axios/backend error into a user-safe string. */
+export const errMsg = (e: any, fallback: string): string => {
+  const d = e?.response?.data?.detail;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d)) {
+    return d.map((x: any) => x?.msg || JSON.stringify(x)).join('; ');
+  }
+  if (d && typeof d === 'object') return d.message || JSON.stringify(d);
+  return e?.message || fallback;
+};
+
+/** Indian-grouping ₹ formatter over paise. `null`/`undefined` → em-dash. */
+export const fmtInr = (
+  paise?: number | null,
+  opts: { showZero?: boolean; symbol?: boolean } = {},
+): string => {
+  const { showZero = true, symbol = true } = opts;
+  if (paise == null) return '—';
+  if (paise === 0 && !showZero) return '';
+  const rupees = paise / 100;
+  const num = rupees.toLocaleString('en-IN', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+  return symbol ? '₹' + num : num;
+};
+
+/** ISO date string → dd MMM yyyy (Indian convention). */
+export const fmtDate = (iso?: string | Date | null): string => {
+  if (!iso) return '—';
+  const d = typeof iso === 'string' ? new Date(iso) : iso;
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  });
+};
+
+/** Consistent empty-state placeholder. */
+export const EmptyState: React.FC<{
+  title?: string;
+  hint?: string;
+  className?: string;
+  children?: React.ReactNode;
+}> = ({ title = 'Nothing to show', hint, className, children }) => (
+  <div
+    className={cn(
+      'py-10 px-4 text-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50',
+      className,
+    )}
+  >
+    <div className="text-sm text-slate-600 font-medium">{title}</div>
+    {hint && <div className="text-xs text-slate-500 mt-1">{hint}</div>}
+    {children && <div className="mt-3">{children}</div>}
+  </div>
+);
+
+/** Consistent loading placeholder. Use `inline` for row-level spinners. */
+export const Loading: React.FC<{
+  label?: string;
+  inline?: boolean;
+  className?: string;
+}> = ({ label = 'Loading…', inline = false, className }) => (
+  <div
+    role="status"
+    aria-live="polite"
+    className={cn(
+      inline
+        ? 'text-xs text-slate-400 inline-flex items-center gap-2'
+        : 'text-center text-slate-400 py-8',
+      className,
+    )}
+  >
+    {label}
+  </div>
+);
+
+/**
+ * Status chip with a canonical color map. Pass a raw status string —
+ * green for approved/success/reimbursed/completed; red for
+ * rejected/failed/dead_letter/cancelled; blue for pending/queued/
+ * submitted/running; amber for warn/skipped_*; slate for the rest.
+ */
+export type StatusTone = 'good' | 'bad' | 'info' | 'warn' | 'neutral';
+
+const STATUS_TONE_MAP: Record<string, StatusTone> = {
+  approved: 'good', sent: 'good', reimbursed: 'good',
+  pushed_to_payroll: 'good', completed: 'good', success: 'good',
+  active: 'good', released: 'good', ready: 'good',
+  rejected: 'bad', failed: 'bad', dead_letter: 'bad',
+  cancelled: 'bad', blocked: 'bad',
+  pending: 'info', queued: 'info', submitted: 'info', running: 'info',
+  draft: 'info', in_progress: 'info', launched: 'info',
+  warn: 'warn', warning: 'warn', at_risk: 'warn',
+  skipped_pref: 'warn', skipped_quiet: 'warn', flagged: 'warn',
+};
+
+const TONE_CLASS: Record<StatusTone, string> = {
+  good: 'bg-green-100 text-green-700 border-green-300',
+  bad: 'bg-red-100 text-red-700 border-red-300',
+  info: 'bg-blue-100 text-blue-700 border-blue-300',
+  warn: 'bg-amber-100 text-amber-700 border-amber-300',
+  neutral: 'bg-slate-100 text-slate-600 border-slate-300',
+};
+
+export const statusTone = (s?: string | null): StatusTone => {
+  if (!s) return 'neutral';
+  return STATUS_TONE_MAP[String(s).toLowerCase()] || 'neutral';
+};
+
+export const StatusChip: React.FC<{
+  status?: string | null;
+  label?: string;
+  tone?: StatusTone;
+  className?: string;
+}> = ({ status, label, tone, className }) => {
+  const t = tone ?? statusTone(status);
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border capitalize',
+        TONE_CLASS[t],
+        className,
+      )}
+    >
+      {label ?? status ?? '—'}
+    </span>
+  );
+};
+
 export const Input = React.forwardRef<
   HTMLInputElement,
   React.InputHTMLAttributes<HTMLInputElement> & {

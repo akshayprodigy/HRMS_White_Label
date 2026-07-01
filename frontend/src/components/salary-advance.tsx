@@ -5,7 +5,7 @@ import {
   AlertTriangle, RotateCcw
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';

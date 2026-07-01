@@ -611,6 +611,62 @@ async def _resolve_approvers(
     return []
 
 
+async def _drop_absent_approvers(
+    db, approver_ids: List[int], window_days: int,
+) -> List[int]:
+    """Section M B5: check attendance for each approver in the trailing
+    `window_days` and drop anyone with ZERO attended work-dates. Uses
+    the engine's pure `is_approver_absent` helper for the classification
+    so the decision is unit-tested.
+
+    Safety: if the filter would return an empty list (every approver is
+    out), return the ORIGINAL list so the request is not stranded — the
+    caller will surface it to HR via the existing 'no_eligible_approver'
+    audit path.
+    """
+    from datetime import date as _date, timedelta as _td
+    from app.models.attendance import Attendance
+    from app.services.approval_engine import (
+        AbsenceCheck, filter_absent_approvers,
+    )
+
+    if not approver_ids or window_days <= 0:
+        return approver_ids
+
+    today = _date.today()
+    since = today - _td(days=window_days)
+    rows = (await db.execute(
+        select(Attendance.user_id, Attendance.work_date).where(
+            and_(
+                Attendance.user_id.in_(approver_ids),
+                Attendance.work_date >= since,
+                Attendance.work_date <= today,
+            )
+        )
+    )).all()
+    attended_by_user: dict = {uid: set() for uid in approver_ids}
+    for row in rows:
+        attended_by_user.setdefault(row.user_id, set()).add(
+            row.work_date.isoformat()
+        )
+    checks = [
+        AbsenceCheck(
+            user_id=uid,
+            required_window_days=window_days,
+            attended_work_dates=frozenset(attended_by_user.get(uid) or set()),
+        )
+        for uid in approver_ids
+    ]
+    filtered = filter_absent_approvers(checks)
+    if not filtered:
+        # All absent — never strand. Fall back to originals; the
+        # step_instance layer records skip_reason='no_eligible_approver'
+        # if the resolver still returns [], and HR can then hold/hand-
+        # approve.
+        return approver_ids
+    return filtered
+
+
 async def instantiate_for_entity(
     *,
     db,
@@ -678,6 +734,16 @@ async def instantiate_for_entity(
         skip_self = step.skip_if_same_person or picked.skip_if_same_person
         if skip_self:
             approver_ids = [u for u in approver_ids if u != submitter.id]
+        # Section M B5: real skip-if-absent lookup. If a step requires
+        # skip_if_absent_days > 0, check attendance for each candidate;
+        # drop candidates with ZERO attended work_dates in the window.
+        # NEVER strand: if the check would empty the list, keep the
+        # originals and let the endpoint mark the step SKIPPED with
+        # 'all_absent' so HR can intervene.
+        if step.skip_if_absent_days and approver_ids:
+            approver_ids = await _drop_absent_approvers(
+                db, approver_ids, step.skip_if_absent_days,
+            )
         materialized.append((step, approver_ids))
     materialized.sort(key=lambda t: t[0].step_order)
 

@@ -19,43 +19,17 @@ import {
   Plus, RefreshCw, Send, CheckCircle2, XCircle, AlertTriangle,
   Eye,
 } from 'lucide-react';
-import { toast } from 'sonner@2.0.3';
-import { Card, Button, Badge, cn } from './ui-elements';
+import { toast } from 'sonner';
+import {
+  Card, Button, Badge, cn, errMsg, fmtInr,
+  EmptyState, Loading, StatusChip,
+} from './ui-elements';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-const errMsg = (e: any, fb: string) => {
-  const d = e?.response?.data?.detail;
-  if (typeof d === 'string') return d;
-  if (Array.isArray(d)) return d.map((x: any) => x?.msg || JSON.stringify(x)).join('; ');
-  if (d && typeof d === 'object') return d.message || JSON.stringify(d);
-  return e?.message || fb;
-};
-
 const today = () => new Date().toISOString().slice(0, 10);
-
-const fmtInr = (paise?: number | null) => {
-  if (paise == null) return '—';
-  const rupees = paise / 100;
-  return '₹' + rupees.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
-
-const statusTone = (s: string) => {
-  const key = (s || '').toLowerCase();
-  if (['approved', 'reimbursed', 'pushed_to_payroll', 'completed'].includes(key))
-    return 'bg-green-100 text-green-700 border-green-300';
-  if (['rejected', 'cancelled'].includes(key))
-    return 'bg-red-100 text-red-700 border-red-300';
-  if (['submitted', 'pending'].includes(key))
-    return 'bg-blue-100 text-blue-700 border-blue-300';
-  return 'bg-slate-100 text-slate-600 border-slate-300';
-};
 
 const TABS = [
   { id: 'my-expenses',   label: 'My Expenses', icon: Receipt },
@@ -175,7 +149,7 @@ const MyExpensesTab: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="text-center text-slate-400 py-8">Loading…</div>
+        <Loading />
       ) : claims.length === 0 ? (
         <Card className="p-8 text-center text-slate-500">
           No claims yet. Click "New Claim" to file receipts.
@@ -194,9 +168,7 @@ const MyExpensesTab: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="text-lg font-semibold">{fmtInr(c.total_amount_paise)}</div>
-                  <Badge className={cn(statusTone(c.status), 'border')}>
-                    {c.status}
-                  </Badge>
+                  <StatusChip status={c.status} />
                 </div>
               </div>
               {(c.line_items || []).some((l: any) => l.is_out_of_policy) && (
@@ -396,7 +368,7 @@ const MyTravelTab: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="text-center text-slate-400 py-8">Loading…</div>
+        <Loading />
       ) : trips.length === 0 ? (
         <Card className="p-8 text-center text-slate-500">No travel requests yet.</Card>
       ) : (
@@ -417,7 +389,7 @@ const MyTravelTab: React.FC = () => {
                       <span className="ml-2 text-purple-700">+ Adv. {fmtInr(t.advance_requested_paise)}</span>
                     )}
                   </div>
-                  <Badge className={cn(statusTone(t.status), 'border')}>{t.status}</Badge>
+                  <StatusChip status={t.status} />
                 </div>
               </div>
               {t.status === 'draft' && (
@@ -533,7 +505,7 @@ const ApproverQueueTab: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="text-center text-slate-400 py-8">Loading…</div>
+        <Loading />
       ) : queue.length === 0 ? (
         <Card className="p-8 text-center text-slate-500">
           Nothing awaiting your action. Nice.
@@ -674,7 +646,7 @@ const FinanceQueueTab: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="text-center text-slate-400 py-8">Loading…</div>
+        <Loading />
       ) : rows.length === 0 ? (
         <Card className="p-8 text-center text-slate-500">Queue is empty.</Card>
       ) : (
@@ -799,7 +771,7 @@ const CategoriesTab: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="text-center text-slate-400 py-8">Loading…</div>
+        <Loading />
       ) : rows.length === 0 ? (
         <Card className="p-8 text-center text-slate-500">No categories yet.</Card>
       ) : (
@@ -992,7 +964,7 @@ const ChainBuilderTab: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="text-center text-slate-400 py-8">Loading…</div>
+        <Loading />
       ) : chains.length === 0 ? (
         <Card className="p-8 text-center text-slate-500">
           No chains yet. Create one so Expense/Travel submissions can route.

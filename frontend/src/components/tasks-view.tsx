@@ -16,7 +16,7 @@ import {
   Folder
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { TaskDetailModal } from './task-detail-modal';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';

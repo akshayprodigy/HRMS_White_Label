@@ -24,6 +24,16 @@ class ResignationStatus:
     REJECTED = "rejected"
 
 
+class TerminationType:
+    """Section M B4: split for the attrition report — voluntary vs
+    involuntary. Value is stored as a string on Resignation so future
+    types (contract_end, retirement, ...) can be added without a
+    migration.
+    """
+    VOLUNTARY = "voluntary"
+    INVOLUNTARY = "involuntary"
+
+
 class ClearanceStatus:
     PENDING = "pending"
     CLEARED = "cleared"
@@ -40,6 +50,11 @@ class Resignation(Base):
     )
     reason: Mapped[str] = mapped_column(String(50), nullable=False)
     reason_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Section M B4: additive — nullable so all existing rows keep working.
+    # Fetcher treats NULL as VOLUNTARY (documented in attrition_report).
+    termination_type: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True, index=True,
+    )
     status: Mapped[str] = mapped_column(
         String(30), default=ResignationStatus.SUBMITTED, index=True
     )

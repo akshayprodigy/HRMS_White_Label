@@ -14,7 +14,7 @@ import {
   Briefcase
 } from 'lucide-react';
 import { cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { client, setAccessToken } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Notification } from '../types/erp';

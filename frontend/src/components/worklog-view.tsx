@@ -7,7 +7,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { Card, Button, Badge, TimerCard, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';

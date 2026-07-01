@@ -34,7 +34,7 @@ import {
 import { Card, Button, Badge, cn } from './ui-elements';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { UserRole } from '../types/erp';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';

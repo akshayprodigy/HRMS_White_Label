@@ -12,7 +12,7 @@ import {
   Search,
 } from 'lucide-react';
 import { Card, Badge, cn } from './ui-elements';
-import { toast } from 'sonner@2.0.3';
+import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 

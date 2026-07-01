@@ -735,15 +735,39 @@ async def _fetch_headcount_trend(
 async def _fetch_attrition_report(
     db, f: _rep.ReportFilter,
 ) -> _rep.ReportResult:
+    """Section M B4: read Resignation.termination_type to split
+    voluntary vs involuntary per month. NULL termination_type is
+    treated as VOLUNTARY (backwards-compatible default)."""
+    from app.models.exit_management import (
+        Resignation as _Resignation, TerminationType as _TT,
+    )
     trend = await _fetch_headcount_trend(db, f)
+    all_resigs = (await db.execute(select(_Resignation))).scalars().all()
+    from datetime import date as _date
     inputs = []
     for row in trend.rows:
         avg_hc = (row["opening"] + row["closing"]) / 2.0
+        # Recompute the month window from year/month to bucket resigs.
+        y, m = int(row["year"]), int(row["month"])
+        first = _date(y, m, 1)
+        if m == 12:
+            last = _date(y + 1, 1, 1)
+        else:
+            last = _date(y, m + 1, 1)
+        month_resigs = [
+            r for r in all_resigs
+            if r.last_working_day
+            and first <= r.last_working_day < last
+        ]
+        involuntary = sum(
+            1 for r in month_resigs
+            if (r.termination_type or "").lower() == _TT.INVOLUNTARY
+        )
+        voluntary = row["leavers"] - involuntary
         inputs.append(_rep.AttritionInput(
-            month_label=row["month_label"], year=row["year"],
-            month=row["month"],
+            month_label=row["month_label"], year=y, month=m,
             leavers=row["leavers"],
-            voluntary=row["leavers"], involuntary=0,
+            voluntary=max(0, voluntary), involuntary=involuntary,
             avg_headcount=avg_hc, department=f.department,
         ))
     return _rep.build_attrition_report(months=inputs, filters=f)
