@@ -61,6 +61,8 @@ import { TaxDeclarationQueue } from './components/tax-declaration-queue';
 import { TDSReconciliationView } from './components/tds-reconciliation';
 import { Form16Workspace } from './components/form16-workspace';
 import { GratuityDashboardView } from './components/gratuity-dashboard';
+import { ReportsWorkspace } from './components/reports-workspace';
+import { EnrichedDashboardView } from './components/enriched-dashboard';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -469,6 +471,10 @@ const App = () => {
         return <Form16Workspace />;
       case 'gratuity-dashboard':
         return <GratuityDashboardView />;
+      case 'reports-workspace':
+        return <ReportsWorkspace />;
+      case 'enriched-dashboard':
+        return <EnrichedDashboardView />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -540,6 +546,8 @@ const App = () => {
       'tds-reconciliation': 'TDS Reconciliation',
       'form16-workspace': 'Form 16 + Form 24Q',
       'gratuity-dashboard': 'Gratuity Liability',
+      'reports-workspace': 'Reports Catalog',
+      'enriched-dashboard': 'HR Insights',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

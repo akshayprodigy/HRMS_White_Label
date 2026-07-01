@@ -121,6 +121,13 @@ export const ENDPOINTS = {
     RECOMPUTE: '/overtime/recompute',
     SUMMARY: '/overtime/summary',
   },
+  REPORTS_ENGINE: {
+    CATALOG: '/reports/catalog',
+    RUN: (key: string) => `/reports/run/${key}`,
+    SAVED: '/reports/saved',
+    SAVED_DETAIL: (id: number) => `/reports/saved/${id}`,
+    SAVED_RUN_NOW: (id: number) => `/reports/saved/${id}/run-now`,
+  },
   TAX: {
     CONFIGS: '/tax/configs',
     CONFIG_DETAIL: (id: number) => `/tax/configs/${id}`,

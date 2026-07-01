@@ -59,6 +59,7 @@ from .tax import (
     TaxRegime, DeclarationStatus, Form16Status, Form24QStatus,
     GratuityStatus,
 )
+from .saved_report import SavedReport, SavedReportCadence
 
 __all__ = [
     "Department",
@@ -136,4 +137,5 @@ __all__ = [
     "Form16Record",
     "Form24QExport",
     "GratuityComputation",
+    "SavedReport",
 ]

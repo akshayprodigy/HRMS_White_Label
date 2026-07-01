@@ -515,6 +515,24 @@ export const Sidebar = ({
       icon: Settings,
       roles: ["hr", "admin", "super admin"],
     },
+    {
+      id: "enriched-dashboard",
+      label: "HR Insights",
+      icon: BarChart3,
+      roles: [
+        "hr", "admin", "super admin", "ceo", "coo",
+        "pm", "dept head",
+      ],
+    },
+    {
+      id: "reports-workspace",
+      label: "Reports Catalog",
+      icon: FileText,
+      roles: [
+        "hr", "admin", "super admin", "ceo", "coo",
+        "pm", "dept head", "recruiter",
+      ],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

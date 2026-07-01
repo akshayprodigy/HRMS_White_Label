@@ -123,6 +123,11 @@ async def seed_demo_roles():
             {"name": "tax generate", "description": "Generate Form 16 Part B / Form 24Q / TDS reconciliation"},
             {"name": "tax view all", "description": "View all employees' tax declarations + Form 16"},
             {"name": "gratuity view", "description": "View company-wide gratuity liability + exit-time compute"},
+            {"name": "report attendance", "description": "Run attendance / OT / muster reports (manager sees own team, HR sees all)"},
+            {"name": "report leave", "description": "Run leave balance + utilization reports"},
+            {"name": "report payroll", "description": "Run salary register, bank advice, increment reports (sensitive)"},
+            {"name": "report statutory", "description": "Run statutory monthly summary report (sensitive)"},
+            {"name": "report headcount", "description": "Run headcount trend + attrition reports"},
         ]
         
         db_perms = {}
@@ -218,6 +223,11 @@ async def seed_demo_roles():
             db_perms["tax generate"],
             db_perms["tax view all"],
             db_perms["gratuity view"],
+            db_perms["report attendance"],
+            db_perms["report leave"],
+            db_perms["report payroll"],
+            db_perms["report statutory"],
+            db_perms["report headcount"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -237,6 +247,9 @@ async def seed_demo_roles():
             # PM is step-1 approver on non-promotion revisions.
             db_perms["revision approve"],
             db_perms["revision view all"],
+            # PM sees only own-team attendance/leave; scoped by report.
+            db_perms["report attendance"],
+            db_perms["report leave"],
         ]
         db_roles["Super Admin"].permissions = [
             db_perms["admin access"],
@@ -262,6 +275,11 @@ async def seed_demo_roles():
             db_perms["tax generate"],
             db_perms["tax view all"],
             db_perms["gratuity view"],
+            db_perms["report attendance"],
+            db_perms["report leave"],
+            db_perms["report payroll"],
+            db_perms["report statutory"],
+            db_perms["report headcount"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
@@ -298,6 +316,11 @@ async def seed_demo_roles():
             db_perms["statutory view"],
             db_perms["tax view all"],
             db_perms["gratuity view"],
+            db_perms["report attendance"],
+            db_perms["report leave"],
+            db_perms["report payroll"],
+            db_perms["report statutory"],
+            db_perms["report headcount"],
         ]
         db_roles["DEPT_HEAD"].permissions = [
             db_perms["employee leave read"],
@@ -308,6 +331,9 @@ async def seed_demo_roles():
             db_perms["shift assign"],
             db_perms["overtime approve"],
             db_perms["revision approve"],
+            # DEPT_HEAD: manager-scoped attendance/leave reports.
+            db_perms["report attendance"],
+            db_perms["report leave"],
         ]
         db_roles["RECRUITER"].permissions = [
             db_perms["employee leave read"],
