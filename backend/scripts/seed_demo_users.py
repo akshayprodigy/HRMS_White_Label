@@ -128,6 +128,10 @@ async def seed_demo_roles():
             {"name": "report payroll", "description": "Run salary register, bank advice, increment reports (sensitive)"},
             {"name": "report statutory", "description": "Run statutory monthly summary report (sensitive)"},
             {"name": "report headcount", "description": "Run headcount trend + attrition reports"},
+            {"name": "performance cycle admin", "description": "Create/launch/release review cycles + build forms"},
+            {"name": "performance calibration", "description": "Run calibration sessions + adjust ratings"},
+            {"name": "performance view all", "description": "View all employees' reviews + goals (HR/CEO)"},
+            {"name": "performance one_on_one", "description": "Access 1:1 tracker (all managers auto-eligible; this gates HR access)"},
         ]
         
         db_perms = {}
@@ -228,6 +232,10 @@ async def seed_demo_roles():
             db_perms["report payroll"],
             db_perms["report statutory"],
             db_perms["report headcount"],
+            db_perms["performance cycle admin"],
+            db_perms["performance calibration"],
+            db_perms["performance view all"],
+            db_perms["performance one_on_one"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -250,6 +258,7 @@ async def seed_demo_roles():
             # PM sees only own-team attendance/leave; scoped by report.
             db_perms["report attendance"],
             db_perms["report leave"],
+            db_perms["performance cycle admin"],
         ]
         db_roles["Super Admin"].permissions = [
             db_perms["admin access"],
@@ -280,6 +289,10 @@ async def seed_demo_roles():
             db_perms["report payroll"],
             db_perms["report statutory"],
             db_perms["report headcount"],
+            db_perms["performance cycle admin"],
+            db_perms["performance calibration"],
+            db_perms["performance view all"],
+            db_perms["performance one_on_one"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
@@ -321,6 +334,7 @@ async def seed_demo_roles():
             db_perms["report payroll"],
             db_perms["report statutory"],
             db_perms["report headcount"],
+            db_perms["performance view all"],
         ]
         db_roles["DEPT_HEAD"].permissions = [
             db_perms["employee leave read"],

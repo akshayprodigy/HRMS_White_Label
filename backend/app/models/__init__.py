@@ -60,6 +60,14 @@ from .tax import (
     GratuityStatus,
 )
 from .saved_report import SavedReport, SavedReportCadence
+from .performance import (
+    Goal, KeyResult, GoalCheckIn, ReviewCycle, ReviewForm, ReviewSection,
+    ReviewQuestion, ReviewTemplateAssignment, ReviewInstance, ReviewResponse,
+    CalibrationSession, CalibrationAdjustment, OneOnOne, OneOnOneActionItem,
+    GoalType, GoalStatus, ConfidenceRAG, CycleType,
+    CycleStatus as PerfCycleStatus, ReviewPhase, QuestionType,
+    OneOnOneCadence, ActionItemStatus,
+)
 
 __all__ = [
     "Department",
@@ -138,4 +146,18 @@ __all__ = [
     "Form24QExport",
     "GratuityComputation",
     "SavedReport",
+    "Goal",
+    "KeyResult",
+    "GoalCheckIn",
+    "ReviewCycle",
+    "ReviewForm",
+    "ReviewSection",
+    "ReviewQuestion",
+    "ReviewTemplateAssignment",
+    "ReviewInstance",
+    "ReviewResponse",
+    "CalibrationSession",
+    "CalibrationAdjustment",
+    "OneOnOne",
+    "OneOnOneActionItem",
 ]

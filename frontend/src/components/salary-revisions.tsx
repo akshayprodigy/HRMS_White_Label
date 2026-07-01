@@ -82,6 +82,7 @@ export const SalaryRevisionsView: React.FC = () => {
     new_basic: 0, new_conveyance: 0, new_hra: 0, new_other_allowance: 0,
   });
   const [pickedEmp, setPickedEmp] = useState<{ old_basic: number; old_ctc: number; band: string | null } | null>(null);
+  const [pickedRating, setPickedRating] = useState<{ final_rating: number | null; cycle_name: string | null } | null>(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -180,7 +181,16 @@ export const SalaryRevisionsView: React.FC = () => {
   const onEmployeeChange = (id: number) => {
     setForm(f => ({ ...f, employee_id: id }));
     const emp = employees.find((e: any) => e.id === id || e.user_id === id);
-    if (!emp) { setPickedEmp(null); return; }
+    if (!emp) { setPickedEmp(null); setPickedRating(null); return; }
+    // Read-only bridge to Performance: fetch the latest RELEASED rating
+    // so HR sees it as decision context. Never triggers a hike.
+    const userId = (emp as any).user_id || emp.id;
+    client.get(`/performance/ratings/${userId}`)
+      .then(r => setPickedRating({
+        final_rating: r.data?.final_rating ?? null,
+        cycle_name: r.data?.cycle_name ?? null,
+      }))
+      .catch(() => setPickedRating(null));
     // Pull employee detail to get current comp baseline.
     client.get(`${ENDPOINTS.HR.EMPLOYEES}/${emp.id}`).then(r => {
       const e: any = r.data;
@@ -393,6 +403,22 @@ export const SalaryRevisionsView: React.FC = () => {
                 onChange={e => setForm({ ...form, reason: e.target.value })}
                 className="w-full border border-slate-200 rounded-md p-2 text-sm" rows={2} />
             </div>
+            {pickedRating && pickedRating.final_rating != null && (
+              <div className="col-span-2 p-2 bg-purple-50 border border-purple-200 rounded-lg text-xs flex items-center gap-2">
+                <span className="font-semibold uppercase tracking-wide text-purple-700">
+                  Latest rating (read-only)
+                </span>
+                <span className="text-lg font-bold text-purple-800">
+                  {pickedRating.final_rating.toFixed(1)}
+                </span>
+                {pickedRating.cycle_name && (
+                  <span className="text-slate-500">from {pickedRating.cycle_name}</span>
+                )}
+                <span className="ml-auto text-[10px] text-slate-400">
+                  Rating is decision context — it does not auto-hike
+                </span>
+              </div>
+            )}
             <div className="col-span-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm grid grid-cols-3 gap-3">
               <div>
                 <div className="text-xs text-slate-500">Old CTC</div>

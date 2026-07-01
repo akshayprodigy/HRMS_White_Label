@@ -533,6 +533,15 @@ export const Sidebar = ({
         "pm", "dept head", "recruiter",
       ],
     },
+    {
+      id: "performance-workspace",
+      label: "Performance",
+      icon: Trophy,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "super admin",
+        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
+      ],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

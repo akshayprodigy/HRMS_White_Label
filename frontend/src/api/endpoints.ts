@@ -121,6 +121,36 @@ export const ENDPOINTS = {
     RECOMPUTE: '/overtime/recompute',
     SUMMARY: '/overtime/summary',
   },
+  PERFORMANCE: {
+    GOALS: '/performance/goals',
+    MY_GOALS: '/performance/goals/my',
+    GOAL_DETAIL: (id: number) => `/performance/goals/${id}`,
+    GOAL_TREE: (ownerId: number) => `/performance/goals/tree/${ownerId}`,
+    KRS: (goalId: number) => `/performance/goals/${goalId}/key-results`,
+    KR_DETAIL: (id: number) => `/performance/key-results/${id}`,
+    CHECKINS: (goalId: number) => `/performance/goals/${goalId}/check-ins`,
+
+    CYCLES: '/performance/cycles',
+    CYCLE_LAUNCH: (id: number) => `/performance/cycles/${id}/launch`,
+    CYCLE_ASSIGN: (id: number) => `/performance/cycles/${id}/assign-template`,
+    CYCLE_RELEASE: (id: number) => `/performance/cycles/${id}/release`,
+    FORMS: '/performance/forms',
+    MY_REVIEW: '/performance/my-review',
+    INSTANCE_SELF: (id: number) => `/performance/instances/${id}/self-submit`,
+    INSTANCE_MGR: (id: number) => `/performance/instances/${id}/manager-submit`,
+    TEAM_REVIEWS: '/performance/team-reviews',
+
+    CALIBRATION_SESSIONS: '/performance/calibration-sessions',
+    CALIBRATION_DATA: (id: number) => `/performance/calibration/${id}/data`,
+    CALIBRATION_ADJUST: (id: number) => `/performance/calibration/${id}/adjust`,
+
+    ONE_ON_ONES: '/performance/one-on-ones',
+    ONE_ON_ONE_DETAIL: (id: number) => `/performance/one-on-ones/${id}`,
+    ONE_ON_ONE_ACTIONS: (id: number) => `/performance/one-on-ones/${id}/action-items`,
+    ACTION_ITEM: (id: number) => `/performance/action-items/${id}`,
+
+    RATING: (userId: number) => `/performance/ratings/${userId}`,
+  },
   REPORTS_ENGINE: {
     CATALOG: '/reports/catalog',
     RUN: (key: string) => `/reports/run/${key}`,
