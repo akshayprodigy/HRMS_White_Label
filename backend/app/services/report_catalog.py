@@ -29,6 +29,7 @@ class ReportCategory:
     HEADCOUNT = "headcount"
     PERFORMANCE = "performance"
     EXPENSE = "expense"
+    DATA_QUALITY = "data_quality"
 
 
 @dataclass
@@ -402,6 +403,20 @@ def build_descriptors_no_fetchers() -> List[ReportDescriptor]:
             category=ReportCategory.EXPENSE,
             permission="finance reimburse",
             filters=[dept],
+        ),
+
+        # ----- Data quality (Section K Item 3) -----
+        ReportDescriptor(
+            key="data_quality_scan",
+            name="Data-Quality Exceptions",
+            description=(
+                "Employees with missing or invalid payroll-critical "
+                "fields (UAN, PAN, IFSC, PF/ESIC id, PT state). "
+                "Advisory — HR fixes before running payroll."
+            ),
+            category=ReportCategory.DATA_QUALITY,
+            permission="hr employee read",
+            filters=[],
         ),
     ]
 

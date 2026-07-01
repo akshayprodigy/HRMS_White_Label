@@ -66,6 +66,7 @@ import { EnrichedDashboardView } from './components/enriched-dashboard';
 import { PerformanceWorkspace } from './components/performance-workspace';
 import { ExpensesWorkspace } from './components/expenses-workspace';
 import { RoleDashboard } from './components/role-dashboard';
+import { PlumbingAdmin } from './components/plumbing-admin';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -489,6 +490,8 @@ const App = () => {
           setActiveTab(route);
           void params;
         }} />;
+      case 'plumbing-admin':
+        return <PlumbingAdmin />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -565,6 +568,7 @@ const App = () => {
       'performance-workspace': 'Performance Management',
       'expenses-workspace': 'Expenses, Travel & Approvals',
       'role-dashboard': 'My Cockpit',
+      'plumbing-admin': 'Bank / Data-Quality / Jobs',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

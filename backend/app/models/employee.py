@@ -1,6 +1,8 @@
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
-from sqlalchemy import String, Integer, ForeignKey, Date, Float, Text, Boolean
+from sqlalchemy import (
+    Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base_class import Base
 
@@ -58,6 +60,23 @@ class Employee(Base):
         String(50), nullable=True
     )
     bank_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Additive plumbing columns (Section K). NEFT/bank-advice reads these.
+    bank_ifsc_code: Mapped[Optional[str]] = mapped_column(
+        String(11), nullable=True
+    )
+    bank_account_holder_name: Mapped[Optional[str]] = mapped_column(
+        String(120), nullable=True
+    )
+    # Mirrors document-verification pattern: employee edits their own,
+    # HR flips verified_at once they've confirmed the details against a
+    # cancelled cheque. bank_advice fetcher can optionally filter on
+    # verified rows only (default: emit all, but flag unverified).
+    bank_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    bank_verified_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
     grade: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     level: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     voluntary_pf: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

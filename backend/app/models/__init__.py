@@ -78,6 +78,7 @@ from .expense import (
     ExpenseCategory, ExpenseClaim, ExpenseLineItem, TravelRequest,
     ExpenseClaimStatus, TravelRequestStatus, ReimbursementMode,
 )
+from .scheduled_job import ScheduledJob, JobRunStatus
 
 __all__ = [
     "Department",
@@ -178,4 +179,5 @@ __all__ = [
     "ExpenseClaim",
     "ExpenseLineItem",
     "TravelRequest",
+    "ScheduledJob",
 ]

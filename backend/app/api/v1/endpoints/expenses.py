@@ -358,6 +358,39 @@ async def submit_claim(
             "Claim contains block-mode policy violations. Fix lines "
             "or split into a separate claim.",
         )
+    # Section K Item 2: receipt-required-above ALWAYS blocks at submit
+    # (irrespective of category policy_mode). Re-run the policy engine
+    # against the persisted lines to catch missing receipts even when
+    # category.policy_mode is 'warn'.
+    from app.services.expense import LineItemInput, evaluate_policy
+    cat_ids = [ln.category_id for ln in claim.line_items if ln.category_id]
+    cats = (await db.execute(
+        select(ExpenseCategory).where(ExpenseCategory.id.in_(cat_ids))
+    )).scalars().all()
+    cat_by_id = {c.id: c for c in cats}
+    submit_inputs = []
+    for ln in claim.line_items:
+        c = cat_by_id.get(ln.category_id) if ln.category_id else None
+        submit_inputs.append(LineItemInput(
+            amount_paise=ln.amount_paise,
+            category_name=(c.name if c else ""),
+            has_receipt=bool(ln.receipt_url),
+            per_diem_cap_paise=(c.per_diem_cap_paise if c else None),
+            receipt_required_above_paise=(
+                c.receipt_required_above_paise if c else None
+            ),
+            policy_mode=(c.policy_mode if c else "warn"),
+        ))
+    submit_report = evaluate_policy(submit_inputs)
+    receipt_missing = [
+        f for f in submit_report.flags if "Receipt" in f.reason
+    ]
+    if receipt_missing:
+        raise HTTPException(
+            400,
+            "Lines require receipts before submit: "
+            + "; ".join(f"line #{f.line_index + 1}" for f in receipt_missing),
+        )
 
     emp = await _employee_for(db, current_user.id)
     dept = emp.department if emp else None

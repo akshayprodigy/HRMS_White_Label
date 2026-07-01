@@ -562,6 +562,15 @@ export const Sidebar = ({
         "finance",
       ],
     },
+    {
+      id: "plumbing-admin",
+      label: "Bank / DQ / Jobs",
+      icon: CreditCard,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "super admin",
+        "admin", "dept head", "finance", "ceo", "coo",
+      ],
+    },
   ];
 
   const filteredItems = menuItems.filter((item) =>

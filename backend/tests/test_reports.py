@@ -530,4 +530,5 @@ class TestCatalog:
             ReportCategory.PAYROLL, ReportCategory.STATUTORY,
             ReportCategory.HEADCOUNT,
             ReportCategory.PERFORMANCE, ReportCategory.EXPENSE,
+            ReportCategory.DATA_QUALITY,
         }

@@ -548,7 +548,8 @@ async def _fetch_bank_advice(
             gross_pay=ln.gross_pay, net_pay=ln.net_pay,
             allowances=ln.allowances or {}, deductions=ln.deductions or {},
             bank_account=emp.bank_account, bank_name=emp.bank_name,
-            ifsc=getattr(emp, "ifsc_code", None),
+            # Section K: real column instead of the missing ifsc_code proxy.
+            ifsc=emp.bank_ifsc_code,
         ))
     return _rep.build_bank_advice(lines=lines, filters=f)
 
@@ -1057,7 +1058,37 @@ _FETCHERS = {
     "pending_reimbursements": _fetch_pending_reimbursements,
     "out_of_policy_claims": _fetch_out_of_policy,
     "travel_advance_outstanding": _fetch_travel_advance_outstanding,
+    "data_quality_scan": None,  # set below after fetcher is defined
 }
+
+
+async def _fetch_data_quality_scan(
+    db, f: _rep.ReportFilter,
+) -> _rep.ReportResult:
+    from app.api.v1.endpoints.plumbing import _build_snapshots
+    from app.services.data_quality import scan_all
+    snapshots = await _build_snapshots(db)
+    findings = scan_all(snapshots)
+    out = [{
+        "employee_code": x.employee_code,
+        "full_name": x.full_name,
+        "field": x.field, "severity": x.severity,
+        "reason": x.reason,
+    } for x in findings]
+    return _rep.ReportResult(
+        rows=out,
+        columns=[
+            _rep.ColumnDef("employee_code", "Emp Code", _rep.ColumnType.TEXT),
+            _rep.ColumnDef("full_name", "Name", _rep.ColumnType.TEXT),
+            _rep.ColumnDef("field", "Field", _rep.ColumnType.TEXT),
+            _rep.ColumnDef("severity", "Severity", _rep.ColumnType.TEXT),
+            _rep.ColumnDef("reason", "Reason", _rep.ColumnType.TEXT),
+        ],
+        totals={"finding_count": len(out)},
+    )
+
+
+_FETCHERS["data_quality_scan"] = _fetch_data_quality_scan
 
 _register_descriptors(_FETCHERS)
 

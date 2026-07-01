@@ -601,7 +601,7 @@ async def action_revision(
 
 
 async def _apply_one(
-    db, rev: SalaryRevision, *, actor_id: int,
+    db, rev: SalaryRevision, *, actor_id: Optional[int],
 ) -> tuple[bool, Optional[str]]:
     """Apply the revision to the employee master and generate the letter.
 

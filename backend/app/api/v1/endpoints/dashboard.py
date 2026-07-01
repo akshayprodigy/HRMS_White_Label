@@ -539,17 +539,19 @@ async def _wp_hr_attrition_rate(db, user, posture) -> dict:
 
 
 async def _wp_hr_exceptions(db, user, posture) -> dict:
-    # Data-quality exceptions: employees missing critical fields.
-    # UAN/IP/PAN/IFSC are on Employee — but shape varies. Count rows
-    # with obvious nulls.
-    missing_dept = (await db.execute(
-        select(func.count(Employee.id)).where(
-            or_(Employee.department.is_(None), Employee.department == "")
-        )
-    )).scalar_one() or 0
-    return {"count": int(missing_dept), "reasons": {
-        "missing_department": int(missing_dept),
-    }}
+    """Real data-quality scan (Section K Item 3) — no more single-field proxy."""
+    from app.api.v1.endpoints.plumbing import _build_snapshots
+    from app.services.data_quality import scan_all, summarize
+    snapshots = await _build_snapshots(db)
+    findings = scan_all(snapshots)
+    s = summarize(findings)
+    return {
+        "count": s["count"],
+        "blocker_count": s["blocker_count"],
+        "employees_blocked": s["employees_blocked"],
+        "by_severity": s["by_severity"],
+        "by_field": s["by_field"],
+    }
 
 
 async def _wp_finance_reimbursement_queue(db, user, posture) -> dict:

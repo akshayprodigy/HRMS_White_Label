@@ -7,7 +7,7 @@ from app.api.v1.endpoints import (
     onboarding, clients, bd_bid_tasks, bd_lead_documents,
     admin_bid_line_items, bd_bid_line_items, exit_management,
     salary_advance, shifts, geofence, overtime, revisions, statutory, tax,
-    performance, approval_chains, expenses, dashboard,
+    performance, approval_chains, expenses, dashboard, plumbing,
 )
 
 api_router = APIRouter()
@@ -191,6 +191,12 @@ api_router.include_router(
     dashboard.router,
     prefix="",
     tags=["dashboard"],
+    dependencies=[Depends(deps.verify_attendance)],
+)
+api_router.include_router(
+    plumbing.router,
+    prefix="",
+    tags=["plumbing"],
     dependencies=[Depends(deps.verify_attendance)],
 )
 # Geofence routes intentionally NOT attendance-gated: the punch UI calls

@@ -279,9 +279,40 @@ const MyExpensesTab: React.FC = () => {
                       onChange={e => setLines(prev => prev.map((x, i) => i === idx ? { ...x, description: e.target.value } : x))} />
                   </div>
                   <div className="col-span-2">
-                    <label className="text-[10px] text-slate-500">Receipt URL</label>
-                    <Input value={l.receipt_url}
-                      onChange={e => setLines(prev => prev.map((x, i) => i === idx ? { ...x, receipt_url: e.target.value } : x))} />
+                    <label className="text-[10px] text-slate-500">Receipt</label>
+                    {l.receipt_url ? (
+                      <div className="flex items-center gap-1 text-xs">
+                        <a href={l.receipt_url} target="_blank" rel="noreferrer"
+                          className="text-blue-600 underline truncate">view</a>
+                        <button
+                          type="button"
+                          className="text-slate-500 hover:text-red-600"
+                          onClick={() => setLines(prev => prev.map((x, i) => i === idx ? { ...x, receipt_url: '' } : x))}
+                        >clear</button>
+                      </div>
+                    ) : (
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        className="text-xs"
+                        onChange={async e => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const fd = new FormData();
+                          fd.append('file', file);
+                          try {
+                            const r = await client.post(
+                              ENDPOINTS.PLUMBING.RECEIPT_UPLOAD, fd,
+                              { headers: { 'Content-Type': 'multipart/form-data' } },
+                            );
+                            setLines(prev => prev.map((x, i) => i === idx ? { ...x, receipt_url: r.data.receipt_url } : x));
+                            toast.success('Receipt uploaded');
+                          } catch (err: any) {
+                            toast.error(errMsg(err, 'Upload failed'));
+                          }
+                        }}
+                      />
+                    )}
                   </div>
                 </div>
               ))}
