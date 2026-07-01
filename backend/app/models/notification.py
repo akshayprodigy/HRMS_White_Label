@@ -22,6 +22,14 @@ class Notification(Base):
     # Optional linked entity
     resource_type: Mapped[Optional[str]] = mapped_column(String(50))
     resource_id: Mapped[Optional[str]] = mapped_column(String(50))
+
+    # Section L: stable event key used by the delivery layer to look up
+    # a template + a per-user preference. Nullable so existing rows +
+    # legacy call sites continue to work — a missing event_type falls
+    # back to a generic template rendered from title + message.
+    event_type: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True,
+    )
     
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(

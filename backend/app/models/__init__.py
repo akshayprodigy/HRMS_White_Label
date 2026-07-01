@@ -79,6 +79,12 @@ from .expense import (
     ExpenseClaimStatus, TravelRequestStatus, ReimbursementMode,
 )
 from .scheduled_job import ScheduledJob, JobRunStatus
+from .notification_channel import (
+    NotificationTemplate, UserNotificationPreference, UserQuietHours,
+    NotificationDelivery,
+    Channel, DeliveryStatus, DigestCadence, EventCategory,
+    EVENT_CATEGORY_MAP,
+)
 
 __all__ = [
     "Department",
@@ -180,4 +186,8 @@ __all__ = [
     "ExpenseLineItem",
     "TravelRequest",
     "ScheduledJob",
+    "NotificationTemplate",
+    "UserNotificationPreference",
+    "UserQuietHours",
+    "NotificationDelivery",
 ]

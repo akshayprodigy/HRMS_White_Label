@@ -73,19 +73,32 @@ def register_job(spec: JobSpec) -> None:
 
 
 class EmailSender:
-    """Contract Part 2 will fulfil. `send()` returns True on delivered,
-    False on queued/failed. Log-only stub for now.
+    """Part 1 contract, now Part 2 fulfils it. `send()` returns True on
+    delivered, False on queued/failed. The default implementation
+    routes through the notifications_delivery provider so a caller
+    getting an EmailSender always sends via the currently-configured
+    email provider (log/SMTP/API) — one code path everywhere.
     """
     async def send(
         self, *,
         to: List[str], subject: str, body_html: str,
         attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
-        log.info(
-            "EmailSender[stub] to=%s subject=%s attachments=%d",
-            to, subject, len(attachments or []),
-        )
-        return False
+        # Route via the notifications-delivery provider.
+        try:
+            from app.services.notifications_delivery import (
+                get_email_provider,
+            )
+            result = await get_email_provider().send(
+                to=to, subject=subject,
+                body_html=body_html,
+                body_text=body_html,  # crude fallback if plain not given
+                attachments=attachments,
+            )
+            return result.ok
+        except Exception as e:
+            log.warning("EmailSender delivery failed: %s", e)
+            return False
 
 
 _email_sender: EmailSender = EmailSender()
@@ -290,16 +303,22 @@ async def _job_deliver_scheduled_reports(
     session: AsyncSession,
 ) -> Dict[str, Any]:
     """For every SavedReport with a cadence whose next-due is <= now,
-    render it and hand it to the email sender.
+    enqueue a delivery through the Section L notifications layer for
+    every recipient. This gets us: real provider routing, per-user
+    preferences respected, delivery log row, retry/backoff, dead-
+    letter — all for free.
 
-    Idempotency: after successful send we stamp `last_sent_at` and
-    won't re-deliver until the next cadence window.
+    Idempotency: after enqueue we stamp `last_sent_at` and won't
+    re-deliver until the next cadence window opens.
     """
     from app.models.saved_report import SavedReport, SavedReportCadence
+    from app.services.notifications_delivery import notify
 
     if not hasattr(SavedReport, "last_sent_at"):
-        # If Part 2 hasn't added the timestamp column yet, no-op cleanly.
-        return {"delivered": 0, "skipped": 0, "note": "SavedReport.last_sent_at column missing — schema pending"}
+        return {
+            "delivered": 0, "skipped": 0,
+            "note": "SavedReport.last_sent_at column missing — schema pending",
+        }
 
     now = datetime.now(timezone.utc)
     rows = (await session.execute(
@@ -308,11 +327,8 @@ async def _job_deliver_scheduled_reports(
         )
     )).scalars().all()
 
-    sender = get_email_sender()
     delivered = skipped = 0
     for sr in rows:
-        # Compute a simple due-window: not sent in the last 20h (daily),
-        # 6d (weekly), 25d (monthly). Prod may want a cron-perfect calc.
         window = {
             "daily": timedelta(hours=20),
             "weekly": timedelta(days=6),
@@ -326,26 +342,33 @@ async def _job_deliver_scheduled_reports(
             skipped += 1
             continue
 
-        recipients = getattr(sr, "recipients_json", None) or []
-        subject = f"[Scheduled report] {sr.name}"
-        body = (
-            f"Report {sr.name} is ready.\n"
-            f"Open it in the ERP: /reports/saved/{sr.id}"
+        recipient_user_ids = (
+            getattr(sr, "recipient_user_ids_json", None) or []
+        )
+        title = f"[Scheduled report] {sr.name}"
+        message = (
+            f"Report {sr.name} is ready. Open it in the ERP at "
+            f"/reports/saved/{sr.id}"
         )
         try:
-            ok = await sender.send(
-                to=list(recipients), subject=subject,
-                body_html=body, attachments=[],
-            )
-        except Exception:
-            ok = False
-        if ok or sender.__class__ is EmailSender:
-            # Stamp last_sent_at even under the stub sender so we don't
-            # log-spam every tick until Part 2 lands.
-            setattr(sr, "last_sent_at", now)
-            delivered += 1
-        else:
+            for uid in recipient_user_ids:
+                await notify(
+                    session, user_id=int(uid),
+                    event_type="report_scheduled",
+                    title=title, message=message,
+                    resource_type="saved_report", resource_id=str(sr.id),
+                    context={
+                        "title": title, "message": message,
+                        "report_name": sr.name, "report_id": sr.id,
+                    },
+                )
+        except Exception as e:
+            log.warning("report delivery for %s failed: %s", sr.id, e)
             skipped += 1
+            continue
+
+        setattr(sr, "last_sent_at", now)
+        delivered += 1
     await session.commit()
     return {"delivered": delivered, "skipped": skipped}
 
@@ -392,6 +415,191 @@ async def _job_esic_continuation_detect(
             updates += 1
     await session.commit()
     return {"updates": updates, "period_end": period_end.isoformat()}
+
+
+# ============================================================
+# Section L jobs: notification delivery sweeper + sender + retry
+# + digest flush
+# ============================================================
+
+
+async def _job_sweep_notifications_for_delivery(
+    session: AsyncSession,
+) -> Dict[str, Any]:
+    """Find in-app Notifications created recently that have NO
+    NotificationDelivery rows yet, and dispatch them. This is the
+    'additive at the central creation point' path — the 14 existing
+    db.add(Notification(...)) sites don't need to change; the sweeper
+    picks up every new row.
+
+    Idempotency: dispatch_notification refuses to insert a duplicate
+    delivery for the same (notification_id, channel) pair.
+    """
+    from app.models.notification import Notification
+    from app.models.notification_channel import (
+        DeliveryStatus, NotificationDelivery,
+    )
+    from app.services.notifications_delivery import dispatch_notification
+
+    since = datetime.now(timezone.utc) - timedelta(minutes=90)
+    rows = (await session.execute(
+        select(Notification).where(Notification.created_at >= since)
+    )).scalars().all()
+    dispatched = skipped = 0
+    for n in rows:
+        already = (await session.execute(
+            select(NotificationDelivery).where(
+                NotificationDelivery.notification_id == n.id
+            ).limit(1)
+        )).scalar_one_or_none()
+        if already is not None:
+            skipped += 1
+            continue
+        event_type = n.event_type or "generic"
+        try:
+            ids = await dispatch_notification(
+                session,
+                notification_id=n.id,
+                recipient_user_id=n.user_id,
+                event_type=event_type,
+                context={
+                    "title": n.title, "message": n.message,
+                    "resource_type": n.resource_type,
+                    "resource_id": n.resource_id,
+                },
+            )
+            dispatched += len(ids)
+        except Exception:
+            log.exception("dispatch failed for notification %s", n.id)
+    return {"dispatched": dispatched, "skipped": skipped}
+
+
+async def _job_send_queued_notifications(
+    session: AsyncSession,
+) -> Dict[str, Any]:
+    """Send every QUEUED delivery whose next_retry_at is due (or None).
+    Digest rows are skipped here — they're picked up by the digest job.
+    """
+    from app.models.notification_channel import (
+        DeliveryStatus, NotificationDelivery,
+    )
+    from app.services.notifications_delivery import send_one_delivery
+
+    now = datetime.now(timezone.utc)
+    rows = (await session.execute(
+        select(NotificationDelivery).where(and_(
+            NotificationDelivery.status == DeliveryStatus.QUEUED,
+            NotificationDelivery.is_digest.is_(False),
+            or_(
+                NotificationDelivery.next_retry_at.is_(None),
+                NotificationDelivery.next_retry_at <= now,
+            ),
+        )).limit(200)
+    )).scalars().all()
+    sent = failed = dead = 0
+    for row in rows:
+        result = await send_one_delivery(session, row.id)
+        if result.ok:
+            sent += 1
+        else:
+            # Row status was already stamped by send_one_delivery.
+            latest_status = (await session.execute(
+                select(NotificationDelivery.status).where(
+                    NotificationDelivery.id == row.id
+                )
+            )).scalar_one()
+            if latest_status == DeliveryStatus.DEAD_LETTER:
+                dead += 1
+            else:
+                failed += 1
+    return {"sent": sent, "failed": failed, "dead_letter": dead}
+
+
+async def _job_flush_notification_digests(
+    session: AsyncSession,
+) -> Dict[str, Any]:
+    """Group queued digest deliveries by (user, channel, category) and
+    fold them into a single summary message. Fires hourly; the
+    per-preference digest_cadence (hourly / daily) filters which
+    windows get flushed at this tick.
+    """
+    from app.models.notification_channel import (
+        DeliveryStatus, NotificationDelivery,
+    )
+    from app.services.notifications_delivery import send_one_delivery
+
+    rows = (await session.execute(
+        select(NotificationDelivery).where(and_(
+            NotificationDelivery.status == DeliveryStatus.QUEUED,
+            NotificationDelivery.is_digest.is_(True),
+        )).limit(500)
+    )).scalars().all()
+    # Group by digest_batch_key which encodes (user, channel, cat, cadence)
+    groups: Dict[str, List] = {}
+    for r in rows:
+        groups.setdefault(r.digest_batch_key or f"{r.id}", []).append(r)
+
+    now = datetime.now(timezone.utc)
+    flushed = 0
+    for key, items in groups.items():
+        # Filter to only the ones due at this tick (daily → once per day)
+        cadence = key.split(":")[-1] if ":" in key else "hourly"
+        if cadence == "daily" and now.hour != 8:
+            continue
+        # Merge context: title = 'N items', message = concatenation
+        titles = [str(i.context_json.get("title", "")) for i in items]
+        header = items[0]
+        digest_ctx = {
+            "title": f"{len(items)} pending updates",
+            "message": " | ".join(titles[:10]),
+        }
+        header.context_json = digest_ctx
+        result = await send_one_delivery(session, header.id)
+        if result.ok:
+            # Mark the rest as SENT with the same provider id.
+            for extra in items[1:]:
+                extra.status = DeliveryStatus.SENT
+                extra.sent_at = now
+                extra.provider_message_id = header.provider_message_id
+            await session.commit()
+            flushed += 1
+    return {"digests_flushed": flushed}
+
+
+register_job(JobSpec(
+    name="sweep_notifications_for_delivery",
+    display_name="Sweep in-app notifications into delivery queue",
+    description=(
+        "Every minute: pick up any Notification that lacks a "
+        "NotificationDelivery row, resolve preferences + template, "
+        "and enqueue email/SMS. This is the additive integration "
+        "with the 14 existing db.add(Notification(...)) sites."
+    ),
+    default_cadence_cron="* * * * *",     # every minute
+    fn=_job_sweep_notifications_for_delivery,
+))
+register_job(JobSpec(
+    name="send_queued_notifications",
+    display_name="Send queued email/SMS notifications",
+    description=(
+        "Every minute: send every QUEUED (non-digest) delivery due "
+        "for its next_retry_at. Failed sends bump attempts + set a "
+        "backoff; MAX_ATTEMPTS → dead-letter (visible in admin log)."
+    ),
+    default_cadence_cron="* * * * *",
+    fn=_job_send_queued_notifications,
+))
+register_job(JobSpec(
+    name="flush_notification_digests",
+    display_name="Flush notification digests (hourly + daily)",
+    description=(
+        "Hourly: fold QUEUED digest rows into one summary email per "
+        "(user, channel, category). Daily-cadence prefs are flushed "
+        "at the 08:00 tick; hourly-cadence prefs flush every hour."
+    ),
+    default_cadence_cron="0 * * * *",
+    fn=_job_flush_notification_digests,
+))
 
 
 # Register at import time.

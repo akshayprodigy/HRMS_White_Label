@@ -62,14 +62,17 @@ def test_default_email_sender_is_stub():
     assert isinstance(sender, EmailSender)
 
 
-def test_email_sender_stub_returns_false():
-    """Stub returns False so the scheduler code treats every send as
-    'queued but not delivered'. Part 2's real transport returns True."""
+def test_email_sender_routes_via_provider_layer():
+    """Post-Section-L: the default EmailSender is a shim over the
+    notifications-delivery provider (log provider by default in dev),
+    which returns ok=True. Tests exercising 'real delivery failed'
+    swap in a failing provider — see test_notifications_delivery.
+    """
     sender = get_email_sender()
     ok = asyncio.run(sender.send(
         to=["hr@example.com"], subject="test", body_html="hello",
     ))
-    assert ok is False
+    assert ok is True
 
 
 def test_set_email_sender_swaps_the_transport():

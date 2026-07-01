@@ -67,6 +67,7 @@ import { PerformanceWorkspace } from './components/performance-workspace';
 import { ExpensesWorkspace } from './components/expenses-workspace';
 import { RoleDashboard } from './components/role-dashboard';
 import { PlumbingAdmin } from './components/plumbing-admin';
+import { NotificationsWorkspace } from './components/notifications-workspace';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -492,6 +493,8 @@ const App = () => {
         }} />;
       case 'plumbing-admin':
         return <PlumbingAdmin />;
+      case 'notifications-workspace':
+        return <NotificationsWorkspace />;
       case 'hr-reports':
         return userRole === 'ceo' || userRole === 'super admin' || userRole === 'coo' ? <ExecutiveReports /> : <HRReports />;
       case 'hr-org-chart':
@@ -569,6 +572,7 @@ const App = () => {
       'expenses-workspace': 'Expenses, Travel & Approvals',
       'role-dashboard': 'My Cockpit',
       'plumbing-admin': 'Bank / Data-Quality / Jobs',
+      'notifications-workspace': 'Notifications',
       'hr-reports': 'HR Analytics & Reports',
       'hr-org-chart': 'Organisation Chart',
       'hr-audit-log': 'Audit Log',

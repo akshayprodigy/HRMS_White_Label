@@ -181,6 +181,18 @@ export const ENDPOINTS = {
     PENDING_COUNT: '/dashboard/pending-count',
     WIDGET: (key: string) => `/dashboard/widget/${key}`,
   },
+  NOTIFICATIONS: {
+    MY_PREFS: '/me/notifications/preferences',
+    MY_QUIET: '/me/notifications/quiet-hours',
+    PROVIDER_STATUS: '/notifications/providers',
+    TEST_SEND: '/notifications/test-send',
+    TEMPLATES: '/notifications/templates',
+    TEMPLATE_DETAIL: (id: number) => `/notifications/templates/${id}`,
+    TEMPLATES_SEED: '/notifications/templates/seed',
+    DELIVERIES: '/notifications/deliveries',
+    DELIVERY_RESEND: (id: number) => `/notifications/deliveries/${id}/resend`,
+    DEAD_LETTER: '/notifications/dead-letter',
+  },
   PLUMBING: {
     MY_BANK: '/me/bank',
     EMP_BANK: (id: number) => `/employees/${id}/bank`,

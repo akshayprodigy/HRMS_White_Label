@@ -30,4 +30,11 @@ def create_app() -> FastAPI:
     setup_exception_handlers(app)
     app.include_router(api_router, prefix=settings.API_V1_STR)
 
+    # Section L: pick providers from env. Boots as LOG providers by
+    # default — no accidental real sends without creds.
+    from app.services.notifications_delivery import (
+        configure_providers_from_env,
+    )
+    configure_providers_from_env()
+
     return app

@@ -27,6 +27,7 @@ import {
   Activity,
   FileSignature,
   Banknote,
+  Bell,
   Network,
   ScrollText,
   Moon,
@@ -569,6 +570,16 @@ export const Sidebar = ({
       roles: [
         "employee", "pm", "hr", "recruiter", "super admin",
         "admin", "dept head", "finance", "ceo", "coo",
+      ],
+    },
+    {
+      id: "notifications-workspace",
+      label: "Notifications",
+      icon: Bell,
+      roles: [
+        "employee", "pm", "hr", "recruiter", "super admin",
+        "admin", "dept head", "finance", "ceo", "coo", "bd",
+        "bd manager", "client manager",
       ],
     },
   ];
