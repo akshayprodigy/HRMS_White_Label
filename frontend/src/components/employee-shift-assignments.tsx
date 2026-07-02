@@ -135,6 +135,51 @@ export const EmployeeShiftAssignmentsView: React.FC = () => {
     note: '',
   });
 
+  // Section R: pick employees by NAME in the bulk dialog.
+  interface PickerEmployee {
+    user_id: number;
+    name: string;
+    email: string;
+    department?: string;
+  }
+  const [pickerPool, setPickerPool] = useState<PickerEmployee[]>([]);
+  const [bulkSelected, setBulkSelected] = useState<PickerEmployee[]>([]);
+  const [bulkSearch, setBulkSearch] = useState('');
+
+  const loadPickerPool = async () => {
+    try {
+      const res = await client.get(ENDPOINTS.HR.EMPLOYEES, {
+        params: { size: 500, status: 'active' },
+      });
+      const items = Array.isArray(res.data?.items) ? res.data.items : [];
+      setPickerPool(
+        items
+          .filter((e: any) => e.user_id)
+          .map((e: any) => ({
+            user_id: e.user_id,
+            name: e.user?.full_name || e.user?.email || `User #${e.user_id}`,
+            email: e.user?.email || '',
+            department: e.department || undefined,
+          })),
+      );
+    } catch {
+      setPickerPool([]); // picker degrades to the raw-IDs input
+    }
+  };
+
+  const pickerMatches = useMemo(() => {
+    const q = bulkSearch.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return pickerPool
+      .filter(
+        (p) =>
+          !bulkSelected.some((s) => s.user_id === p.user_id) &&
+          (p.name.toLowerCase().includes(q) ||
+            p.email.toLowerCase().includes(q)),
+      )
+      .slice(0, 8);
+  }, [bulkSearch, pickerPool, bulkSelected]);
+
   const [deleteTarget, setDeleteTarget] = useState<Assignment | null>(null);
 
   const fetchItems = async () => {
@@ -200,6 +245,9 @@ export const EmployeeShiftAssignmentsView: React.FC = () => {
       effective_to: '',
       note: '',
     });
+    setBulkSelected([]);
+    setBulkSearch('');
+    if (pickerPool.length === 0) void loadPickerPool();
     setBulkOpen(true);
   };
 
@@ -225,14 +273,17 @@ export const EmployeeShiftAssignmentsView: React.FC = () => {
       }
       payload.department = bulkForm.department.trim();
     } else {
-      const ids = bulkForm.employee_ids
+      const manualIds = bulkForm.employee_ids
         .split(/[,\s]+/)
         .map((s) => s.trim())
         .filter(Boolean)
         .map((s) => Number(s))
         .filter((n) => Number.isFinite(n) && n > 0);
+      const ids = Array.from(
+        new Set([...bulkSelected.map((p) => p.user_id), ...manualIds]),
+      );
       if (ids.length === 0) {
-        toast.error('Provide at least one employee user ID');
+        toast.error('Pick at least one employee (search by name above)');
         return;
       }
       payload.employee_ids = ids;
@@ -546,7 +597,7 @@ export const EmployeeShiftAssignmentsView: React.FC = () => {
                   )}
                 >
                   <Users size={12} className="inline mr-1" />
-                  By Employee IDs
+                  By Employees
                 </button>
               </div>
             </div>
@@ -571,19 +622,88 @@ export const EmployeeShiftAssignmentsView: React.FC = () => {
             ) : (
               <div>
                 <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">
-                  Employee User IDs
+                  Employees
                 </label>
+                {/* Section R: pick by NAME — search + click to add. */}
+                {bulkSelected.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-1.5">
+                    {bulkSelected.map((p) => (
+                      <span
+                        key={p.user_id}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-50 text-blue-700 text-[9px] font-black uppercase tracking-widest"
+                      >
+                        {p.name}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setBulkSelected(
+                              bulkSelected.filter(
+                                (x) => x.user_id !== p.user_id,
+                              ),
+                            )
+                          }
+                          className="hover:text-blue-900"
+                          aria-label={`Remove ${p.name}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <Input
+                  value={bulkSearch}
+                  onChange={(e: any) => setBulkSearch(e.target.value)}
+                  placeholder="Search by name or email…"
+                  className="mt-1.5"
+                />
+                {bulkSearch.trim().length >= 2 && (
+                  <div className="mt-1.5 max-h-40 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 bg-white">
+                    {pickerMatches.length === 0 ? (
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest p-3">
+                        No matches
+                      </p>
+                    ) : (
+                      pickerMatches.map((p) => (
+                        <button
+                          key={p.user_id}
+                          type="button"
+                          onClick={() => {
+                            if (
+                              !bulkSelected.some(
+                                (x) => x.user_id === p.user_id,
+                              )
+                            ) {
+                              setBulkSelected([...bulkSelected, p]);
+                            }
+                            setBulkSearch('');
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-blue-50 transition-colors"
+                        >
+                          <span className="text-[11px] font-black text-[#0F172A]">
+                            {p.name}
+                          </span>
+                          <span className="text-[9px] font-bold text-slate-400 ml-2">
+                            {p.email}
+                            {p.department ? ` · ${p.department}` : ''}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+                <p className="text-[9px] font-bold text-slate-400 mt-1">
+                  Type at least 2 characters to search. Advanced: paste raw
+                  user IDs below.
+                </p>
                 <Input
                   value={bulkForm.employee_ids}
                   onChange={(e: any) =>
                     setBulkForm({ ...bulkForm, employee_ids: e.target.value })
                   }
-                  placeholder="32, 43, 47"
+                  placeholder="Optional: 32, 43, 47"
                   className="mt-1.5"
                 />
-                <p className="text-[9px] font-bold text-slate-400 mt-1">
-                  Comma or space separated.
-                </p>
               </div>
             )}
 
