@@ -48,6 +48,11 @@ export interface AttendanceLog {
   latitude?: number | null;
   longitude?: number | null;
   remarks?: string | null;
+  // Section Q: time-rule flags + HR edit-trail badge
+  late_minutes?: number | null;
+  early_exit_minutes?: number | null;
+  edited_at?: string | null;
+  edited_by_name?: string | null;
 }
 
 export interface LeaveRecord {

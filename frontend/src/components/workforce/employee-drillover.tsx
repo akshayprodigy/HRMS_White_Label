@@ -10,6 +10,8 @@ import {
   CheckCircle,
   XCircle,
   Navigation,
+  Pencil,
+  CalendarPlus,
   type LucideIcon,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from '../ui-elements';
@@ -28,6 +30,14 @@ import {
   type DayStatus,
 } from './workforce-data';
 import { exportEmployeePdf } from './workforce-export';
+import { EditPunchModal, AddMissedPunchModal } from './edit-punch-modal';
+
+// Section Q: HR/admin can hand-edit punches. Backend enforces the
+// 'attendance edit' permission; this only controls button visibility.
+const canEditPunches = (): boolean => {
+  const role = (localStorage.getItem('hr_role') || '').toLowerCase();
+  return role === 'hr' || role === 'admin' || role === 'super admin';
+};
 
 interface EmployeeDrilloverProps {
   employee: EmployeeBasic;
@@ -38,6 +48,7 @@ interface EmployeeDrilloverProps {
   allHolidays: Map<string, HolidayRecord>;
   allCorrections: CorrectionRecord[];
   onClose: () => void;
+  onChanged?: () => void;
 }
 
 type InnerTab = 'heatmap' | 'ledger' | 'log' | 'hours' | 'corrections';
@@ -85,11 +96,15 @@ export const EmployeeDrillover: React.FC<EmployeeDrilloverProps> = ({
   allHolidays,
   allCorrections,
   onClose,
+  onChanged,
 }) => {
   const [range, setRange] = useState<DateRange>(parentRange);
   const [tab, setTab] = useState<InnerTab>('heatmap');
   const [balances, setBalances] = useState<any[]>([]);
   const [balLoading, setBalLoading] = useState(true);
+  const [editLog, setEditLog] = useState<AttendanceLog | null>(null);
+  const [addPunchOpen, setAddPunchOpen] = useState(false);
+  const allowEdit = canEditPunches();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -258,7 +273,14 @@ export const EmployeeDrillover: React.FC<EmployeeDrilloverProps> = ({
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
           {tab === 'heatmap' && <HeatmapView days={heatmap} />}
           {tab === 'ledger' && <LedgerView balances={balances} loading={balLoading} leaves={empLeaves} />}
-          {tab === 'log' && <LogView logs={empLogs} />}
+          {tab === 'log' && (
+            <LogView
+              logs={empLogs}
+              canEdit={allowEdit}
+              onEdit={setEditLog}
+              onAddMissed={() => setAddPunchOpen(true)}
+            />
+          )}
           {tab === 'hours' && <HoursView days={heatmap} />}
           {tab === 'corrections' && <CorrectionsView corrections={empCorrections} />}
         </div>
@@ -279,6 +301,22 @@ export const EmployeeDrillover: React.FC<EmployeeDrilloverProps> = ({
           </Button>
         </div>
       </aside>
+
+      {editLog && (
+        <EditPunchModal
+          log={editLog}
+          onClose={() => setEditLog(null)}
+          onSaved={() => onChanged?.()}
+        />
+      )}
+      {addPunchOpen && (
+        <AddMissedPunchModal
+          userId={employee.user_id}
+          userName={employee.full_name}
+          onClose={() => setAddPunchOpen(false)}
+          onSaved={() => onChanged?.()}
+        />
+      )}
     </div>
   );
 };
@@ -470,13 +508,26 @@ const LedgerView: React.FC<{ balances: any[]; loading: boolean; leaves: LeaveRec
   </div>
 );
 
-const LogView: React.FC<{ logs: AttendanceLog[] }> = ({ logs }) => {
-  if (logs.length === 0) {
-    return <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 text-center py-8">No punches in this period</p>;
-  }
+const LogView: React.FC<{
+  logs: AttendanceLog[];
+  canEdit: boolean;
+  onEdit: (log: AttendanceLog) => void;
+  onAddMissed: () => void;
+}> = ({ logs, canEdit, onEdit, onAddMissed }) => {
   return (
     <div className="space-y-2">
-      {logs.map(l => {
+      {canEdit && (
+        <Button
+          variant="outline"
+          onClick={onAddMissed}
+          className="w-full h-9 text-[9px] font-black uppercase tracking-widest border-dashed border-slate-300 text-slate-500 hover:text-blue-600 hover:border-blue-300"
+        >
+          <CalendarPlus size={12} className="mr-2" /> Add Missed Punch
+        </Button>
+      )}
+      {logs.length === 0 ? (
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 text-center py-8">No punches in this period</p>
+      ) : logs.map(l => {
         const inDate = new Date(l.captured_at);
         const out = l.punch_out_time ? new Date(l.punch_out_time) : null;
         return (
@@ -485,14 +536,49 @@ const LogView: React.FC<{ logs: AttendanceLog[] }> = ({ logs }) => {
               <p className="text-[10px] font-black uppercase tracking-widest text-[#0F172A] tabular-nums">
                 {inDate.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
               </p>
-              <Badge variant="neutral" className="text-[8px] uppercase">
-                {l.mode}
-              </Badge>
+              <div className="flex items-center gap-1.5">
+                <Badge variant="neutral" className="text-[8px] uppercase">
+                  {l.mode}
+                </Badge>
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => onEdit(l)}
+                    className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                    aria-label="Edit punch times"
+                    title="Edit punch times"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                )}
+              </div>
             </div>
             <p className="text-[10px] font-bold text-slate-600 mt-1 tabular-nums">
               {inDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} IN
               {out ? ` · ${out.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} OUT` : ' · OPEN'}
             </p>
+            {(l.late_minutes || l.early_exit_minutes || l.edited_at) ? (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {l.late_minutes ? (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 text-[8px] font-black uppercase tracking-widest">
+                    Late {l.late_minutes}m
+                  </span>
+                ) : null}
+                {l.early_exit_minutes ? (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-600 text-[8px] font-black uppercase tracking-widest">
+                    Early out {l.early_exit_minutes}m
+                  </span>
+                ) : null}
+                {l.edited_at ? (
+                  <span
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[8px] font-black uppercase tracking-widest"
+                    title={l.edited_by_name ? `Edited by ${l.edited_by_name}` : 'Edited by HR'}
+                  >
+                    <Pencil size={8} /> Edited{l.edited_by_name ? ` · ${l.edited_by_name}` : ''}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             {(l.latitude && l.longitude) ? (
               <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1 inline-flex items-center gap-1">
                 <Navigation size={10} className="text-blue-600" />

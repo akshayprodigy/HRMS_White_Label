@@ -54,7 +54,9 @@ from app.services.letter_pdf import generate_letter, LETTER_GENERATORS
 from app.services.salary_calculator import calculate_salary
 from app.schemas.attendance import (
     AttendanceCorrectionCreate, AttendanceCorrectionRead,
-    AttendanceCorrectionUpdate
+    AttendanceCorrectionUpdate, AttendanceRead,
+    AttendanceTimesEdit, AttendanceManualCreate,
+    TimeRulesRead, TimeRulesUpdate,
 )
 from app.schemas.employee import EmployeeCreateWithUser
 from app.schemas.user import UserLinkRead
@@ -2080,6 +2082,242 @@ async def attendance_correction_action(
     await db.commit()
     await db.refresh(corr)
     return corr
+
+
+# ---------------------------------------------------------------------------
+# Section Q: HR/admin direct attendance edit + org time rules
+# ---------------------------------------------------------------------------
+
+ATTENDANCE_EDIT = "attendance edit"
+
+
+def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """MariaDB round-trips DATETIME columns as naive; treat them as UTC."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+async def _assert_attendance_editable(db, work_date: date) -> None:
+    """Refuse edits once a payroll run has locked attendance for that
+    month (user rule: 'edit should be before payroll is clicked')."""
+    from app.models.payroll import PayrollRun, PayrollRunStatus
+
+    run = (await db.execute(
+        select(PayrollRun).where(
+            PayrollRun.month == work_date.month,
+            PayrollRun.year == work_date.year,
+            PayrollRun.status != PayrollRunStatus.DRAFT,
+        )
+    )).scalars().first()
+    if run:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Attendance for {work_date.isoformat()} is locked by the "
+                f"{run.month:02d}/{run.year} payroll run "
+                f"(status: {run.status.value}). Punch edits must happen "
+                "before payroll locks attendance."
+            ),
+        )
+
+
+def _require_reason(reason: str) -> str:
+    cleaned = (reason or "").strip()
+    if len(cleaned) < 5:
+        raise HTTPException(
+            status_code=422,
+            detail="A reason of at least 5 characters is required.",
+        )
+    return cleaned
+
+
+@router.patch("/attendance/{attendance_id}", response_model=AttendanceRead)
+async def edit_attendance_times(
+    *,
+    db: deps.DBDep,
+    attendance_id: int,
+    obj_in: AttendanceTimesEdit,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([ATTENDANCE_EDIT])),
+) -> Any:
+    """Directly edit punch-in / punch-out times (HR/admin).
+
+    Employees forget to punch; HR fixes it here with a mandatory reason.
+    Old and new values land in the audit log; the row is permanently
+    badged via edited_by/edited_at.
+    """
+    reason = _require_reason(obj_in.reason)
+    if obj_in.punch_in_time is None and obj_in.punch_out_time is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide punch_in_time and/or punch_out_time.",
+        )
+
+    att = await db.get(Attendance, attendance_id)
+    if not att:
+        raise HTTPException(status_code=404, detail="Attendance not found")
+
+    await _assert_attendance_editable(db, att.work_date)
+
+    new_in = _as_utc(obj_in.punch_in_time) or _as_utc(att.captured_at)
+    new_out = (
+        _as_utc(obj_in.punch_out_time)
+        if obj_in.punch_out_time is not None
+        else _as_utc(att.punch_out_time)
+    )
+    if new_out is not None and new_out <= new_in:
+        raise HTTPException(
+            status_code=422,
+            detail="Punch-out must be after punch-in.",
+        )
+
+    old = {
+        "punch_in_time": _as_utc(att.captured_at).isoformat(),
+        "punch_out_time": (
+            _as_utc(att.punch_out_time).isoformat()
+            if att.punch_out_time else None
+        ),
+    }
+
+    att.captured_at = new_in
+    att.punch_out_time = new_out
+    att.edited_by_id = current_user.id
+    att.edited_at = datetime.now(timezone.utc)
+    db.add(att)
+
+    await log_audit(
+        db, current_user.id, "EDIT_ATTENDANCE",
+        "attendance", str(att.id),
+        {
+            "user_id": att.user_id,
+            "work_date": att.work_date.isoformat(),
+            "old": old,
+            "new": {
+                "punch_in_time": new_in.isoformat(),
+                "punch_out_time": new_out.isoformat() if new_out else None,
+            },
+            "reason": reason,
+        },
+        request,
+    )
+    await db.commit()
+    await db.refresh(att)
+    return att
+
+
+@router.post("/attendance/manual", response_model=AttendanceRead)
+async def create_manual_attendance(
+    *,
+    db: deps.DBDep,
+    obj_in: AttendanceManualCreate,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([ATTENDANCE_EDIT])),
+) -> Any:
+    """Create an attendance record for a day the employee never punched.
+
+    Mode is 'manual'; geofence checks don't apply — HR is asserting the
+    times. Refuses when a record already exists (edit that instead) or
+    when payroll has locked the month.
+    """
+    reason = _require_reason(obj_in.reason)
+
+    target = await db.get(User, obj_in.user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await _assert_attendance_editable(db, obj_in.work_date)
+
+    punch_in = _as_utc(obj_in.punch_in_time)
+    punch_out = _as_utc(obj_in.punch_out_time)
+    if punch_out is not None and punch_out <= punch_in:
+        raise HTTPException(
+            status_code=422,
+            detail="Punch-out must be after punch-in.",
+        )
+
+    existing = (await db.execute(
+        select(Attendance).where(
+            Attendance.user_id == obj_in.user_id,
+            Attendance.work_date == obj_in.work_date,
+        )
+    )).scalars().first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "An attendance record already exists for "
+                f"{obj_in.work_date.isoformat()} — edit it instead."
+            ),
+        )
+
+    # Snapshot the employee's shift for correct late/early evaluation.
+    from app.api.v1.endpoints.attendance import _effective_shift_on
+    shift = await _effective_shift_on(db, obj_in.user_id, obj_in.work_date)
+
+    att = Attendance(
+        user_id=obj_in.user_id,
+        mode="manual",
+        captured_at=punch_in,
+        punch_out_time=punch_out,
+        work_date=obj_in.work_date,
+        shift_template_id=shift.id if shift else None,
+        attribution_flag=None if shift else "no_shift",
+        edited_by_id=current_user.id,
+        edited_at=datetime.now(timezone.utc),
+    )
+    db.add(att)
+    await db.flush()
+
+    await log_audit(
+        db, current_user.id, "CREATE_MANUAL_ATTENDANCE",
+        "attendance", str(att.id),
+        {
+            "user_id": obj_in.user_id,
+            "work_date": obj_in.work_date.isoformat(),
+            "punch_in_time": punch_in.isoformat(),
+            "punch_out_time": punch_out.isoformat() if punch_out else None,
+            "reason": reason,
+        },
+        request,
+    )
+    await db.commit()
+    await db.refresh(att)
+    return att
+
+
+@router.get("/time-rules", response_model=TimeRulesRead)
+async def get_time_rules_endpoint(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.check_permissions([ATTENDANCE_EDIT])),
+) -> Any:
+    from app.services.time_rules import get_time_rules
+    return TimeRulesRead(rules=await get_time_rules(db))
+
+
+@router.put("/time-rules", response_model=TimeRulesRead)
+async def update_time_rules_endpoint(
+    *,
+    db: deps.DBDep,
+    obj_in: TimeRulesUpdate,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([ATTENDANCE_EDIT])),
+) -> Any:
+    from app.services.time_rules import get_time_rules, set_time_rules
+
+    before = await get_time_rules(db)
+    after = await set_time_rules(db, obj_in.rules)
+    changed = {
+        k: {"from": before[k], "to": after[k]}
+        for k in after if before.get(k) != after[k]
+    }
+    if changed:
+        await log_audit(
+            db, current_user.id, "UPDATE_TIME_RULES",
+            "system_setting", "time-rules", {"changed": changed}, request,
+        )
+        await db.commit()
+    return TimeRulesRead(rules=after)
 
 
 # Holiday Calendar

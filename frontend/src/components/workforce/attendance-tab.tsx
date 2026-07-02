@@ -284,6 +284,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({ initialEmployeeId,
           allHolidays={data.holidays}
           allCorrections={data.corrections}
           onClose={handleCloseEmployee}
+          onChanged={refetch}
         />
       )}
     </div>

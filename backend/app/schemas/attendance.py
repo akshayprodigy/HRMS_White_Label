@@ -55,6 +55,40 @@ class AttendanceHRRead(AttendanceRead):
     shift_template_name: Optional[str] = None
     matched_fence_name: Optional[str] = None
     punch_out_matched_fence_name: Optional[str] = None
+    # Section Q: time-rule flags (None when flags disabled / not
+    # applicable) + HR edit-trail badge fields.
+    late_minutes: Optional[int] = None
+    early_exit_minutes: Optional[int] = None
+    edited_at: Optional[datetime] = None
+    edited_by_name: Optional[str] = None
+
+
+class AttendanceTimesEdit(BaseModel):
+    """HR/admin direct edit of punch times. At least one time required."""
+    punch_in_time: Optional[datetime] = None
+    punch_out_time: Optional[datetime] = None
+    reason: str
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
+class AttendanceManualCreate(BaseModel):
+    """HR/admin creates a record for a fully-missed day."""
+    user_id: int
+    work_date: date
+    punch_in_time: datetime
+    punch_out_time: Optional[datetime] = None
+    reason: str
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
+class TimeRulesRead(BaseModel):
+    rules: dict[str, str]
+
+
+class TimeRulesUpdate(BaseModel):
+    rules: dict[str, str]
 
 
 class AttendanceToday(BaseModel):

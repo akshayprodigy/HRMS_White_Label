@@ -1,23 +1,36 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Users, CalendarDays, CalendarRange, type LucideIcon } from 'lucide-react';
+import { Users, CalendarDays, CalendarRange, Clock3, type LucideIcon } from 'lucide-react';
 import { cn } from '../ui-elements';
 import { AttendanceTab } from './attendance-tab';
 import { CombinedCalendarTab } from './combined-calendar-tab';
+import { TimeRulesTab } from './time-rules-tab';
 import { LeaveHR } from '../leave-hr';
 
-type TabId = 'attendance' | 'leave' | 'combined';
+type TabId = 'attendance' | 'leave' | 'combined' | 'time-rules';
+
+// Section Q: Time Rules is config, so it's gated to HR/admin (the
+// backend enforces the 'attendance edit' permission regardless).
+const canManageTimeRules = (): boolean => {
+  const role = (localStorage.getItem('hr_role') || '').toLowerCase();
+  return role === 'hr' || role === 'admin' || role === 'super admin';
+};
 
 const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'attendance', label: 'Attendance', icon: Users },
   { id: 'leave', label: 'Leave', icon: CalendarDays },
   { id: 'combined', label: 'Combined Calendar', icon: CalendarRange },
+  { id: 'time-rules', label: 'Time Rules', icon: Clock3 },
 ];
 
 function readUrlState(): { tab: TabId; employee: number | null } {
   if (typeof window === 'undefined') return { tab: 'attendance', employee: null };
   const params = new URLSearchParams(window.location.search);
   const t = params.get('tab');
-  const tab: TabId = t === 'leave' || t === 'combined' || t === 'attendance' ? t : 'attendance';
+  const tab: TabId =
+    t === 'leave' || t === 'combined' || t === 'attendance' ||
+    (t === 'time-rules' && canManageTimeRules())
+      ? (t as TabId)
+      : 'attendance';
   const empRaw = params.get('employee');
   const employee = empRaw && /^\d+$/.test(empRaw) ? parseInt(empRaw, 10) : null;
   return { tab, employee };
@@ -69,7 +82,7 @@ export const WorkforceActivity: React.FC = () => {
             </p>
           </div>
           <nav className="inline-flex bg-white border border-slate-200 rounded-2xl p-1 gap-1">
-            {TABS.map(t => {
+            {TABS.filter(t => t.id !== 'time-rules' || canManageTimeRules()).map(t => {
               const Icon = t.icon;
               const active = tab === t.id;
               return (
@@ -111,6 +124,11 @@ export const WorkforceActivity: React.FC = () => {
         {tab === 'combined' && (
           <div className="px-8 pt-6 max-w-[1600px] mx-auto">
             <CombinedCalendarTab />
+          </div>
+        )}
+        {tab === 'time-rules' && canManageTimeRules() && (
+          <div className="px-8 pt-6 max-w-[1600px] mx-auto">
+            <TimeRulesTab />
           </div>
         )}
       </div>

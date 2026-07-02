@@ -100,7 +100,24 @@ class Attendance(Base):
         String(32), nullable=True
     )
 
-    user: Mapped["User"] = relationship("User", back_populates="attendances")
+    # Section Q: HR edit trail. Set whenever HR/admin hand-edits punch
+    # times (or creates the record manually). Detail lives in the audit
+    # log; these columns exist so the UI can badge edited rows.
+    edited_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    edited_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    user: Mapped["User"] = relationship(
+        "User", back_populates="attendances", foreign_keys=[user_id]
+    )
+    edited_by: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[edited_by_id]
+    )
 
 
 class CorrectionStatus:

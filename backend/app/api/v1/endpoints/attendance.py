@@ -25,6 +25,13 @@ from app.services.shift_resolver import (
     DEFAULT_EARLY_IN_BUFFER,
     AttributionFlag,
     resolve_work_date,
+    late_in_minutes,
+    early_out_minutes,
+)
+from app.services.time_rules import (
+    get_time_rules,
+    build_default_shift,
+    flags_enabled,
 )
 from app.schemas.attendance import (
     AttendanceMark,
@@ -812,24 +819,59 @@ async def get_all_attendance(
 
     rows = list((await db.execute(query)).scalars().all())
 
-    # Resolve shift template names in a single round-trip.
+    # Resolve full shift templates in a single round-trip (names for the
+    # UI + start/end/grace for late/early evaluation).
     shift_ids = {r.shift_template_id for r in rows if r.shift_template_id}
-    shift_name_by_id: dict[int, str] = {}
+    shift_by_id: dict[int, ShiftTemplate] = {}
     if shift_ids:
         tpls = list((await db.execute(
             select(ShiftTemplate).where(ShiftTemplate.id.in_(shift_ids))
         )).scalars().all())
-        shift_name_by_id = {t.id: t.name for t in tpls}
+        shift_by_id = {t.id: t for t in tpls}
+
+    # Section Q: org time rules. Employees with no shift snapshot are
+    # evaluated against the org-default virtual shift.
+    rules = await get_time_rules(db)
+    evaluate = flags_enabled(rules)
+    default_shift = build_default_shift(rules)
+
+    # Bulk-resolve editor names for the HR-edit badge.
+    editor_ids = {r.edited_by_id for r in rows if r.edited_by_id}
+    editor_name_by_id: dict[int, str] = {}
+    if editor_ids:
+        editors = list((await db.execute(
+            select(UserModel).where(UserModel.id.in_(editor_ids))
+        )).scalars().all())
+        editor_name_by_id = {u.id: u.full_name for u in editors}
+
+    def _aware(dt):
+        if dt is None:
+            return None
+        return dt if dt.tzinfo is not None else dt.replace(
+            tzinfo=timezone.utc
+        )
 
     output = []
     for att in rows:
         read = AttendanceHRRead.model_validate(att)
         read.user_name = att.user.full_name
         read.user_email = att.user.email
+        shift = None
         if att.shift_template_id is not None:
-            read.shift_template_name = shift_name_by_id.get(
-                att.shift_template_id
+            shift = shift_by_id.get(att.shift_template_id)
+            read.shift_template_name = shift.name if shift else None
+        if att.edited_by_id is not None:
+            read.edited_by_name = editor_name_by_id.get(att.edited_by_id)
+        if evaluate and att.work_date is not None:
+            effective = shift or default_shift
+            late = late_in_minutes(
+                _aware(att.captured_at), att.work_date, effective
             )
+            early = early_out_minutes(
+                _aware(att.punch_out_time), att.work_date, effective
+            )
+            read.late_minutes = late if late > 0 else None
+            read.early_exit_minutes = early if early > 0 else None
         output.append(read)
     return output
 

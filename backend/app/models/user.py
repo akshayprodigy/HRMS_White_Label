@@ -70,7 +70,11 @@ class User(Base):
     )
 
     attendances: Mapped[list["Attendance"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        back_populates="user",
+        cascade="all, delete-orphan",
+        # Attendance has two FK paths to user (user_id + edited_by_id);
+        # this collection is the ownership path.
+        foreign_keys="[Attendance.user_id]",
     )
     
     time_entries: Mapped[list["TimeEntry"]] = relationship(
