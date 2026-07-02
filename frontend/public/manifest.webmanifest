@@ -1,14 +1,17 @@
 {
-  "name": "United Exploration ERP",
-  "short_name": "UE ERP",
-  "description": "Employee & manager companion for United Exploration — attendance, leave, payslips, approvals.",
+  "name": "Veliora — Intelligent Workforce Management",
+  "short_name": "Veliora",
+  "description": "Employee & manager companion for Veliora — attendance, leave, payslips, approvals.",
   "start_url": "/?utm_source=pwa",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#F8FAFC",
   "theme_color": "#2563EB",
-  "categories": ["business", "productivity"],
+  "categories": [
+    "business",
+    "productivity"
+  ],
   "icons": [
     {
       "src": "/icons/icon-192.svg",

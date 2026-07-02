@@ -30,11 +30,11 @@ import {
   Bell,
   Network,
   ScrollText,
-  Moon,
+  MapPin,
   Timer,
 } from "lucide-react";
 import { cn } from "./ui-elements";
-import logoImg from "figma:asset/cffb70cda3aa408edd2d37bc7e7cdc4b08a0118e.png";
+import logoImg from "../assets/veliora-logo.png";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import { UserRole } from "../types/erp";
 
@@ -48,6 +48,391 @@ interface SidebarProps {
   badges?: Record<string, number>;
 }
 
+// Section P IA: every menu item carries an explicit `group` tag (the old
+// id-prefix bucketing heuristic got crufty as ids multiplied). Sibling
+// admin screens are consolidated into tabbed workspaces (see
+// tabbed-workspaces.tsx), so one entry here can cover several screens.
+const GROUP_ORDER = [
+  "Overview",
+  "My Work",
+  "People",
+  "Time & Attendance",
+  "Payroll & Compensation",
+  "Compliance",
+  "Performance",
+  "Approvals & Spend",
+  "Reports & Analytics",
+  "Business",
+  "Administration",
+] as const;
+type GroupName = (typeof GROUP_ORDER)[number];
+
+// Self-service audience: every human role. "admin" is a pure system
+// account and "dop" is approvals-only by convention, so both stay out.
+const EVERYONE: string[] = [
+  "employee", "pm", "hr", "recruiter", "super admin", "bd", "bd manager",
+  "dept head", "ceo", "coo", "client manager", "finance",
+];
+
+interface MenuItem {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  roles: string[];
+  group: GroupName;
+}
+
+const menuItems: MenuItem[] = [
+  // ---- Overview ---------------------------------------------------------
+  {
+    id: "role-dashboard",
+    label: "My Cockpit",
+    icon: LayoutDashboard,
+    roles: [...EVERYONE, "admin"],
+    group: "Overview",
+  },
+  {
+    id: "dashboard",
+    label: "My Workspace",
+    icon: LayoutDashboard,
+    roles: EVERYONE,
+    group: "Overview",
+  },
+
+  // ---- My Work (self-service) ------------------------------------------
+  {
+    id: "timesheet",
+    label: "My Timesheet",
+    icon: CalendarDays,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+  {
+    id: "tasks",
+    label: "My Tasks",
+    icon: CheckSquare,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+  {
+    id: "leave",
+    label: "My Leave",
+    icon: FileText,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+  {
+    id: "my-overtime",
+    label: "My Overtime",
+    icon: Timer,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+  {
+    id: "my-pay",
+    label: "My Pay",
+    icon: Banknote,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+  {
+    id: "policies",
+    label: "Policy Center",
+    icon: BookOpen,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+  {
+    id: "profile",
+    label: "Profile",
+    icon: UserCircle,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+
+  // ---- People (HR core) --------------------------------------------------
+  {
+    id: "hr-directory",
+    label: "Employee Management",
+    icon: Users,
+    roles: ["hr", "super admin", "ceo"],
+    group: "People",
+  },
+  {
+    id: "hr-org-chart",
+    label: "Org Chart",
+    icon: Network,
+    roles: ["hr", "super admin", "ceo", "coo"],
+    group: "People",
+  },
+  {
+    id: "hr-recruitment",
+    label: "Recruitment",
+    icon: Briefcase,
+    roles: ["hr", "recruiter", "super admin", "ceo"],
+    group: "People",
+  },
+  {
+    id: "hr-onboarding",
+    label: "Onboarding",
+    icon: UserPlus,
+    roles: ["hr", "recruiter", "super admin", "ceo"],
+    group: "People",
+  },
+  {
+    id: "hr-letters",
+    label: "Employee Letters",
+    icon: FileSignature,
+    roles: ["hr", "super admin", "ceo"],
+    group: "People",
+  },
+
+  // ---- Time & Attendance --------------------------------------------------
+  {
+    id: "hr-attendance",
+    label: "Attendance Control",
+    icon: Clock,
+    roles: ["hr", "super admin", "ceo"],
+    group: "Time & Attendance",
+  },
+  {
+    id: "hr-leave",
+    label: "Leave Approvals",
+    icon: CalendarDays,
+    roles: ["pm", "dept head"],
+    group: "Time & Attendance",
+  },
+  {
+    id: "shifts-workspace",
+    label: "Shifts",
+    icon: CalendarDays,
+    roles: ["hr", "pm", "dept head", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
+    id: "geo-workspace",
+    label: "Geo Attendance",
+    icon: MapPin,
+    roles: ["hr", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
+    id: "overtime-admin",
+    label: "Overtime Admin",
+    icon: Timer,
+    roles: ["hr", "pm", "dept head", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
+    id: "hr-holidays",
+    label: "Holiday Calendar",
+    icon: CalendarDays,
+    roles: ["hr", "super admin", "ceo"],
+    group: "Time & Attendance",
+  },
+
+  // ---- Payroll & Compensation ---------------------------------------------
+  {
+    id: "hr-payroll",
+    label: "Payroll Bureau",
+    icon: CreditCard,
+    roles: ["hr", "super admin", "ceo"],
+    group: "Payroll & Compensation",
+  },
+  {
+    id: "hr-advances",
+    label: "Salary Advances",
+    icon: Banknote,
+    roles: ["hr", "super admin", "ceo"],
+    group: "Payroll & Compensation",
+  },
+  {
+    id: "revisions-workspace",
+    label: "Salary Revisions",
+    icon: Trophy,
+    roles: ["hr", "pm", "dept head", "admin", "super admin", "ceo"],
+    group: "Payroll & Compensation",
+  },
+  {
+    id: "designations",
+    label: "Designations & Grades",
+    icon: Network,
+    roles: ["hr", "admin", "super admin"],
+    group: "Payroll & Compensation",
+  },
+
+  // ---- Compliance ----------------------------------------------------------
+  {
+    id: "compliance-dashboard",
+    label: "Compliance Dashboard",
+    icon: ShieldCheck,
+    roles: ["hr", "admin", "super admin", "ceo"],
+    group: "Compliance",
+  },
+  {
+    id: "statutory-workspace",
+    label: "Statutory (PF / ESIC / PT)",
+    icon: ScrollText,
+    roles: ["hr", "admin", "super admin"],
+    group: "Compliance",
+  },
+  {
+    id: "tax-workspace",
+    label: "Tax & TDS",
+    icon: FileCheck,
+    roles: ["hr", "admin", "super admin", "ceo"],
+    group: "Compliance",
+  },
+
+  // ---- Performance ----------------------------------------------------------
+  {
+    id: "performance-workspace",
+    label: "Performance",
+    icon: Trophy,
+    roles: EVERYONE,
+    group: "Performance",
+  },
+
+  // ---- Approvals & Spend -----------------------------------------------------
+  {
+    id: "approvals",
+    label: "Approvals Center",
+    icon: FileCheck,
+    roles: [
+      "pm", "hr", "recruiter", "bd", "bd manager", "dept head",
+      "dop", "coo", "admin", "super admin", "ceo",
+    ],
+    group: "Approvals & Spend",
+  },
+  {
+    id: "expenses-workspace",
+    label: "Expenses & Travel",
+    icon: Banknote,
+    roles: EVERYONE,
+    group: "Approvals & Spend",
+  },
+  {
+    id: "cost-approvals",
+    label: "Cost Adjudication",
+    icon: ShieldCheck,
+    roles: ["pm", "dop", "coo", "super admin", "ceo"],
+    group: "Approvals & Spend",
+  },
+
+  // ---- Reports & Analytics -----------------------------------------------------
+  {
+    id: "hr-dashboard",
+    label: "HR Intelligence",
+    icon: LayoutDashboard,
+    roles: ["hr", "recruiter", "super admin", "ceo"],
+    group: "Reports & Analytics",
+  },
+  {
+    id: "enriched-dashboard",
+    label: "HR Insights",
+    icon: BarChart3,
+    roles: ["hr", "admin", "super admin", "ceo", "coo", "pm", "dept head"],
+    group: "Reports & Analytics",
+  },
+  {
+    id: "coo-dashboard",
+    label: "COO Operations Hub",
+    icon: Activity,
+    roles: ["coo", "super admin", "ceo", "dop"],
+    group: "Reports & Analytics",
+  },
+  {
+    id: "hr-reports",
+    label: "Enterprise Analytics",
+    icon: BarChart3,
+    roles: ["hr", "super admin", "ceo", "coo"],
+    group: "Reports & Analytics",
+  },
+  {
+    id: "reports-workspace",
+    label: "Reports Catalog",
+    icon: FileText,
+    roles: [
+      "hr", "admin", "super admin", "ceo", "coo",
+      "pm", "dept head", "recruiter",
+    ],
+    group: "Reports & Analytics",
+  },
+
+  // ---- Business ------------------------------------------------------------------
+  {
+    id: "bd",
+    label: "Business Development",
+    icon: Target,
+    roles: ["bd", "bd manager", "super admin", "ceo", "coo"],
+    group: "Business",
+  },
+  {
+    id: "projects",
+    label: "Project Deliverables",
+    icon: Briefcase,
+    roles: [
+      "pm", "dop", "coo", "super admin", "dept head", "ceo",
+      "client manager",
+    ],
+    group: "Business",
+  },
+  {
+    id: "pm-bids",
+    label: "Bid Requests",
+    icon: ClipboardList,
+    roles: ["pm", "super admin", "ceo", "coo"],
+    group: "Business",
+  },
+  {
+    id: "client-details",
+    label: "Client Details",
+    icon: Building2,
+    roles: ["client manager", "super admin", "bd", "bd manager"],
+    group: "Business",
+  },
+
+  // ---- Administration ----------------------------------------------------------------
+  {
+    id: "admin",
+    label: "System Administration",
+    icon: Shield,
+    roles: ["admin", "super admin", "ceo"],
+    group: "Administration",
+  },
+  {
+    id: "functional-areas",
+    label: "Functional Areas",
+    icon: Settings,
+    roles: ["admin", "super admin"],
+    group: "Administration",
+  },
+  {
+    id: "plumbing-admin",
+    label: "Bank / DQ / Jobs",
+    icon: CreditCard,
+    roles: [
+      "employee", "pm", "hr", "recruiter", "super admin",
+      "admin", "dept head", "finance", "ceo", "coo",
+    ],
+    group: "Administration",
+  },
+  {
+    id: "notifications-workspace",
+    label: "Notifications",
+    icon: Bell,
+    roles: [...EVERYONE, "admin"],
+    group: "Administration",
+  },
+  {
+    id: "hr-audit-log",
+    label: "Audit Log",
+    icon: ScrollText,
+    roles: ["super admin", "ceo"],
+    group: "Administration",
+  },
+];
+
 export const Sidebar = ({
   activeTab,
   setActiveTab,
@@ -57,601 +442,13 @@ export const Sidebar = ({
   onLogout,
   badges = {},
 }: SidebarProps) => {
-  // Dashboard items
-  const menuItems = [
-    {
-      id: "role-dashboard",
-      label: "My Cockpit",
-      icon: LayoutDashboard,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "bd", "bd manager",
-        "dept head", "ceo", "coo", "client manager",
-        "super admin", "admin", "finance",
-      ],
-    },
-    {
-      id: "dashboard",
-      label: "My Workspace",
-      icon: LayoutDashboard,
-      roles: [
-        "employee",
-        "pm",
-        "hr",
-        "recruiter",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-    {
-      id: "hr-dashboard",
-      label: "HR Intelligence",
-      icon: LayoutDashboard,
-      roles: ["hr", "recruiter", "super admin", "ceo"],
-    },
-
-    // Core Modules - Employee Management (Primary for HR)
-    {
-      id: "hr-directory",
-      label: "Employee Management",
-      icon: Users,
-      roles: ["hr", "super admin", "ceo"],
-    },
-
-    // HR Operational Modules (HR Only)
-    {
-      id: "hr-attendance",
-      label: "Workforce Activity",
-      icon: Clock,
-      roles: ["hr", "super admin", "ceo"],
-    },
-    {
-      id: "hr-leave",
-      label: "Leave Approvals",
-      icon: CalendarDays,
-      roles: ["pm", "dept head"],
-    },
-    {
-      id: "hr-payroll",
-      label: "Payroll Bureau",
-      icon: CreditCard,
-      roles: ["hr", "super admin", "ceo"],
-    },
-    {
-      id: "hr-advances",
-      label: "Salary Advances",
-      icon: Banknote,
-      roles: ["hr", "super admin", "ceo"],
-    },
-    {
-      id: "hr-recruitment",
-      label: "Recruitment",
-      icon: Briefcase,
-      roles: ["hr", "recruiter", "super admin", "ceo"],
-    },
-    {
-      id: "hr-onboarding",
-      label: "Onboarding",
-      icon: UserPlus,
-      roles: ["hr", "recruiter", "super admin", "ceo"],
-    },
-    {
-      id: "hr-holidays",
-      label: "Holiday Calendar",
-      icon: CalendarDays,
-      roles: ["hr", "super admin", "ceo"],
-    },
-    {
-      id: "hr-letters",
-      label: "Employee Letters",
-      icon: FileSignature,
-      roles: ["hr", "super admin", "ceo"],
-    },
-    {
-      id: "hr-org-chart",
-      label: "Org Chart",
-      icon: Network,
-      roles: ["hr", "super admin", "ceo", "coo"],
-    },
-    {
-      id: "hr-audit-log",
-      label: "Audit Log",
-      icon: ScrollText,
-      roles: ["super admin", "ceo"],
-    },
-    {
-      id: "hr-attendance-review",
-      label: "Attendance Review",
-      icon: Clock,
-      roles: ["hr", "super admin"],
-    },
-    {
-      id: "geo-fences",
-      label: "Geo Fences",
-      icon: Shield,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "employee-geo",
-      label: "Employee Geo Assign",
-      icon: Shield,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "hr-reports",
-      label: "Enterprise Analytics",
-      icon: BarChart3,
-      roles: ["hr", "super admin", "ceo", "coo"],
-    },
-
-    // Work Tools Section for everyone
-    {
-      id: "worklog",
-      label: "My Worklog",
-      icon: Clock,
-      roles: [
-        "employee",
-        "pm",
-        "hr",
-        "recruiter",
-        "super admin",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-    {
-      id: "timesheet",
-      label: "My Timesheet",
-      icon: CalendarDays,
-      roles: [
-        "employee",
-        "pm",
-        "hr",
-        "recruiter",
-        "super admin",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-    {
-      id: "tasks",
-      label: "My Tasks",
-      icon: CheckSquare,
-      roles: [
-        "employee",
-        "pm",
-        "hr",
-        "recruiter",
-        "super admin",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-    {
-      id: "leave",
-      label: "My Leave",
-      icon: FileText,
-      roles: [
-        "employee",
-        "pm",
-        "hr",
-        "recruiter",
-        "super admin",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-    {
-      id: "my-payslips",
-      label: "My Payslips",
-      icon: FileCheck,
-      roles: [
-        "employee",
-        "pm",
-        "hr",
-        "recruiter",
-        "super admin",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-    {
-      id: "policies",
-      label: "Policy Center",
-      icon: BookOpen,
-      roles: [
-        "employee",
-        "pm",
-        "hr",
-        "recruiter",
-        "super admin",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-
-    // PM Module
-    {
-      id: "projects",
-      label: "Project Deliverables",
-      icon: Briefcase,
-      roles: [
-        "pm",
-        "dop",
-        "coo",
-        "super admin",
-        "dept head",
-        "ceo",
-        "client manager",
-      ],
-    },
-
-    {
-      id: "pm-bids",
-      label: "Bid Requests",
-      icon: ClipboardList,
-      roles: ["pm", "super admin", "ceo", "coo"],
-    },
-    {
-      id: "cost-approvals",
-      label: "Cost Adjudication",
-      icon: ShieldCheck,
-      roles: ["pm", "dop", "coo", "super admin", "ceo"],
-    },
-    {
-      id: "coo-dashboard",
-      label: "COO Operations Hub",
-      icon: Activity,
-      roles: ["coo", "super admin", "ceo", "dop"],
-    },
-
-    {
-      id: "approvals",
-      label: "Approvals Center",
-      icon: FileCheck,
-      roles: [
-        "pm",
-        "hr",
-        "recruiter",
-        "bd",
-        "bd manager",
-        "dept head",
-        "dop",
-        "coo",
-        "admin",
-        "super admin",
-        "ceo",
-      ],
-    },
-
-    {
-      id: "bd",
-      label: "Business Development",
-      icon: Target,
-      roles: ["bd", "bd manager", "super admin", "ceo", "coo"],
-    },
-
-    {
-      id: "client-details",
-      label: "Client Details",
-      icon: Building2,
-      roles: ["client manager", "super admin", "bd", "bd manager"],
-    },
-
-    {
-      id: "profile",
-      label: "Profile",
-      icon: UserCircle,
-      roles: [
-        "employee",
-        "hr",
-        "recruiter",
-        "pm",
-        "super admin",
-        "bd",
-        "bd manager",
-        "dept head",
-        "ceo",
-        "coo",
-        "client manager",
-      ],
-    },
-
-    // Admin Module
-    {
-      id: "admin",
-      label: "System Administration",
-      icon: Shield,
-      roles: ["admin", "super admin", "ceo"],
-    },
-    {
-      id: "functional-areas",
-      label: "Functional Areas",
-      icon: Shield,
-      roles: ["admin", "super admin"],
-    },
-    {
-      id: "shift-templates",
-      label: "Shift Templates",
-      icon: Shield,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "shift-assignments",
-      label: "Shift Assignments",
-      icon: Shield,
-      roles: ["hr", "pm", "dept_head", "admin", "super admin"],
-    },
-    {
-      id: "overtime-rules",
-      label: "Overtime Rules",
-      icon: Timer,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "night-allowance-rules",
-      label: "Night Allowance Rules",
-      icon: Moon,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "overtime-approvals",
-      label: "Overtime Approvals",
-      icon: Timer,
-      roles: ["hr", "pm", "dept_head", "admin", "super admin"],
-    },
-    {
-      id: "my-overtime",
-      label: "My Overtime",
-      icon: Timer,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "super admin",
-        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
-      ],
-    },
-    {
-      id: "designations",
-      label: "Designations & Grades",
-      icon: Network,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "salary-revisions",
-      label: "Salary Revisions",
-      icon: Trophy,
-      roles: ["hr", "pm", "dept head", "admin", "super admin", "ceo"],
-    },
-    {
-      id: "revision-cycles",
-      label: "Revision Cycles",
-      icon: BarChart3,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "my-revisions",
-      label: "My Revisions",
-      icon: Trophy,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "super admin",
-        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
-      ],
-    },
-    {
-      id: "compliance-dashboard",
-      label: "Compliance Dashboard",
-      icon: ShieldCheck,
-      roles: ["hr", "admin", "super admin", "ceo"],
-    },
-    {
-      id: "statutory-filings",
-      label: "Statutory Filings",
-      icon: ScrollText,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "statutory-reconciliation",
-      label: "Statutory Reconciliation",
-      icon: FileCheck,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "statutory-config",
-      label: "Statutory Configuration",
-      icon: Shield,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "my-tax-declaration",
-      label: "My Tax Declaration",
-      icon: FileText,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "super admin",
-        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
-      ],
-    },
-    {
-      id: "tax-declaration-queue",
-      label: "Tax Declaration Queue",
-      icon: FileCheck,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "tds-reconciliation",
-      label: "TDS Reconciliation",
-      icon: BarChart3,
-      roles: ["hr", "admin", "super admin", "ceo"],
-    },
-    {
-      id: "form16-workspace",
-      label: "Form 16 + 24Q",
-      icon: FileSignature,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "gratuity-dashboard",
-      label: "Gratuity Liability",
-      icon: Banknote,
-      roles: ["hr", "admin", "super admin", "ceo"],
-    },
-    {
-      id: "tax-config",
-      label: "Tax Configuration",
-      icon: Settings,
-      roles: ["hr", "admin", "super admin"],
-    },
-    {
-      id: "enriched-dashboard",
-      label: "HR Insights",
-      icon: BarChart3,
-      roles: [
-        "hr", "admin", "super admin", "ceo", "coo",
-        "pm", "dept head",
-      ],
-    },
-    {
-      id: "reports-workspace",
-      label: "Reports Catalog",
-      icon: FileText,
-      roles: [
-        "hr", "admin", "super admin", "ceo", "coo",
-        "pm", "dept head", "recruiter",
-      ],
-    },
-    {
-      id: "performance-workspace",
-      label: "Performance",
-      icon: Trophy,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "super admin",
-        "bd", "bd manager", "dept head", "ceo", "coo", "client manager",
-      ],
-    },
-    {
-      id: "expenses-workspace",
-      label: "Expenses & Approvals",
-      icon: Banknote,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "super admin",
-        "bd", "bd manager", "dept head", "ceo", "coo",
-        "finance",
-      ],
-    },
-    {
-      id: "plumbing-admin",
-      label: "Bank / DQ / Jobs",
-      icon: CreditCard,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "super admin",
-        "admin", "dept head", "finance", "ceo", "coo",
-      ],
-    },
-    {
-      id: "notifications-workspace",
-      label: "Notifications",
-      icon: Bell,
-      roles: [
-        "employee", "pm", "hr", "recruiter", "super admin",
-        "admin", "dept head", "finance", "ceo", "coo", "bd",
-        "bd manager", "client manager",
-      ],
-    },
-  ];
-
   const filteredItems = menuItems.filter((item) =>
     item.roles.includes(role),
   );
 
-  // Section M IA: bucket the flat list into 7 logical groups. New
-  // entries automatically fall into the right bucket via the id
-  // prefix rules below — no per-entry tagging needed. Order of the
-  // groups drives sidebar render order.
-  const GROUP_ORDER = [
-    "Overview",
-    "People",
-    "Time & Attendance",
-    "Payroll & Compensation",
-    "Compliance",
-    "Performance & Reviews",
-    "Approvals & Expense",
-    "Reports & Analytics",
-    "Business Development",
-    "Admin & Plumbing",
-  ] as const;
-  type GroupName = typeof GROUP_ORDER[number];
-
-  const groupFor = (id: string): GroupName => {
-    // Order matters — first match wins.
-    if (id === "role-dashboard" || id === "dashboard") return "Overview";
-    if (id.startsWith("coo-") || id === "enriched-dashboard") return "Overview";
-    if (id === "hr-dashboard") return "Overview";
-    if (id === "hr-directory" || id === "hr-org-chart") return "People";
-    if (id === "hr-recruitment" || id === "hr-onboarding") return "People";
-    if (id === "hr-letters" || id === "profile") return "People";
-    if (id === "hr-holidays") return "People";
-    if (
-      id === "worklog" || id === "timesheet" || id === "tasks" ||
-      id === "leave" || id === "hr-leave" ||
-      id === "hr-attendance" || id === "hr-attendance-review" ||
-      id.startsWith("shift-") || id.startsWith("geo-") ||
-      id === "employee-geo" || id === "my-overtime" ||
-      id.startsWith("overtime-") || id === "night-allowance-rules"
-    ) return "Time & Attendance";
-    if (
-      id === "hr-payroll" || id === "my-payslips" || id === "hr-advances" ||
-      id === "designations" || id === "salary-revisions" ||
-      id === "revision-cycles" || id === "my-revisions"
-    ) return "Payroll & Compensation";
-    if (
-      id === "compliance-dashboard" || id.startsWith("statutory-") ||
-      id.startsWith("tax-") || id === "form16-workspace" ||
-      id === "gratuity-dashboard" || id === "my-tax-declaration" ||
-      id === "tds-reconciliation" || id === "policies"
-    ) return "Compliance";
-    if (id === "performance-workspace") return "Performance & Reviews";
-    if (
-      id === "approvals" || id === "cost-approvals" ||
-      id === "expenses-workspace"
-    ) return "Approvals & Expense";
-    if (
-      id === "hr-reports" || id === "reports-workspace"
-    ) return "Reports & Analytics";
-    if (
-      id === "bd" || id === "client-details" || id === "projects" ||
-      id === "pm-bids"
-    ) return "Business Development";
-    return "Admin & Plumbing";
-  };
-
   const groupedItems = GROUP_ORDER.map((gn) => ({
     name: gn,
-    items: filteredItems.filter((it) => groupFor(it.id) === gn),
+    items: filteredItems.filter((it) => it.group === gn),
   })).filter((g) => g.items.length > 0);
 
   return (
@@ -669,8 +466,8 @@ export const Sidebar = ({
           />
         )}
         {collapsed && (
-          <div className="w-8 h-8 bg-[#2563EB] rounded-lg flex items-center justify-center font-bold text-white text-xs">
-            U E
+          <div className="w-8 h-8 bg-[#2563EB] rounded-lg flex items-center justify-center font-bold text-white text-sm">
+            V
           </div>
         )}
         <button

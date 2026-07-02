@@ -113,7 +113,7 @@ export const ExecutiveReports = () => {
             </div>
             <h2 className="text-4xl font-black text-[#0F172A] tracking-tighter uppercase italic">Executive Radar</h2>
           </div>
-          <p className="text-[#64748B] font-bold uppercase tracking-widest text-[10px] ml-13">United Exploration Global Performance Dashboard</p>
+          <p className="text-[#64748B] font-bold uppercase tracking-widest text-[10px] ml-13">Veliora Global Performance Dashboard</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex bg-slate-100 p-1 rounded-xl mr-2">

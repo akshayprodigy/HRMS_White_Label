@@ -123,23 +123,32 @@ Email/SMS provider defaults:
 
 ## Scheduler (APScheduler)
 
-**Audit finding, called out explicitly.** `start_scheduler()` exists
-in `app/services/scheduler.py` but is **not currently invoked from
-`create_app()`** — there's no lifespan hook that boots it. Same in
-prod today. So in this local stack (and in prod), APScheduler is
-**not a live in-process loop** — jobs run only when an admin taps
-"Run now" (which goes through `run_job_once`).
+**Wired in Section P.** `create_app()` now boots the APScheduler loop
+on startup when `ENABLE_SCHEDULER=1` (set on the backend service in
+`docker-compose.local.yml`). All six registered jobs (notification
+sweep/send every minute, digest flush hourly, scheduled reports
+hourly, due revisions daily, ESIC continuation monthly) run
+autonomously in this stack. With the flag unset (the default), the
+old behavior applies: jobs only run via the admin "Run now" button.
 
-The local stack takes two safeguards against this:
+Two safeguards make the in-process loop safe:
 
-1. **Single gunicorn worker (`-w 1`).** If/when `start_scheduler` is
-   wired into a startup hook, there will be exactly one loop running,
-   not N.
-2. **The `is_running` row-lock on `ScheduledJob` protects manual
-   triggers.** The lock is a `SELECT ... FOR UPDATE` against
-   MariaDB — proven to work against the containerized DB by hitting
-   `/admin/jobs/{name}/run-now` twice back-to-back and observing the
-   second call return `{"ok": false, "error": "already running"}`.
+1. **Single gunicorn worker (`-w 1`).** One worker means exactly one
+   scheduler loop, not N. If you enable `ENABLE_SCHEDULER` in another
+   deployment, keep the worker count at 1 (or move the scheduler to a
+   dedicated process).
+2. **The `is_running` row-lock on `ScheduledJob`.** A
+   `SELECT ... FOR UPDATE` against MariaDB prevents any job from
+   running twice concurrently — covering both cron fires and manual
+   "Run now" triggers.
+
+Verify it's live:
+
+```bash
+docker compose -f docker-compose.local.yml logs backend | grep "scheduler started"
+# then after a minute, last_run_at fills in for the minutely jobs:
+# GET /api/v1/admin/jobs → sweep_notifications_for_delivery.last_run_at != null
+```
 
 ## Tail logs
 

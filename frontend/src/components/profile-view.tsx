@@ -1338,7 +1338,7 @@ const ExitInterviewFormModal = ({ resignationId, onClose, onSuccess }: { resigna
             <div className="p-2.5 bg-purple-50 rounded-xl"><FileText size={20} className="text-purple-600" /></div>
             <div>
               <h3 className="text-lg font-black text-[#0F172A] uppercase tracking-tight">Exit Interview Form</h3>
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">United Exploration India Pvt. Ltd.</p>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Veliora — Intelligent Workforce Management</p>
             </div>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg"><XCircle size={20} className="text-slate-400" /></button>

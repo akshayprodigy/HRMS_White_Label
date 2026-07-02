@@ -167,7 +167,7 @@ const MobileHeader: React.FC<{
       <div className="h-14 flex items-center justify-between px-4">
         <div>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
-            UE ERP
+            Veliora
           </p>
           <h1 className="text-base font-black text-[#0F172A] leading-tight">
             {title}

@@ -9,7 +9,6 @@ import { TimesheetView } from './components/timesheet-view';
 import { TasksView } from './components/tasks-view';
 import { LeaveView } from './components/leave-view';
 import { ProfileView } from './components/profile-view';
-import { AnalyticsView } from './components/analytics-view';
 import { AttendanceModal } from './components/attendance-modal';
 import { ProjectsView } from './components/projects-view';
 import { COODashboardView } from './components/coo-dashboard-view';
@@ -23,7 +22,6 @@ import { ApprovalsView } from './components/approvals-view';
 import { HRDashboard } from './components/hr-dashboard';
 import { EmployeeManagement } from './components/employee-management';
 import { LeaveHR } from './components/leave-hr';
-import { WorkforceActivity } from './components/workforce/workforce-activity';
 import { PayrollHR } from './components/payroll-hr';
 import { SalaryAdvanceManagement } from './components/salary-advance';
 import { MyPayslips } from './components/my-payslips';
@@ -68,6 +66,16 @@ import { ExpensesWorkspace } from './components/expenses-workspace';
 import { RoleDashboard } from './components/role-dashboard';
 import { PlumbingAdmin } from './components/plumbing-admin';
 import { NotificationsWorkspace } from './components/notifications-workspace';
+import {
+  AttendanceWorkspace,
+  ShiftsWorkspace,
+  GeoWorkspace,
+  OvertimeAdminWorkspace,
+  RevisionsWorkspace,
+  StatutoryWorkspace,
+  TaxWorkspace,
+  MyPayWorkspace,
+} from './components/tabbed-workspaces';
 
 import { cn } from './components/ui-elements';
 import { UserRole } from './types/erp';
@@ -413,19 +421,33 @@ const App = () => {
         return <TasksView />;
       case 'leave':
         return <LeaveView />;
-      case 'analytics':
-        return <AnalyticsView />;
-      
+
       // HR Module Redesign Content
       case 'hr-dashboard':
         return <HRDashboard onNavigate={setActiveTab} />;
       case 'hr-directory':
         return <EmployeeManagement userRole={userRole} />;
       case 'hr-attendance':
-        return <WorkforceActivity />;
+      case 'attendance-hr': // legacy drill route emitted by the dashboard service
+        return <AttendanceWorkspace role={userRole} />;
+      case 'shifts-workspace':
+        return <ShiftsWorkspace role={userRole} />;
+      case 'geo-workspace':
+        return <GeoWorkspace role={userRole} />;
+      case 'overtime-admin':
+        return <OvertimeAdminWorkspace role={userRole} />;
+      case 'revisions-workspace':
+        return <RevisionsWorkspace role={userRole} />;
+      case 'statutory-workspace':
+        return <StatutoryWorkspace role={userRole} />;
+      case 'tax-workspace':
+        return <TaxWorkspace role={userRole} />;
+      case 'my-pay':
+        return <MyPayWorkspace />;
       case 'hr-leave':
         return <LeaveHR />;
       case 'approvals':
+      case 'approvals-view': // legacy drill route emitted by the dashboard service
         return <ApprovalsView />;
       case 'hr-payroll':
         return <PayrollHR />;
@@ -543,10 +565,18 @@ const App = () => {
       timesheet: 'Weekly Timesheets',
       tasks: 'My Tasks & Subtasks',
       leave: 'Leave & Attendance',
-      analytics: 'Operational Insights',
       'hr-dashboard': 'HR Intelligence Dashboard',
       'hr-directory': 'Employee Management System',
-      'hr-attendance': 'Workforce Activity',
+      'hr-attendance': 'Attendance Control',
+      'attendance-hr': 'Attendance Control',
+      'shifts-workspace': 'Shift Management',
+      'geo-workspace': 'Geo Attendance',
+      'overtime-admin': 'Overtime Administration',
+      'revisions-workspace': 'Salary Revisions',
+      'statutory-workspace': 'Statutory Compliance',
+      'tax-workspace': 'Tax & TDS',
+      'my-pay': 'My Pay',
+      'approvals-view': 'Approvals Center',
       'hr-leave': 'Leave Approval Bureau',
       'hr-payroll': 'Payroll & Compensation',
       'hr-advances': 'Salary Advances',
@@ -667,7 +697,7 @@ const App = () => {
           </div>
 
           <footer className="py-4 px-8 text-center text-xs text-[#94A3B8] border-t border-[#E5E7EB] bg-white">
-            &copy; 2026 United Exploration India Pvt. Ltd. • All Rights Reserved.
+            &copy; 2026 Veliora • Intelligent Workforce Management • All Rights Reserved.
           </footer>
         </main>
 

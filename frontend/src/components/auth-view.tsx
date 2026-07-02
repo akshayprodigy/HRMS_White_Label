@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mail, Lock, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { Button, Input, Card } from './ui-elements';
-import logoImg from "figma:asset/cffb70cda3aa408edd2d37bc7e7cdc4b08a0118e.png";
+import logoImg from "../assets/veliora-logo.png";
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { UserRole } from '../types/erp';
 
@@ -15,24 +15,14 @@ interface AuthProps {
 export const AuthView = ({ onLogin, isLoading: parentLoading, loginError }: AuthProps) => {
   const [mode, setMode] = useState<'login' | 'forgot'>('login');
   const [showPassword, setShowPassword] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  const loading = parentLoading ?? isLoading;
+  const loading = parentLoading ?? false;
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     onLogin(email, password);
-  };
-
-  const handleReset = (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      setMode('login');
-    }, 1500);
   };
 
   return (
@@ -43,10 +33,10 @@ export const AuthView = ({ onLogin, isLoading: parentLoading, loginError }: Auth
         className="w-full max-w-[420px]"
       >
         <div className="flex justify-center mb-8">
-          <ImageWithFallback 
-            src={logoImg} 
-            alt="Company Logo" 
-            className="h-12 object-contain" 
+          <ImageWithFallback
+            src={logoImg}
+            alt="Company Logo"
+            className="h-24 object-contain"
           />
         </div>
 
@@ -120,14 +110,6 @@ export const AuthView = ({ onLogin, isLoading: parentLoading, loginError }: Auth
                   </Button>
                 </form>
 
-                <div className="text-center">
-                  <p className="text-xs text-[#94A3B8] mt-8 bg-slate-50 p-3 rounded-lg leading-relaxed">
-                    Demo Roles: <br/>
-                    <span className="font-bold text-blue-600 cursor-pointer hover:underline" onClick={() => setEmail('employee')}>employee</span>, 
-                    <span className="font-bold text-blue-600 cursor-pointer hover:underline" onClick={() => setEmail('hr')}>hr</span>, 
-                    <span className="font-bold text-blue-600 cursor-pointer hover:underline" onClick={() => setEmail('pm')}>pm</span>
-                  </p>
-                </div>
               </motion.div>
             ) : (
               <motion.div
@@ -139,34 +121,25 @@ export const AuthView = ({ onLogin, isLoading: parentLoading, loginError }: Auth
               >
                 <div className="text-center space-y-2">
                   <h1 className="text-2xl font-bold text-[#0F172A]">Forgot Password?</h1>
-                  <p className="text-[#64748B]">No worries, we'll send you reset instructions.</p>
+                  <p className="text-[#64748B]">
+                    Password resets are handled by your system administrator.
+                  </p>
                 </div>
 
-                <form onSubmit={handleReset} className="space-y-4">
-                  <div className="relative">
-                    <Input
-                      label="Email"
-                      type="email"
-                      placeholder="name@company.com"
-                      required
-                      className="pl-10"
-                    />
-                    <Mail className="absolute left-3 top-[38px] w-4 h-4 text-[#94A3B8]" />
-                  </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-[#64748B] leading-relaxed">
+                  Please contact your HR team or system administrator to have
+                  your password reset. Once reset, you can change it anytime
+                  from your profile after signing in.
+                </div>
 
-                  <Button type="submit" className="w-full" isLoading={isLoading}>
-                    Send Reset Link
-                  </Button>
-
-                  <button
-                    type="button"
-                    onClick={() => setMode('login')}
-                    className="flex items-center justify-center w-full text-sm font-medium text-[#64748B] hover:text-[#0F172A] pt-2"
-                  >
-                    <ArrowLeft className="w-4 h-4 mr-2" />
-                    Back to Login
-                  </button>
-                </form>
+                <button
+                  type="button"
+                  onClick={() => setMode('login')}
+                  className="flex items-center justify-center w-full text-sm font-medium text-[#64748B] hover:text-[#0F172A] pt-2"
+                >
+                  <ArrowLeft className="w-4 h-4 mr-2" />
+                  Back to Login
+                </button>
               </motion.div>
             )}
           </AnimatePresence>

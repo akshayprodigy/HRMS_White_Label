@@ -28,6 +28,7 @@ export const pickPrimaryRole = ({
     { when: roles.has('hr'), role: 'hr' },
     { when: roles.has('recruiter'), role: 'recruiter' },
     { when: roles.has('dept head'), role: 'dept head' },
+    { when: roles.has('finance'), role: 'finance' },
     { when: roles.has('bd manager'), role: 'bd manager' },
     { when: roles.has('business developer') || roles.has('bd'), role: 'bd' },
     { when: roles.has('pm'), role: 'pm' },

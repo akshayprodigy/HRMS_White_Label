@@ -1,4 +1,4 @@
-/* United Exploration ERP — Service Worker
+/* Veliora — Service Worker
  *
  * Scope: app shell + static assets only.
  *
@@ -11,7 +11,7 @@
  * "time" the user was not verified at.
  */
 
-const CACHE_VERSION = 'ue-erp-shell-v1';
+const CACHE_VERSION = 'veliora-shell-v1';
 const OFFLINE_URL = '/offline.html';
 const PRECACHE_URLS = [
   '/',

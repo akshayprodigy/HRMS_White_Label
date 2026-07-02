@@ -66,6 +66,10 @@ services:
       - .env.local
     environment:
       MARIADB_SERVER: db
+      # Section P: boot the APScheduler loop in-process. Safe here
+      # because this service runs gunicorn with exactly one worker
+      # (see command below) — one loop, no duplicate schedulers.
+      ENABLE_SCHEDULER: "1"
     volumes:
       - uploads_local_data:/app/uploads
     ports:

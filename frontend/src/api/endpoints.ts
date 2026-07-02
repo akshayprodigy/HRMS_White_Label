@@ -182,6 +182,9 @@ export const ENDPOINTS = {
     WIDGET: (key: string) => `/dashboard/widget/${key}`,
   },
   NOTIFICATIONS: {
+    LIST: '/notifications/',
+    MARK_READ: (id: number) => `/notifications/${id}/read`,
+    MARK_ALL_READ: '/notifications/mark-all-read',
     MY_PREFS: '/me/notifications/preferences',
     MY_QUIET: '/me/notifications/quiet-hours',
     PROVIDER_STATUS: '/notifications/providers',
@@ -381,11 +384,6 @@ export const ENDPOINTS = {
     DETAIL: (id: number) => `/approvals/${id}`,
     RESOURCE: (id: number) => `/approvals/${id}/resource`,
     ACTION: (id: number) => `/approvals/${id}/action`,
-  },
-  NOTIFICATIONS: {
-    LIST: '/notifications/',
-    MARK_READ: (id: number) => `/notifications/${id}/read`,
-    MARK_ALL_READ: '/notifications/mark-all-read',
   },
   REPORTS: {
     SUMMARY: '/reports/summary',

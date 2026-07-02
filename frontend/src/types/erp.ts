@@ -11,7 +11,8 @@ export type UserRole =
   | 'bd manager'
   | 'dept head'
   | 'ceo'
-  | 'client manager';
+  | 'client manager'
+  | 'finance';
 
 export interface Project {
   id: string;

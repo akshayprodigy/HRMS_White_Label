@@ -5,8 +5,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "ERP United"
+    PROJECT_NAME: str = "Veliora"
     LOG_LEVEL: str = "INFO"
+
+    # Boot the in-process APScheduler loop on app startup. Keep this on
+    # exactly ONE worker (gunicorn -w 1) — N workers means N scheduler
+    # loops. The is_running row-lock on ScheduledJob still prevents a
+    # job from running twice concurrently, but duplicate loops waste
+    # work. Off by default so plain imports/tests never start it.
+    ENABLE_SCHEDULER: bool = False
     
     SECRET_KEY: str = "secret-key-change-me-in-production"
     ALGORITHM: str = "HS256"

@@ -37,4 +37,32 @@ def create_app() -> FastAPI:
     )
     configure_providers_from_env()
 
+    # Section P: boot the APScheduler loop (env-gated via
+    # ENABLE_SCHEDULER; see the note in core/config.py about single
+    # worker). Without this, cron jobs only ever run via the manual
+    # /admin/jobs/{name}/run-now endpoint.
+    if settings.ENABLE_SCHEDULER:
+
+        @app.on_event("startup")
+        async def _boot_scheduler() -> None:
+            from app.db.session import SessionLocal
+            from app.services.scheduler import ensure_jobs, start_scheduler
+
+            try:
+                async with SessionLocal() as session:
+                    await ensure_jobs(session)
+                start_scheduler(SessionLocal)
+            except Exception:  # pragma: no cover — never block app boot
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "scheduler startup failed; continuing without it"
+                )
+
+        @app.on_event("shutdown")
+        async def _stop_scheduler() -> None:
+            from app.services.scheduler import shutdown_scheduler
+
+            shutdown_scheduler()
+
     return app
