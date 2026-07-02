@@ -75,8 +75,11 @@ import { client, setAccessToken } from './api/client';
 import { ENDPOINTS } from './api/endpoints';
 import { TimerProvider } from './contexts/timer-context';
 import { pickPrimaryRole } from './utils/roles';
+import { useIsMobile } from './mobile/use-is-mobile';
+import { MobileShell } from './mobile/mobile-shell';
 
 const App = () => {
+  const isMobileViewport = useIsMobile();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>('employee');
   const [userInfo, setUserInfo] = useState<{name: string, avatar?: string} | null>(null);
@@ -598,6 +601,26 @@ const App = () => {
     };
     return titles[activeTab] || 'ERP System';
   };
+
+  // On mobile viewports (or when ?mobile=1 is set) hand control to the
+  // PWA shell. The shell has its own dedicated attendance screen, so we
+  // skip the desktop AttendanceModal there.
+  if (isMobileViewport) {
+    return (
+      <TimerProvider>
+        <MobileShell
+          userRole={userRole}
+          userName={userData.name}
+          avatarUrl={userData.avatar}
+          hasMarkedAttendance={hasMarkedAttendance}
+          hasPunchedOut={hasPunchedOut}
+          onAttendanceSuccess={handleAttendanceSuccess}
+          onPunchedOut={() => setHasPunchedOut(true)}
+          onLogout={handleLogout}
+        />
+      </TimerProvider>
+    );
+  }
 
   return (
     <TimerProvider>
