@@ -351,6 +351,77 @@ async def _seed_leaves(
     return leave_days
 
 
+# ---------------------------------------------------------------------------
+# Section R additions: reporting managers + the Shift Change chain
+# ---------------------------------------------------------------------------
+
+async def ensure_managers(session: AsyncSession) -> None:
+    """Point the test employees at PM as reporting manager (and PM at
+    CEO) so the REPORTING_MANAGER chain step resolves."""
+    emails = [
+        "t1@example.com", "t2@example.com", "t3@example.com",
+        "employee@gmail.com", "pm@gmail.com", "hr@gmail.com",
+        "ceo@gmail.com",
+    ]
+    users = {
+        u.email: u for u in (await session.execute(
+            select(User).where(User.email.in_(emails))
+        )).scalars().all()
+    }
+    pm = users.get("pm@gmail.com")
+    ceo = users.get("ceo@gmail.com")
+    changed = 0
+    for email in ("t1@example.com", "t2@example.com", "t3@example.com",
+                  "employee@gmail.com", "hr@gmail.com"):
+        u = users.get(email)
+        if u and pm and not u.manager_id:
+            u.manager_id = pm.id
+            changed += 1
+    if pm and ceo and not pm.manager_id:
+        pm.manager_id = ceo.id
+        changed += 1
+    await session.commit()
+    print(f"  managers wired: {changed}")
+
+
+async def ensure_shift_change_chain(session: AsyncSession) -> None:
+    from datetime import date as _date
+
+    from app.models.approval_chain import (
+        ApprovalChain, ApprovalChainStep, ApproverType, ChainEntityType,
+    )
+
+    existing = (await session.execute(
+        select(ApprovalChain).where(
+            ApprovalChain.entity_type == ChainEntityType.SHIFT_CHANGE,
+        )
+    )).scalars().first()
+    if existing:
+        print("  shift-change chain exists")
+        return
+    chain = ApprovalChain(
+        name="Shift Change (Manager -> HR)",
+        entity_type=ChainEntityType.SHIFT_CHANGE,
+        is_active=True,
+        effective_from=_date(2026, 1, 1),
+        notes="Seeded by seed_month_data",
+    )
+    session.add(chain)
+    await session.flush()
+    session.add(ApprovalChainStep(
+        chain_id=chain.id, step_order=1,
+        approver_type=ApproverType.REPORTING_MANAGER,
+        label="Reporting Manager",
+    ))
+    session.add(ApprovalChainStep(
+        chain_id=chain.id, step_order=2,
+        approver_type=ApproverType.ROLE, approver_ref="HR",
+        label="HR",
+    ))
+    await session.commit()
+    print("  shift-change chain created (Manager -> HR)")
+
+
 async def main() -> None:
     _guard()
     engine = create_async_engine(settings.SQLALCHEMY_DATABASE_URI)
@@ -391,6 +462,10 @@ async def main() -> None:
         print("[6/6] project + time entries")
         proj = await _ensure_project(session, users)
         await _seed_time_entries(session, proj, punches)
+
+        print("[7] managers + shift-change chain (Section R)")
+        await ensure_managers(session)
+        await ensure_shift_change_chain(session)
 
     await engine.dispose()
     print("\nDone. A month of attendance/timesheets/leaves is seeded.")

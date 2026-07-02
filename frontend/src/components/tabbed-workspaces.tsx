@@ -24,6 +24,7 @@ import { WorkforceActivity } from './workforce/workforce-activity';
 import { AttendanceFlaggedReview } from './attendance-flagged-review';
 import { ShiftTemplatesAdmin } from './shift-templates-admin';
 import { EmployeeShiftAssignmentsView } from './employee-shift-assignments';
+import { ShiftChangeRequestsTab } from './shift-change-requests-tab';
 import { GeoFenceLocationsAdmin } from './geofence-locations-admin';
 import { EmployeeGeoAssignments } from './employee-geo-assignments';
 import { OvertimeRulesAdmin } from './overtime-rules-admin';
@@ -142,6 +143,13 @@ export const ShiftsWorkspace: React.FC<{ role?: UserRole }> = ({ role }) => (
         icon: CalendarDays,
         roles: ADMIN_ONLY,
         render: () => <ShiftTemplatesAdmin />,
+      },
+      {
+        id: 'change-requests',
+        label: 'Change Requests',
+        icon: FileCheck,
+        roles: ADMIN_ONLY,
+        render: () => <ShiftChangeRequestsTab />,
       },
     ]}
   />

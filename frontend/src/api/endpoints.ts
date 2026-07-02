@@ -97,6 +97,9 @@ export const ENDPOINTS = {
     EFFECTIVE: '/shifts/effective',
     MY_CURRENT: '/shifts/my/current',
     MY_HISTORY: '/shifts/my/history',
+    CHANGE_REQUESTS: '/shifts/change-requests',
+    CHANGE_REQUESTS_MY: '/shifts/change-requests/my',
+    CHANGE_REQUEST_CANCEL: (id: number) => `/shifts/change-requests/${id}/cancel`,
   },
   GEO: {
     FENCES: '/geo/fences',

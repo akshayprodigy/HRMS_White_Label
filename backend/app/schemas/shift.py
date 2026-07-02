@@ -159,3 +159,30 @@ class EffectiveShiftResponse(BaseModel):
     on_date: date
     shift: Optional[ShiftTemplateRead] = None
     assignment_id: Optional[int] = None
+
+
+# ---- Section R: shift change requests ------------------------------------
+
+
+class ShiftChangeRequestCreate(BaseModel):
+    requested_shift_template_id: int
+    effective_from: date
+    reason: str = Field(min_length=5, max_length=500)
+
+
+class ShiftChangeRequestRead(BaseModel):
+    id: int
+    user_id: int
+    user_name: Optional[str] = None
+    current_shift_template_id: Optional[int] = None
+    current_shift_name: Optional[str] = None
+    requested_shift_template_id: int
+    requested_shift_name: Optional[str] = None
+    effective_from: date
+    reason: str
+    status: str
+    approval_instance_id: Optional[int] = None
+    created_at: datetime
+    decided_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)

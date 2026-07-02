@@ -857,6 +857,38 @@ async def _entity_summary(
             "advance_requested_paise": row.advance_requested_paise,
             "employee_id": row.employee_id,
         }
+    if entity_type == ChainEntityType.SHIFT_CHANGE:
+        from app.models.shift import ShiftChangeRequest, ShiftTemplate
+
+        row = (await db.execute(
+            select(ShiftChangeRequest).where(
+                ShiftChangeRequest.id == entity_id
+            )
+        )).scalar_one_or_none()
+        if not row:
+            return None
+        requester = await db.get(User, row.user_id)
+        target = await db.get(
+            ShiftTemplate, row.requested_shift_template_id
+        )
+        current = (
+            await db.get(ShiftTemplate, row.current_shift_template_id)
+            if row.current_shift_template_id else None
+        )
+        return {
+            "kind": "shift_change",
+            "id": row.id,
+            "title": (
+                f"Shift change: {requester.full_name if requester else '?'}"
+                f" → {target.name if target else '?'}"
+                f" from {row.effective_from.isoformat()}"
+            ),
+            "current_shift": current.name if current else None,
+            "requested_shift": target.name if target else None,
+            "effective_from": row.effective_from,
+            "reason": row.reason,
+            "employee_id": row.user_id,
+        }
     return {"kind": entity_type, "id": entity_id}
 
 
@@ -995,6 +1027,23 @@ async def act_on_step(
                     if outcome.next_status == ChainedApprovalStatus.APPROVED
                     else "rejected"
                 )
+        elif instance.entity_type == ChainEntityType.SHIFT_CHANGE:
+            from app.models.shift import ShiftChangeRequest
+            from app.models.shift import ShiftChangeStatus
+            from app.services.shift_change import apply_shift_change
+
+            req = (await db.execute(
+                select(ShiftChangeRequest).where(
+                    ShiftChangeRequest.id == instance.entity_id
+                )
+            )).scalar_one_or_none()
+            if req:
+                if outcome.next_status == ChainedApprovalStatus.APPROVED:
+                    # Materializes the assignment + stamps the request.
+                    await apply_shift_change(db, req)
+                else:
+                    req.status = ShiftChangeStatus.REJECTED
+                    req.decided_at = datetime.now(timezone.utc)
         # Notify submitter.
         if instance.submitter_id:
             db.add(Notification(

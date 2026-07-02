@@ -125,3 +125,58 @@ class EmployeeShiftAssignment(Base):
     assigned_by: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[assigned_by_id]
     )
+
+
+class ShiftChangeStatus:
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class ShiftChangeRequest(Base):
+    """Section R: employee-initiated shift change, approved via the
+    generic chain engine (Reporting Manager -> HR). On final approval
+    the chain endpoint creates the EmployeeShiftAssignment."""
+
+    __tablename__ = "shift_change_request"  # type: ignore[assignment]
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="CASCADE"), index=True
+    )
+    # Snapshot of the shift the employee was on when they asked (may be
+    # NULL when they had no shift).
+    current_shift_template_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("shift_template.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    requested_shift_template_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("shift_template.id", ondelete="CASCADE"),
+    )
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default=ShiftChangeStatus.PENDING, index=True
+    )
+    approval_instance_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("chained_approval_instance.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
+    requested_shift: Mapped["ShiftTemplate"] = relationship(
+        "ShiftTemplate", foreign_keys=[requested_shift_template_id]
+    )
+    current_shift: Mapped[Optional["ShiftTemplate"]] = relationship(
+        "ShiftTemplate", foreign_keys=[current_shift_template_id]
+    )

@@ -37,6 +37,7 @@ CASCADE = "CASCADE"
 class ChainEntityType:
     EXPENSE = "expense"
     TRAVEL = "travel"
+    SHIFT_CHANGE = "shift_change"
     # future consumers add strings here (do NOT re-use for existing
     # leave/OT/revision flows — those live on the legacy engine).
 

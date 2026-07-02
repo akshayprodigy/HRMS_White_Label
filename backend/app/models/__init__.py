@@ -34,7 +34,10 @@ from .employee_asset import EmployeeAsset
 from .project_document import ProjectDocument
 from .comp_off import CompOffAccrual
 from .functional_area import FunctionalArea
-from .shift import ShiftTemplate, EmployeeShiftAssignment
+from .shift import (
+    ShiftTemplate, EmployeeShiftAssignment, ShiftChangeRequest,
+    ShiftChangeStatus,
+)
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
 )

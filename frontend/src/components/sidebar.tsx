@@ -122,6 +122,13 @@ const menuItems: MenuItem[] = [
     group: "My Work",
   },
   {
+    id: "my-shift",
+    label: "My Shift",
+    icon: Clock,
+    roles: EVERYONE,
+    group: "My Work",
+  },
+  {
     id: "my-overtime",
     label: "My Overtime",
     icon: Timer,

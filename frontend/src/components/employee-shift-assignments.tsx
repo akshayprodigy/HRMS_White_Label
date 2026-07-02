@@ -48,6 +48,57 @@ const errMsg = (err: any, fallback: string): string => {
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+// Section R: weekly/monthly period presets for bulk assignment.
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+const PERIOD_PRESETS: { label: string; range: () => [string, string] }[] = [
+  {
+    label: 'This Week',
+    range: () => {
+      const now = new Date();
+      const mon = new Date(now);
+      mon.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+      const sun = new Date(mon);
+      sun.setDate(mon.getDate() + 6);
+      return [iso(mon), iso(sun)];
+    },
+  },
+  {
+    label: 'Next Week',
+    range: () => {
+      const now = new Date();
+      const mon = new Date(now);
+      mon.setDate(now.getDate() - ((now.getDay() + 6) % 7) + 7);
+      const sun = new Date(mon);
+      sun.setDate(mon.getDate() + 6);
+      return [iso(mon), iso(sun)];
+    },
+  },
+  {
+    label: 'This Month',
+    range: () => {
+      const now = new Date();
+      return [
+        iso(new Date(now.getFullYear(), now.getMonth(), 1)),
+        iso(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+      ];
+    },
+  },
+  {
+    label: 'Next Month',
+    range: () => {
+      const now = new Date();
+      return [
+        iso(new Date(now.getFullYear(), now.getMonth() + 1, 1)),
+        iso(new Date(now.getFullYear(), now.getMonth() + 2, 0)),
+      ];
+    },
+  },
+  {
+    label: 'Open-ended',
+    range: () => [todayISO(), ''],
+  },
+];
+
 export const EmployeeShiftAssignmentsView: React.FC = () => {
   const [items, setItems] = useState<Assignment[]>([]);
   const [templates, setTemplates] = useState<ShiftTemplate[]>([]);
@@ -560,6 +611,38 @@ export const EmployeeShiftAssignmentsView: React.FC = () => {
                     </option>
                   ))}
               </select>
+            </div>
+
+            {/* Section R: weekly/monthly period presets */}
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">
+                Period
+              </label>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {PERIOD_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => {
+                      const [from, to] = p.range();
+                      setBulkForm({
+                        ...bulkForm,
+                        effective_from: from,
+                        effective_to: to,
+                      });
+                    }}
+                    className={cn(
+                      'px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest transition-colors',
+                      bulkForm.effective_from === p.range()[0] &&
+                        bulkForm.effective_to === p.range()[1]
+                        ? 'border-blue-600 bg-blue-50 text-blue-700'
+                        : 'border-slate-200 text-slate-500 hover:border-blue-300 hover:text-blue-600',
+                    )}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

@@ -775,3 +775,202 @@ async def get_my_shift_history(
         ).scalars().all()
     )
     return [_enrich_assignment(r) for r in rows]
+
+
+# ===========================================================================
+# Section R: shift change requests (employee-initiated, Manager -> HR)
+# ===========================================================================
+
+from datetime import datetime, timezone as _tz  # noqa: E402
+
+from app.models.approval_chain import (  # noqa: E402
+    ChainedApprovalStatus, ChainEntityType,
+)
+from app.models.shift import (  # noqa: E402
+    ShiftChangeRequest, ShiftChangeStatus,
+)
+from app.schemas.shift import (  # noqa: E402
+    ShiftChangeRequestCreate, ShiftChangeRequestRead,
+)
+from app.services.shift_change import apply_shift_change  # noqa: E402
+
+
+async def _change_request_read(
+    db, req: ShiftChangeRequest
+) -> ShiftChangeRequestRead:
+    read = ShiftChangeRequestRead.model_validate(req)
+    user = await db.get(User, req.user_id)
+    read.user_name = user.full_name if user else None
+    if req.current_shift_template_id:
+        cur = await db.get(ShiftTemplate, req.current_shift_template_id)
+        read.current_shift_name = cur.name if cur else None
+    tgt = await db.get(ShiftTemplate, req.requested_shift_template_id)
+    read.requested_shift_name = tgt.name if tgt else None
+    return read
+
+
+@router.post("/change-requests", response_model=ShiftChangeRequestRead)
+async def create_change_request(
+    *,
+    db: deps.DBDep,
+    payload: ShiftChangeRequestCreate,
+    request: Request,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Employee requests a shift change (routed Manager -> HR via the
+    chain engine; approvers act in their approvals queue)."""
+    today = datetime.now(_tz.utc).date()
+    if payload.effective_from <= today:
+        raise HTTPException(
+            422, "effective_from must be a future date."
+        )
+
+    shift = await db.get(ShiftTemplate, payload.requested_shift_template_id)
+    if not shift or not shift.is_active:
+        raise HTTPException(404, "Requested shift template not found")
+
+    pending = (await db.execute(
+        select(ShiftChangeRequest).where(
+            ShiftChangeRequest.user_id == current_user.id,
+            ShiftChangeRequest.status == ShiftChangeStatus.PENDING,
+        )
+    )).scalars().first()
+    if pending:
+        raise HTTPException(
+            409,
+            "You already have a pending shift change request — cancel it "
+            "before submitting another.",
+        )
+
+    # Snapshot the shift currently effective on the change date.
+    current = (await db.execute(
+        select(EmployeeShiftAssignment).where(
+            EmployeeShiftAssignment.employee_id == current_user.id,
+            EmployeeShiftAssignment.effective_from <= payload.effective_from,
+            or_(
+                EmployeeShiftAssignment.effective_to.is_(None),
+                EmployeeShiftAssignment.effective_to
+                >= payload.effective_from,
+            ),
+        ).order_by(EmployeeShiftAssignment.effective_from.desc()).limit(1)
+    )).scalars().first()
+    if current and current.shift_template_id == shift.id:
+        raise HTTPException(
+            422, "You are already on that shift for the requested date."
+        )
+
+    req = ShiftChangeRequest(
+        user_id=current_user.id,
+        current_shift_template_id=(
+            current.shift_template_id if current else None
+        ),
+        requested_shift_template_id=shift.id,
+        effective_from=payload.effective_from,
+        reason=payload.reason.strip(),
+    )
+    db.add(req)
+    await db.flush()
+
+    emp = (await db.execute(
+        select(Employee).where(Employee.user_id == current_user.id)
+    )).scalars().first()
+    from app.api.v1.endpoints.approval_chains import instantiate_for_entity
+    instance = await instantiate_for_entity(
+        db=db,
+        entity_type=ChainEntityType.SHIFT_CHANGE,
+        entity_id=req.id,
+        submitter=current_user,
+        amount_paise=0,
+        department=(emp.department if emp else None),
+        context={
+            "requested_shift": shift.name,
+            "effective_from": payload.effective_from.isoformat(),
+        },
+    )
+    req.approval_instance_id = instance.id
+    # Auto-approve short-circuit (e.g. no applicable steps).
+    if instance.status == ChainedApprovalStatus.APPROVED:
+        await apply_shift_change(db, req)
+
+    await log_audit(
+        db, current_user.id, "SHIFT_CHANGE_REQUEST",
+        "shift_change_request", str(req.id),
+        {
+            "requested_shift_template_id": shift.id,
+            "effective_from": payload.effective_from.isoformat(),
+            "instance_id": instance.id,
+        },
+        request,
+    )
+    await db.commit()
+    await db.refresh(req)
+    return await _change_request_read(db, req)
+
+
+@router.get(
+    "/change-requests/my", response_model=List[ShiftChangeRequestRead]
+)
+async def my_change_requests(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    rows = (await db.execute(
+        select(ShiftChangeRequest)
+        .where(ShiftChangeRequest.user_id == current_user.id)
+        .order_by(ShiftChangeRequest.created_at.desc())
+    )).scalars().all()
+    return [await _change_request_read(db, r) for r in rows]
+
+
+@router.get("/change-requests", response_model=List[ShiftChangeRequestRead])
+async def list_change_requests(
+    db: deps.DBDep,
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    current_user: User = Depends(deps.check_permissions([PERM_ASSIGN])),
+) -> Any:
+    stmt = select(ShiftChangeRequest).order_by(
+        ShiftChangeRequest.created_at.desc()
+    )
+    if status_filter:
+        stmt = stmt.where(ShiftChangeRequest.status == status_filter)
+    rows = (await db.execute(stmt)).scalars().all()
+    return [await _change_request_read(db, r) for r in rows]
+
+
+@router.post(
+    "/change-requests/{request_id}/cancel",
+    response_model=ShiftChangeRequestRead,
+)
+async def cancel_change_request(
+    *,
+    db: deps.DBDep,
+    request_id: int,
+    request: Request,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    req = await db.get(ShiftChangeRequest, request_id)
+    if not req:
+        raise HTTPException(404, "Request not found")
+    if req.user_id != current_user.id:
+        raise HTTPException(403, "You may only cancel your own request")
+    if req.status != ShiftChangeStatus.PENDING:
+        raise HTTPException(400, f"Request is already {req.status}")
+
+    req.status = ShiftChangeStatus.CANCELLED
+    req.decided_at = datetime.now(_tz.utc)
+    if req.approval_instance_id:
+        from app.models.approval_chain import ChainedApprovalInstance
+        inst = await db.get(
+            ChainedApprovalInstance, req.approval_instance_id
+        )
+        if inst and inst.status == ChainedApprovalStatus.PENDING:
+            inst.status = ChainedApprovalStatus.CANCELLED
+            inst.finalized_at = datetime.now(_tz.utc)
+
+    await log_audit(
+        db, current_user.id, "SHIFT_CHANGE_CANCEL",
+        "shift_change_request", str(req.id), {}, request,
+    )
+    await db.commit()
+    await db.refresh(req)
+    return await _change_request_read(db, req)

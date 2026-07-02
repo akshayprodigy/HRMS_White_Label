@@ -45,6 +45,7 @@ import { OvertimeRulesAdmin } from './components/overtime-rules-admin';
 import { NightAllowanceRulesAdmin } from './components/night-allowance-rules-admin';
 import { OvertimeApprovalQueue } from './components/overtime-approval-queue';
 import { MyOvertimeView } from './components/my-overtime';
+import { MyShiftView } from './components/my-shift-view';
 import { DesignationGradeAdmin } from './components/designation-grade-admin';
 import { SalaryRevisionsView } from './components/salary-revisions';
 import { RevisionCyclesView } from './components/revision-cycles';
@@ -487,6 +488,8 @@ const App = () => {
         return <OvertimeApprovalQueue />;
       case 'my-overtime':
         return <MyOvertimeView />;
+      case 'my-shift':
+        return <MyShiftView />;
       case 'designations':
         return <DesignationGradeAdmin />;
       case 'salary-revisions':
@@ -597,6 +600,7 @@ const App = () => {
       'night-allowance-rules': 'Night-Shift Allowance Rules',
       'overtime-approvals': 'Overtime Approvals',
       'my-overtime': 'My Overtime & Allowance',
+      'my-shift': 'My Shift',
       'designations': 'Designations & Grades',
       'salary-revisions': 'Salary Revisions',
       'revision-cycles': 'Revision Cycles',
