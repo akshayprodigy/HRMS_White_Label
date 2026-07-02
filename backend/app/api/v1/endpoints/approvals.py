@@ -22,6 +22,18 @@ ADMIN_ACCESS_PERMISSION = "admin access"
 LEAD_ESTIMATE_APPROVE = "lead estimate approve"
 
 
+def _attach_requester_names(items):
+    """Populate `requested_by_name` on each item so the frontend can
+    render the person, not just their id. Requires the caller to have
+    eager-loaded ApprovalItem.requested_by.
+    """
+    for it in items:
+        u = getattr(it, "requested_by", None)
+        if u is not None:
+            it.requested_by_name = u.full_name or u.email
+    return items
+
+
 def _user_has_permission(user: User, permission_name: str) -> bool:
     roles = getattr(user, "roles", None) or []
     for role in roles:
@@ -144,7 +156,10 @@ async def get_approvals_inbox(
         and status is not None
         and status != ApprovalStatus.PENDING
     ):
-        query = select(ApprovalItem).options(selectinload(ApprovalItem.steps))
+        query = select(ApprovalItem).options(
+            selectinload(ApprovalItem.steps),
+            selectinload(ApprovalItem.requested_by),
+        )
         query = query.where(ApprovalItem.status == status)
         if resource_type:
             query = query.where(ApprovalItem.resource_type == resource_type)
@@ -152,7 +167,7 @@ async def get_approvals_inbox(
             query = query.where(ApprovalItem.due_date <= due_before)
 
         result = await db.execute(query)
-        return result.scalars().all()
+        return _attach_requester_names(result.scalars().all())
 
     # Non-admin: support non-pending history view too, but limit it to:
     # - requests created by the current user, or
@@ -172,7 +187,10 @@ async def get_approvals_inbox(
                     ApprovalStep.approver_id == current_user.id,
                 )
             )
-            .options(selectinload(ApprovalItem.steps))
+            .options(
+                selectinload(ApprovalItem.steps),
+                selectinload(ApprovalItem.requested_by),
+            )
             .distinct()
         )
         if resource_type:
@@ -181,7 +199,7 @@ async def get_approvals_inbox(
             query = query.where(ApprovalItem.due_date <= due_before)
 
         result = await db.execute(query)
-        return result.scalars().all()
+        return _attach_requester_names(result.scalars().all())
 
     base_conditions = [
         ApprovalItem.current_step_number == ApprovalStep.step_number,
@@ -199,7 +217,10 @@ async def get_approvals_inbox(
         select(ApprovalItem)
         .join(ApprovalStep)
         .where(and_(*base_conditions))
-        .options(selectinload(ApprovalItem.steps))
+        .options(
+            selectinload(ApprovalItem.steps),
+            selectinload(ApprovalItem.requested_by),
+        )
     )
     
     if status:
@@ -210,7 +231,7 @@ async def get_approvals_inbox(
         query = query.where(ApprovalItem.due_date <= due_before)
         
     result = await db.execute(query)
-    return result.scalars().all()
+    return _attach_requester_names(result.scalars().all())
 
 
 @router.get("/{id}", response_model=ApprovalItemRead)

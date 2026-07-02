@@ -207,6 +207,7 @@ export const ApprovalsView = () => {
     const needle = search.trim().toLowerCase();
     if (!needle) return true;
     const haystack = [
+      item.requested_by_name,
       item.resource_id,
       item.resource_type,
       String(item.id),
@@ -254,7 +255,7 @@ export const ApprovalsView = () => {
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by ID/type"
+                placeholder="Search by name / ID / type"
                 className="pl-9 h-10 rounded-xl text-xs font-semibold w-[200px]"
               />
             </div>
@@ -313,9 +314,12 @@ export const ApprovalsView = () => {
                     <CheckCircle2 size={24} />
                   </div>
                   <div>
-                    <h4 className="text-lg font-black text-[#0F172A] tracking-tight truncate max-w-[220px]">ID: {item.resource_id}</h4>
-                    <div className="flex items-center gap-2">
+                    <h4 className="text-lg font-black text-[#0F172A] tracking-tight truncate max-w-[260px]">
+                      {item.requested_by_name || `Request #${item.resource_id}`}
+                    </h4>
+                    <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-[10px] text-blue-600 font-black uppercase tracking-widest">{item.resource_type}</p>
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">#{item.resource_id}</span>
                       <Badge
                         className={cn(
                           'rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-widest',
