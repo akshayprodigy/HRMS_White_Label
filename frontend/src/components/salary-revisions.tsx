@@ -91,12 +91,14 @@ export const SalaryRevisionsView: React.FC = () => {
         client.get(ENDPOINTS.REVISIONS.REVISIONS, {
           params: status === 'all' ? {} : { status },
         }),
-        client.get(ENDPOINTS.HR.EMPLOYEES).catch(() => ({ data: [] })),
+        client.get(ENDPOINTS.HR.EMPLOYEES, { params: { size: 500 } })
+          .catch(() => ({ data: { items: [] } })),
         client.get(ENDPOINTS.REVISIONS.DESIGNATIONS),
         client.get(ENDPOINTS.REVISIONS.GRADES),
       ]);
       setRows(r.data || []);
-      setEmployees(e.data || []);
+      // GET /hr/employees returns a paginated { items, total } envelope.
+      setEmployees(Array.isArray(e.data?.items) ? e.data.items : []);
       setDesignations(d.data || []);
       setGrades(g.data || []);
     } catch (e: any) {
