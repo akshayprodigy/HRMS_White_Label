@@ -102,4 +102,9 @@ class Employee(Base):
     # Key Result Areas - editable by employee, viewable by HR
     kra: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    user: Mapped["User"] = relationship("User", backref="employee")
+    # foreign_keys explicit: Employee has two FKs to user (user_id and
+    # bank_verified_by_id), so SA can't auto-pick. The primary owning
+    # relationship is via user_id — bank_verified_by_id is unrelated.
+    user: Mapped["User"] = relationship(
+        "User", foreign_keys=[user_id], backref="employee",
+    )

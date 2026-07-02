@@ -124,7 +124,7 @@ def upgrade():
                   nullable=False, server_default=sa.false()),
         sa.Column("digest_batch_key", sa.String(64), nullable=True),
         sa.Column("context_json", sa.JSON(),
-                  nullable=False, server_default=sa.text("'{}'::json")),
+                  nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True),
                   nullable=False, server_default=sa.func.now()),
         sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),

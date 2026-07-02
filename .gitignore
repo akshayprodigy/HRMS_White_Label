@@ -12,6 +12,7 @@ venv/
 .env.*
 !.env.example
 !.env.prod.example
+!.env.local.example
 
 # Copilot / AI instructions
 .github/copilot-instructions.md

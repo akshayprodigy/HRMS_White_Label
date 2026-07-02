@@ -1,0 +1,123 @@
+# Local production-like stack for end-to-end testing on Docker Desktop.
+#
+# - Reuses the existing backend + frontend Dockerfiles as-is.
+# - Same MariaDB 11 the production compose uses.
+# - Alembic runs to head once in a dedicated init service, THEN the
+#   backend starts serving traffic. Idempotent on re-up.
+# - Backend runs the real gunicorn (not --reload) but with -w 1 so the
+#   scheduler assumption (one live loop) holds; the is_running row-lock
+#   still protects concurrent admin "run now" calls against MariaDB.
+# - Frontend serves the production Vite build behind nginx using the
+#   local nginx config (no TLS, proxies /api -> backend:8000).
+#
+# Bring-up:   docker compose -f docker-compose.local.yml up -d --build
+# Tear-down:  docker compose -f docker-compose.local.yml down
+# Nuke data:  docker compose -f docker-compose.local.yml down -v
+
+name: erp-united-exploration-local
+
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-erp_local}
+      MARIADB_USER: ${DB_USER:-erp_user}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-erp_password}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_password}
+    ports:
+      # 3406 on host — chosen to dodge 3306/3307 which are often taken
+      # by other dev DBs. Change if 3406 is also busy on your machine.
+      - "3406:3306"
+    volumes:
+      - mariadb_local_data:/var/lib/mysql
+    healthcheck:
+      # `healthcheck.sh` ships with the mariadb:11 image and is the
+      # recommended way to probe readiness (mysqladmin ping is legacy).
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  migrate:
+    # One-shot: runs Alembic to the latest head and exits.
+    # Uses the same image the backend runs on so the migration env
+    # matches production exactly.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env.local
+    environment:
+      MARIADB_SERVER: db
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      MARIADB_SERVER: db
+    volumes:
+      - uploads_local_data:/app/uploads
+    ports:
+      # 4001 on host — direct API access for /docs, /api/v1/health,
+      # and curl-based verification. The frontend also proxies /api to
+      # the backend service on the internal network.
+      - "4001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Override the image CMD: migrations already ran in the init
+    # service, so start gunicorn directly with a single worker.
+    #
+    # Why single worker locally: APScheduler is designed to run as one
+    # in-process loop. If/when scheduler startup is wired into
+    # create_app(), running -w 1 avoids N concurrent schedulers. The
+    # is_running row-lock on ScheduledJob still holds either way.
+    command:
+      - gunicorn
+      - -c
+      - gunicorn_conf.py
+      - -w
+      - "1"
+      - app.main:create_app
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=2).read()" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        # Swap nginx config so we don't require /etc/letsencrypt certs
+        # locally. nginx.local.conf listens on :80 plain and proxies
+        # /api to backend:8000.
+        NGINX_CONF: nginx.local.conf
+    restart: unless-stopped
+    ports:
+      - "4180:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mariadb_local_data:
+  uploads_local_data:

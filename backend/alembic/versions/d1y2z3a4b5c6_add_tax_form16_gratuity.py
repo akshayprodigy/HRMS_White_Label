@@ -134,7 +134,10 @@ def upgrade():
         ),
         sa.Column(
             "declarations_json", sa.JSON(), nullable=False,
-            server_default=sa.text("'{}'::json"),
+            # No server_default: MariaDB rejects Postgres-only "'{}'::json"
+            # cast syntax on a fresh CREATE TABLE. The ORM layer defaults
+            # this column to {} (see models/tax.py: default=dict), so no
+            # behaviour changes; inserts always supply a value.
         ),
         sa.Column(
             "monthly_rent_paid", sa.Float(),
