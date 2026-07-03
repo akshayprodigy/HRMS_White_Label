@@ -21,6 +21,7 @@ import { toast } from 'sonner';
 import { PeriodPicker, toIsoDate, type DateRange } from '../period-picker';
 import {
   buildEmployeeHeatmap,
+  logDayIso,
   type AttendanceLog,
   type LeaveRecord,
   type CorrectionRecord,
@@ -179,7 +180,7 @@ export const EmployeeDrillover: React.FC<EmployeeDrilloverProps> = ({
     return allLogs
       .filter(l => l.user_id === employee.user_id)
       .filter(l => {
-        const iso = toIsoDate(new Date(l.captured_at));
+        const iso = logDayIso(l);
         return iso >= fromIso && iso <= toIso;
       })
       .sort((a, b) => b.captured_at.localeCompare(a.captured_at));

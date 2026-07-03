@@ -13,6 +13,7 @@ import { Card, Badge, cn } from '../ui-elements';
 import {
   useWorkforceData,
   toIsoDate,
+  logDayIso,
   type DateRange,
   type DailyRollup,
   type EmployeeBasic,
@@ -402,7 +403,7 @@ const DayDetailSlideover: React.FC<{
   const presentSet = useMemo(() => {
     const set = new Set<number>();
     for (const l of logs) {
-      const iso = toIsoDate(new Date(l.captured_at));
+      const iso = logDayIso(l);
       if (iso === day.date) set.add(l.user_id);
     }
     return set;

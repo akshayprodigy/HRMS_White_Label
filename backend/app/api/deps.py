@@ -4,8 +4,8 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from datetime import datetime, timezone
+from sqlalchemy import select, and_, or_
+from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
 from app.db.session import SessionLocal
@@ -84,11 +84,28 @@ async def verify_attendance(
 
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    
+    today = now.date()
+
+    # 24x7 rule: a night-shift punch-in is attributed to YESTERDAY's
+    # work_date, so a plain captured_at >= today check locks the
+    # employee out of the whole app after midnight, mid-shift. Accept:
+    # a punch captured today, a row attributed to today, or
+    # yesterday's cross-midnight shift that is still open / ended today.
     query = select(Attendance).where(
         and_(
             Attendance.user_id == current_user.id,
-            Attendance.captured_at >= today_start
+            or_(
+                Attendance.captured_at >= today_start,
+                Attendance.work_date == today,
+                and_(
+                    Attendance.work_date == today - timedelta(days=1),
+                    Attendance.is_cross_midnight.is_(True),
+                    or_(
+                        Attendance.punch_out_time.is_(None),
+                        Attendance.punch_out_time >= today_start,
+                    ),
+                ),
+            ),
         )
     ).limit(1)
     result = await db.execute(query)

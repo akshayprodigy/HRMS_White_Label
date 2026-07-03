@@ -870,8 +870,12 @@ async def get_all_attendance(
             early = early_out_minutes(
                 _aware(att.punch_out_time), att.work_date, effective
             )
-            read.late_minutes = late if late > 0 else None
-            read.early_exit_minutes = early if early > 0 else None
+            # 0 = evaluated and on-time; None = not evaluated (flags
+            # disabled or no work_date). The UI must not re-guess
+            # lateness from wall-clock time — night shifts punch in
+            # at 22:00 and are on time.
+            read.late_minutes = late
+            read.early_exit_minutes = early
         output.append(read)
     return output
 

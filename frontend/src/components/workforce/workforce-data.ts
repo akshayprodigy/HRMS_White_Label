@@ -3,9 +3,6 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { toIsoDate, fromIsoDate, type DateRange } from '../period-picker';
 
-const LATE_HOUR = 9;
-const LATE_MINUTE = 30;
-
 // Sunday only — Saturdays are working days.
 const WEEKEND_DAYS = new Set<number>([0]);
 
@@ -43,6 +40,10 @@ export interface AttendanceLog {
   user_name?: string;
   user_email?: string;
   captured_at: string;
+  // Logical date from the shift-aware resolver. For a night shift
+  // punching in 22:00 and out 06:30 next day this is the SHIFT START
+  // date — always bucket by this, never by captured_at's calendar day.
+  work_date?: string | null;
   punch_out_time?: string | null;
   mode: string;
   latitude?: number | null;
@@ -152,11 +153,19 @@ function bucketLeave(code: string | null | undefined, name: string | null): keyo
   return 'other';
 }
 
-function isLatePunch(captured_at: string): boolean {
-  const d = new Date(captured_at);
-  const h = d.getHours();
-  const m = d.getMinutes();
-  return h > LATE_HOUR || (h === LATE_HOUR && m > LATE_MINUTE);
+/** Shift-aware lateness. The backend evaluates each punch against the
+ * employee's ACTUAL shift (incl. overnight windows + grace) and sends
+ * late_minutes (0 = evaluated, on time; null = flags disabled). A
+ * wall-clock guess here would mark every evening/night-shift punch-in
+ * "late", so null simply means not-late. */
+function isLateLog(log: AttendanceLog): boolean {
+  return (log.late_minutes ?? 0) > 0;
+}
+
+/** Bucket a log on its logical work_date (shift start day), falling
+ * back to the punch-in calendar date for legacy rows. */
+export function logDayIso(log: AttendanceLog): string {
+  return log.work_date || toIsoDate(new Date(log.captured_at));
 }
 
 function isWfhMode(mode: string | undefined): boolean {
@@ -221,7 +230,7 @@ function classifyDay(args: {
   }
   if (log) {
     const wfh = isWfhMode(log.mode);
-    const late = !wfh && isLatePunch(log.captured_at);
+    const late = !wfh && isLateLog(log);
     return {
       date: iso,
       status: wfh ? 'wfh' : late ? 'late' : 'present',
@@ -253,7 +262,7 @@ export function buildEmployeeHeatmap(
   const empLogs = logs.filter(l => l.user_id === employee.user_id);
   const logByDay = new Map<string, AttendanceLog>();
   for (const l of empLogs) {
-    const iso = toIsoDate(new Date(l.captured_at));
+    const iso = logDayIso(l);
     if (!logByDay.has(iso)) logByDay.set(iso, l);
   }
   const empLeaves = leaves.filter(
@@ -366,12 +375,12 @@ function buildDailyRollup(args: {
   const lateByDay = new Map<string, number>();
   const wfhByDay = new Map<string, number>();
   for (const l of logs) {
-    const iso = toIsoDate(new Date(l.captured_at));
+    const iso = logDayIso(l);
     if (!logsByDayUser.has(iso)) logsByDayUser.set(iso, new Set());
     logsByDayUser.get(iso)!.add(l.user_id);
     const wfh = isWfhMode(l.mode);
     if (wfh) wfhByDay.set(iso, (wfhByDay.get(iso) || 0) + 1);
-    else if (isLatePunch(l.captured_at)) lateByDay.set(iso, (lateByDay.get(iso) || 0) + 1);
+    else if (isLateLog(l)) lateByDay.set(iso, (lateByDay.get(iso) || 0) + 1);
   }
   const out: DailyRollup[] = [];
   for (const d of eachDay(range)) {
