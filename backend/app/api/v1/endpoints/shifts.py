@@ -754,6 +754,107 @@ async def get_my_current_shift(
     )
 
 
+@router.get("/my/week")
+async def get_my_week(
+    db: deps.DBDep,
+    start: Optional[date_cls] = Query(
+        None, description="Week start (defaults to this week's Monday)"
+    ),
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Seven-day shift outlook for the logged-in employee.
+
+    Per day: the assigned shift (or the org default when no assignment
+    covers the date), holiday name, approved leave, weekend flag. Feeds
+    the My Workspace week strip.
+    """
+    from datetime import timedelta
+
+    from app.models.hr import HolidayCalendar
+    from app.models.leave import LeaveRequest, LeaveStatus
+    from app.services.time_rules import build_default_shift, get_time_rules
+
+    today = date_cls.today()
+    week_start = start or (today - timedelta(days=today.weekday()))
+    days = [week_start + timedelta(days=i) for i in range(7)]
+
+    assignments = list((await db.execute(
+        select(EmployeeShiftAssignment)
+        .options(selectinload(EmployeeShiftAssignment.shift_template))
+        .where(
+            EmployeeShiftAssignment.employee_id == current_user.id,
+            EmployeeShiftAssignment.effective_from <= days[-1],
+            or_(
+                EmployeeShiftAssignment.effective_to.is_(None),
+                EmployeeShiftAssignment.effective_to >= days[0],
+            ),
+        )
+        .order_by(EmployeeShiftAssignment.effective_from.desc())
+    )).scalars().all())
+
+    holidays = {
+        h.date: h.name
+        for h in (await db.execute(
+            select(HolidayCalendar).where(HolidayCalendar.date.in_(days))
+        )).scalars().all()
+    }
+
+    leaves = list((await db.execute(
+        select(LeaveRequest)
+        .options(selectinload(LeaveRequest.leave_type))
+        .where(
+            LeaveRequest.employee_id == current_user.id,
+            LeaveRequest.status == LeaveStatus.APPROVED,
+            LeaveRequest.start_date <= days[-1],
+            LeaveRequest.end_date >= days[0],
+        )
+    )).scalars().all())
+
+    default_shift = build_default_shift(await get_time_rules(db))
+
+    out = []
+    for d in days:
+        asg = next(
+            (a for a in assignments
+             if a.effective_from <= d
+             and (a.effective_to is None or a.effective_to >= d)),
+            None,
+        )
+        tpl = asg.shift_template if asg else None
+        lv = next(
+            (l for l in leaves if l.start_date <= d <= l.end_date), None
+        )
+        if tpl is not None:
+            shift = {
+                "name": tpl.name,
+                "start_time": tpl.start_time.strftime("%H:%M"),
+                "end_time": tpl.end_time.strftime("%H:%M"),
+                "is_overnight": tpl.is_overnight,
+                "source": "assigned",
+            }
+        else:
+            shift = {
+                "name": "Default hours",
+                "start_time": default_shift.start_time.strftime("%H:%M"),
+                "end_time": default_shift.end_time.strftime("%H:%M"),
+                "is_overnight": default_shift.is_overnight,
+                "source": "default",
+            }
+        out.append({
+            "date": d.isoformat(),
+            "is_today": d == today,
+            # Sunday-only weekend — matches the workforce UI convention.
+            "is_weekend": d.weekday() == 6,
+            "holiday_name": holidays.get(d),
+            "on_leave": lv is not None,
+            "leave_type": (
+                lv.leave_type.name if lv is not None and lv.leave_type else None
+            ),
+            "shift": shift,
+        })
+    return {"start": week_start.isoformat(), "days": out}
+
+
 @router.get("/my/history", response_model=List[EmployeeShiftAssignmentRead])
 async def get_my_shift_history(
     db: deps.DBDep,

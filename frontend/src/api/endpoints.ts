@@ -96,6 +96,7 @@ export const ENDPOINTS = {
     ASSIGNMENTS_BULK: '/shifts/assignments/bulk',
     EFFECTIVE: '/shifts/effective',
     MY_CURRENT: '/shifts/my/current',
+    MY_WEEK: '/shifts/my/week',
     MY_HISTORY: '/shifts/my/history',
     CHANGE_REQUESTS: '/shifts/change-requests',
     CHANGE_REQUESTS_MY: '/shifts/change-requests/my',

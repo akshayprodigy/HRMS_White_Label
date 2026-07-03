@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Users, 
-  Clock, 
-  Calendar, 
+import {
+  Users,
+  Clock,
+  Calendar,
+  CalendarDays,
   CheckCircle2, 
   AlertCircle, 
   TrendingUp, 
@@ -38,6 +39,129 @@ import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { useTimer } from '../contexts/timer-context';
+
+interface MyWeekDay {
+  date: string;
+  is_today: boolean;
+  is_weekend: boolean;
+  holiday_name?: string | null;
+  on_leave: boolean;
+  leave_type?: string | null;
+  shift: {
+    name: string;
+    start_time: string;
+    end_time: string;
+    is_overnight: boolean;
+    source: 'assigned' | 'default';
+  };
+}
+
+/** Seven-day shift outlook. Today is highlighted; holidays, approved
+ * leave and week-offs replace the shift label where they apply. */
+const MyWeekStrip = ({ onNavigate }: { onNavigate: (tab: string) => void }) => {
+  const [days, setDays] = useState<MyWeekDay[]>([]);
+
+  useEffect(() => {
+    client
+      .get(ENDPOINTS.SHIFTS.MY_WEEK)
+      .then(r => setDays(Array.isArray(r.data?.days) ? r.data.days : []))
+      .catch(() => setDays([]));
+  }, []);
+
+  if (days.length === 0) return null;
+
+  // Template names often embed the timing ("Night (22:00-06:30)") —
+  // trim it so labels don't show the hours twice.
+  const shiftName = (name: string) => name.replace(/\s*\(.*\)\s*$/, '');
+
+  const today = days.find(d => d.is_today);
+  const todayLabel = today
+    ? today.holiday_name
+      ? today.holiday_name
+      : today.on_leave
+        ? `On leave${today.leave_type ? ` · ${today.leave_type}` : ''}`
+        : today.is_weekend
+          ? 'Week off'
+          : `${shiftName(today.shift.name)} · ${today.shift.start_time}–${today.shift.end_time}${today.shift.is_overnight ? ' (+1d)' : ''}`
+    : null;
+
+  return (
+    <Card className="p-8 bg-white border-slate-100 shadow-sm">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2 mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-[#2563EB] border border-blue-100">
+            <CalendarDays size={16} />
+          </div>
+          <h3 className="text-lg font-black text-[#0F172A] uppercase tracking-tight">My Week</h3>
+          {todayLabel && (
+            <span className="text-[10px] font-black uppercase tracking-widest text-[#2563EB] bg-blue-50 border border-blue-100 rounded-full px-3 py-1">
+              Today · {todayLabel}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => onNavigate('my-shift')}
+          className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-[#2563EB] transition-colors text-left"
+        >
+          My Shift & Requests
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 gap-2">
+        {days.map(d => {
+          const dt = new Date(d.date);
+          const dayName = dt.toLocaleDateString(undefined, { weekday: 'short' });
+          const dayNum = dt.getDate();
+          let body: React.ReactNode;
+          if (d.holiday_name) {
+            body = <p className="sb-item-sm font-black text-slate-500 mt-1">{d.holiday_name}</p>;
+          } else if (d.on_leave) {
+            body = <p className="sb-item-sm font-black text-[#2563EB] mt-1">{d.leave_type || 'On leave'}</p>;
+          } else if (d.is_weekend) {
+            body = <p className="sb-item-sm font-black text-slate-400 mt-1">Week off</p>;
+          } else {
+            body = (
+              <div className="mt-1">
+                <p className="sb-item-sm font-black text-[#0F172A] tabular-nums">
+                  {d.shift.start_time}–{d.shift.end_time}
+                  {d.shift.is_overnight && (
+                    <span className="text-amber-600"> +1d</span>
+                  )}
+                </p>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5 truncate">
+                  {shiftName(d.shift.name)}{d.shift.source === 'default' ? ' · org default' : ''}
+                </p>
+              </div>
+            );
+          }
+          return (
+            <div
+              key={d.date}
+              className={cn(
+                'p-3 rounded-xl border',
+                d.is_today
+                  ? 'bg-blue-50 border-blue-100'
+                  : 'bg-slate-50 border-slate-100',
+              )}
+            >
+              <div className="flex items-center justify-between gap-1">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  {dayName} <span className="text-slate-600">{dayNum}</span>
+                </p>
+                {d.is_today && (
+                  <span className="text-[8px] font-black uppercase tracking-widest bg-[#2563EB] text-white rounded-full px-2 py-0.5">
+                    Today
+                  </span>
+                )}
+              </div>
+              {body}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+};
 
 const performanceData = [
   { name: 'Mon', value: 78 },
@@ -520,6 +644,9 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
            </div>
         </Card>
       </div>
+
+      {/* MY WEEK: shift outlook */}
+      <MyWeekStrip onNavigate={onNavigate} />
 
       {/* BOTTOM ROW: ASSIGNMENTS & LEAVE */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
