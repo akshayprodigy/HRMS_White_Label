@@ -2,6 +2,7 @@ import calendar
 from datetime import datetime, date, timezone
 from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from sqlalchemy import select, and_, func, delete
 from app.api import deps
 from app.models.payroll import (
@@ -958,6 +959,79 @@ async def update_payroll_line(
     line.pending_amount = round(payable - line.disbursed_amount, 2)
     line.disbursement_count = 0
     return line
+
+
+def _has_payroll_view(user: User) -> bool:
+    if user.is_superuser:
+        return True
+    for role in user.roles or []:
+        if (role.name or "").lower() in ("hr", "admin", "super admin"):
+            return True
+        for perm in role.permissions or []:
+            if (perm.name or "") in (HR_PAYROLL_VIEW, HR_PAYROLL_RUN):
+                return True
+    return False
+
+
+@router.get("/payslips/{payslip_id}/download")
+async def download_payslip(
+    payslip_id: int,
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user)
+) -> Any:
+    """Render a published payslip as PDF. Accessible to the payslip's
+    owner and to payroll-view roles (HR/admin)."""
+    row = (await db.execute(
+        select(Payslip, PayrollLine, PayrollRun)
+        .join(PayrollLine, Payslip.payroll_line_id == PayrollLine.id)
+        .join(PayrollRun, PayrollLine.payroll_run_id == PayrollRun.id)
+        .where(Payslip.id == payslip_id)
+    )).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Payslip not found")
+    _, line, run = row
+    if line.user_id != current_user.id and not _has_payroll_view(current_user):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    emp = (await db.execute(
+        select(Employee).where(Employee.user_id == line.user_id)
+    )).scalar_one_or_none()
+    emp_user = await db.get(User, line.user_id)
+
+    from app.models.statutory import EmployerIdentifier
+    from app.core.config import settings
+    employer = (await db.execute(
+        select(EmployerIdentifier)
+        .where(EmployerIdentifier.is_active.is_(True)).limit(1)
+    )).scalar_one_or_none()
+
+    from app.services.payslip_pdf import build_payslip_pdf
+    pdf = build_payslip_pdf(
+        company_name=(employer.name if employer else settings.PROJECT_NAME),
+        month=run.month, year=run.year,
+        employee_name=(emp_user.full_name if emp_user else "-"),
+        employee_code=(emp.employee_id if emp else str(line.user_id)),
+        department=(emp.department if emp else None),
+        designation=(emp.designation if emp else None),
+        pan_number=(emp.pan_number if emp else None),
+        bank_name=(emp.bank_name if emp else None),
+        bank_account=(emp.bank_account if emp else None),
+        payable_days=float(line.payable_days or 0),
+        lop_days=float(line.lop_days or 0),
+        allowances=line.allowances or {},
+        deductions=line.deductions or {},
+        gross_pay=float(line.gross_pay or 0),
+        net_pay=float(line.net_pay or 0),
+        advance_deduction=float(line.advance_deduction or 0),
+    )
+    fname = (
+        f"Payslip_{emp.employee_id if emp else line.user_id}"
+        f"_{run.year}{run.month:02d}.pdf"
+    )
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @router.get("/my-payslips")

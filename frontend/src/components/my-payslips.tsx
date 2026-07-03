@@ -22,6 +22,29 @@ interface PayslipRecord {
 export const MyPayslips = () => {
   const [payslips, setPayslips] = useState<PayslipRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [downloadingId, setDownloadingId] = useState<number | null>(null);
+
+  const downloadPayslip = async (slip: PayslipRecord) => {
+    setDownloadingId(slip.id);
+    try {
+      const res = await client.get(
+        ENDPOINTS.HR.PAYROLL.PAYSLIP_DOWNLOAD(slip.id),
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(
+        new Blob([res.data], { type: 'application/pdf' })
+      );
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Payslip_${slip.year}_${String(slip.month).padStart(2, '0')}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error: any) {
+      toast.error('Failed to download payslip');
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   useEffect(() => {
     fetchPayslips();
@@ -105,9 +128,24 @@ export const MyPayslips = () => {
                     </div>
                   </div>
                 </div>
-                <Badge className="bg-green-100 text-green-700 text-[9px] font-black px-3 py-1">
-                  Published
-                </Badge>
+                <div className="flex items-center gap-3">
+                  <Badge className="bg-green-100 text-green-700 text-[9px] font-black px-3 py-1">
+                    Published
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    onClick={() => downloadPayslip(slip)}
+                    disabled={downloadingId === slip.id}
+                    className="h-10 px-4 rounded-xl font-black text-xs"
+                  >
+                    {downloadingId === slip.id ? (
+                      <Loader2 size={14} className="animate-spin mr-1.5" />
+                    ) : (
+                      <Download size={14} className="mr-1.5" />
+                    )}
+                    PDF
+                  </Button>
+                </div>
               </Card>
           ))}
         </div>

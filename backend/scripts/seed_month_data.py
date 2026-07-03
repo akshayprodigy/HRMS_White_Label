@@ -40,7 +40,10 @@ from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.timesheet import TimeEntry, TimeEntrySource
 from app.models.user import Permission, Role, User
 
-DAYS_BACK = 32
+# Days of history to seed. Override with SEED_DAYS_BACK=95 for ~3
+# months of payroll-testable attendance (idempotent — re-running with
+# a larger window only adds the earlier days).
+DAYS_BACK = int(os.environ.get("SEED_DAYS_BACK", "32"))
 
 SHIFTS = [
     # name, start, end, overnight, break, grace_in, grace_out

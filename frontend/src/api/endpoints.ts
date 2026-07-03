@@ -383,6 +383,7 @@ export const ENDPOINTS = {
       LINES: (id: number) => `/hr/payroll/${id}/lines`,
       LINE_UPDATE: (runId: number, lineId: number) => `/hr/payroll/${runId}/lines/${lineId}`,
       MY_PAYSLIPS: '/hr/payroll/my-payslips',
+      PAYSLIP_DOWNLOAD: (id: number) => `/hr/payroll/payslips/${id}/download`,
     },
   },
   APPROVALS: {

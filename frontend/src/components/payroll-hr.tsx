@@ -50,6 +50,33 @@ export const PayrollHR = () => {
   const [savingLineId, setSavingLineId] = useState<number | null>(null);
   const [expandedLineId, setExpandedLineId] = useState<number | null>(null);
 
+  const [exporting, setExporting] = useState(false);
+
+  const exportSalaryRegister = async () => {
+    if (!currentRun) return;
+    setExporting(true);
+    try {
+      const res = await client.post(
+        `${ENDPOINTS.REPORTS_ENGINE.RUN('salary_register')}?format=xlsx`,
+        { payroll_run_id: currentRun.id },
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SalaryRegister_${currentRun.year}_${String(currentRun.month).padStart(2, '0')}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Salary register exported');
+    } catch (error: any) {
+      toast.error(getErrorMessage(error, 'Failed to export salary register'));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const saveLineEdit = async (line: PayrollLine) => {
     if (!currentRun) return;
     setSavingLineId(line.id);
@@ -565,9 +592,24 @@ export const PayrollHR = () => {
                        <h3 className="text-xl font-black">{currentStep === 4 ? 'Review & Disburse' : 'Finalized — Disburse Remaining'}</h3>
                        <p className="text-slate-500 font-bold">{currentStep === 4 ? 'Pay employees in full or partial amounts before finalizing.' : 'Disburse any remaining amounts, then publish payslips.'}</p>
                     </div>
-                    <div className="text-right">
-                       <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Total Gross</span>
-                       <span className="text-2xl font-black text-green-600">₹{currentRun.total_gross.toLocaleString('en-IN')}</span>
+                    <div className="flex items-end gap-4">
+                      <Button
+                        variant="outline"
+                        onClick={exportSalaryRegister}
+                        disabled={exporting}
+                        className="h-11 px-5 rounded-xl font-black text-xs"
+                      >
+                        {exporting ? (
+                          <Loader2 size={14} className="animate-spin mr-1.5" />
+                        ) : (
+                          <Download size={14} className="mr-1.5" />
+                        )}
+                        Export Excel
+                      </Button>
+                      <div className="text-right">
+                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Total Gross</span>
+                         <span className="text-2xl font-black text-green-600">₹{currentRun.total_gross.toLocaleString('en-IN')}</span>
+                      </div>
                     </div>
                  </div>
 
