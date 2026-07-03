@@ -85,18 +85,13 @@ interface MenuItem {
 
 const menuItems: MenuItem[] = [
   // ---- Overview ---------------------------------------------------------
-  {
-    id: "role-dashboard",
-    label: "My Cockpit",
-    icon: LayoutDashboard,
-    roles: [...EVERYONE, "admin"],
-    group: "Overview",
-  },
+  // "My Cockpit" merged into My Workspace: the role Command Center now
+  // renders inside the workspace, so one landing entry covers both.
   {
     id: "dashboard",
     label: "My Workspace",
     icon: LayoutDashboard,
-    roles: EVERYONE,
+    roles: [...EVERYONE, "admin"],
     group: "Overview",
   },
 

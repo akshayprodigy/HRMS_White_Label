@@ -64,7 +64,6 @@ import { ReportsWorkspace } from './components/reports-workspace';
 import { EnrichedDashboardView } from './components/enriched-dashboard';
 import { PerformanceWorkspace } from './components/performance-workspace';
 import { ExpensesWorkspace } from './components/expenses-workspace';
-import { RoleDashboard } from './components/role-dashboard';
 import { PlumbingAdmin } from './components/plumbing-admin';
 import { NotificationsWorkspace } from './components/notifications-workspace';
 import {
@@ -92,9 +91,9 @@ const App = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>('employee');
   const [userInfo, setUserInfo] = useState<{name: string, avatar?: string} | null>(null);
-  // Land on the role cockpit by default. Users can still navigate to
-  // the legacy "My Workspace" dashboard from the sidebar.
-  const [activeTab, setActiveTab] = useState('role-dashboard');
+  // Single landing page: My Workspace embeds the role Command Center
+  // (the old separate "My Cockpit" tab is aliased below).
+  const [activeTab, setActiveTab] = useState('dashboard');
   const handleSetActiveTab = (tab: string) => {
     setActiveTab(tab);
     if (tab === 'tasks') setSidebarBadges((prev) => ({ ...prev, tasks: 0 }));
@@ -190,16 +189,9 @@ const App = () => {
           setHasMarkedAttendance(response.data.is_marked);
           setHasPunchedOut(Boolean(response.data?.attendance?.punch_out_time));
 
-          // Set default tab based on LATEST role from server
-          if (currentRole === 'hr' || currentRole === 'recruiter') {
-            setActiveTab('hr-dashboard');
-          } else if (currentRole === 'super admin' || currentRole === 'admin') {
-            setActiveTab('admin');
-          } else if (currentRole === 'coo') {
-            setActiveTab('coo-dashboard');
-          } else {
-            setActiveTab('dashboard');
-          }
+          // Everyone lands on My Workspace — the embedded Command
+          // Center adapts it to the user's role(s).
+          setActiveTab('dashboard');
         } catch (error: any) {
           console.error("Failed to fetch initial session data", error);
           
@@ -208,16 +200,9 @@ const App = () => {
           if (error.response?.status === 401) {
             handleLogout();
           } else {
-            // Fallback to cached role if API fails for other reasons (e.g. 403/500)
-            if (role === 'hr' || role === 'recruiter') {
-              setActiveTab('hr-dashboard');
-            } else if (role === 'super admin' || role === 'admin') {
-              setActiveTab('admin');
-            } else if (role === 'coo') {
-              setActiveTab('coo-dashboard');
-            } else {
-              setActiveTab('dashboard');
-            }
+            // API failed for a non-auth reason — still land on the
+            // unified workspace.
+            setActiveTab('dashboard');
           }
         }
       }
@@ -274,15 +259,9 @@ const App = () => {
         setHasPunchedOut(false);
       }
 
-      if (role === 'hr' || role === 'recruiter') {
-        setActiveTab('hr-dashboard');
-      } else if (role === 'super admin' || role === 'admin') {
-        setActiveTab('admin');
-      } else if (role === 'coo') {
-        setActiveTab('coo-dashboard');
-      } else {
-        setActiveTab('dashboard');
-      }
+      // Everyone lands on My Workspace — the embedded Command Center
+      // adapts it to the user's role(s).
+      setActiveTab('dashboard');
 
       toast.success(`Welcome back, ${userData.full_name}!`);
     } catch (error: any) {
@@ -382,7 +361,7 @@ const App = () => {
         const taskCount = tasksR.data?.count ?? 0;
         if (taskCount > 0) next.tasks = taskCount;
         const cockpitCount = cockpitR.data?.count ?? 0;
-        if (cockpitCount > 0) next['role-dashboard'] = cockpitCount;
+        if (cockpitCount > 0) next['dashboard'] = cockpitCount;
         setSidebarBadges(next);
       } catch {
         // silently ignore
@@ -527,10 +506,8 @@ const App = () => {
       case 'expenses-workspace':
         return <ExpensesWorkspace />;
       case 'role-dashboard':
-        return <RoleDashboard onNavigate={(route, params) => {
-          setActiveTab(route);
-          void params;
-        }} />;
+        // Legacy alias — the cockpit now lives inside My Workspace.
+        return <DashboardView attendanceMarked={hasMarkedAttendance} alreadyPunchedOut={hasPunchedOut} onPunchedOut={() => setHasPunchedOut(true)} onNavigate={setActiveTab} onLogout={handleLogout} userRole={userRole} />;
       case 'plumbing-admin':
         return <PlumbingAdmin />;
       case 'notifications-workspace':
@@ -563,7 +540,7 @@ const App = () => {
 
   const getPageTitle = () => {
     const titles: Record<string, string> = {
-      dashboard: 'ERP Dashboard',
+      dashboard: 'My Workspace',
       worklog: 'Daily Worklog',
       timesheet: 'Weekly Timesheets',
       tasks: 'My Tasks & Subtasks',
@@ -619,7 +596,7 @@ const App = () => {
       'enriched-dashboard': 'HR Insights',
       'performance-workspace': 'Performance Management',
       'expenses-workspace': 'Expenses, Travel & Approvals',
-      'role-dashboard': 'My Cockpit',
+      'role-dashboard': 'My Workspace',
       'plumbing-admin': 'Bank / Data-Quality / Jobs',
       'notifications-workspace': 'Notifications',
       'hr-reports': 'HR Analytics & Reports',

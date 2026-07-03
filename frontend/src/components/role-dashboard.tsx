@@ -44,6 +44,10 @@ interface DashboardData {
 
 interface RoleDashboardProps {
   onNavigate?: (tab: string, params?: Record<string, any>) => void;
+  /** Render as a section inside My Workspace: compact chrome, no page
+   * padding, and hidden entirely for single-role employees with
+   * nothing pending (their personal widgets already live there). */
+  embedded?: boolean;
 }
 
 const DASHBOARD_LABELS: Record<string, string> = {
@@ -467,7 +471,7 @@ const writeSavedCockpit = (v: string | null) => {
   }
 };
 
-export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate }) => {
+export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate, embedded = false }) => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [picked, setPicked] = useState<string | null>(null);
@@ -503,7 +507,19 @@ export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate }) => {
   }, [data]);
 
   if (loading || !data) {
+    if (embedded) return null;
     return <div className="p-6"><Loading label="Loading your cockpit…" /></div>;
+  }
+
+  // Inside My Workspace, a single-role employee with nothing pending
+  // gets no Command Center — the page already covers their day.
+  if (
+    embedded
+    && data.available_dashboards.length <= 1
+    && data.active_dashboard === 'employee-dashboard'
+    && data.pending_count === 0
+  ) {
+    return null;
   }
 
   const drillFor = (meta: WidgetMeta) => () => {
@@ -531,14 +547,31 @@ export const RoleDashboard: React.FC<RoleDashboardProps> = ({ onNavigate }) => {
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div
+      className={embedded
+        ? 'p-8 bg-white border border-slate-100 rounded-2xl shadow-sm space-y-6'
+        : 'p-6 space-y-6'}
+    >
       <div className="flex justify-between items-center flex-wrap gap-3">
-        <div>
-          <div className="text-xl font-semibold text-slate-800">
-            {DASHBOARD_LABELS[data.active_dashboard] || 'Dashboard'} Cockpit
-          </div>
-          <div className="text-xs text-slate-500">
-            Signed in as {data.role_names.join(', ')} · {data.pending_count} pending
+        <div className="flex items-center gap-3">
+          {embedded && (
+            <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-[#2563EB] border border-blue-100">
+              <ClipboardCheck size={16} />
+            </div>
+          )}
+          <div>
+            <div className={embedded
+              ? 'text-lg font-black text-[#0F172A] uppercase tracking-tight'
+              : 'text-xl font-semibold text-slate-800'}>
+              {embedded
+                ? 'Command Center'
+                : `${DASHBOARD_LABELS[data.active_dashboard] || 'Dashboard'} Cockpit`}
+            </div>
+            <div className="text-xs text-slate-500">
+              {embedded
+                ? `${DASHBOARD_LABELS[data.active_dashboard] || 'Role'} view · ${data.pending_count} pending`
+                : `Signed in as ${data.role_names.join(', ')} · ${data.pending_count} pending`}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">

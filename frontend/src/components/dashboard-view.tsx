@@ -38,6 +38,7 @@ import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { useTimer } from '../contexts/timer-context';
+import { RoleDashboard } from './role-dashboard';
 
 interface MyWeekDay {
   date: string;
@@ -636,6 +637,10 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
            </div>
         </Card>
       </div>
+
+      {/* COMMAND CENTER: role-driven widgets (renders nothing for a
+          single-role employee with no pending items) */}
+      <RoleDashboard embedded onNavigate={(route) => onNavigate(route)} />
 
       {/* MY WEEK: shift outlook */}
       <MyWeekStrip onNavigate={onNavigate} />
