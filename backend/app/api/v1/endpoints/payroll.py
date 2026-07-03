@@ -15,6 +15,9 @@ from app.models.salary_advance import (
     SalaryAdvance, AdvanceRecovery, AdvanceStatus
 )
 from app.services.salary_calculator import calculate_salary, calculate_salary_contractual
+from app.services.payroll_engine import (
+    compute_statutory, load_statutory_context,
+)
 from app.models.audit import AuditLog
 from app.models.overtime import (
     OvertimeEntry, NightAllowanceEntry, OvertimeStatus,
@@ -278,7 +281,14 @@ async def generate_draft(
         select(Employee).where(Employee.status == "active")
     )
     employees = employees_res.scalars().all()
-    
+
+    # Unified statutory engine — one bulk load of StatutoryConfig,
+    # PT slabs, tax slabs, declarations and FY-to-date actuals; the
+    # per-line math below reads from this context (no N+1).
+    stat_ctx = await load_statutory_context(
+        db, run.year, run.month, employees
+    )
+
     num_days = calendar.monthrange(run.year, run.month)[1]
     
     total_gross = 0.0
@@ -474,10 +484,28 @@ async def generate_draft(
             breakdown["total_actual_earnings"]
             + ot_amount + night_amount + arrears_amount
         )
-        net = (
-            breakdown["net_salary"]
-            + ot_amount + night_amount + arrears_amount
-        )
+        if is_contractual:
+            # Legacy flat-10% contractual path — out of P0 scope.
+            net = (
+                breakdown["net_salary"]
+                + ot_amount + night_amount + arrears_amount
+            )
+            stat = None
+            total_ded = breakdown["total_deductions"]
+        else:
+            # Unified engine: ESIC / PT / TDS on the FULL gross
+            # (incl. OT + night + arrears), PF on capped basic.
+            stat = compute_statutory(
+                stat_ctx, emp,
+                basic_actual=breakdown["basic_salary_actual"],
+                hra_actual=breakdown["hra_actual"],
+                gross_total=gross,
+            )
+            total_ded = round(
+                stat.employee_pf + vpf + stat.esic_employee
+                + stat.pt_amount + stat.tds, 2,
+            )
+            net = round(gross - total_ded, 2)
 
         # Auto-recover active salary advances
         advance_deduction = 0.0
@@ -550,20 +578,49 @@ async def generate_draft(
                 "revision_arrears_detail": arrears_meta,
                 "effective_components_source": eff.source,
             },
-            deductions={
-                "employee_esi": breakdown["employee_esi"],
-                "employee_pf": breakdown["employee_pf"],
-                "voluntary_pf": breakdown["voluntary_pf"],
-                "professional_tax": breakdown["professional_tax"],
-                "guest_house": breakdown["guest_house"],
-                "tds": breakdown["tds"],
-                "total_deductions": breakdown["total_deductions"],
-                "advance_recovery": advance_deduction,
-                "employer_esic": breakdown["employer_esic"],
-                "employer_pf": breakdown["employer_pf"],
-                "total_employer_cost": breakdown["total_employer_cost"],
-                "esic_applicable": breakdown["esic_applicable"],
-            },
+            deductions=(
+                {
+                    "employee_esi": stat.esic_employee,
+                    "employee_pf": stat.employee_pf,
+                    "voluntary_pf": vpf,
+                    "professional_tax": stat.pt_amount,
+                    "guest_house": 0.0,
+                    "tds": stat.tds,
+                    "total_deductions": total_ded,
+                    "advance_recovery": advance_deduction,
+                    "employer_esic": stat.esic_employer,
+                    "employer_pf": stat.employer_pf,
+                    "total_employer_cost": round(
+                        net + stat.esic_employer + stat.employer_pf
+                        + stat.epf_admin_charges + stat.edli_charges, 2,
+                    ),
+                    "esic_applicable": stat.esic_covered,
+                    "engine": "unified_v1",
+                    "epf_wages": stat.epf_wages,
+                    "epf_admin_charges": stat.epf_admin_charges,
+                    "edli_charges": stat.edli_charges,
+                    "esic_covered": stat.esic_covered,
+                    "esic_basis": stat.esic_basis,
+                    "pt_state": stat.pt_state,
+                    "tds_auto": stat.tds_auto,
+                    "tds_regime": stat.tds_regime,
+                    "tds_note": stat.tds_note,
+                } if stat is not None else {
+                    "employee_esi": breakdown["employee_esi"],
+                    "employee_pf": breakdown["employee_pf"],
+                    "voluntary_pf": breakdown["voluntary_pf"],
+                    "professional_tax": breakdown["professional_tax"],
+                    "guest_house": breakdown["guest_house"],
+                    "tds": breakdown["tds"],
+                    "total_deductions": breakdown["total_deductions"],
+                    "advance_recovery": advance_deduction,
+                    "employer_esic": breakdown["employer_esic"],
+                    "employer_pf": breakdown["employer_pf"],
+                    "total_employer_cost": breakdown["total_employer_cost"],
+                    "esic_applicable": breakdown["esic_applicable"],
+                    "engine": "legacy_contractual",
+                }
+            ),
         )
         db.add(line)
         total_gross += gross
@@ -803,7 +860,77 @@ async def update_payroll_line(
     line.gross_pay = (
         breakdown["total_actual_earnings"] + prev_ot + prev_night
     )
-    line.net_pay = breakdown["net_salary"] + prev_ot + prev_night
+    if is_contractual:
+        line.net_pay = breakdown["net_salary"] + prev_ot + prev_night
+        line.deductions = {
+            **(line.deductions or {}),
+            "employee_esi": breakdown["employee_esi"],
+            "employee_pf": breakdown["employee_pf"],
+            "voluntary_pf": breakdown["voluntary_pf"],
+            "guest_house": new_guest_house,
+            "tds": new_tds,
+            "professional_tax": breakdown["professional_tax"],
+            "total_deductions": breakdown["total_deductions"],
+            "employer_esic": breakdown["employer_esic"],
+            "employer_pf": breakdown["employer_pf"],
+            "total_employer_cost": breakdown["total_employer_cost"],
+            "esic_applicable": breakdown["esic_applicable"],
+            "engine": "legacy_contractual",
+        }
+    else:
+        # Unified engine on the edited gross. A TDS typed by HR is a
+        # manual override and sticks across later edits (tds_manual);
+        # otherwise TDS re-derives from the tax config.
+        stat_ctx = await load_statutory_context(
+            db, run.year, run.month, [emp]
+        )
+        was_manual = bool(existing_ded.get("tds_manual"))
+        if payload.tds is not None:
+            tds_override, tds_manual = float(payload.tds), True
+        elif was_manual:
+            tds_override, tds_manual = float(existing_ded.get("tds", 0.0)), True
+        else:
+            tds_override, tds_manual = None, False
+        stat = compute_statutory(
+            stat_ctx, emp,
+            basic_actual=breakdown["basic_salary_actual"],
+            hra_actual=breakdown["hra_actual"],
+            gross_total=line.gross_pay,
+            tds_override=tds_override,
+        )
+        total_ded = round(
+            stat.employee_pf + vpf + stat.esic_employee
+            + stat.pt_amount + stat.tds + new_guest_house, 2,
+        )
+        line.net_pay = round(line.gross_pay - total_ded, 2)
+        line.deductions = {
+            **(line.deductions or {}),
+            "employee_esi": stat.esic_employee,
+            "employee_pf": stat.employee_pf,
+            "voluntary_pf": vpf,
+            "guest_house": new_guest_house,
+            "tds": stat.tds,
+            "tds_manual": tds_manual,
+            "professional_tax": stat.pt_amount,
+            "total_deductions": total_ded,
+            "employer_esic": stat.esic_employer,
+            "employer_pf": stat.employer_pf,
+            "total_employer_cost": round(
+                line.net_pay + stat.esic_employer + stat.employer_pf
+                + stat.epf_admin_charges + stat.edli_charges, 2,
+            ),
+            "esic_applicable": stat.esic_covered,
+            "engine": "unified_v1",
+            "epf_wages": stat.epf_wages,
+            "epf_admin_charges": stat.epf_admin_charges,
+            "edli_charges": stat.edli_charges,
+            "esic_covered": stat.esic_covered,
+            "esic_basis": stat.esic_basis,
+            "pt_state": stat.pt_state,
+            "tds_auto": stat.tds_auto,
+            "tds_regime": stat.tds_regime,
+            "tds_note": stat.tds_note,
+        }
     line.allowances = {
         **existing_allow,
         "arrear": new_arrear,
@@ -813,20 +940,6 @@ async def update_payroll_line(
         "hra_actual": breakdown["hra_actual"],
         "other_allowance_actual": breakdown["other_allowance_actual"],
         # overtime/night already in existing_allow — carried via spread.
-    }
-    line.deductions = {
-        **(line.deductions or {}),
-        "employee_esi": breakdown["employee_esi"],
-        "employee_pf": breakdown["employee_pf"],
-        "voluntary_pf": breakdown["voluntary_pf"],
-        "guest_house": new_guest_house,
-        "tds": new_tds,
-        "professional_tax": breakdown["professional_tax"],
-        "total_deductions": breakdown["total_deductions"],
-        "employer_esic": breakdown["employer_esic"],
-        "employer_pf": breakdown["employer_pf"],
-        "total_employer_cost": breakdown["total_employer_cost"],
-        "esic_applicable": breakdown["esic_applicable"],
     }
 
     # Update run totals using old values (line totals already include OT/night).
