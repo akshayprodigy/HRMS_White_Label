@@ -496,6 +496,63 @@ export const Sidebar = ({
   const isOpen = (name: string) =>
     openGroups[name] ?? (name === (activeGroup ?? groupedItems[0]?.name));
 
+  // "Overview" items stay pinned above the collapsible sections — the
+  // daily-driver pages shouldn't hide behind a toggle.
+  const pinnedItems =
+    groupedItems.find((g) => g.name === "Overview")?.items ?? [];
+  const sections = groupedItems.filter((g) => g.name !== "Overview");
+
+  const renderItem = (item: (typeof menuItems)[number], tree = false) => (
+    <button
+      key={item.id}
+      onClick={() => setActiveTab(item.id)}
+      aria-label={item.label}
+      className={cn(
+        "relative w-full flex items-center rounded-lg transition-all duration-200 group text-left",
+        tree && !collapsed ? "px-2 py-1.5" : "p-2.5",
+        activeTab === item.id
+          ? "bg-[#2563EB]/10 text-[#2563EB]"
+          : "text-[#64748B] hover:bg-slate-50 hover:text-[#0F172A]",
+      )}
+    >
+      <item.icon
+        className={cn(
+          "flex-shrink-0 transition-colors",
+          tree && !collapsed ? "sb-icon-sm" : "w-5 h-5",
+          activeTab === item.id
+            ? "text-[#2563EB]"
+            : "text-slate-400 group-hover:text-[#0F172A]",
+        )}
+      />
+      {!collapsed && (
+        <span
+          className={cn(
+            "ml-2 whitespace-nowrap overflow-hidden text-ellipsis flex-1",
+            tree ? "sb-item-sm" : "text-sm",
+            activeTab === item.id ? "font-semibold" : "font-medium",
+          )}
+        >
+          {item.label}
+        </span>
+      )}
+      {badges[item.id] > 0 && (
+        collapsed ? (
+          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
+        ) : (
+          <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center px-1">
+            {badges[item.id]}
+          </span>
+        )
+      )}
+      {!collapsed && activeTab === item.id && !(badges[item.id] > 0) && (
+        <motion.div
+          layoutId="active-indicator"
+          className="ml-auto w-1.5 h-1.5 rounded-full bg-[#2563EB]"
+        />
+      )}
+    </button>
+  );
+
   return (
     <motion.aside
       initial={false}
@@ -530,96 +587,77 @@ export const Sidebar = ({
         </button>
       </div>
 
-      <nav className="flex-1 px-4 space-y-1 mt-4 overflow-y-auto scrollbar-none">
-        {groupedItems.map((g, gi) => {
-          const open = isOpen(g.name);
-          const groupBadgeCount = g.items.reduce(
-            (sum, it) => sum + (badges[it.id] || 0), 0,
-          );
-          return (
-          <div key={g.name} className={gi === 0 ? "" : "mt-1"}>
-            {!collapsed && (
-              <button
-                onClick={() => toggleGroup(g.name)}
-                aria-label={`${g.name} section`}
-                aria-expanded={open}
-                className="w-full flex items-center px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-slate-400 font-semibold hover:text-slate-600 transition-colors group/header"
-              >
-                <span className="flex-1 text-left">{g.name}</span>
-                {!open && groupBadgeCount > 0 && (
-                  <span className="mr-1.5 min-w-[16px] h-[16px] rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center px-1">
-                    {groupBadgeCount}
-                  </span>
-                )}
-                <ChevronDown
-                  size={13}
-                  className={cn(
-                    "flex-shrink-0 transition-transform duration-200",
-                    open ? "" : "-rotate-90",
-                  )}
-                />
-              </button>
-            )}
-            {collapsed && gi > 0 && (
-              <div className="mx-3 my-2 border-t border-slate-100" />
-            )}
-            <AnimatePresence initial={false}>
-            {(collapsed || open) && (
-              <motion.div
-                initial={collapsed ? false : { height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.18, ease: "easeOut" }}
-                className="overflow-hidden"
-              >
-            {g.items.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                aria-label={item.label}
-                className={cn(
-                  "relative w-full flex items-center p-2.5 rounded-xl transition-all duration-200 group text-left",
-                  activeTab === item.id
-                    ? "bg-[#2563EB]/10 text-[#2563EB]"
-                    : "hover:bg-slate-50 hover:text-[#0F172A]",
-                )}
-              >
-                <item.icon
-                  className={cn(
-                    "w-5 h-5 flex-shrink-0 transition-colors",
-                    activeTab === item.id
-                      ? "text-[#2563EB]"
-                      : "text-[#64748B] group-hover:text-[#0F172A]",
-                  )}
-                />
-                {!collapsed && (
-                  <span className="ml-3 font-medium whitespace-nowrap overflow-hidden text-ellipsis flex-1">
-                    {item.label}
-                  </span>
-                )}
-                {badges[item.id] > 0 && (
-                  collapsed ? (
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
-                  ) : (
-                    <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center px-1">
-                      {badges[item.id]}
-                    </span>
-                  )
-                )}
-                {!collapsed && activeTab === item.id && !(badges[item.id] > 0) && (
-                  <motion.div
-                    layoutId="active-indicator"
-                    className="ml-auto w-1.5 h-1.5 rounded-full bg-[#2563EB]"
-                  />
-                )}
-              </button>
-            ))}
-              </motion.div>
-            )}
-            </AnimatePresence>
+      <nav className="flex-1 px-3 mt-2 pb-4 overflow-y-auto scrollbar-none">
+        {pinnedItems.length > 0 && (
+          <div className="space-y-1">
+            {pinnedItems.map((item) => renderItem(item))}
           </div>
-          );
-        })}
+        )}
+        {pinnedItems.length > 0 && sections.length > 0 && (
+          <div className={cn("border-t border-slate-100", collapsed ? "mx-3 my-2" : "mx-2 my-2")} />
+        )}
+
+        {collapsed ? (
+          sections.map((g, gi) => (
+            <div key={g.name}>
+              {gi > 0 && <div className="mx-3 my-2 border-t border-slate-100" />}
+              {g.items.map((item) => renderItem(item))}
+            </div>
+          ))
+        ) : (
+          <div className="space-y-1">
+            {sections.map((g) => {
+              const open = isOpen(g.name);
+              const groupBadgeCount = g.items.reduce(
+                (sum, it) => sum + (badges[it.id] || 0), 0,
+              );
+              return (
+                <div key={g.name}>
+                  <button
+                    onClick={() => toggleGroup(g.name)}
+                    aria-label={`${g.name} section`}
+                    aria-expanded={open}
+                    className={cn(
+                      "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors hover:bg-slate-100",
+                      open ? "text-slate-700" : "text-slate-500 hover:text-slate-600",
+                    )}
+                  >
+                    <span className="flex-1 text-left sb-group-label font-bold uppercase whitespace-nowrap overflow-hidden text-ellipsis">
+                      {g.name}
+                    </span>
+                    {!open && groupBadgeCount > 0 && (
+                      <span className="min-w-[16px] h-[16px] rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center px-1">
+                        {groupBadgeCount}
+                      </span>
+                    )}
+                    <ChevronDown
+                      size={13}
+                      className={cn(
+                        "flex-shrink-0 text-slate-400 transition-transform duration-200",
+                        !open && "sb-rot-closed",
+                      )}
+                    />
+                  </button>
+                  <AnimatePresence initial={false}>
+                    {open && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.18, ease: "easeOut" }}
+                        className="overflow-hidden"
+                      >
+                        <div className="ml-3 mt-0.5 mb-1 pl-2 border-l border-slate-200 space-y-1">
+                          {g.items.map((item) => renderItem(item, true))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </nav>
 
       <div className="p-4 mt-auto border-t border-slate-100">
