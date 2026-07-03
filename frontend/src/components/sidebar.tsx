@@ -1,5 +1,5 @@
-import React from "react";
-import { motion } from "motion/react";
+import React, { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import {
   LayoutDashboard,
   Clock,
@@ -11,6 +11,7 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   ShieldCheck,
   BarChart3,
   Users,
@@ -458,6 +459,43 @@ export const Sidebar = ({
     items: filteredItems.filter((it) => it.group === gn),
   })).filter((g) => g.items.length > 0);
 
+  const activeGroup = groupedItems.find((g) =>
+    g.items.some((it) => it.id === activeTab),
+  )?.name;
+
+  // Expanded groups persist per browser; the group holding the active
+  // tab is always forced open so navigation never hides the current
+  // page. First visit: only the active group (or the first) is open.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(
+    () => {
+      try {
+        const saved = localStorage.getItem("hr_sidebar_groups");
+        if (saved) return JSON.parse(saved);
+      } catch { /* corrupted state -> defaults */ }
+      return {};
+    },
+  );
+
+  useEffect(() => {
+    if (activeGroup && !openGroups[activeGroup]) {
+      setOpenGroups((prev) => ({ ...prev, [activeGroup]: true }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeGroup]);
+
+  const toggleGroup = (name: string) => {
+    setOpenGroups((prev) => {
+      const next = { ...prev, [name]: !prev[name] };
+      try {
+        localStorage.setItem("hr_sidebar_groups", JSON.stringify(next));
+      } catch { /* storage full/blocked -> non-fatal */ }
+      return next;
+    });
+  };
+
+  const isOpen = (name: string) =>
+    openGroups[name] ?? (name === (activeGroup ?? groupedItems[0]?.name));
+
   return (
     <motion.aside
       initial={false}
@@ -493,19 +531,47 @@ export const Sidebar = ({
       </div>
 
       <nav className="flex-1 px-4 space-y-1 mt-4 overflow-y-auto scrollbar-none">
-        {groupedItems.map((g, gi) => (
-          <div key={g.name} className={gi === 0 ? "" : "mt-3"}>
+        {groupedItems.map((g, gi) => {
+          const open = isOpen(g.name);
+          const groupBadgeCount = g.items.reduce(
+            (sum, it) => sum + (badges[it.id] || 0), 0,
+          );
+          return (
+          <div key={g.name} className={gi === 0 ? "" : "mt-1"}>
             {!collapsed && (
-              <div
-                className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-slate-400 font-semibold"
+              <button
+                onClick={() => toggleGroup(g.name)}
                 aria-label={`${g.name} section`}
+                aria-expanded={open}
+                className="w-full flex items-center px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-slate-400 font-semibold hover:text-slate-600 transition-colors group/header"
               >
-                {g.name}
-              </div>
+                <span className="flex-1 text-left">{g.name}</span>
+                {!open && groupBadgeCount > 0 && (
+                  <span className="mr-1.5 min-w-[16px] h-[16px] rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center px-1">
+                    {groupBadgeCount}
+                  </span>
+                )}
+                <ChevronDown
+                  size={13}
+                  className={cn(
+                    "flex-shrink-0 transition-transform duration-200",
+                    open ? "" : "-rotate-90",
+                  )}
+                />
+              </button>
             )}
             {collapsed && gi > 0 && (
               <div className="mx-3 my-2 border-t border-slate-100" />
             )}
+            <AnimatePresence initial={false}>
+            {(collapsed || open) && (
+              <motion.div
+                initial={collapsed ? false : { height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+                className="overflow-hidden"
+              >
             {g.items.map((item) => (
               <button
                 key={item.id}
@@ -548,8 +614,12 @@ export const Sidebar = ({
                 )}
               </button>
             ))}
+              </motion.div>
+            )}
+            </AnimatePresence>
           </div>
-        ))}
+          );
+        })}
       </nav>
 
       <div className="p-4 mt-auto border-t border-slate-100">

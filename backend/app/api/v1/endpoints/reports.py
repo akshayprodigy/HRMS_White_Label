@@ -477,12 +477,17 @@ async def _fetch_salary_register(
     run = await db.get(_PayrollRun, f.payroll_run_id)
     if run is None:
         raise HTTPException(404, "Payroll run not found")
+    # DRAFT_GENERATED is allowed so HR can pull the register at the
+    # Review & Disburse step; the export is stamped run_status=draft
+    # in meta. Earlier stages have no lines to report on.
     if run.status not in (
+        _PayrollRunStatus.DRAFT_GENERATED,
         _PayrollRunStatus.FINALIZED, _PayrollRunStatus.PUBLISHED,
     ):
         raise HTTPException(
             400,
-            "Salary reports run on FINALIZED / PUBLISHED payroll only.",
+            "Salary register needs a generated draft — lock the period "
+            "and generate the draft first.",
         )
     lines_res = (await db.execute(
         select(_PayrollLine).where(_PayrollLine.payroll_run_id == run.id)

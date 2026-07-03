@@ -66,7 +66,8 @@ export const PayrollHR = () => {
       }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `SalaryRegister_${currentRun.year}_${String(currentRun.month).padStart(2, '0')}.xlsx`;
+      const draftTag = currentRun.status === 'draft_generated' ? '_DRAFT' : '';
+      a.download = `SalaryRegister_${currentRun.year}_${String(currentRun.month).padStart(2, '0')}${draftTag}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success('Salary register exported');
