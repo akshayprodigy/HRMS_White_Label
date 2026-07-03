@@ -291,6 +291,7 @@ export const TimerCard = ({
   taskOptions = {},
   className,
   headerActions,
+  footerStats,
   status: externalStatus,
 }: {
   title?: string;
@@ -306,6 +307,8 @@ export const TimerCard = ({
   className?: string;
   /** Extra controls rendered beside the status badge (e.g. Punch Out). */
   headerActions?: React.ReactNode;
+  /** Real footer metrics (replaces the old hardcoded demo tiles). */
+  footerStats?: { label: string; value: string; accent?: boolean }[];
   status?: {
     isActive: boolean;
     isPaused: boolean;
@@ -515,17 +518,12 @@ export const TimerCard = ({
 
       <div className="mt-8 pt-6 border-t border-slate-50 flex items-center justify-between">
         <div className="flex gap-12">
-          <div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Session Accuracy</p>
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-black text-[#0F172A]">98.2%</span>
-              <span className="text-[10px] font-black text-green-500">+1.2%</span>
+          {(footerStats || []).map((s, i) => (
+            <div key={i}>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+              <span className={cn('text-xl font-black', s.accent ? 'text-[#2563EB]' : 'text-[#0F172A]')}>{s.value}</span>
             </div>
-          </div>
-          <div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Worklog Integrity</p>
-            <span className="text-xl font-black text-[#2563EB]">VERIFIED</span>
-          </div>
+          ))}
         </div>
         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">
           {isActive ? `Recording activity for: ${taskLabel || project}` : "Please select project and task to begin tracking."}

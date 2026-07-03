@@ -109,3 +109,8 @@ class HRDashboardStats(BaseModel):
     attendance_trends: List[Dict[str, Any]]
     leave_trends: List[Dict[str, Any]]
     activities: List[ActivityItem]
+    # Real operational counters (all DB-derived).
+    joined_this_month: int = 0
+    today_present: int = 0
+    today_on_leave: int = 0
+    active_employees: int = 0

@@ -42,6 +42,11 @@ interface DashboardStats {
   onboarding_count: number;
   attendance_trends: any[];
   leave_trends: any[];
+  activities?: { name: string; identifier: string; action: string; type: string; time: string }[];
+  joined_this_month?: number;
+  today_present?: number;
+  today_on_leave?: number;
+  active_employees?: number;
 }
 
 export const HRDashboard = ({ onNavigate = () => {} }: HRDashboardProps) => {
@@ -192,23 +197,23 @@ export const HRDashboard = ({ onNavigate = () => {} }: HRDashboardProps) => {
   };
 
   const stats = [
-    { 
-      label: 'Total Enterprise Assets', 
-      value: statsData?.total_employees.toString() || '...', 
-      trend: '+12 this month', 
-      icon: Users, 
-      color: 'text-blue-600', 
-      bg: 'bg-blue-50', 
-      tab: 'hr-directory' 
+    {
+      label: 'Total Enterprise Assets',
+      value: statsData?.total_employees.toString() || '...',
+      trend: `+${statsData?.joined_this_month ?? 0} this month`,
+      icon: Users,
+      color: 'text-blue-600',
+      bg: 'bg-blue-50',
+      tab: 'hr-directory'
     },
-    { 
-      label: 'Avg. Working Hours', 
-      value: statsData?.avg_working_hours || '...', 
-      trend: `Productivity: ${statsData?.attendance_rate || 0}%`, 
-      icon: Clock, 
-      color: 'text-purple-600', 
-      bg: 'bg-purple-50', 
-      tab: 'hr-reports' 
+    {
+      label: 'Avg. Working Hours',
+      value: statsData?.avg_working_hours || '...',
+      trend: `Attendance: ${statsData?.attendance_rate || 0}%`,
+      icon: Clock,
+      color: 'text-purple-600',
+      bg: 'bg-purple-50',
+      tab: 'hr-reports'
     },
     { 
       label: 'Active Requisitions', 
@@ -377,9 +382,19 @@ export const HRDashboard = ({ onNavigate = () => {} }: HRDashboardProps) => {
             <Card className="p-8 border-slate-200 shadow-sm bg-white">
                <div className="flex items-center justify-between mb-8">
                   <h4 className="text-xl font-black text-[#0F172A] tracking-tight uppercase">Strategic Activity Queue</h4>
-                  <Badge variant="error" className="text-[9px] font-black uppercase px-3 py-1">08 Flagged Events</Badge>
+                  <Badge
+                    variant={(statsData?.activities?.length || 0) > 0 ? 'error' : 'neutral'}
+                    className="text-[9px] font-black uppercase px-3 py-1"
+                  >
+                    {String(statsData?.activities?.length || 0).padStart(2, '0')} Open Items
+                  </Badge>
                </div>
                <div className="space-y-4">
+                  {(statsData?.activities || []).length === 0 && (
+                     <div className="p-8 text-center text-slate-300 font-bold uppercase text-[10px] italic">
+                        Queue clear — nothing pending
+                     </div>
+                  )}
                   {(statsData?.activities || []).map((item, i) => (
                      <div key={i} className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-2xl group hover:border-blue-600 hover:bg-white transition-all shadow-sm">
                         <div className="flex items-center gap-4">
@@ -388,39 +403,64 @@ export const HRDashboard = ({ onNavigate = () => {} }: HRDashboardProps) => {
                            </div>
                            <div>
                               <p className="text-sm font-black text-[#0F172A]">{item.action}</p>
-                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{item.name} • {item.identifier} • {item.type}</p>
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{item.name} • {item.type}{item.time ? ` • ${item.time}` : ''}</p>
                            </div>
                         </div>
-                        <Button size="sm" className="h-9 px-6 bg-slate-900 font-black uppercase text-[9px] tracking-widest shadow-lg shadow-slate-900/10">Execute</Button>
+                        <Button
+                          size="sm"
+                          onClick={() => onNavigate(
+                            item.type === 'Leave' ? 'hr-leave'
+                              : item.type === 'Shifts' ? 'shifts-workspace'
+                              : 'hr-attendance'
+                          )}
+                          className="h-9 px-6 bg-slate-900 font-black uppercase text-[9px] tracking-widest shadow-lg shadow-slate-900/10"
+                        >
+                          Open
+                        </Button>
                      </div>
                   ))}
                </div>
-               <Button variant="ghost" className="w-full mt-6 font-black text-[10px] uppercase tracking-widest text-slate-400 hover:text-blue-600">View Comprehensive Action Log <ArrowRight size={14} className="ml-2" /></Button>
+               <Button
+                 variant="ghost"
+                 onClick={() => onNavigate('approvals')}
+                 className="w-full mt-6 font-black text-[10px] uppercase tracking-widest text-slate-400 hover:text-blue-600"
+               >
+                 Open Approvals Center <ArrowRight size={14} className="ml-2" />
+               </Button>
             </Card>
          </div>
 
          <div className="space-y-6">
             <Card className="p-8 border-slate-200 shadow-sm bg-white">
-               <h4 className="text-lg font-black text-[#0F172A] tracking-tight mb-6 uppercase flex items-center gap-2"><Timer size={18} className="text-blue-600"/> Today's Log Summary</h4>
+               <h4 className="text-lg font-black text-[#0F172A] tracking-tight mb-6 uppercase flex items-center gap-2"><Timer size={18} className="text-blue-600"/> Today at a Glance</h4>
                <div className="space-y-6">
                   <div className="p-5 rounded-2xl bg-blue-50 border border-blue-100">
-                     <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Total Productivity</p>
-                     <p className="text-2xl font-black text-[#0F172A]">07h 42m</p>
+                     <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Present Today</p>
+                     <p className="text-2xl font-black text-[#0F172A] tabular-nums">
+                       {statsData?.today_present ?? 0}
+                       <span className="text-sm font-black text-slate-400"> / {statsData?.active_employees ?? 0}</span>
+                     </p>
                   </div>
                   <div className="space-y-4">
                      <div className="flex justify-between items-center text-[10px] font-black uppercase">
-                        <span className="text-slate-400">HR Tasks</span>
-                        <span className="text-[#0F172A]">04h 15m</span>
+                        <span className="text-slate-400">On Approved Leave</span>
+                        <span className="text-[#0F172A] tabular-nums">{statsData?.today_on_leave ?? 0}</span>
                      </div>
                      <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-full bg-blue-600 w-3/4" />
+                        <div
+                          className="h-full bg-blue-600"
+                          style={{ width: `${Math.min(100, ((statsData?.today_on_leave ?? 0) / Math.max(1, statsData?.active_employees ?? 1)) * 100)}%` }}
+                        />
                      </div>
                      <div className="flex justify-between items-center text-[10px] font-black uppercase pt-2">
-                        <span className="text-slate-400">Recruitment</span>
-                        <span className="text-[#0F172A]">02h 30m</span>
+                        <span className="text-slate-400">Corrections Pending</span>
+                        <span className="text-[#0F172A] tabular-nums">{statsData?.pending_actions ?? 0}</span>
                      </div>
                      <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-full bg-purple-600 w-1/3" />
+                        <div
+                          className="h-full bg-purple-600"
+                          style={{ width: `${Math.min(100, (statsData?.pending_actions ?? 0) * 10)}%` }}
+                        />
                      </div>
                   </div>
                </div>

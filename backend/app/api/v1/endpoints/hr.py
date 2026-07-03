@@ -567,41 +567,144 @@ async def get_hr_dashboard_stats(
         label = datetime(y, m, 1).strftime("%b")
         leave_trends.append({"month": label, "count": leave_by_month.get((y, m), 0)})
 
-    activities = [
-        ActivityItem(
-            name="Sarah Jenkins",
-            identifier="UE-2026-042",
-            action="Appraisal Review Pending",
-            type="HR Approval",
-            time="2h ago"
-        ),
-        ActivityItem(
-            name="Robert Fox",
-            identifier="UE-2026-156",
-            action="Asset Handover Verification",
-            type="Exit Flow",
-            time="4h ago"
-        ),
-        ActivityItem(
-            name="Alexander Wright",
-            identifier="UE-2026-409",
-            action="Compensation Audit Failed",
-            type="Payroll",
-            time="1d ago"
-        ),
-    ]
+    # ----- real operational metrics (no fabricated numbers) -----
+    from app.models.shift import ShiftChangeRequest, ShiftChangeStatus
+
+    def _ago(ts) -> str:
+        if ts is None:
+            return ""
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        secs = max(0, (now - ts).total_seconds())
+        if secs < 3600:
+            return f"{int(secs // 60)}m ago"
+        if secs < 86400:
+            return f"{int(secs // 3600)}h ago"
+        return f"{int(secs // 86400)}d ago"
+
+    # Avg worked span over the last 7 days of closed punches.
+    span_rows = (await db.execute(
+        select(Attendance.captured_at, Attendance.punch_out_time).where(
+            Attendance.punch_out_time.isnot(None),
+            Attendance.work_date >= today - timedelta(days=7),
+        )
+    )).all()
+    if span_rows:
+        total_secs = sum(
+            (o - i).total_seconds() for i, o in span_rows if o and o > i
+        )
+        avg_secs = total_secs / len(span_rows)
+        avg_working_hours = f"{int(avg_secs // 3600):02d}h {int((avg_secs % 3600) // 60):02d}m"
+    else:
+        avg_working_hours = "—"
+
+    # Attendance rate: mean daily presence over the last 5 business days.
+    active_emp = (await db.execute(
+        select(func.count(Employee.id)).where(Employee.status == "active")
+    )).scalar() or 0
+    # Join to Employee so punches from non-employee accounts (e.g. a
+    # CEO login without an employee record) can't push the rate >100%.
+    presence_rows = (await db.execute(
+        select(
+            Attendance.work_date,
+            func.count(func.distinct(Attendance.user_id)),
+        )
+        .join(Employee, Employee.user_id == Attendance.user_id)
+        .where(
+            Attendance.work_date.in_(business_days_sorted),
+            Employee.status == "active",
+        )
+        .group_by(Attendance.work_date)
+    )).all()
+    if active_emp and presence_rows:
+        attendance_rate = round(
+            sum(c for _, c in presence_rows)
+            / (len(business_days_sorted) * active_emp) * 100, 1,
+        )
+    else:
+        attendance_rate = 0.0
+
+    # Requisitions raised in the last 7 days.
+    req_week = (await db.execute(
+        select(func.count(ManpowerRequisition.id)).where(
+            ManpowerRequisition.created_at >= now - timedelta(days=7)
+        )
+    )).scalar() or 0
+
+    joined_this_month = (await db.execute(
+        select(func.count(Employee.id)).where(
+            Employee.date_of_joining >= today.replace(day=1)
+        )
+    )).scalar() or 0
+
+    today_present = (await db.execute(
+        select(func.count(func.distinct(Attendance.user_id))).where(
+            Attendance.work_date == today
+        )
+    )).scalar() or 0
+    today_on_leave = (await db.execute(
+        select(func.count(LeaveRequest.id)).where(
+            LeaveRequest.status == LeaveStatus.APPROVED,
+            LeaveRequest.start_date <= today,
+            LeaveRequest.end_date >= today,
+        )
+    )).scalar() or 0
+
+    # Live activity feed: real pending items across modules, newest first.
+    activities: List[ActivityItem] = []
+    corr_rows = (await db.execute(
+        select(AttendanceCorrectionRequest, User)
+        .join(User, AttendanceCorrectionRequest.user_id == User.id)
+        .where(AttendanceCorrectionRequest.status == CorrectionStatus.PENDING)
+        .order_by(AttendanceCorrectionRequest.id.desc()).limit(3)
+    )).all()
+    for c, u in corr_rows:
+        activities.append(ActivityItem(
+            name=u.full_name, identifier=f"COR-{c.id}",
+            action=f"Attendance correction · {c.date.isoformat()}",
+            type="Attendance", time=_ago(getattr(c, "created_at", None)),
+        ))
+    leave_rows_p = (await db.execute(
+        select(LeaveRequest, User)
+        .join(User, LeaveRequest.employee_id == User.id)
+        .where(LeaveRequest.status == LeaveStatus.SUBMITTED)
+        .order_by(LeaveRequest.created_at.desc()).limit(3)
+    )).all()
+    for lv, u in leave_rows_p:
+        activities.append(ActivityItem(
+            name=u.full_name, identifier=f"LV-{lv.id}",
+            action=f"Leave approval · {lv.start_date.isoformat()}",
+            type="Leave", time=_ago(lv.created_at),
+        ))
+    shift_rows = (await db.execute(
+        select(ShiftChangeRequest, User)
+        .join(User, ShiftChangeRequest.user_id == User.id)
+        .where(ShiftChangeRequest.status == ShiftChangeStatus.PENDING)
+        .order_by(ShiftChangeRequest.created_at.desc()).limit(3)
+    )).all()
+    for sc, u in shift_rows:
+        activities.append(ActivityItem(
+            name=u.full_name, identifier=f"SC-{sc.id}",
+            action=f"Shift change · from {sc.effective_from.isoformat()}",
+            type="Shifts", time=_ago(sc.created_at),
+        ))
+    activities = activities[:5]
 
     return HRDashboardStats(
         total_employees=total_emp,
         active_requisitions=active_req,
         pending_actions=pending_actions,
-        avg_working_hours="08h 12m",
-        attendance_rate=94.2,
-        requisition_trend="+2 this week",
+        avg_working_hours=avg_working_hours,
+        attendance_rate=attendance_rate,
+        requisition_trend=f"+{req_week} this week",
         onboarding_count=onboarding_count,
         attendance_trends=attendance_trends,
         leave_trends=leave_trends,
-        activities=activities
+        activities=activities,
+        joined_this_month=joined_this_month,
+        today_present=today_present,
+        today_on_leave=today_on_leave,
+        active_employees=active_emp,
     )
 
 

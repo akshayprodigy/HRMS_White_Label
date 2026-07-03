@@ -570,6 +570,14 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
              onPause={handlePauseTimer}
              onResume={handleResumeTimer}
              onStop={handleStopTimer}
+             footerStats={[
+               { label: 'Hours This Week', value: `${totalHoursLogged}h` },
+               {
+                 label: 'Active Days',
+                 value: String((timesheetData?.daily_data || []).filter((d: any) => (d.total_seconds ?? d.value ?? 0) > 0).length),
+                 accent: true,
+               },
+             ]}
              headerActions={attendanceMarked ? (
                <Button
                  onClick={handleEndWorkday}
