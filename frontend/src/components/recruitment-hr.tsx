@@ -73,7 +73,8 @@ export const RecruitmentHR = () => {
     fetchData();
     const loadDepartments = async () => {
       try {
-        const res = await client.get(ENDPOINTS.ADMIN.DEPARTMENTS);
+        // HR-readable endpoint — ADMIN.DEPARTMENTS 403s for HR users.
+        const res = await client.get(ENDPOINTS.HR.DEPARTMENTS);
         setDepartments((res as any).data || []);
       } catch (err) {
         console.error('Failed to load departments', err);

@@ -139,7 +139,10 @@ async def list_requisitions(
     return result.scalars().all()
 
 
-@router.get("/{id}", response_model=RequisitionRead)
+# NOTE: the :int converter keeps this catch-all from swallowing the
+# literal /applicants and /interviews routes declared below it —
+# without it, GET /recruitment/applicants 422s ("applicants" as id).
+@router.get("/{id:int}", response_model=RequisitionRead)
 async def get_requisition(
     id: int,
     db: deps.DBDep,
