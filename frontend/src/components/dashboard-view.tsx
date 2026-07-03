@@ -24,7 +24,6 @@ import {
   Pause,
   Square,
   UserCheck,
-  Coffee,
   Umbrella,
   ClipboardCheck,
   MoreVertical,
@@ -471,13 +470,6 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
     await submitPunchOut(true);
   };
 
-  const handleStartBreak = (type: string) => {
-    toast.success(`${type} Started`, {
-      description: `Your ${type.toLowerCase()} session has been logged in the system.`,
-      style: { background: '#2563EB', color: '#fff' }
-    });
-  };
-
   const isManagement = userRole === 'hr';
 
   const taskOptionsByProjectId = React.useMemo(() => {
@@ -753,31 +745,6 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
                </div>
             </div>
 
-            <div className="px-8 pb-8 space-y-6">
-               <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Short Break Tracker</h4>
-               <div className="space-y-3">
-                  {[
-                    { label: 'Lunch Session', value: '45/60M', percent: 75, icon: <Coffee size={14}/>, color: 'bg-orange-500' },
-                    { label: 'Tea Break', value: '12/15M', percent: 80, icon: <Clock size={14}/>, color: 'bg-blue-500' },
-                  ].map((breakItem, i) => (
-                    <div 
-                      key={i} 
-                      onClick={() => handleStartBreak(breakItem.label)}
-                      className="p-4 bg-white border border-slate-100 rounded-2xl flex items-center justify-between group hover:border-blue-100 transition-all cursor-pointer hover:bg-slate-50/50"
-                    >
-                       <div className="flex items-center gap-4">
-                          <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-sm", breakItem.color)}>
-                             {breakItem.icon}
-                          </div>
-                          <p className="text-sm font-black text-[#0F172A] uppercase tracking-tight">{breakItem.label}</p>
-                       </div>
-                       <div className="text-right">
-                          <p className="text-[10px] font-black text-slate-400 tracking-widest">{breakItem.value}</p>
-                       </div>
-                    </div>
-                  ))}
-               </div>
-            </div>
          </Card>
       </div>
 
