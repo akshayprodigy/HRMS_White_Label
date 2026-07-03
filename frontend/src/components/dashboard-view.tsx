@@ -443,7 +443,7 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Project Deliverable Tracker */}
         <div className="lg:col-span-8 relative">
-           <TimerCard 
+           <TimerCard
              title="Project Deliverable Tracker"
              projectOptions={timerProjectOptions}
              taskOptions={taskOptionsByProjectId}
@@ -453,22 +453,22 @@ export const DashboardView = ({ onNavigate, onLogout, attendanceMarked, alreadyP
              onPause={handlePauseTimer}
              onResume={handleResumeTimer}
              onStop={handleStopTimer}
+             headerActions={attendanceMarked ? (
+               <Button
+                 onClick={handleEndWorkday}
+                 isLoading={punchOutBusy}
+                 disabled={alreadyPunchedOut || punchOutBusy}
+                 className={cn(
+                   "h-8 px-4 font-black text-[10px] uppercase tracking-widest rounded-full transition-all",
+                   alreadyPunchedOut
+                     ? "border border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed"
+                     : "border border-red-100 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700",
+                 )}
+               >
+                 {alreadyPunchedOut ? 'Punched Out' : 'Punch Out'}
+               </Button>
+             ) : undefined}
            />
-           {attendanceMarked && (
-             <Button
-               onClick={handleEndWorkday}
-               isLoading={punchOutBusy}
-               disabled={alreadyPunchedOut || punchOutBusy}
-               className={cn(
-                 "absolute right-10 top-10 h-10 px-6 font-black text-[10px] uppercase tracking-widest rounded-xl transition-all z-20",
-                 alreadyPunchedOut
-                   ? "border border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed"
-                   : "border border-red-100 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700",
-               )}
-             >
-               {alreadyPunchedOut ? 'Punched Out' : 'Punch Out'}
-             </Button>
-           )}
         </div>
 
         {/* Performance Index Card */}

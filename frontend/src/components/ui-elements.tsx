@@ -281,17 +281,18 @@ export const Input = React.forwardRef<
 ));
 Input.displayName = "Input";
 
-export const TimerCard = ({ 
+export const TimerCard = ({
   title = "Deliverable Session Tracker",
   onStop,
   onStart,
   onPause,
   onResume,
-  projectOptions = [], 
+  projectOptions = [],
   taskOptions = {},
   className,
+  headerActions,
   status: externalStatus,
-}: { 
+}: {
   title?: string;
   onStop?: (duration: number, project: string, task: string) => void;
   onStart?: (project: string, task: string) => Promise<void>;
@@ -303,6 +304,8 @@ export const TimerCard = ({
     Array<string | { id: number | string; name: string }>
   >;
   className?: string;
+  /** Extra controls rendered beside the status badge (e.g. Punch Out). */
+  headerActions?: React.ReactNode;
   status?: {
     isActive: boolean;
     isPaused: boolean;
@@ -466,9 +469,12 @@ export const TimerCard = ({
           )}
         </div>
         
-        <Badge variant="neutral" className="bg-slate-100 text-slate-500 font-black text-[10px] uppercase tracking-[0.2em] px-4 py-1.5 rounded-full border-none w-fit">
-          {isActive ? (isPaused ? "PAUSED" : "ACTIVE") : "STANDBY"}
-        </Badge>
+        <div className="flex items-center gap-2 w-fit">
+          {headerActions}
+          <Badge variant="neutral" className="bg-slate-100 text-slate-500 font-black text-[10px] uppercase tracking-[0.2em] px-4 py-1.5 rounded-full border-none w-fit">
+            {isActive ? (isPaused ? "PAUSED" : "ACTIVE") : "STANDBY"}
+          </Badge>
+        </div>
       </div>
 
       <div className="flex flex-col items-center justify-center flex-1 py-4">
