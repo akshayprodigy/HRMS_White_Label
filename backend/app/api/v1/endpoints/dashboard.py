@@ -30,7 +30,7 @@ from app.models.leave import LeaveBalanceLedger, LeaveRequest, LeaveStatus, Leav
 from app.models.payroll import PayrollRun, PayrollRunStatus
 from app.models.performance import (
     Goal, GoalStatus, OneOnOne, OneOnOneActionItem, ActionItemStatus,
-    ReviewCycle, ReviewInstance,
+    ReviewCycle, ReviewInstance, ReviewPhase,
 )
 from app.models.tax import DeclarationStatus, EmployeeTaxDeclaration
 from app.models.user import User
@@ -114,12 +114,15 @@ async def _wp_my_pending_actions(db, user, posture) -> dict:
     count = 0
     breakdown: Dict[str, int] = {}
 
-    # Unreleased reviews awaiting my self-submission.
+    # Reviews currently in the SELF phase awaiting my submission —
+    # instances past that phase keep self_submitted_at NULL when the
+    # window lapsed, so filter on the live phase too.
     my_reviews = (await db.execute(
         select(ReviewInstance).where(
             and_(
                 ReviewInstance.employee_id == user.id,
                 ReviewInstance.self_submitted_at.is_(None),
+                ReviewInstance.current_phase == ReviewPhase.SELF,
             )
         )
     )).scalars().all()
@@ -155,11 +158,11 @@ async def _wp_my_pending_actions(db, user, posture) -> dict:
         breakdown["expense_action"] = int(my_expenses)
         count += int(my_expenses)
 
-    # Open 1:1 action items assigned to me.
+    # Open 1:1 action items owned by me (column is owner_id).
     my_actions = (await db.execute(
         select(func.count(OneOnOneActionItem.id)).where(
             and_(
-                OneOnOneActionItem.assignee_id == user.id,
+                OneOnOneActionItem.owner_id == user.id,
                 OneOnOneActionItem.status == ActionItemStatus.OPEN,
             )
         )
@@ -206,7 +209,7 @@ async def _wp_my_1on1_actions(db, user, posture) -> dict:
     open_actions = (await db.execute(
         select(OneOnOneActionItem).where(
             and_(
-                OneOnOneActionItem.assignee_id == user.id,
+                OneOnOneActionItem.owner_id == user.id,
                 OneOnOneActionItem.status == ActionItemStatus.OPEN,
             )
         )
@@ -215,7 +218,9 @@ async def _wp_my_1on1_actions(db, user, posture) -> dict:
         "count": len(open_actions),
         "top": [
             {
-                "id": a.id, "description": a.description,
+                "id": a.id,
+                # title is the required field; description is optional
+                "description": a.title or a.description,
                 "due_date": a.due_date.isoformat() if a.due_date else None,
             }
             for a in open_actions[:5]
@@ -631,15 +636,15 @@ async def _wp_finance_payroll_status(db, user, posture) -> dict:
 
 async def _wp_finance_statutory_due(db, user, posture) -> dict:
     from app.models.statutory import StatutoryFiling, FilingStatus
+    # "Due" = any filing not yet paid to the regulator (a REJECTED one
+    # still needs rework + payment). FilingStatus has no PENDING/
+    # COMPUTED/EXPORTED states — that was the old crash here.
     rows = (await db.execute(
-        select(StatutoryFiling).where(
-            StatutoryFiling.status.in_([
-                FilingStatus.PENDING, FilingStatus.COMPUTED,
-                FilingStatus.EXPORTED,
-            ])
+        select(func.count(StatutoryFiling.id)).where(
+            StatutoryFiling.status != FilingStatus.PAID
         )
-    )).scalars().all()
-    return {"count": len(rows)}
+    )).scalar_one()
+    return {"count": int(rows)}
 
 
 async def _wp_finance_cost_analytics(db, user, posture) -> dict:
@@ -781,7 +786,14 @@ async def get_dashboard(
         try:
             payloads[w.key] = await builder(db, current_user, posture)
         except Exception:
-            # A failed widget never breaks the dashboard.
+            # A failed widget never breaks the dashboard — but it must
+            # be visible in the logs, or breakage hides behind a
+            # "widget errored server-side" tile forever.
+            import logging
+            logging.getLogger(__name__).exception(
+                "dashboard widget %r failed for user %s", w.key,
+                current_user.id,
+            )
             payloads[w.key] = {"error": True}
         metas.append(_widget_meta(w))
 
