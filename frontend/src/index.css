@@ -4612,3 +4612,38 @@ html {
 .sb-item-sm { font-size: 13px; }
 .sb-icon-sm { width: 1rem; height: 1rem; }
 .sb-rot-closed { transform: rotate(-90deg); }
+
+/* drill-over / attendance page utilities (standard Tailwind names) */
+.grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.grid-cols-7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.max-w-\[640px\] { max-width: 640px; }
+.h-1 { height: 0.25rem; }
+.shrink-0 { flex-shrink: 0; }
+.border-b-2 { border-bottom-width: 2px; }
+.bg-slate-900\/50 { background-color: rgb(15 23 42 / 0.5); }
+.bg-slate-50\/60 { background-color: rgb(248 250 252 / 0.6); }
+.bg-emerald-500 { background-color: #10b981; }
+.bg-emerald-600 { background-color: #059669; }
+.hover\:bg-emerald-700:hover { background-color: #047857; }
+.bg-emerald-50 { background-color: #ecfdf5; }
+.text-emerald-600 { color: #059669; }
+.text-emerald-700 { color: #047857; }
+.bg-rose-500 { background-color: #f43f5e; }
+.bg-rose-300 { background-color: #fda4af; }
+.bg-rose-50 { background-color: #fff1f2; }
+.hover\:bg-rose-50:hover { background-color: #fff1f2; }
+.text-rose-600 { color: #e11d48; }
+.text-rose-700 { color: #be123c; }
+.border-rose-200 { border-color: #fecdd3; }
+.bg-amber-400 { background-color: #fbbf24; }
+.bg-indigo-400 { background-color: #818cf8; }
+.bg-indigo-50 { background-color: #eef2ff; }
+.text-indigo-600 { color: #4f46e5; }
+.text-slate-800 { color: #1e293b; }
+/* rings via box-shadow (this sheet has no --tw-ring machinery) */
+.cell-ring-worked { box-shadow: inset 0 0 0 2px #fbbf24; }
+.cell-ring-hover { box-shadow: 0 0 0 2px rgb(37 99 235 / 0.4); }
+.pb-1 { padding-bottom: 0.25rem; }
+.min-h-\[64px\] { min-height: 64px; }
+.min-w-\[1\.1rem\] { min-width: 1.1rem; }
