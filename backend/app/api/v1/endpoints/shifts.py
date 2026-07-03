@@ -384,23 +384,48 @@ async def create_assignment(
     overlapping = await _find_overlapping(
         db, payload.employee_id, payload.effective_from, payload.effective_to
     )
+    new_effective_to = payload.effective_to
+    auto_bounded = False
     if overlapping and close_previous:
-        # Auto-close: shrink each overlapping open-ended assignment so its
-        # effective_to is the day before this new one starts. If shrinking
-        # would invert dates (existing.from > new.from - 1), refuse.
+        # Smooth reassignment semantics:
+        # - assignments already RUNNING (start <= new start - 1) are
+        #   shrunk to end the day before the new one starts
+        # - assignments starting in the FUTURE stay untouched (they are
+        #   usually an approved plan, e.g. from a shift-change request);
+        #   an open-ended new assignment is auto-bounded to end the day
+        #   before the earliest future one begins
         from datetime import timedelta
 
         prior_end = payload.effective_from - timedelta(days=1)
-        for o in overlapping:
-            if o.effective_from > prior_end:
+        past_overlaps = [o for o in overlapping if o.effective_from <= prior_end]
+        future_overlaps = [o for o in overlapping if o.effective_from > prior_end]
+
+        if future_overlaps:
+            earliest_future = min(o.effective_from for o in future_overlaps)
+            if earliest_future == payload.effective_from:
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        f"Cannot close existing assignment #{o.id}: it starts "
-                        f"on {o.effective_from} which is after the proposed "
-                        f"new-prior-end {prior_end}."
+                        f"An assignment already starts on {earliest_future} "
+                        "for this employee — edit or delete it instead of "
+                        "creating another one for the same date."
                     ),
                 )
+            bound = earliest_future - timedelta(days=1)
+            if new_effective_to is None:
+                new_effective_to = bound
+                auto_bounded = True
+            elif new_effective_to >= earliest_future:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"The requested period crosses a future assignment "
+                        f"starting {earliest_future}. End this one by "
+                        f"{bound}, or delete the future assignment first."
+                    ),
+                )
+
+        for o in past_overlaps:
             o.effective_to = prior_end
             db.add(o)
     elif overlapping:
@@ -417,7 +442,7 @@ async def create_assignment(
         employee_id=payload.employee_id,
         shift_template_id=payload.shift_template_id,
         effective_from=payload.effective_from,
-        effective_to=payload.effective_to,
+        effective_to=new_effective_to,
         note=payload.note,
         assigned_by_id=current_user.id,
     )
@@ -453,6 +478,9 @@ async def create_assignment(
             if obj.effective_to
             else None,
             "closed_prior": [o.id for o in overlapping] if close_previous else [],
+            # True when an open-ended request was bounded to protect a
+            # future-starting assignment (e.g. an approved shift change).
+            "auto_bounded": auto_bounded,
         },
         request,
     )
