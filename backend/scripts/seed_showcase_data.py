@@ -271,6 +271,106 @@ async def seed_travel(session, users, emps) -> None:
     print(f"  travel requests: +{added}")
 
 
+async def wire_leave_approvals(session, users) -> None:
+    """Backfill ApprovalItems for SUBMITTED leaves (the API creates
+    these on submit; direct seed inserts skip that). Leaves starting
+    within 10 days are advanced past the manager step so the HR
+    approvals inbox has live items for the demo.
+    """
+    from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
+    from app.models.user import Role
+
+    hr_role = (await session.execute(
+        select(Role).where(Role.name == "HR")
+    )).scalars().first()
+
+    submitted = (await session.execute(
+        select(LeaveRequest).where(LeaveRequest.status == LeaveStatus.SUBMITTED)
+    )).scalars().all()
+    wired = advanced = 0
+    today = date.today()
+    for lv in submitted:
+        existing = (await session.execute(
+            select(ApprovalItem).where(
+                ApprovalItem.resource_type == "leave_request",
+                ApprovalItem.resource_id == str(lv.id),
+            )
+        )).scalars().first()
+        if existing:
+            continue
+        requester = (await session.execute(
+            select(User).where(User.id == lv.employee_id)
+        )).scalars().first()
+        if requester is None:
+            continue
+        item = ApprovalItem(
+            resource_type="leave_request", resource_id=str(lv.id),
+            status=ApprovalStatus.PENDING, current_step_number=1,
+            requested_by_id=requester.id,
+        )
+        session.add(item)
+        await session.flush()
+        step_idx = 1
+        advance_to_hr = (lv.start_date - today).days <= 10
+        if requester.manager_id:
+            session.add(ApprovalStep(
+                approval_item_id=item.id, step_number=step_idx,
+                approver_id=requester.manager_id,
+                status=ApprovalStatus.APPROVED if advance_to_hr
+                else ApprovalStatus.PENDING,
+            ))
+            if advance_to_hr:
+                item.current_step_number = 2
+                advanced += 1
+            step_idx += 1
+        session.add(ApprovalStep(
+            approval_item_id=item.id, step_number=step_idx,
+            role_id=hr_role.id if hr_role else None,
+            status=ApprovalStatus.PENDING,
+        ))
+        wired += 1
+    print(f"  leave approval items: +{wired} ({advanced} advanced to HR step)")
+
+
+async def wire_expense_chains(session, users, emps) -> None:
+    """Attach chain approval instances to SUBMITTED claims/travel so
+    they show in the chain approver queue (HR per the local seed chain).
+    """
+    from app.api.v1.endpoints.approval_chains import instantiate_for_entity
+    from app.models.approval_chain import ChainEntityType
+
+    claims = (await session.execute(
+        select(ExpenseClaim).where(
+            ExpenseClaim.status == ExpenseClaimStatus.SUBMITTED,
+            ExpenseClaim.approval_instance_id.is_(None),
+        )
+    )).scalars().all()
+    wired = 0
+    for claim in claims:
+        submitter = (await session.execute(
+            select(User).where(User.id == claim.submitter_id)
+        )).scalars().first()
+        if submitter is None:
+            continue
+        emp = emps.get(submitter.id)
+        try:
+            instance = await instantiate_for_entity(
+                db=session,
+                entity_type=ChainEntityType.EXPENSE,
+                entity_id=claim.id,
+                submitter=submitter,
+                amount_paise=claim.total_amount_paise,
+                department=emp.department if emp else None,
+                context={"claim_title": claim.title},
+            )
+            claim.approval_instance_id = instance.id
+            claim.submitted_at = datetime.now(timezone.utc)
+            wired += 1
+        except Exception as e:  # no matching chain configured — skip
+            print(f"  (claim '{claim.title}' not chained: {e})")
+    print(f"  expense chain instances: +{wired}")
+
+
 async def main() -> None:
     _guard()
     engine = create_async_engine(settings.SQLALCHEMY_DATABASE_URI)
@@ -279,16 +379,20 @@ async def main() -> None:
         users = await _users(session)
         emps = await _employees_by_user(session, [u.id for u in users.values()])
         types = await _leave_types(session)
-        print(f"[1/5] users found: {sorted(users)}")
-        print("[2/5] leave balances")
+        print(f"[1/6] users found: {sorted(users)}")
+        print("[2/6] leave balances")
         await seed_balances(session, users, types)
-        print("[3/5] leave requests")
+        print("[3/6] leave requests")
         await seed_leaves(session, users, types)
-        print("[4/5] expense categories + claims")
+        print("[4/6] expense categories + claims")
         cats = await seed_categories(session)
         await seed_claims(session, users, emps, cats)
-        print("[5/5] travel requests")
+        print("[5/6] travel requests")
         await seed_travel(session, users, emps)
+        await session.flush()
+        print("[6/6] approval wiring (inbox + chains)")
+        await wire_leave_approvals(session, users)
+        await wire_expense_chains(session, users, emps)
         await session.commit()
     await engine.dispose()
     print("done.")
