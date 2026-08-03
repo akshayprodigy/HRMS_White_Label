@@ -136,6 +136,7 @@ async def seed_demo_roles():
             {"name": "finance approve", "description": "Finance-level approver in the generic chain engine"},
             {"name": "finance reimburse", "description": "Mark expense claims reimbursed / push to payroll"},
             {"name": "expense category admin", "description": "Manage expense categories + policy caps"},
+            {"name": "department head write", "description": "Assign functional head / deputy to a department"},
         ]
         
         db_perms = {}
@@ -244,6 +245,7 @@ async def seed_demo_roles():
             db_perms["performance one_on_one"],
             db_perms["approval chain admin"],
             db_perms["expense category admin"],
+            db_perms["department head write"],
         ]
         db_roles["PM"].permissions = [
             db_perms["employee leave read"],
@@ -305,6 +307,7 @@ async def seed_demo_roles():
             db_perms["expense category admin"],
             db_perms["finance approve"],
             db_perms["finance reimburse"],
+            db_perms["department head write"],
         ]
         db_roles["Business Developer"].permissions = [
             db_perms["client read"],
