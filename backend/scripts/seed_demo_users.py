@@ -162,7 +162,8 @@ async def seed_demo_roles():
             {"name": "BD MANAGER", "description": "Business Development Approval Authority"},
             {"name": "DEPT_HEAD", "description": "Departmental Management & Requisition Authority"},
             {"name": "RECRUITER", "description": "Talent Acquisition & Pipeline Management"},
-            {"name": "Finance", "description": "Finance-level approver + owns the reimbursement queue (distinct from HR)"}
+            {"name": "Finance", "description": "Finance-level approver + owns the reimbursement queue (distinct from HR)"},
+            {"name": "MD", "description": "Managing Director — top-level approver"}
         ]
 
         db_roles = {}
@@ -177,7 +178,8 @@ async def seed_demo_roles():
             ("BD MANAGER", "Business Development Approval Authority"),
             ("DEPT_HEAD", "Departmental Management & Requisition Authority"),
             ("RECRUITER", "Talent Acquisition & Pipeline Management"),
-            ("Finance", "Finance-level approver + owns the reimbursement queue (distinct from HR)")
+            ("Finance", "Finance-level approver + owns the reimbursement queue (distinct from HR)"),
+            ("MD", "Managing Director — top-level approver")
         ]:
             result = await session.execute(
                 select(Role).where(Role.name == r_name)
