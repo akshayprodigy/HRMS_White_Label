@@ -39,6 +39,7 @@ from app.models.approval_chain import (
 from app.models.expense import ExpenseClaim, ExpenseClaimStatus, TravelRequest
 from app.models.notification import Notification
 from app.models.user import Role, User
+from app.services import functional_head as functional_head_service
 from app.services.approval_engine import (
     ChainSpec, RequestContext, StepSpec, advance_state, build_plan,
     pick_effective_chain, validate_bands,
@@ -568,15 +569,18 @@ async def preview_route(
 
 
 async def _resolve_approvers(
-    db, step: StepSpec, submitter_id: int,
+    db, step, submitter_id: int, department: Optional[str] = None,
 ) -> List[int]:
     """Turn an approver_type into a list of user ids.
 
     - REPORTING_MANAGER: submitter's User.manager_id
-    - DEPT_HEAD: users tagged with the "dept_head" role (org-wide fallback)
-    - ROLE: all users with the named role
+    - DEPT_HEAD: users with the "DEPT_HEAD" role (org-wide)
+    - ROLE: all users with the named role (approver_ref)
     - SPECIFIC_USER: exactly the referenced user id
-    - FINANCE: users with the "finance" role
+    - FINANCE: users with the "Finance" role
+    - FUNCTIONAL_HEAD: the active head (deputy fallback) of `department`
+    - CEO: users with the "CEO" role
+    - MD: users with the "MD" role
     """
     kind = step.approver_type
     if kind == ApproverType.REPORTING_MANAGER:
@@ -585,11 +589,7 @@ async def _resolve_approvers(
         )).scalar_one_or_none()
         return [row] if row else []
     if kind == ApproverType.DEPT_HEAD:
-        stmt = (
-            select(User.id)
-            .join(User.roles)
-            .where(Role.name == "dept_head")
-        )
+        stmt = select(User.id).join(User.roles).where(Role.name == "DEPT_HEAD")
         return list((await db.execute(stmt)).scalars().all())
     if kind == ApproverType.ROLE:
         role_name = step.approver_ref or ""
@@ -604,9 +604,16 @@ async def _resolve_approvers(
             return []
         return [uid]
     if kind == ApproverType.FINANCE:
-        stmt = (
-            select(User.id).join(User.roles).where(Role.name == "finance")
-        )
+        stmt = select(User.id).join(User.roles).where(Role.name == "Finance")
+        return list((await db.execute(stmt)).scalars().all())
+    if kind == ApproverType.FUNCTIONAL_HEAD:
+        head = await functional_head_service.resolve_head_for_department(db, department)
+        return [head.id] if head else []
+    if kind == ApproverType.CEO:
+        stmt = select(User.id).join(User.roles).where(Role.name == "CEO")
+        return list((await db.execute(stmt)).scalars().all())
+    if kind == ApproverType.MD:
+        stmt = select(User.id).join(User.roles).where(Role.name == "MD")
         return list((await db.execute(stmt)).scalars().all())
     return []
 
@@ -730,7 +737,7 @@ async def instantiate_for_entity(
             step.max_amount_paise or 10**18
         ):
             continue
-        approver_ids = await _resolve_approvers(db, step, submitter.id)
+        approver_ids = await _resolve_approvers(db, step, submitter.id, department=department)
         skip_self = step.skip_if_same_person or picked.skip_if_same_person
         if skip_self:
             approver_ids = [u for u in approver_ids if u != submitter.id]

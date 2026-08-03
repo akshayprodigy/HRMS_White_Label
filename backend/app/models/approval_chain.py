@@ -48,6 +48,9 @@ class ApproverType:
     ROLE = "role"
     SPECIFIC_USER = "specific_user"
     FINANCE = "finance"
+    FUNCTIONAL_HEAD = "functional_head"
+    CEO = "ceo"
+    MD = "md"
 
 
 class ParallelRule:
