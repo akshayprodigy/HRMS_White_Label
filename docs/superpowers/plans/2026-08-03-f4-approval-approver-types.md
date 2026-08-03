@@ -451,3 +451,12 @@ git status
 **Placeholder scan:** No TBD/TODO. The two conditional instructions (Task 4 `StepSpec` fields; Task 3(d) other callers) point at concrete source-of-truth files, not undefined logic. ✅
 
 **Type consistency:** `resolve_head_for_department` defined in Task 1, used in Task 3. `ApproverType.FUNCTIONAL_HEAD/CEO/MD` defined in Task 3 Step 1, used in Task 3 Step 2 + Task 4. `_resolve_approvers(db, step, submitter_id, department=None)` signature consistent between definition (Task 3) and all test calls (Task 4). Role names `"CEO"`, `"MD"`, `"DEPT_HEAD"`, `"Finance"` match the seed catalog. ✅
+
+---
+
+## Rollout notes & follow-ups (from final code review)
+
+- **⚠️ Rollout audit — DEPT_HEAD/Finance case-fix is a live-behavior change.** Before promoting past dev in any tenant, run per-environment:
+  `SELECT c.id, c.entity_type, s.approver_type FROM approval_chain c JOIN approval_chain_step s ON s.chain_id=c.id WHERE s.approver_type IN ('dept_head','finance') AND c.is_active=1;`
+  Any active chain using those approver types will flip from "silently skipped (nobody gates)" to "a real DEPT_HEAD/Finance user now gates the request." This is the intended/correct behavior, and it's forward-only (already-instantiated in-flight approvals are unaffected), but confirm with process owners it's desired. In this dev DB it is currently a no-op (0 configured chains).
+- **Follow-up (do in W2 leave migration): end-to-end SoD test on the real path.** The new SoD test covers only the pure `build_plan` helper (used by `/preview`). The real submission path `instantiate_for_entity` has its own duplicated `skip_if_same_person` filter that is correct today but untested. When the first legacy flow (leave) migrates onto the generic engine in W2, add an integration test that drives `instantiate_for_entity` with a self-approving submitter, and consider DRYing the two skip-self implementations then.
