@@ -119,3 +119,30 @@ async def test_resolve_head_skips_inactive_head_falls_to_deputy(db):
     deputy.is_active = False
     await db.flush()
     assert await fh.resolve_head(db, emp) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_head_for_department_active_then_deputy(db):
+    from app.services import functional_head as fh2
+    head = await _mk_user(db, "fh_dh1@pytest.local", "Dept Head")
+    deputy = await _mk_user(db, "fh_dd1@pytest.local", "Dept Deputy")
+    dept = Department(name="FH_DEPT_A", is_active=True, head_user_id=head.id, deputy_head_user_id=deputy.id)
+    db.add(dept)
+    await db.flush()
+
+    resolved = await fh2.resolve_head_for_department(db, "FH_DEPT_A")
+    assert resolved is not None and resolved.id == head.id
+
+    # inactive head -> deputy
+    head.is_active = False
+    await db.flush()
+    resolved2 = await fh2.resolve_head_for_department(db, "FH_DEPT_A")
+    assert resolved2 is not None and resolved2.id == deputy.id
+
+
+@pytest.mark.asyncio
+async def test_resolve_head_for_department_none_cases(db):
+    from app.services import functional_head as fh2
+    assert await fh2.resolve_head_for_department(db, None) is None
+    assert await fh2.resolve_head_for_department(db, "") is None
+    assert await fh2.resolve_head_for_department(db, "FH_NO_SUCH_DEPT") is None
