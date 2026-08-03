@@ -6,7 +6,7 @@ from app.api import deps
 from app.models.user import User
 from app.models.department import Department
 from app.models.employee import Employee
-from app.schemas.department import DepartmentRead, DepartmentHeadUpdate, TeamMemberRead
+from app.schemas.department import DepartmentRead, DepartmentHeadUpdate, TeamMemberRead, HeadOfEmployeeRead
 from app.services import functional_head as fh_service
 
 router = APIRouter()
@@ -37,6 +37,11 @@ async def assign_department_head(
             u = await db.get(User, value)
             if u is None:
                 raise HTTPException(status_code=400, detail=f"User {value} not found")
+            if not u.is_active:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"User {value} is inactive and cannot be a department head",
+                )
         setattr(dept, field, value)
 
     db.add(dept)
@@ -62,7 +67,7 @@ async def my_team(db: deps.DBDep, current_user: deps.CurrentUser) -> Any:
     ]
 
 
-@router.get("/of-employee/{employee_id}")
+@router.get("/of-employee/{employee_id}", response_model=HeadOfEmployeeRead)
 async def head_of_employee(
     employee_id: int, db: deps.DBDep, current_user: deps.CurrentUser
 ) -> Any:

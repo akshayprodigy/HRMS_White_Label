@@ -41,3 +41,9 @@ class TeamMemberRead(BaseModel):
     designation: Optional[str] = None
     status: str
     model_config = ConfigDict(from_attributes=True)
+
+
+class HeadOfEmployeeRead(BaseModel):
+    employee_id: int
+    head_user_id: Optional[int] = None
+    head_name: Optional[str] = None

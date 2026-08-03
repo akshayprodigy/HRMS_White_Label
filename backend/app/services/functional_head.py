@@ -11,13 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.department import Department
-from app.models.employee import Employee
+from app.models.employee import Employee, EmployeeStatus
 from app.models.user import User
 
 
 async def resolve_head(db: AsyncSession, employee: Employee) -> Optional[User]:
-    """Return the functional head governing an employee: the department's
-    head if set, else its deputy, else None."""
+    """Return the ACTIVE functional head governing an employee: the
+    department's head if set and active, else its (active) deputy, else None.
+    An inactive head is skipped so a deactivated account never silently
+    becomes the approver."""
     if not employee.department:
         return None
     dept = (
@@ -25,10 +27,11 @@ async def resolve_head(db: AsyncSession, employee: Employee) -> Optional[User]:
     ).scalars().first()
     if dept is None:
         return None
-    if dept.head_user_id:
-        return await db.get(User, dept.head_user_id)
-    if dept.deputy_head_user_id:
-        return await db.get(User, dept.deputy_head_user_id)
+    for uid in (dept.head_user_id, dept.deputy_head_user_id):
+        if uid:
+            candidate = await db.get(User, uid)
+            if candidate is not None and candidate.is_active:
+                return candidate
     return None
 
 
@@ -54,7 +57,7 @@ async def resolve_team(db: AsyncSession, head_user: User) -> list[Employee]:
             .options(selectinload(Employee.user))
             .where(
                 Employee.department.in_(dept_names),
-                Employee.status == "active",
+                Employee.status == EmployeeStatus.ACTIVE,
             )
         )
     ).scalars().all()

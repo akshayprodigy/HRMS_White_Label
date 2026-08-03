@@ -70,3 +70,32 @@ async def test_assign_head_404_when_department_missing(app):
             assert resp.status_code == 404, resp.text
     finally:
         app.dependency_overrides = {}
+
+
+@pytest.mark.asyncio
+async def test_assign_head_rejects_inactive_user(app):
+    dept = Department(id=1, name="Engineering", description=None, is_active=True)
+    inactive_user = User(id=5, email="inactive@test.com", is_active=False)
+
+    async def override_db():
+        db = AsyncMock()
+
+        async def get_side(model, pk):
+            if model is Department:
+                return dept
+            return inactive_user
+
+        db.get = AsyncMock(side_effect=get_side)
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+        return db
+
+    app.dependency_overrides[verify_attendance] = lambda: None
+    app.dependency_overrides[get_current_user] = lambda: user_with_perm
+    app.dependency_overrides[get_db] = override_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.patch(f"{BASE}/functional-head/departments/1", json={"head_user_id": 5})
+            assert resp.status_code == 400, resp.text
+    finally:
+        app.dependency_overrides = {}

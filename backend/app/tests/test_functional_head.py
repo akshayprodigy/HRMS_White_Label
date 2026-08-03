@@ -98,3 +98,24 @@ async def test_is_head_of_true_for_head_and_deputy(db):
     assert await fh.is_head_of(db, head, emp) is True
     assert await fh.is_head_of(db, deputy, emp) is True
     assert await fh.is_head_of(db, other, emp) is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_head_skips_inactive_head_falls_to_deputy(db):
+    head = await _mk_user(db, "fh_inh@pytest.local", "Inactive Head")
+    head.is_active = False
+    deputy = await _mk_user(db, "fh_actd@pytest.local", "Active Deputy")
+    await db.flush()
+    dept = Department(name="FH_SUP", is_active=True, head_user_id=head.id, deputy_head_user_id=deputy.id)
+    db.add(dept)
+    await db.flush()
+    emp_user = await _mk_user(db, "fh_supemp@pytest.local", "Sup Emp")
+    emp = await _mk_employee(db, emp_user, "FH_SUP")
+
+    resolved = await fh.resolve_head(db, emp)
+    assert resolved is not None and resolved.id == deputy.id
+
+    # both inactive -> None
+    deputy.is_active = False
+    await db.flush()
+    assert await fh.resolve_head(db, emp) is None
