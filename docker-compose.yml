@@ -27,6 +27,7 @@ services:
       - MARIADB_PASSWORD=erp_password
       - MARIADB_DB=erp_db
       - BACKEND_CORS_ORIGINS=["http://localhost:5173", "http://localhost"]
+      - ENABLE_SCHEDULER=1
     ports:
       - "8001:8000"
     depends_on:

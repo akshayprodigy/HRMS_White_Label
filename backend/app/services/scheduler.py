@@ -566,6 +566,77 @@ async def _job_flush_notification_digests(
     return {"digests_flushed": flushed}
 
 
+async def _job_birthday_anniversary_reminders(session: AsyncSession) -> Dict[str, Any]:
+    """Daily: notify HR of today's birthdays and work anniversaries.
+
+    Year-agnostic month-day match on User.date_of_birth (birthday) and
+    Employee.date_of_joining (work anniversary). Each hit fans out an
+    in-app + templated notification to every active HR / Super Admin user,
+    deep-linked to the employee (resource_type='employee').
+    """
+    from datetime import date
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from app.services.notifications_delivery import notify
+    from app.models.employee import Employee
+    from app.models.user import User, Role
+
+    today = date.today()
+
+    hr_users = (await session.execute(
+        select(User).join(User.roles).where(
+            Role.name.in_(["HR", "Super Admin"]),
+            User.is_active.is_(True),
+        )
+    )).scalars().unique().all()
+    if not hr_users:
+        return {"birthdays": 0, "anniversaries": 0, "notifications": 0}
+
+    employees = (await session.execute(
+        select(Employee).options(selectinload(Employee.user))
+        .where(Employee.status == "active")
+    )).scalars().all()
+
+    def is_today(d) -> bool:
+        return bool(d) and d.month == today.month and d.day == today.day
+
+    sent = 0
+    birthdays = 0
+    anniversaries = 0
+    for emp in employees:
+        name = emp.user.full_name if emp.user else emp.employee_id
+        events = []
+        if emp.user and is_today(emp.user.date_of_birth):
+            birthdays += 1
+            events.append(("birthday", f"🎂 {name}'s birthday is today"))
+        if is_today(emp.date_of_joining):
+            years = today.year - emp.date_of_joining.year
+            anniversaries += 1
+            events.append((
+                "anniversary",
+                f"🎉 {name}'s work anniversary today"
+                + (f" ({years} year{'s' if years != 1 else ''})" if years > 0 else ""),
+            ))
+        for kind, title in events:
+            for hr in hr_users:
+                try:
+                    await notify(
+                        session, user_id=hr.id,
+                        event_type="celebration_reminder",
+                        title=title,
+                        message=f"{title}. Open their profile to send wishes or plan a celebration.",
+                        resource_type="employee", resource_id=str(emp.id),
+                        context={"title": title, "employee_id": emp.id,
+                                 "employee_name": name, "kind": kind},
+                    )
+                    sent += 1
+                except Exception as e:  # noqa: BLE001 — one bad row must not abort the job
+                    log.warning("celebration notify failed for emp %s: %s", emp.id, e)
+
+    await session.commit()
+    return {"birthdays": birthdays, "anniversaries": anniversaries, "notifications": sent}
+
+
 register_job(JobSpec(
     name="sweep_notifications_for_delivery",
     display_name="Sweep in-app notifications into delivery queue",
@@ -634,4 +705,14 @@ register_job(JobSpec(
     ),
     default_cadence_cron="0 3 1 * *",     # first of month 03:00 UTC
     fn=_job_esic_continuation_detect,
+))
+register_job(JobSpec(
+    name="birthday_anniversary_reminders",
+    display_name="Birthday & work-anniversary reminders",
+    description=(
+        "Daily: notify HR of today's employee birthdays and work "
+        "anniversaries (deep-linked to the employee profile)."
+    ),
+    default_cadence_cron="0 4 * * *",     # daily 04:00 UTC
+    fn=_job_birthday_anniversary_reminders,
 ))

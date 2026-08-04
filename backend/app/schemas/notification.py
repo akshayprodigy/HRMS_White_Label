@@ -9,6 +9,7 @@ class NotificationBase(BaseModel):
     type: str = "info"
     resource_type: Optional[str] = None
     resource_id: Optional[str] = None
+    event_type: Optional[str] = None
 
 
 class NotificationRead(NotificationBase):

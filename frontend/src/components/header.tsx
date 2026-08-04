@@ -71,12 +71,38 @@ export const Header = ({ title, userName, userRole, avatarUrl, onLogout, onNavig
 
   const unreadCount = (notifications || []).filter(n => !n.is_read).length;
 
+  // Deep-link map: notification resource_type -> destination tab id (F5).
+  const NAV_MAP: Record<string, string> = {
+    leave: 'leave',
+    task: 'tasks',
+    timesheet: 'timesheet',
+    payroll: 'hr-payroll',
+    payslip: 'my-payslips',
+    saved_report: 'reports',
+    approval: 'approvals',
+    approval_chain: 'expenses-workspace',
+    expense: 'expenses-workspace',
+    travel: 'expenses-workspace',
+    overtime: 'my-overtime',
+    revision: 'salary-revisions',
+    salary_revision: 'salary-revisions',
+    employee: 'hr-directory',
+    review: 'performance',
+    performance: 'performance',
+  };
+
   const handleNotificationClick = (n: Notification) => {
     if (!n.is_read) markRead(n.id);
-    if (n.resource_type === 'leave') onNavigate?.('leave');
-    else if (n.resource_type === 'task') onNavigate?.('tasks');
-    else if (n.resource_type === 'timesheet') onNavigate?.('timesheet');
-    else if (n.resource_type === 'payroll') onNavigate?.('payroll');
+    const tab = n.resource_type ? NAV_MAP[n.resource_type] : undefined;
+    if (tab) {
+      onNavigate?.(tab);
+      // Carry the entity id so target screens can focus a specific row (F5).
+      try {
+        window.dispatchEvent(new CustomEvent('erp:navigate', {
+          detail: { tab, resourceType: n.resource_type, resourceId: (n as any).resource_id },
+        }));
+      } catch { /* no-op */ }
+    }
     setShowNotifications(false);
   };
 
