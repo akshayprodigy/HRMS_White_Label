@@ -1,6 +1,7 @@
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 
 from app.api import deps
 from app.models.user import User
@@ -12,6 +13,15 @@ from app.services import functional_head as fh_service
 router = APIRouter()
 
 PERM_HEAD_WRITE = "department head write"
+
+
+@router.get("/departments", response_model=List[DepartmentRead])
+async def list_departments_with_heads(
+    db: deps.DBDep, current_user: deps.CurrentUser,
+) -> Any:
+    """All departments with their current head/deputy user ids — powers the
+    head-assignment screen. Read-only; any authenticated user."""
+    return (await db.execute(select(Department).order_by(Department.name))).scalars().all()
 
 
 @router.patch("/departments/{dept_id}", response_model=DepartmentRead)

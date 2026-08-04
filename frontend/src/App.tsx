@@ -49,6 +49,7 @@ import { MyShiftView } from './components/my-shift-view';
 import { DesignationGradeAdmin } from './components/designation-grade-admin';
 import { EmploymentTypesAdmin } from './components/employment-types-admin';
 import { SalaryStructureAdmin } from './components/salary-structure-admin';
+import { DepartmentHeadsAdmin } from './components/department-heads-admin';
 import { SalaryRevisionsView } from './components/salary-revisions';
 import { RevisionCyclesView } from './components/revision-cycles';
 import { MyRevisionsView } from './components/my-revisions';
@@ -477,6 +478,8 @@ const App = () => {
         return <EmploymentTypesAdmin />;
       case 'salary-structure':
         return <SalaryStructureAdmin />;
+      case 'department-heads':
+        return <DepartmentHeadsAdmin />;
       case 'salary-revisions':
         return <SalaryRevisionsView />;
       case 'revision-cycles':
@@ -576,6 +579,7 @@ const App = () => {
       'functional-areas': 'Functional Areas',
       'employment-types': 'Employment Types',
       'salary-structure': 'Salary Structure',
+      'department-heads': 'Department Heads',
       'shift-templates': 'Shift Templates',
       'shift-assignments': 'Shift Assignments',
       'hr-attendance-review': 'Attendance Review Queue',

@@ -1442,6 +1442,12 @@ const EmployeeDetails = ({
 
   const [managerCandidates, setManagerCandidates] = useState<any[]>([]);
   const [savingField, setSavingField] = useState<string | null>(null);
+  const [empTypes, setEmpTypes] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!isManagement) return;
+    client.get(ENDPOINTS.HR.EMPLOYMENT_TYPES).then(r => setEmpTypes(r.data || [])).catch(() => setEmpTypes([]));
+  }, [isManagement]);
 
   useEffect(() => {
     if (!isManagement) return;
@@ -1566,9 +1572,16 @@ const EmployeeDetails = ({
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="permanent">Permanent</SelectItem>
-                            <SelectItem value="contractual">Contractual</SelectItem>
-                            <SelectItem value="advisor">Advisor</SelectItem>
+                            {(empTypes.length > 0
+                              ? empTypes.map((t: any) => ({ value: t.code, label: t.name }))
+                              : [
+                                  { value: 'permanent', label: 'Permanent' },
+                                  { value: 'contractual', label: 'Contractual' },
+                                  { value: 'advisor', label: 'Advisor' },
+                                ]
+                            ).map((o: any) => (
+                              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       </div>
@@ -2918,6 +2931,7 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
   const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
   const [salaryTemplates, setSalaryTemplates] = useState<any[]>([]);
+  const [employmentTypes, setEmploymentTypes] = useState<any[]>([]);
   const [usersState, setUsersState] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
   const [usersError, setUsersError] = useState<string | null>(null);
   const [userLinkMode, setUserLinkMode] = useState<'existing' | 'new'>('existing');
@@ -2949,6 +2963,7 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
     if (isOpen) {
       fetchUsers();
       client.get(ENDPOINTS.HR.SALARY_TEMPLATES).then(r => setSalaryTemplates(r.data || [])).catch(() => setSalaryTemplates([]));
+      client.get(ENDPOINTS.HR.EMPLOYMENT_TYPES).then(r => setEmploymentTypes(r.data || [])).catch(() => setEmploymentTypes([]));
       if (editingEmp) {
         setUserLinkMode('existing');
         setFormData({
@@ -3323,9 +3338,16 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="permanent">Permanent</SelectItem>
-                    <SelectItem value="contractual">Contractual</SelectItem>
-                    <SelectItem value="advisor">Advisor</SelectItem>
+                    {(employmentTypes.length > 0
+                      ? employmentTypes.map((t: any) => ({ value: t.code, label: t.name }))
+                      : [
+                          { value: 'permanent', label: 'Permanent' },
+                          { value: 'contractual', label: 'Contractual' },
+                          { value: 'advisor', label: 'Advisor' },
+                        ]
+                    ).map((o: any) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

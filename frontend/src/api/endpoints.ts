@@ -363,6 +363,10 @@ export const ENDPOINTS = {
     // Employment-type master (F2)
     EMPLOYMENT_TYPES: '/hr/employment-types',
     EMPLOYMENT_TYPE_DETAIL: (id: number) => `/hr/employment-types/${id}`,
+    // Functional head assignment (F1)
+    FH_DEPARTMENTS: '/functional-head/departments',
+    FH_ASSIGN_HEAD: (deptId: number) => `/functional-head/departments/${deptId}`,
+    FH_MY_TEAM: '/functional-head/my-team',
     // Salary component + template master (F3)
     SALARY_COMPONENTS: '/hr/salary-components',
     SALARY_COMPONENT_DETAIL: (id: number) => `/hr/salary-components/${id}`,
