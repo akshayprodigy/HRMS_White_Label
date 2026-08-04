@@ -5,6 +5,7 @@ from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 from app.api import deps
 from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
+from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
 from app.models.user import User
 from app.models.notification import Notification
 from app.models.bd import EstimateVersion, EstimateStatus
@@ -387,7 +388,12 @@ async def action_approval(
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=404, detail="Approval item not found")
-        
+
+    # W3: separation of duties — cannot approve your own request.
+    if action.status == ApprovalStatus.APPROVED:
+        requester_id = await resolve_approval_owner_id(db, item)
+        guard_self_approval(current_user.id, requester_id)
+
     # Find current step
     current_step = next(
         (s for s in item.steps if s.step_number == item.current_step_number),

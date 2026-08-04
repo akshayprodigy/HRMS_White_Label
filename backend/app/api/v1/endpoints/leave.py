@@ -10,6 +10,7 @@ from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
+from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
 from app.core.config import settings
 from app.models.leave import LeaveType, LeaveBalanceLedger, LeaveRequest, LeaveStatus, HalfDaySession
 from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
@@ -701,10 +702,15 @@ async def action_approval(
     
     if not approval_item:
         raise HTTPException(status_code=404, detail="Approval item not found")
-    
+
+    # W3: separation of duties — cannot approve your own request.
+    if action.status == ApprovalStatus.APPROVED:
+        requester_id = await resolve_approval_owner_id(db, approval_item)
+        guard_self_approval(current_user.id, requester_id)
+
     if approval_item.status != ApprovalStatus.PENDING:
         raise HTTPException(status_code=400, detail="Approval already actioned")
-    
+
     # Find the current pending step
     role_ids = [r.id for r in current_user.roles]
     current_step = next((s for s in approval_item.steps if s.step_number == approval_item.current_step_number), None)

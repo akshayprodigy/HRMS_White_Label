@@ -15,6 +15,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
+from app.services.self_approval import guard_self_approval
 from app.api.v1.endpoints.hr import log_audit
 from app.models.approval import ApprovalItem, ApprovalStatus, ApprovalStep
 from app.models.attendance import Attendance
@@ -567,6 +568,9 @@ async def action_ot_entry(
     entry = await db.get(OvertimeEntry, entry_id)
     if entry is None:
         raise HTTPException(404, "OT entry not found")
+    # W3: separation of duties — cannot approve your own OT.
+    if payload.action == "approve":
+        guard_self_approval(current_user.id, entry.user_id)
     if entry.status in (OvertimeStatus.APPROVED, OvertimeStatus.AUTO_APPROVED):
         raise HTTPException(400, f"Entry is already {entry.status}")
     if entry.payroll_run_id is not None:
