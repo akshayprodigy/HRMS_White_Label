@@ -826,10 +826,19 @@ async def process_employee_row(
     esic_raw = col_val(COL_ESIC)
     esic_applicable = str(esic_raw).strip().upper() in ("Y", "YES", "TRUE", "1") if esic_raw else False
 
-    # Parse employment type (defaults to permanent)
+    # Parse employment type (defaults to permanent). Validate against the
+    # employment-type master so custom types configured by HR are accepted
+    # and typos are rejected (rather than silently downgraded).
     emp_type_raw = col_val(COL_EMP_TYPE)
-    employment_type = str(emp_type_raw).strip().lower() if emp_type_raw else "permanent"
-    if employment_type not in ("permanent", "contractual", "advisor"):
+    if emp_type_raw:
+        employment_type = str(emp_type_raw).strip().lower()
+        et_master = await employment_type_service.get_employment_type(db, employment_type)
+        if et_master is None or not et_master.is_active:
+            return (
+                f"Row {row_num} ({full_name}): Unknown employment type "
+                f"'{employment_type}'. Configure it under Employment Types first."
+            )
+    else:
         employment_type = "permanent"
 
     # Support old "Salary" column name as fallback

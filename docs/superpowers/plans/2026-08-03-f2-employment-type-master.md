@@ -644,3 +644,15 @@ git commit -m "feat(hr): accept + validate employee employment_type against the 
 **Placeholder scan:** No TBD/TODO; conditional test-mock notes point at concrete adjustments, not undefined logic. ✅
 
 **Type consistency:** `EmploymentType.code/statutory_enabled/flat_tds_rate` consistent across model (T1), service (T2), schema/endpoints (T3), payroll (T4). `is_statutory_employee`/`flat_tds_rate_for` signatures match between tests (T2) and payroll callers (T4). `HR_WRITE = "hr employee write"` matches the seeded HR permission. ✅
+
+---
+
+## Review fixes applied (from final code review)
+
+- **Bulk employee upload wired to the master.** `process_employee_row` (hr.py) no longer hardcodes the 3-value allow-list — it validates the uploaded employment type against the active master and rejects unknown codes with a clear per-row error (previously silently downgraded to `permanent`). So HR-configured custom types are usable via bulk upload.
+- **N+1 removed from the payroll draft loop.** Added `employment_type.load_map(db)` + pure `is_statutory_for`/`flat_tds_for(code, et_map)` helpers; `generate_draft` prefetches the (tiny) master once and uses the map, matching the function's existing prefetch pattern. The single-line recompute path (one employee) keeps the async helpers. A test locks map-vs-async parity.
+
+**Noted minors (not fixed — low value / match existing patterns):**
+- Redundant non-unique index `ix_employment_type_code` alongside the unique constraint (harmless).
+- Case-sensitivity: non-canonical-case codes on the JSON create/update path are *rejected* by `_validate_employment_type` (not silently mis-stored), so the risk is contained; explicit lowercase-normalization on employee write deferred.
+- TOCTOU on the create clash-check (concurrent dup → 500 not 400) — matches the existing `_require_known_department` pattern repo-wide.

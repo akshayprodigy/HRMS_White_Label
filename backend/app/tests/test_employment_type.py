@@ -27,6 +27,16 @@ async def test_legacy_fallback_for_unknown_code(db):
 
 
 @pytest.mark.asyncio
+async def test_map_helpers_match_async_helpers(db):
+    # The prefetched-map variants (used by the payroll batch loop) must match
+    # the per-row async helpers for every case incl. fallback.
+    et_map = await et_svc.load_map(db)
+    for code in ["permanent", "contractual", "advisor", None, "weird"]:
+        assert et_svc.is_statutory_for(code, et_map) == await et_svc.is_statutory_employee(db, code)
+        assert et_svc.flat_tds_for(code, et_map) == await et_svc.flat_tds_rate_for(db, code)
+
+
+@pytest.mark.asyncio
 async def test_validate_employment_type_rejects_unknown_and_inactive(db):
     from fastapi import HTTPException
     from app.api.v1.endpoints.hr import _validate_employment_type

@@ -348,6 +348,10 @@ async def generate_draft(
     for r in rev_q:
         revs_by_emp.setdefault(r.employee_id, []).append(r)
 
+    # Prefetch the employment-type master once (tiny table) to avoid an
+    # N+1 lookup per employee in the loop below.
+    et_map = await employment_type_service.load_map(db)
+
     for emp in employees:
         # Calculate LOP days from unpaid leaves
         # Find approved leave requests in this month
@@ -409,7 +413,7 @@ async def generate_draft(
         other_val = eff.other_allowance
         esic = emp.esic_applicable or False
         vpf = emp.voluntary_pf or 0.0
-        is_contractual = not await employment_type_service.is_statutory_employee(db, emp.employment_type)
+        is_contractual = not employment_type_service.is_statutory_for(emp.employment_type, et_map)
 
         # Full salary calculation
         if is_contractual:
@@ -417,7 +421,7 @@ async def generate_draft(
                 basic_salary=base_salary,
                 paid_days=int(payable_days),
                 days_in_month=num_days,
-                tds_rate=await employment_type_service.flat_tds_rate_for(db, emp.employment_type),
+                tds_rate=employment_type_service.flat_tds_for(emp.employment_type, et_map),
             )
             breakdown["employment_type"] = emp.employment_type or "contractual"
         else:
