@@ -17,6 +17,7 @@ from app.models.salary_advance import (
 )
 from app.services.salary_calculator import calculate_salary, calculate_salary_contractual
 from app.services import employment_type as employment_type_service
+from app.services import salary_structure as salary_structure_service
 from app.services.payroll_engine import (
     compute_statutory, load_statutory_context,
 )
@@ -352,6 +353,11 @@ async def generate_draft(
     # N+1 lookup per employee in the loop below.
     et_map = await employment_type_service.load_map(db)
 
+    # Prefetch salary templates (F3). Only employees with a salary_template_id
+    # use the structured path; everyone else keeps the flat-column path, so
+    # this is a no-op for existing data.
+    template_map = await salary_structure_service.load_template_map(db)
+
     for emp in employees:
         # Calculate LOP days from unpaid leaves
         # Find approved leave requests in this month
@@ -387,18 +393,34 @@ async def generate_draft(
         # to the employee master. This is the no-regression contract:
         # employees with zero revisions are unaffected.
         emp_master_basic = float(emp.salary or 0.0)
-        emp_master_ca = float(
-            emp.conveyance_allowance if emp.conveyance_allowance is not None
-            else round(emp_master_basic * 0.30)
+        tmpl_lines = (
+            template_map.get(emp.salary_template_id)
+            if emp.salary_template_id else None
         )
-        emp_master_hra = float(
-            emp.hra if emp.hra is not None
-            else round(emp_master_basic * 0.50)
-        )
-        emp_master_other = float(
-            emp.other_allowance if emp.other_allowance is not None
-            else round(emp_master_basic * 0.20)
-        )
+        if tmpl_lines:
+            # Structured path (F3): the assigned template governs the earning
+            # heads. Opt-in — employees without a template never reach here,
+            # so existing payroll output is unchanged.
+            re = salary_structure_service.resolve_earnings_from_template(
+                emp_master_basic, tmpl_lines,
+            )
+            emp_master_basic = float(re.basic)
+            emp_master_ca = float(re.conveyance)
+            emp_master_hra = float(re.hra)
+            emp_master_other = float(re.other_allowance)
+        else:
+            emp_master_ca = float(
+                emp.conveyance_allowance if emp.conveyance_allowance is not None
+                else round(emp_master_basic * 0.30)
+            )
+            emp_master_hra = float(
+                emp.hra if emp.hra is not None
+                else round(emp_master_basic * 0.50)
+            )
+            emp_master_other = float(
+                emp.other_allowance if emp.other_allowance is not None
+                else round(emp_master_basic * 0.20)
+            )
         eff = effective_components_for_month(
             employee_basic=emp_master_basic,
             employee_conveyance=emp_master_ca,
