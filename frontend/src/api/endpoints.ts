@@ -284,6 +284,7 @@ export const ENDPOINTS = {
     TYPES: '/leave/types',
     MY: '/leave/my',
     APPLY: '/leave/apply',
+    APPLY_ON_BEHALF: '/leave/apply-on-behalf',
     ATTACHMENT_UPLOAD: '/leave/attachments',
     ATTACHMENT_DOWNLOAD: (filename: string) => `/leave/attachments/${filename}`,
     CANCEL: (id: number) => `/leave/${id}/cancel`,

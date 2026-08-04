@@ -17,7 +17,7 @@ from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
 from app.models.comp_off import CompOffAccrual
 from app.models.user import User, Role
 from app.models.audit import AuditLog
-from app.schemas.leave import LeaveRequestCreate, LeaveRequestRead, LeaveBalanceRead, LeaveTypeRead
+from app.schemas.leave import LeaveRequestCreate, LeaveRequestRead, LeaveBalanceRead, LeaveTypeRead, LeaveOnBehalfCreate
 from app.schemas.approval import ApprovalItemRead, ApprovalAction
 
 router = APIRouter()
@@ -313,6 +313,70 @@ async def download_leave_attachment(
     return FileResponse(path)
 
 
+async def _validate_leave_request(db, target_user_id: int, leave_in) -> tuple:
+    """Validate a leave request against the TARGET employee — date range,
+    overlap, leave-type policy, monthly limit, and paid-balance. Returns
+    (leave_type, days). Raises HTTPException on failure. Shared by apply_leave
+    (self) and apply_on_behalf (HR files for the target). Keyed on
+    target_user_id so on-behalf validates the employee, not the HR caller."""
+    # 1. Date range
+    if leave_in.start_date > leave_in.end_date:
+        raise HTTPException(status_code=400, detail="Start date cannot be after end date")
+    if leave_in.is_half_day and leave_in.start_date != leave_in.end_date:
+        raise HTTPException(status_code=400, detail="Half day leaves must be for a single day")
+
+    # 2. Overlap
+    overlap = (await db.execute(select(LeaveRequest).where(and_(
+        LeaveRequest.employee_id == target_user_id,
+        LeaveRequest.status.in_([LeaveStatus.SUBMITTED, LeaveStatus.APPROVED]),
+        LeaveRequest.start_date <= leave_in.end_date,
+        LeaveRequest.end_date >= leave_in.start_date,
+    )))).scalar_one_or_none()
+    if overlap:
+        raise HTTPException(status_code=400, detail="Leave request overlaps with an existing or pending request")
+
+    # 3. Leave type + policy
+    leave_type = (await db.execute(
+        select(LeaveType).where(LeaveType.id == leave_in.leave_type_id)
+    )).scalar_one_or_none()
+    if not leave_type:
+        raise HTTPException(status_code=404, detail="Leave type not found")
+
+    days = 0.5 if leave_in.is_half_day else (leave_in.end_date - leave_in.start_date).days + 1
+
+    if leave_in.is_half_day and not leave_type.allow_half_day:
+        raise HTTPException(status_code=400, detail=f"{leave_type.name} does not allow half-day leaves")
+    if leave_type.max_consecutive_days and days > leave_type.max_consecutive_days:
+        raise HTTPException(status_code=400, detail=f"{leave_type.name} allows max {leave_type.max_consecutive_days} consecutive days")
+    if leave_type.requires_medical_cert_after and days >= leave_type.requires_medical_cert_after and not leave_in.attachment_url:
+        raise HTTPException(status_code=400, detail=f"{leave_type.name} requires a medical certificate for {leave_type.requires_medical_cert_after}+ consecutive days")
+
+    if leave_type.max_per_month:
+        month_start = leave_in.start_date.replace(day=1)
+        if leave_in.start_date.month == 12:
+            month_end = leave_in.start_date.replace(year=leave_in.start_date.year + 1, month=1, day=1)
+        else:
+            month_end = leave_in.start_date.replace(month=leave_in.start_date.month + 1, day=1)
+        month_count = (await db.execute(select(func.count(LeaveRequest.id)).where(and_(
+            LeaveRequest.employee_id == target_user_id,
+            LeaveRequest.leave_type_id == leave_in.leave_type_id,
+            LeaveRequest.status.in_([LeaveStatus.SUBMITTED, LeaveStatus.APPROVED]),
+            LeaveRequest.start_date >= month_start, LeaveRequest.start_date < month_end,
+        )))).scalar() or 0
+        if month_count >= leave_type.max_per_month:
+            raise HTTPException(status_code=400, detail=f"{leave_type.name} allows max {leave_type.max_per_month} per month")
+
+    if not leave_type.unpaid_allowed:
+        ledger = (await db.execute(select(LeaveBalanceLedger).where(and_(
+            LeaveBalanceLedger.user_id == target_user_id,
+            LeaveBalanceLedger.leave_type_id == leave_in.leave_type_id,
+        )))).scalar_one_or_none()
+        if not ledger or (ledger.balance - ledger.used) < days:
+            raise HTTPException(status_code=400, detail="Insufficient leave balance")
+
+    return leave_type, days
+
+
 @router.post("/apply", response_model=LeaveRequestRead)
 async def apply_leave(
     *,
@@ -324,101 +388,7 @@ async def apply_leave(
     request: Request
 ) -> Any:
     """Apply for a new leave."""
-    # 1. Date range validation
-    if leave_in.start_date > leave_in.end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Start date cannot be after end date"
-        )
-    
-    if leave_in.is_half_day and leave_in.start_date != leave_in.end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Half day leaves must be for a single day"
-        )
-
-    # 2. Overlap detection
-    overlap_query = select(LeaveRequest).where(
-        and_(
-            LeaveRequest.employee_id == current_user.id,
-            LeaveRequest.status.in_([LeaveStatus.SUBMITTED, LeaveStatus.APPROVED]),
-            LeaveRequest.start_date <= leave_in.end_date,
-            LeaveRequest.end_date >= leave_in.start_date
-        )
-    )
-    overlap_result = await db.execute(overlap_query)
-    if overlap_result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Leave request overlaps with an existing or pending request"
-        )
-
-    # 3. Balance check
-    lt_query = select(LeaveType).where(LeaveType.id == leave_in.leave_type_id)
-    lt_result = await db.execute(lt_query)
-    leave_type = lt_result.scalar_one_or_none()
-    if not leave_type:
-        raise HTTPException(status_code=404, detail="Leave type not found")
-
-    days = 0.5 if leave_in.is_half_day else (leave_in.end_date - leave_in.start_date).days + 1
-
-    # Policy-based validations
-    if leave_in.is_half_day and not leave_type.allow_half_day:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"{leave_type.name} does not allow half-day leaves"
-        )
-
-    if leave_type.max_consecutive_days and days > leave_type.max_consecutive_days:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"{leave_type.name} allows max {leave_type.max_consecutive_days} consecutive days"
-        )
-
-    if leave_type.requires_medical_cert_after and days >= leave_type.requires_medical_cert_after:
-        if not leave_in.attachment_url:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{leave_type.name} requires a medical certificate for {leave_type.requires_medical_cert_after}+ consecutive days"
-            )
-
-    # Monthly limit check (e.g., Comp-off max 2/month)
-    if leave_type.max_per_month:
-        month_start = leave_in.start_date.replace(day=1)
-        if leave_in.start_date.month == 12:
-            month_end = leave_in.start_date.replace(year=leave_in.start_date.year + 1, month=1, day=1)
-        else:
-            month_end = leave_in.start_date.replace(month=leave_in.start_date.month + 1, day=1)
-        month_count_q = select(func.count(LeaveRequest.id)).where(
-            and_(
-                LeaveRequest.employee_id == current_user.id,
-                LeaveRequest.leave_type_id == leave_in.leave_type_id,
-                LeaveRequest.status.in_([LeaveStatus.SUBMITTED, LeaveStatus.APPROVED]),
-                LeaveRequest.start_date >= month_start,
-                LeaveRequest.start_date < month_end,
-            )
-        )
-        month_count = (await db.execute(month_count_q)).scalar() or 0
-        if month_count >= leave_type.max_per_month:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{leave_type.name} allows max {leave_type.max_per_month} per month"
-            )
-
-    if not leave_type.unpaid_allowed:
-        balance_query = select(LeaveBalanceLedger).where(
-            and_(
-                LeaveBalanceLedger.user_id == current_user.id,
-                LeaveBalanceLedger.leave_type_id == leave_in.leave_type_id
-            )
-        )
-        balance_result = await db.execute(balance_query)
-        ledger = balance_result.scalar_one_or_none()
-        if not ledger or (ledger.balance - ledger.used) < days:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Insufficient leave balance"
-            )
+    leave_type, days = await _validate_leave_request(db, current_user.id, leave_in)
 
     # 4. Create Leave Request
     db_obj = LeaveRequest(
@@ -484,6 +454,90 @@ async def apply_leave(
     query = select(LeaveRequest).where(LeaveRequest.id == db_obj.id).options(selectinload(LeaveRequest.leave_type))
     result = await db.execute(query)
     return result.scalar_one()
+
+
+@router.post("/apply-on-behalf", response_model=LeaveRequestRead)
+async def apply_leave_on_behalf(
+    *,
+    db: deps.DBDep,
+    current_user: User = Depends(deps.check_permissions(["hr employee write"])),
+    leave_in: LeaveOnBehalfCreate,
+    request: Request,
+) -> Any:
+    """HR files a leave for another employee (W2). Validates against the
+    TARGET; created_by = acting HR (SoD trail). auto_approve debits the
+    ledger inline (HR is the approver) — else a normal approval chain is
+    created for the target's manager + HR."""
+    target = await db.get(User, leave_in.employee_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Target employee not found")
+
+    leave_type, days = await _validate_leave_request(db, leave_in.employee_id, leave_in)
+
+    base_fields = leave_in.model_dump(exclude={"employee_id", "auto_approve"})
+    db_obj = LeaveRequest(
+        **base_fields,
+        employee_id=leave_in.employee_id,
+        created_by_user_id=current_user.id,
+        status=LeaveStatus.SUBMITTED,
+    )
+    db.add(db_obj)
+    await db.flush()
+
+    db.add(AuditLog(
+        user_id=current_user.id, action="LEAVE_APPLY_ON_BEHALF",
+        resource_type="leave_request", resource_id=str(db_obj.id),
+        ip_address=request.client.host if request.client else None,
+        details={"target_user_id": leave_in.employee_id, "days": days, "leave_type": leave_type.name},
+    ))
+
+    if leave_in.auto_approve:
+        db_obj.status = LeaveStatus.APPROVED
+        if not leave_type.unpaid_allowed:
+            ledger = (await db.execute(select(LeaveBalanceLedger).where(and_(
+                LeaveBalanceLedger.user_id == leave_in.employee_id,
+                LeaveBalanceLedger.leave_type_id == leave_in.leave_type_id,
+            )))).scalar_one_or_none()
+            if ledger:
+                ledger.used += days
+            else:
+                db.add(LeaveBalanceLedger(
+                    user_id=leave_in.employee_id, leave_type_id=leave_in.leave_type_id,
+                    balance=0.0, used=days,
+                ))
+        db.add(AuditLog(
+            user_id=current_user.id, action="LEAVE_AUTO_APPROVE_ON_BEHALF",
+            resource_type="leave_request", resource_id=str(db_obj.id),
+            ip_address=request.client.host if request.client else None,
+            details={"target_user_id": leave_in.employee_id, "days": days},
+        ))
+    else:
+        approval_item = ApprovalItem(
+            resource_type="leave_request", resource_id=str(db_obj.id),
+            status=ApprovalStatus.PENDING, current_step_number=1,
+            requested_by_id=leave_in.employee_id,
+        )
+        db.add(approval_item)
+        await db.flush()
+        step_idx = 1
+        if target.manager_id:
+            db.add(ApprovalStep(
+                approval_item_id=approval_item.id, step_number=step_idx,
+                approver_id=target.manager_id, status=ApprovalStatus.PENDING,
+            ))
+            step_idx += 1
+        hr_role = (await db.execute(select(Role).where(Role.name == "HR"))).scalar_one_or_none()
+        db.add(ApprovalStep(
+            approval_item_id=approval_item.id, step_number=step_idx,
+            role_id=hr_role.id if hr_role else None, status=ApprovalStatus.PENDING,
+        ))
+
+    await db.commit()
+    await db.refresh(db_obj)
+    return (await db.execute(
+        select(LeaveRequest).where(LeaveRequest.id == db_obj.id)
+        .options(selectinload(LeaveRequest.leave_type))
+    )).scalar_one()
 
 
 @router.post("/{id}/cancel", response_model=LeaveRequestRead)

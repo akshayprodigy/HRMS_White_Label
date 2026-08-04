@@ -30,6 +30,7 @@ import { Input } from './ui/input';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { ApprovalItem } from '../types/erp';
+import { FileLeaveOnBehalfPanel } from './leave-file-on-behalf';
 
 // Safely extract a string message from axios error responses
 // Pydantic 422 detail is an array of objects — this converts them to a readable string
@@ -183,6 +184,7 @@ export const LeaveHR = () => {
           <TabsTrigger value="history" className="rounded-xl px-8 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-sm h-full">History</TabsTrigger>
           <TabsTrigger value="balances" className="rounded-xl px-8 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-sm h-full">Leave Balances</TabsTrigger>
           <TabsTrigger value="grant" className="rounded-xl px-8 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-sm h-full">Grant Leave</TabsTrigger>
+          <TabsTrigger value="file" className="rounded-xl px-8 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-sm h-full">File Leave</TabsTrigger>
           <TabsTrigger value="compoff" className="rounded-xl px-8 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-sm h-full">Comp Off</TabsTrigger>
         </TabsList>
 
@@ -389,6 +391,10 @@ export const LeaveHR = () => {
         </TabsContent>
 
         {/* ── Grant Leave Tab — only mounts when first visited ── */}
+        <TabsContent value="file" className="space-y-6">
+          {mountedTabs.has('file') && <FileLeaveOnBehalfPanel />}
+        </TabsContent>
+
         <TabsContent value="grant" className="space-y-6">
           {mountedTabs.has('grant') && <GrantLeavePanel />}
         </TabsContent>

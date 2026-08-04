@@ -67,6 +67,12 @@ class LeaveRequestBase(BaseModel):
 class LeaveRequestCreate(LeaveRequestBase):
     pass
 
+class LeaveOnBehalfCreate(LeaveRequestBase):
+    """HR files a leave for another employee (W2). employee_id is the target
+    user id; auto_approve debits the ledger inline (HR acts as approver)."""
+    employee_id: int
+    auto_approve: bool = False
+
 class LeaveRequestRead(LeaveRequestBase):
     id: int
     employee_id: int
