@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------- Salary Component ----------
@@ -48,6 +48,15 @@ class SalaryTemplateComponentBase(BaseModel):
     value: Optional[float] = None
     percent: Optional[float] = None
     display_order: int = 0
+
+    @model_validator(mode="after")
+    def _percent_requires_value(self):
+        # A percent_of_basic line with no percent silently contributes zero
+        # to payroll — reject it. (A flat line with value=None is allowed:
+        # the basic slot uses it to mean "use the employee's own basic".)
+        if self.calc_method == "percent_of_basic" and self.percent is None:
+            raise ValueError("percent is required when calc_method is 'percent_of_basic'")
+        return self
 
 
 class SalaryTemplateComponentRead(SalaryTemplateComponentBase):

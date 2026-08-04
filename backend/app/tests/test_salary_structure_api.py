@@ -90,6 +90,23 @@ async def test_create_component_rejects_bad_slot(app):
 
 
 @pytest.mark.asyncio
+async def test_create_template_rejects_percent_line_without_percent(app):
+    # calc_method=percent_of_basic with no percent would silently pay zero —
+    # the schema validator must reject it (422) before any DB work.
+    app.dependency_overrides[verify_attendance] = lambda: None
+    app.dependency_overrides[get_current_user] = lambda: user_hr
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(f"{BASE}/hr/salary-templates", json={
+                "code": "bad", "name": "Bad",
+                "components": [{"component_id": 1, "calc_method": "percent_of_basic"}],
+            })
+            assert resp.status_code == 422, resp.text
+    finally:
+        app.dependency_overrides = {}
+
+
+@pytest.mark.asyncio
 async def test_create_template_forbidden_without_hr_write(app):
     app.dependency_overrides[verify_attendance] = lambda: None
     app.dependency_overrides[get_current_user] = lambda: user_none

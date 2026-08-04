@@ -111,11 +111,23 @@ async def _get_template_or_404(db, template_id: int) -> SalaryTemplate:
     return tmpl
 
 
-async def _assert_component_exists(db, component_id: int) -> None:
+async def _assert_component_usable(db, component_id: int) -> None:
+    """A template line must reference a known, active EARNING component —
+    the resolver only sums earnings, so a deduction/inactive component would
+    be silently dropped at payroll time."""
     comp = await db.get(SalaryComponent, component_id)
     if comp is None:
         raise HTTPException(
             status_code=400, detail=f"Unknown component_id {component_id}",
+        )
+    if comp.component_type != "earning":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Component {component_id} is not an earning component",
+        )
+    if not comp.is_active:
+        raise HTTPException(
+            status_code=400, detail=f"Component {component_id} is inactive",
         )
 
 
@@ -161,7 +173,7 @@ async def create_salary_template(
     db.add(tmpl)
     await db.flush()
     for line in obj_in.components:
-        await _assert_component_exists(db, line.component_id)
+        await _assert_component_usable(db, line.component_id)
         db.add(SalaryTemplateComponent(
             template_id=tmpl.id, component_id=line.component_id,
             calc_method=line.calc_method, value=line.value,
@@ -211,7 +223,7 @@ async def set_template_components(
                 detail=f"Duplicate component_id {line.component_id} in template",
             )
         seen.add(line.component_id)
-        await _assert_component_exists(db, line.component_id)
+        await _assert_component_usable(db, line.component_id)
     # Clear + re-add (cascade delete-orphan handles removals).
     for existing in list(tmpl.components):
         await db.delete(existing)

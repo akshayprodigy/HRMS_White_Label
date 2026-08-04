@@ -27,6 +27,13 @@ def test_standard_template_matches_legacy_ratio_path():
         assert r.other_allowance == round(basic * 0.20)
 
 
+def test_basic_head_is_not_rounded():
+    # The legacy flat-column path fed emp.salary through unrounded; the
+    # resolver must not round basic, or fractional salaries diverge.
+    r = resolve_earnings_from_template(50000.50, _standard_lines())
+    assert r.basic == 50000.50
+
+
 def test_ctc_is_sum_of_heads():
     r = resolve_earnings_from_template(20000, _standard_lines())
     assert r.ctc == r.basic + r.conveyance + r.hra + r.other_allowance

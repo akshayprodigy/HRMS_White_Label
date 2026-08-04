@@ -5,10 +5,13 @@ earning heads — basic / conveyance / hra / other — that the salary
 calculator consumes. This is the opt-in replacement for the flat salary
 columns on Employee.
 
-Parity contract: the seeded "standard" structure (basic flat + conveyance
+Parity contract: a template built to mirror the legacy structure (a basic
+line with value=None so the employee's own basic is used, plus conveyance
 30% / hra 50% / other 20% of basic) reproduces the historical flat-column
-default path in payroll.py exactly (Python `round` on basic*ratio), so an
-employee moved onto an equivalent template computes byte-identically.
+default path in payroll.py exactly (Python `round` on basic*ratio, basic
+itself unrounded), so an employee moved onto it computes byte-identically.
+The migration seeds the four canonical *components* only — no ready-made
+template ships; HR assembles one.
 """
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
@@ -82,8 +85,12 @@ def resolve_earnings_from_template(
         target = ln.slot if ln.slot in slots else "other"
         slots[target] += amount
 
+    # Basic is NOT rounded: the legacy flat-column path fed emp.salary
+    # (a raw Float) straight through, so rounding here would diverge for
+    # fractional salaries. Allowances ARE rounded — matching the legacy
+    # round(basic*ratio) fallback.
     return ResolvedEarnings(
-        basic=round(resolved_basic),
+        basic=float(resolved_basic),
         conveyance=round(slots["conveyance"]),
         hra=round(slots["hra"]),
         other_allowance=round(slots["other"]),

@@ -857,9 +857,26 @@ async def update_payroll_line(
         )
         breakdown["employment_type"] = emp.employment_type or "contractual"
     else:
-        ca = emp.conveyance_allowance if emp.conveyance_allowance is not None else round(base_salary * 0.30)
-        hra_val = emp.hra if emp.hra is not None else round(base_salary * 0.50)
-        other_val = emp.other_allowance if emp.other_allowance is not None else round(base_salary * 0.20)
+        # Structured path (F3): if the employee is on a salary template, the
+        # template governs the earning heads here too — otherwise the editor
+        # would silently overwrite template-derived allowances with the flat
+        # ratios on the next edit. base_salary comes from the line (already
+        # resolved at draft time), so we reuse it as the basic.
+        tmpl_lines = None
+        if emp.salary_template_id:
+            _tmap = await salary_structure_service.load_template_map(db)
+            tmpl_lines = _tmap.get(emp.salary_template_id)
+        if tmpl_lines:
+            _re = salary_structure_service.resolve_earnings_from_template(
+                base_salary, tmpl_lines,
+            )
+            ca = _re.conveyance
+            hra_val = _re.hra
+            other_val = _re.other_allowance
+        else:
+            ca = emp.conveyance_allowance if emp.conveyance_allowance is not None else round(base_salary * 0.30)
+            hra_val = emp.hra if emp.hra is not None else round(base_salary * 0.50)
+            other_val = emp.other_allowance if emp.other_allowance is not None else round(base_salary * 0.20)
         breakdown = calculate_salary(
             basic_salary=base_salary,
             conveyance_allowance=ca,
