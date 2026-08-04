@@ -9,6 +9,7 @@ from app.api.v1.endpoints import (
     salary_advance, shifts, geofence, overtime, revisions, statutory, tax,
     performance, approval_chains, expenses, dashboard, plumbing,
     notifications_admin, functional_head, employment_types,
+    salary_structure,
 )
 
 api_router = APIRouter()
@@ -216,6 +217,12 @@ api_router.include_router(
     employment_types.router,
     prefix="/hr",
     tags=["employment-types"],
+    dependencies=[Depends(deps.verify_attendance)],
+)
+api_router.include_router(
+    salary_structure.router,
+    prefix="/hr",
+    tags=["salary-structure"],
     dependencies=[Depends(deps.verify_attendance)],
 )
 # Geofence routes intentionally NOT attendance-gated: the punch UI calls
