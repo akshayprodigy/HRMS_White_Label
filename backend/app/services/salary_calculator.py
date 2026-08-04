@@ -124,16 +124,18 @@ def calculate_salary_contractual(
     days_in_month: int = 31,
     arrear: float = 0,
     incentive: float = 0,
+    tds_rate: float = 0.10,
 ) -> dict:
     """
     Simplified calculation for contractual employees.
     Gross = pro-rated salary + arrear + incentive.
-    Only deduction: 10% TDS on gross.
+    Only deduction: flat TDS on gross (rate from the employment-type master;
+    defaults to 10%).
     """
     total_fixed = basic_salary
     prorated = roundup(total_fixed / days_in_month * paid_days)
     gross = prorated + arrear + incentive
-    tds = roundup(gross * 0.10)
+    tds = roundup(gross * tds_rate)
     net = gross - tds
 
     return {

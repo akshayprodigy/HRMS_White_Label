@@ -16,6 +16,7 @@ from app.models.salary_advance import (
     SalaryAdvance, AdvanceRecovery, AdvanceStatus
 )
 from app.services.salary_calculator import calculate_salary, calculate_salary_contractual
+from app.services import employment_type as employment_type_service
 from app.services.payroll_engine import (
     compute_statutory, load_statutory_context,
 )
@@ -408,7 +409,7 @@ async def generate_draft(
         other_val = eff.other_allowance
         esic = emp.esic_applicable or False
         vpf = emp.voluntary_pf or 0.0
-        is_contractual = (emp.employment_type or "permanent") in ("contractual", "advisor")
+        is_contractual = not await employment_type_service.is_statutory_employee(db, emp.employment_type)
 
         # Full salary calculation
         if is_contractual:
@@ -416,6 +417,7 @@ async def generate_draft(
                 basic_salary=base_salary,
                 paid_days=int(payable_days),
                 days_in_month=num_days,
+                tds_rate=await employment_type_service.flat_tds_rate_for(db, emp.employment_type),
             )
             breakdown["employment_type"] = emp.employment_type or "contractual"
         else:
@@ -809,7 +811,7 @@ async def update_payroll_line(
     num_days = calendar.monthrange(run.year, run.month)[1]
     base_salary = line.base_salary
     vpf = emp.voluntary_pf or 0.0
-    is_contractual = (emp.employment_type or "permanent") in ("contractual", "advisor")
+    is_contractual = not await employment_type_service.is_statutory_employee(db, emp.employment_type)
 
     # Use new values if provided, else keep existing from line/deductions JSON
     existing_ded = line.deductions or {}
@@ -825,6 +827,7 @@ async def update_payroll_line(
             days_in_month=num_days,
             arrear=new_arrear,
             incentive=new_incentive,
+            tds_rate=await employment_type_service.flat_tds_rate_for(db, emp.employment_type),
         )
         breakdown["employment_type"] = emp.employment_type or "contractual"
     else:
