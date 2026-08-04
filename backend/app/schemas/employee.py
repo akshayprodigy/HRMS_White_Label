@@ -31,6 +31,7 @@ class EmployeeCreate(EmployeeBase):
     pan_number: Optional[str] = None
     manager_id: Optional[int] = None
     notice_period_days: Optional[int] = 30
+    employment_type: Optional[str] = None
 
 
 class EmployeeCreateWithUser(EmployeeBase):

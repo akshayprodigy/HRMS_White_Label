@@ -52,6 +52,7 @@ from app.schemas.hr import (
 )
 from app.services.letter_pdf import generate_letter, LETTER_GENERATORS
 from app.services.salary_calculator import calculate_salary
+from app.services import employment_type as employment_type_service
 from app.schemas.attendance import (
     AttendanceCorrectionCreate, AttendanceCorrectionRead,
     AttendanceCorrectionUpdate, AttendanceRead,
@@ -338,6 +339,18 @@ async def _require_known_department(db, name: Optional[str]) -> None:
                 f"Department '{name}' is not configured. "
                 "Ask an admin to add it in System Administration first."
             ),
+        )
+
+
+async def _validate_employment_type(db, code: Optional[str]) -> None:
+    """Raise 400 if `code` is not an active employment-type master code."""
+    if code is None:
+        return
+    et = await employment_type_service.get_employment_type(db, code)
+    if et is None or not et.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or inactive employment type '{code}'",
         )
 
 
@@ -1048,6 +1061,7 @@ async def create_employee(
         )
 
     await _require_known_department(db, obj_in.department)
+    await _validate_employment_type(db, getattr(obj_in, "employment_type", None))
 
     data = obj_in.model_dump(exclude={"manager_id"})
     db_obj = Employee(**data)
@@ -1393,6 +1407,8 @@ async def update_employee(
 
     if "department" in update_data:
         await _require_known_department(db, update_data["department"])
+    if "employment_type" in update_data:
+        await _validate_employment_type(db, update_data["employment_type"])
 
     for field, value in update_data.items():
         if field == "manager_id" and db_obj.user:
