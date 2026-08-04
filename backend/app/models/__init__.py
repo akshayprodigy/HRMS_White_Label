@@ -34,6 +34,9 @@ from .employee_asset import EmployeeAsset
 from .project_document import ProjectDocument
 from .comp_off import CompOffAccrual
 from .functional_area import FunctionalArea
+from .employment_type import EmploymentType
+from .salary_component import SalaryComponent
+from .salary_template import SalaryTemplate, SalaryTemplateComponent
 from .shift import (
     ShiftTemplate, EmployeeShiftAssignment, ShiftChangeRequest,
     ShiftChangeStatus,
@@ -140,6 +143,10 @@ __all__ = [
     "ProjectDocument",
     "CompOffAccrual",
     "FunctionalArea",
+    "EmploymentType",
+    "SalaryComponent",
+    "SalaryTemplate",
+    "SalaryTemplateComponent",
     "ShiftTemplate",
     "EmployeeShiftAssignment",
     "GeoFenceLocation",

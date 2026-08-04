@@ -88,6 +88,14 @@ class Employee(Base):
     # Employment type
     employment_type: Mapped[str] = mapped_column(String(20), default="permanent", nullable=False)
 
+    # Salary structure template (F3). Opt-in: when set, the template governs
+    # the earning heads at payroll time; when NULL (the default) payroll uses
+    # the historical flat salary columns above — no regression.
+    salary_template_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("salary_template.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+
     # Confirmation / probation
     probation_end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     confirmation_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
