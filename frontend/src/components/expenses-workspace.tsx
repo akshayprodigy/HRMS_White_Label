@@ -1068,6 +1068,9 @@ const ChainBuilderTab: React.FC = () => {
                         value={s.approver_type} onChange={e => setStep(idx, { approver_type: e.target.value })}>
                         <option value="reporting_manager">Reporting manager</option>
                         <option value="dept_head">Department head</option>
+                        <option value="functional_head">Functional head</option>
+                        <option value="ceo">CEO</option>
+                        <option value="md">Managing Director</option>
                         <option value="role">Role</option>
                         <option value="specific_user">Specific user</option>
                         <option value="finance">Finance</option>

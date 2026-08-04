@@ -2917,6 +2917,7 @@ const BulkUploadModal = ({ isOpen, onClose, onSuccess }: any) => {
 const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [] }: any) => {
   const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
+  const [salaryTemplates, setSalaryTemplates] = useState<any[]>([]);
   const [usersState, setUsersState] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
   const [usersError, setUsersError] = useState<string | null>(null);
   const [userLinkMode, setUserLinkMode] = useState<'existing' | 'new'>('existing');
@@ -2935,6 +2936,7 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
     date_of_joining: '',
     status: 'active',
     salary: '',
+    salary_template_id: '',
     bank_account: '',
     bank_name: '',
     voluntary_pf: '',
@@ -2946,6 +2948,7 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
   useEffect(() => {
     if (isOpen) {
       fetchUsers();
+      client.get(ENDPOINTS.HR.SALARY_TEMPLATES).then(r => setSalaryTemplates(r.data || [])).catch(() => setSalaryTemplates([]));
       if (editingEmp) {
         setUserLinkMode('existing');
         setFormData({
@@ -2963,6 +2966,7 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
           date_of_joining: editingEmp.date_of_joining,
           status: editingEmp.status,
           salary: editingEmp.salary || '',
+          salary_template_id: editingEmp.salary_template_id ? String(editingEmp.salary_template_id) : '',
           bank_account: editingEmp.bank_account || '',
           bank_name: editingEmp.bank_name || '',
           voluntary_pf: editingEmp.voluntary_pf || '',
@@ -2987,6 +2991,7 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
           date_of_joining: '',
           status: 'active',
           salary: '',
+          salary_template_id: '',
           bank_account: '',
           bank_name: '',
           voluntary_pf: '',
@@ -3035,6 +3040,7 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
         date_of_joining: formData.date_of_joining,
         status: formData.status,
         salary: formData.salary,
+        salary_template_id: formData.salary_template_id ? parseInt(formData.salary_template_id) : null,
         bank_account: formData.bank_account,
         bank_name: formData.bank_name || null,
         voluntary_pf: formData.voluntary_pf || null,
@@ -3332,6 +3338,22 @@ const EmployeeModal = ({ isOpen, onClose, onSuccess, editingEmp, departments = [
                   placeholder="0.00"
                   className="h-12 font-bold rounded-xl bg-slate-50 border-slate-200"
                 />
+              </div>
+              <div className="space-y-2 col-span-2">
+                <label className="text-[10px] font-black text-[#64748B] uppercase tracking-widest">Salary Template (optional)</label>
+                <select
+                  value={formData.salary_template_id ?? ''}
+                  onChange={(e) => setFormData({...formData, salary_template_id: e.target.value})}
+                  className="h-12 w-full px-3 font-bold rounded-xl bg-slate-50 border border-slate-200 text-sm text-[#0F172A] outline-none"
+                >
+                  <option value="">None — use flat salary + default 30/50/20 allowances</option>
+                  {salaryTemplates.map((t: any) => (
+                    <option key={t.id} value={t.id}>{t.name} ({t.code})</option>
+                  ))}
+                </select>
+                <p className="text-[9px] font-bold text-slate-400">
+                  When set, the template governs the earning heads at payroll time (F3).
+                </p>
               </div>
               <div className="space-y-2">
                 <label className="text-[10px] font-black text-[#64748B] uppercase tracking-widest">Voluntary PF (₹/month)</label>

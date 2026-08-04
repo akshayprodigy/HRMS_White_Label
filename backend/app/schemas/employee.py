@@ -32,6 +32,7 @@ class EmployeeCreate(EmployeeBase):
     manager_id: Optional[int] = None
     notice_period_days: Optional[int] = 30
     employment_type: Optional[str] = None
+    salary_template_id: Optional[int] = None
 
 
 class EmployeeCreateWithUser(EmployeeBase):
@@ -45,6 +46,7 @@ class EmployeeCreateWithUser(EmployeeBase):
     pf_number: Optional[str] = None
     pan_number: Optional[str] = None
     notice_period_days: Optional[int] = 30
+    salary_template_id: Optional[int] = None
 
 
 class EmployeeUpdate(BaseModel):
@@ -64,6 +66,7 @@ class EmployeeUpdate(BaseModel):
     manager_id: Optional[int] = None
     kra: Optional[str] = None
     notice_period_days: Optional[int] = None
+    salary_template_id: Optional[int] = None
 
 
 class EmployeeProfileUpdate(BaseModel):
@@ -87,6 +90,7 @@ class EmployeeRead(EmployeeBase):
 class EmployeeHRRead(EmployeeRead):
     employment_type: str = "permanent"
     salary: Optional[float] = None
+    salary_template_id: Optional[int] = None
     conveyance_allowance: Optional[float] = None
     hra: Optional[float] = None
     other_allowance: Optional[float] = None

@@ -360,6 +360,15 @@ export const ENDPOINTS = {
     LETTER_DOWNLOAD: (id: number) => `/hr/letters/${id}/download`,
     SALARY_CALCULATE: (empId: number) => `/hr/employees/${empId}/salary-calculate`,
     SALARY_PREVIEW: '/hr/salary/preview',
+    // Employment-type master (F2)
+    EMPLOYMENT_TYPES: '/hr/employment-types',
+    EMPLOYMENT_TYPE_DETAIL: (id: number) => `/hr/employment-types/${id}`,
+    // Salary component + template master (F3)
+    SALARY_COMPONENTS: '/hr/salary-components',
+    SALARY_COMPONENT_DETAIL: (id: number) => `/hr/salary-components/${id}`,
+    SALARY_TEMPLATES: '/hr/salary-templates',
+    SALARY_TEMPLATE_DETAIL: (id: number) => `/hr/salary-templates/${id}`,
+    SALARY_TEMPLATE_COMPONENTS: (id: number) => `/hr/salary-templates/${id}/components`,
     ADVANCES: '/hr/salary/advances',
     ADVANCE_MY: '/hr/salary/advances/my',
     ADVANCE_DETAIL: (id: number) => `/hr/salary/advances/${id}`,

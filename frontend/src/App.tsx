@@ -47,6 +47,8 @@ import { OvertimeApprovalQueue } from './components/overtime-approval-queue';
 import { MyOvertimeView } from './components/my-overtime';
 import { MyShiftView } from './components/my-shift-view';
 import { DesignationGradeAdmin } from './components/designation-grade-admin';
+import { EmploymentTypesAdmin } from './components/employment-types-admin';
+import { SalaryStructureAdmin } from './components/salary-structure-admin';
 import { SalaryRevisionsView } from './components/salary-revisions';
 import { RevisionCyclesView } from './components/revision-cycles';
 import { MyRevisionsView } from './components/my-revisions';
@@ -471,6 +473,10 @@ const App = () => {
         return <MyShiftView />;
       case 'designations':
         return <DesignationGradeAdmin />;
+      case 'employment-types':
+        return <EmploymentTypesAdmin />;
+      case 'salary-structure':
+        return <SalaryStructureAdmin />;
       case 'salary-revisions':
         return <SalaryRevisionsView />;
       case 'revision-cycles':
@@ -568,6 +574,8 @@ const App = () => {
       'policies': 'Policy Center',
       'admin': 'Admin Panel',
       'functional-areas': 'Functional Areas',
+      'employment-types': 'Employment Types',
+      'salary-structure': 'Salary Structure',
       'shift-templates': 'Shift Templates',
       'shift-assignments': 'Shift Assignments',
       'hr-attendance-review': 'Attendance Review Queue',
