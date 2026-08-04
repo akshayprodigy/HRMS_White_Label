@@ -90,6 +90,10 @@ class DefaultStatutoryConfig:
     esic_employee_rate: float = 0.75
     esic_employer_rate: float = 3.25
     esic_wage_ceiling: float = 21000.0
+    # W4: HR-configurable caps on the resulting deduction AMOUNT (not the
+    # wage base). None = no cap (unchanged behaviour).
+    pf_employee_max_amount: Optional[float] = None
+    vpf_max_amount: Optional[float] = None
 
 
 @dataclass
@@ -288,6 +292,10 @@ def compute_statutory(
     # ----- PF (capped, same math as compute_ecr_row) -----
     epf_wages = min(float(basic_actual), float(cfg.pf_wage_ceiling))
     employee_pf = _round2(epf_wages * cfg.pf_employee_rate / 100.0)
+    # W4: optional HR cap on the resulting employee-PF amount.
+    pf_cap = getattr(cfg, "pf_employee_max_amount", None)
+    if pf_cap is not None:
+        employee_pf = min(employee_pf, _round2(float(pf_cap)))
     employer_pf = _round2(epf_wages * cfg.pf_employer_rate / 100.0)
     epf_admin = _round2(epf_wages * cfg.epf_admin_rate / 100.0)
     edli = _round2(

@@ -66,6 +66,10 @@ class StatutoryConfigBase(BaseModel):
     esic_employer_rate: float = Field(3.25, ge=0, le=100)
     esic_wage_ceiling: float = Field(21000.0, ge=0)
 
+    # W4: caps on the resulting deduction amount (None = no cap).
+    pf_employee_max_amount: Optional[float] = Field(None, ge=0)
+    vpf_max_amount: Optional[float] = Field(None, ge=0)
+
     notes: Optional[str] = None
 
     @model_validator(mode="after")
@@ -94,6 +98,8 @@ class StatutoryConfigUpdate(BaseModel):
     esic_employee_rate: Optional[float] = Field(None, ge=0, le=100)
     esic_employer_rate: Optional[float] = Field(None, ge=0, le=100)
     esic_wage_ceiling: Optional[float] = Field(None, ge=0)
+    pf_employee_max_amount: Optional[float] = Field(None, ge=0)
+    vpf_max_amount: Optional[float] = Field(None, ge=0)
     notes: Optional[str] = None
 
 

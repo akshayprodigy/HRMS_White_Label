@@ -143,6 +143,11 @@ class StatutoryConfig(Base):
         Float, default=21000.0, nullable=False
     )
 
+    # W4: HR-configurable caps on the resulting deduction AMOUNT (distinct
+    # from the wage ceilings above, which cap the base). NULL = no cap.
+    pf_employee_max_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    vpf_max_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

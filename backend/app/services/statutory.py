@@ -153,6 +153,10 @@ def compute_ecr_row(
     edli_wages = min(basic_for_pf, config.edli_wage_ceiling)
 
     epf_employee = _round2(epf_wages * config.pf_employee_rate / 100.0)
+    # W4: keep the ECR filing reconciled with the payslip PF cap.
+    _pf_cap = getattr(config, "pf_employee_max_amount", None)
+    if _pf_cap is not None:
+        epf_employee = min(epf_employee, _round2(float(_pf_cap)))
     eps_employer = _round2(eps_wages * config.eps_rate / 100.0)
     # Employer's full PF rate − the EPS portion lands in EPF account.
     epf_employer_to_epf = _round2(

@@ -27,6 +27,7 @@ interface Config {
   pf_wage_ceiling: number; eps_wage_ceiling: number;
   edli_rate: number; edli_wage_ceiling: number; epf_admin_rate: number;
   esic_employee_rate: number; esic_employer_rate: number; esic_wage_ceiling: number;
+  pf_employee_max_amount: number | null; vpf_max_amount: number | null;
   notes: string | null;
 }
 interface PTSlab {
@@ -62,6 +63,7 @@ export const StatutoryConfigAdmin: React.FC = () => {
     pf_wage_ceiling: 15000, eps_wage_ceiling: 15000,
     edli_rate: 0.5, edli_wage_ceiling: 15000, epf_admin_rate: 0.5,
     esic_employee_rate: 0.75, esic_employer_rate: 3.25, esic_wage_ceiling: 21000,
+    pf_employee_max_amount: null as number | null, vpf_max_amount: null as number | null,
     notes: '',
   });
 
@@ -118,6 +120,7 @@ export const StatutoryConfigAdmin: React.FC = () => {
       pf_wage_ceiling: 15000, eps_wage_ceiling: 15000,
       edli_rate: 0.5, edli_wage_ceiling: 15000, epf_admin_rate: 0.5,
       esic_employee_rate: 0.75, esic_employer_rate: 3.25, esic_wage_ceiling: 21000,
+      pf_employee_max_amount: null as number | null, vpf_max_amount: null as number | null,
       notes: '',
     });
     setConfigOpen(true);
@@ -132,7 +135,10 @@ export const StatutoryConfigAdmin: React.FC = () => {
       edli_rate: c.edli_rate, edli_wage_ceiling: c.edli_wage_ceiling,
       epf_admin_rate: c.epf_admin_rate,
       esic_employee_rate: c.esic_employee_rate, esic_employer_rate: c.esic_employer_rate,
-      esic_wage_ceiling: c.esic_wage_ceiling, notes: c.notes || '',
+      esic_wage_ceiling: c.esic_wage_ceiling,
+      pf_employee_max_amount: c.pf_employee_max_amount ?? null,
+      vpf_max_amount: c.vpf_max_amount ?? null,
+      notes: c.notes || '',
     });
     setConfigOpen(true);
   };
@@ -452,6 +458,17 @@ export const StatutoryConfigAdmin: React.FC = () => {
                 <label className="text-xs text-slate-600">ESIC wage ceiling ₹</label>
                 <Input type="number" step={100} value={configForm.esic_wage_ceiling}
                   onChange={e => setConfigForm({ ...configForm, esic_wage_ceiling: Number(e.target.value) })} />
+              </div>
+              <div className="col-span-2 mt-3 text-[10px] font-semibold text-purple-700 uppercase tracking-wide">Deduction Caps (W4) — blank = no cap</div>
+              <div>
+                <label className="text-xs text-slate-600">Employee PF max ₹/mo</label>
+                <Input type="number" step={100} value={configForm.pf_employee_max_amount ?? ''}
+                  onChange={e => setConfigForm({ ...configForm, pf_employee_max_amount: e.target.value === '' ? null : Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="text-xs text-slate-600">Voluntary PF max ₹/mo</label>
+                <Input type="number" step={100} value={configForm.vpf_max_amount ?? ''}
+                  onChange={e => setConfigForm({ ...configForm, vpf_max_amount: e.target.value === '' ? null : Number(e.target.value) })} />
               </div>
               <div className="col-span-2">
                 <label className="text-xs text-slate-600">Notes</label>
