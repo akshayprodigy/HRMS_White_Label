@@ -363,6 +363,11 @@ export const ENDPOINTS = {
     // Employment-type master (F2)
     EMPLOYMENT_TYPES: '/hr/employment-types',
     EMPLOYMENT_TYPE_DETAIL: (id: number) => `/hr/employment-types/${id}`,
+    // Late-mark rules engine (W9)
+    LATE_MARK_RULES: '/late-marks/rules',
+    LATE_MARK_RULE_DETAIL: (id: number) => `/late-marks/rules/${id}`,
+    LATE_MARK_PROCESS: '/late-marks/process',
+    LATE_MARK_DEDUCTIONS: '/late-marks/deductions',
     // Functional head assignment (F1)
     FH_DEPARTMENTS: '/functional-head/departments',
     FH_ASSIGN_HEAD: (deptId: number) => `/functional-head/departments/${deptId}`,

@@ -51,6 +51,7 @@ import { EmploymentTypesAdmin } from './components/employment-types-admin';
 import { SalaryStructureAdmin } from './components/salary-structure-admin';
 import { DepartmentHeadsAdmin } from './components/department-heads-admin';
 import { AccountsApprovals } from './components/accounts-approvals';
+import { LateMarkAdmin } from './components/late-mark-admin';
 import { SalaryRevisionsView } from './components/salary-revisions';
 import { RevisionCyclesView } from './components/revision-cycles';
 import { MyRevisionsView } from './components/my-revisions';
@@ -483,6 +484,8 @@ const App = () => {
         return <DepartmentHeadsAdmin />;
       case 'accounts-approvals':
         return <AccountsApprovals />;
+      case 'late-marks':
+        return <LateMarkAdmin />;
       case 'salary-revisions':
         return <SalaryRevisionsView />;
       case 'revision-cycles':
@@ -584,6 +587,7 @@ const App = () => {
       'salary-structure': 'Salary Structure',
       'department-heads': 'Department Heads',
       'accounts-approvals': 'Accounts — Payroll Approval',
+      'late-marks': 'Late-Mark Rules',
       'shift-templates': 'Shift Templates',
       'shift-assignments': 'Shift Assignments',
       'hr-attendance-review': 'Attendance Review Queue',

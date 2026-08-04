@@ -37,6 +37,7 @@ from .functional_area import FunctionalArea
 from .employment_type import EmploymentType
 from .salary_component import SalaryComponent
 from .salary_template import SalaryTemplate, SalaryTemplateComponent
+from .late_mark import LateMarkRule, LateMarkDeduction
 from .shift import (
     ShiftTemplate, EmployeeShiftAssignment, ShiftChangeRequest,
     ShiftChangeStatus,
@@ -147,6 +148,8 @@ __all__ = [
     "SalaryComponent",
     "SalaryTemplate",
     "SalaryTemplateComponent",
+    "LateMarkRule",
+    "LateMarkDeduction",
     "ShiftTemplate",
     "EmployeeShiftAssignment",
     "GeoFenceLocation",

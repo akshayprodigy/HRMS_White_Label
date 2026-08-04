@@ -18,6 +18,7 @@ from app.models.salary_advance import (
 from app.services.salary_calculator import calculate_salary, calculate_salary_contractual
 from app.services import employment_type as employment_type_service
 from app.services import salary_structure as salary_structure_service
+from app.services import late_mark as late_mark_service
 from app.services.payroll_engine import (
     compute_statutory, load_statutory_context,
 )
@@ -360,6 +361,10 @@ async def generate_draft(
     # this is a no-op for existing data.
     template_map = await salary_structure_service.load_template_map(db)
 
+    # Prefetch late-mark LOP days for this month (W9). Empty unless HR has
+    # processed late marks — so a no-op for existing data.
+    late_lop_map = await late_mark_service.lop_days_for_run(db, run.year, run.month)
+
     for emp in employees:
         # Calculate LOP days from unpaid leaves
         # Find approved leave requests in this month
@@ -386,7 +391,10 @@ async def generate_draft(
             if lv.is_half_day:
                 days = 0.5
             lop_days += days
-        
+
+        # W9: late-mark cascade residual LOP for this employee/month.
+        lop_days += float(late_lop_map.get(emp.user_id, 0.0))
+
         payable_days = max(0.0, float(num_days) - lop_days)
 
         # Effective components for THIS payroll month. If an APPLIED
@@ -437,6 +445,10 @@ async def generate_draft(
         other_val = eff.other_allowance
         esic = emp.esic_applicable or False
         vpf = emp.voluntary_pf or 0.0
+        # W4: optional HR cap on voluntary PF (uncapped by default).
+        _vcap = getattr(getattr(stat_ctx, "config", None), "vpf_max_amount", None)
+        if _vcap is not None:
+            vpf = min(vpf, float(_vcap))
         is_contractual = not employment_type_service.is_statutory_for(emp.employment_type, et_map)
 
         # Full salary calculation
@@ -969,6 +981,10 @@ async def update_payroll_line(
         stat_ctx = await load_statutory_context(
             db, run.year, run.month, [emp]
         )
+        # W4: cap voluntary PF (matches generate_draft).
+        _vcap = getattr(getattr(stat_ctx, "config", None), "vpf_max_amount", None)
+        if _vcap is not None:
+            vpf = min(vpf, float(_vcap))
         was_manual = bool(existing_ded.get("tds_manual"))
         if payload.tds is not None:
             tds_override, tds_manual = float(payload.tds), True
