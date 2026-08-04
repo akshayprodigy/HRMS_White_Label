@@ -16,6 +16,7 @@ from app.models.leave import LeaveType, LeaveBalanceLedger, LeaveRequest, LeaveS
 from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
 from app.models.comp_off import CompOffAccrual
 from app.models.user import User, Role
+from app.models.employee import Employee
 from app.models.audit import AuditLog
 from app.schemas.leave import LeaveRequestCreate, LeaveRequestRead, LeaveBalanceRead, LeaveTypeRead, LeaveOnBehalfCreate
 from app.schemas.approval import ApprovalItemRead, ApprovalAction
@@ -341,6 +342,18 @@ async def _validate_leave_request(db, target_user_id: int, leave_in) -> tuple:
     )).scalar_one_or_none()
     if not leave_type:
         raise HTTPException(status_code=404, detail="Leave type not found")
+
+    # W1: per-employment-type eligibility (missing policy row = eligible).
+    from app.services import leave_policy as leave_policy_service
+    _emp = (await db.execute(
+        select(Employee).where(Employee.user_id == target_user_id)
+    )).scalars().first()
+    _code = _emp.employment_type if _emp else None
+    if not await leave_policy_service.is_eligible(db, _code, leave_type.id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{leave_type.name} is not available for this employment type",
+        )
 
     days = 0.5 if leave_in.is_half_day else (leave_in.end_date - leave_in.start_date).days + 1
 

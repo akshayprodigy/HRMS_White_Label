@@ -289,6 +289,13 @@ const menuItems: MenuItem[] = [
     group: "Payroll & Compensation",
   },
   {
+    id: "leave-policies",
+    label: "Leave Policy Matrix",
+    icon: CalendarDays,
+    roles: ["hr", "admin", "super admin"],
+    group: "Payroll & Compensation",
+  },
+  {
     id: "salary-structure",
     label: "Salary Structure",
     icon: Wallet,

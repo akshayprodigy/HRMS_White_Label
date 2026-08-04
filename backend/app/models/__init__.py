@@ -35,6 +35,7 @@ from .project_document import ProjectDocument
 from .comp_off import CompOffAccrual
 from .functional_area import FunctionalArea
 from .employment_type import EmploymentType
+from .employment_type_leave_policy import EmploymentTypeLeavePolicy
 from .salary_component import SalaryComponent
 from .salary_template import SalaryTemplate, SalaryTemplateComponent
 from .late_mark import LateMarkRule, LateMarkDeduction
@@ -145,6 +146,7 @@ __all__ = [
     "CompOffAccrual",
     "FunctionalArea",
     "EmploymentType",
+    "EmploymentTypeLeavePolicy",
     "SalaryComponent",
     "SalaryTemplate",
     "SalaryTemplateComponent",

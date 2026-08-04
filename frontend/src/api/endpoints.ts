@@ -361,6 +361,11 @@ export const ENDPOINTS = {
     LETTER_DOWNLOAD: (id: number) => `/hr/letters/${id}/download`,
     SALARY_CALCULATE: (empId: number) => `/hr/employees/${empId}/salary-calculate`,
     SALARY_PREVIEW: '/hr/salary/preview',
+    // Per-employment-type leave policy (W1)
+    LEAVE_POLICIES: '/hr/leave-policies',
+    LEAVE_POLICY_MATRIX: '/hr/leave-policies/matrix',
+    LEAVE_POLICY_DETAIL: (id: number) => `/hr/leave-policies/${id}`,
+    LEAVE_POLICY_ALLOCATE: '/hr/leave-policies/allocate',
     // Employment-type master (F2)
     EMPLOYMENT_TYPES: '/hr/employment-types',
     EMPLOYMENT_TYPE_DETAIL: (id: number) => `/hr/employment-types/${id}`,
