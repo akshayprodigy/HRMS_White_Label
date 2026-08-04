@@ -137,6 +137,7 @@ async def seed_demo_roles():
             {"name": "finance reimburse", "description": "Mark expense claims reimbursed / push to payroll"},
             {"name": "expense category admin", "description": "Manage expense categories + policy caps"},
             {"name": "department head write", "description": "Assign functional head / deputy to a department"},
+            {"name": "payroll accounts verify", "description": "Accounts: verify/approve finalized payroll before payment"},
         ]
         
         db_perms = {}
@@ -163,7 +164,8 @@ async def seed_demo_roles():
             {"name": "DEPT_HEAD", "description": "Departmental Management & Requisition Authority"},
             {"name": "RECRUITER", "description": "Talent Acquisition & Pipeline Management"},
             {"name": "Finance", "description": "Finance-level approver + owns the reimbursement queue (distinct from HR)"},
-            {"name": "MD", "description": "Managing Director — top-level approver"}
+            {"name": "MD", "description": "Managing Director — top-level approver"},
+            {"name": "Accounts", "description": "Accounts — verifies payroll before payment & owns income-tax/TDS config"}
         ]
 
         db_roles = {}
@@ -179,7 +181,8 @@ async def seed_demo_roles():
             ("DEPT_HEAD", "Departmental Management & Requisition Authority"),
             ("RECRUITER", "Talent Acquisition & Pipeline Management"),
             ("Finance", "Finance-level approver + owns the reimbursement queue (distinct from HR)"),
-            ("MD", "Managing Director — top-level approver")
+            ("MD", "Managing Director — top-level approver"),
+            ("Accounts", "Accounts — verifies payroll before payment & owns income-tax/TDS config")
         ]:
             result = await session.execute(
                 select(Role).where(Role.name == r_name)
@@ -396,6 +399,16 @@ async def seed_demo_roles():
             # Finance sees payroll totals but does not run payroll.
             db_perms["hr payroll view"],
         ]
+        db_roles["Accounts"].permissions = [
+            # Verifies finalized payroll before payment; owns income-tax/TDS
+            # config (HR keeps PF/ESI/PT + salary structure).
+            db_perms["payroll accounts verify"],
+            db_perms["hr payroll view"],
+            db_perms["tax config write"],
+            db_perms["tax view all"],
+            db_perms["tax declaration verify"],
+            db_perms["tax generate"],
+        ]
         db_roles["BD MANAGER"].permissions = [
             db_perms["bd lead read"],
             db_perms["bd lead write"],
@@ -422,6 +435,7 @@ async def seed_demo_roles():
             {"email": "bd@gmail.com", "full_name": "Demo BD", "role": "Business Developer"},
             {"email": "ceo@gmail.com", "full_name": "United CEO", "role": ["CEO", "BD MANAGER"]},
             {"email": "coo@gmail.com", "full_name": "Demo COO", "role": "COO"},
+            {"email": "accounts@gmail.com", "full_name": "Demo Accounts", "role": "Accounts"},
         ]
         
         password = "test@12345"

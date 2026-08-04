@@ -33,6 +33,8 @@ class PayrollRunRead(PayrollRunBase):
     finalized_at: Optional[datetime] = None
     published_at: Optional[datetime] = None
     finalized_by_id: Optional[int] = None
+    accounts_approved_at: Optional[datetime] = None
+    accounts_approved_by_id: Optional[int] = None
     created_at: datetime
 
     class Config:

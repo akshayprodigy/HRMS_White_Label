@@ -393,6 +393,7 @@ export const ENDPOINTS = {
       LOCK_LEAVES: (id: number) => `/hr/payroll/${id}/lock-leaves`,
       GENERATE_DRAFT: (id: number) => `/hr/payroll/${id}/generate-draft`,
       FINALIZE: (id: number) => `/hr/payroll/${id}/finalize`,
+      ACCOUNTS_APPROVE: (id: number) => `/hr/payroll/${id}/accounts-approve`,
       PUBLISH: (id: number) => `/hr/payroll/${id}/publish`,
       LINES: (id: number) => `/hr/payroll/${id}/lines`,
       LINE_UPDATE: (runId: number, lineId: number) => `/hr/payroll/${runId}/lines/${lineId}`,

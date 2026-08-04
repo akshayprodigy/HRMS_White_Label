@@ -40,6 +40,8 @@ router = APIRouter()
 HR_PAYROLL_RUN = "hr payroll run"
 HR_PAYROLL_APPROVE = "hr payroll approve"
 HR_PAYROLL_VIEW = "hr payroll view"
+# Accounts verification gate (F6) — held by the Accounts role.
+PAYROLL_ACCOUNTS_VERIFY = "payroll accounts verify"
 
 ERR_RUN_NOT_FOUND = "Run not found"
 
@@ -725,6 +727,40 @@ async def finalize_run(
     return {"message": "Payroll run finalized", "run": run}
 
 
+@router.post("/{run_id}/accounts-approve", response_model=PayrollActionResponse)
+async def accounts_approve_run(
+    run_id: int,
+    db: deps.DBDep,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([PAYROLL_ACCOUNTS_VERIFY]))
+) -> Any:
+    """Accounts verifies a FINALIZED run (F6). Only after this can HR publish
+    / pay. This is the separation-of-duties gate between HR finalize and
+    payment — Accounts, not HR, holds `payroll accounts verify`."""
+    run = await db.get(PayrollRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=ERR_RUN_NOT_FOUND)
+
+    if run.status != PayrollRunStatus.FINALIZED:
+        raise HTTPException(
+            status_code=400,
+            detail="Run must be in FINALIZED status for Accounts approval",
+        )
+
+    run.status = PayrollRunStatus.ACCOUNTS_APPROVED
+    run.accounts_approved_at = datetime.now(timezone.utc)
+    run.accounts_approved_by_id = current_user.id
+
+    log_audit(
+        db, current_user.id, "ACCOUNTS_APPROVE_RUN", "payroll_run",
+        str(run_id), {"period": f"{run.month}/{run.year}"}, request,
+    )
+
+    await db.commit()
+    await db.refresh(run)
+    return {"message": "Payroll run approved by Accounts", "run": run}
+
+
 @router.post("/{run_id}/publish", response_model=PayrollActionResponse)
 async def publish_run(
     run_id: int,
@@ -735,11 +771,13 @@ async def publish_run(
     run = await db.get(PayrollRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail=ERR_RUN_NOT_FOUND)
-    
-    if run.status != PayrollRunStatus.FINALIZED:
+
+    # F6: publishing (= payment authorization) is blocked until Accounts
+    # has verified the finalized run.
+    if run.status != PayrollRunStatus.ACCOUNTS_APPROVED:
         raise HTTPException(
             status_code=400,
-            detail="Run must be in FINALIZED status to publish"
+            detail="Run must be Accounts-approved before it can be published",
         )
     
     # Generate payslips

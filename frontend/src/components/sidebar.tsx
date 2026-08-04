@@ -32,6 +32,7 @@ import {
   Network,
   Wallet,
   UserCog,
+  ShieldCheck,
   ScrollText,
   MapPin,
   Timer,
@@ -284,6 +285,13 @@ const menuItems: MenuItem[] = [
     label: "Salary Structure",
     icon: Wallet,
     roles: ["hr", "admin", "super admin"],
+    group: "Payroll & Compensation",
+  },
+  {
+    id: "accounts-approvals",
+    label: "Accounts Approval",
+    icon: ShieldCheck,
+    roles: ["accounts", "super admin", "ceo"],
     group: "Payroll & Compensation",
   },
 

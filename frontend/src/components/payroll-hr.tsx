@@ -228,6 +228,9 @@ export const PayrollHR = () => {
       case 'finalized':
       case 'FINALIZED':
         return 5;
+      case 'accounts_approved':
+      case 'ACCOUNTS_APPROVED':
+        return 5;
       case 'published':
       case 'PUBLISHED':
         return 6;
@@ -868,7 +871,12 @@ export const PayrollHR = () => {
                         Finalize & Approve
                       </Button>
                     )}
-                    {currentStep === 5 && (
+                    {currentStep === 5 && ['finalized', 'FINALIZED'].includes(currentRun.status) && (
+                      <div className="flex items-center gap-2 px-6 h-14 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 font-black uppercase text-xs tracking-widest">
+                        <Clock size={16} /> Awaiting Accounts approval before payment
+                      </div>
+                    )}
+                    {currentStep === 5 && ['accounts_approved', 'ACCOUNTS_APPROVED'].includes(currentRun.status) && (
                       <Button
                         onClick={() => setConfirmAction('publish')}
                         disabled={actionLoading}

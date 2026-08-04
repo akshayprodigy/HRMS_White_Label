@@ -15,6 +15,9 @@ class PayrollRunStatus(str, enum.Enum):
     LEAVES_LOCKED = "leaves_locked"
     DRAFT_GENERATED = "draft_generated"
     FINALIZED = "finalized"
+    # Accounts verified/approved the finalized run (F6). Sits between HR
+    # finalize and publish — payment (publish) is blocked until this.
+    ACCOUNTS_APPROVED = "accounts_approved"
     PUBLISHED = "published"
 
 
@@ -45,12 +48,22 @@ class PayrollRun(Base):
     finalized_by_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id")
     )
-    
+    # Accounts approval gate (F6).
+    accounts_approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    accounts_approved_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id")
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
-    
-    finalized_by: Mapped[Optional["User"]] = relationship()
+
+    finalized_by: Mapped[Optional["User"]] = relationship(foreign_keys=[finalized_by_id])
+    accounts_approved_by: Mapped[Optional["User"]] = relationship(
+        foreign_keys=[accounts_approved_by_id]
+    )
     lines: Mapped[List["PayrollLine"]] = relationship(
         "PayrollLine",
         back_populates="payroll_run",
