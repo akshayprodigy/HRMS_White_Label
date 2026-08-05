@@ -46,7 +46,7 @@ export const PayrollHR = () => {
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [editingLineId, setEditingLineId] = useState<number | null>(null);
-  const [lineEditValues, setLineEditValues] = useState<{ arrear: string; incentive: string }>({ arrear: '0', incentive: '0' });
+  const [lineEditValues, setLineEditValues] = useState<{ arrear: string; incentive: string; reason: string }>({ arrear: '0', incentive: '0', reason: '' });
   const [savingLineId, setSavingLineId] = useState<number | null>(null);
   const [expandedLineId, setExpandedLineId] = useState<number | null>(null);
 
@@ -80,11 +80,16 @@ export const PayrollHR = () => {
 
   const saveLineEdit = async (line: PayrollLine) => {
     if (!currentRun) return;
+    if (!lineEditValues.reason.trim()) {
+      toast.error('A reason is required to edit a payroll line');
+      return;
+    }
     setSavingLineId(line.id);
     try {
       const res = await client.patch(ENDPOINTS.HR.PAYROLL.LINE_UPDATE(currentRun.id, line.id), {
         arrear: parseFloat(lineEditValues.arrear) || 0,
         incentive: parseFloat(lineEditValues.incentive) || 0,
+        reason: lineEditValues.reason.trim(),
       });
       setRunLines(prev => prev.map(l => l.id === line.id ? { ...l, ...res.data } : l));
       setEditingLineId(null);
@@ -156,6 +161,36 @@ export const PayrollHR = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const [offCycleOpen, setOffCycleOpen] = useState(false);
+  const [offCycleReason, setOffCycleReason] = useState('');
+  const [offCycleEmpIds, setOffCycleEmpIds] = useState<number[]>([]);
+  const [ocEmployees, setOcEmployees] = useState<any[]>([]);
+
+  const openOffCycle = async () => {
+    setOffCycleReason(''); setOffCycleEmpIds([]); setOffCycleOpen(true);
+    try {
+      const r = await client.get(ENDPOINTS.HR.EMPLOYEES, { params: { limit: 500 } });
+      setOcEmployees(r.data?.items ?? (Array.isArray(r.data) ? r.data : []));
+    } catch { setOcEmployees([]); }
+  };
+
+  const startOffCycleRun = async () => {
+    if (offCycleEmpIds.length === 0) { toast.error('Select at least one employee'); return; }
+    setActionLoading(true);
+    try {
+      const res = await client.post(ENDPOINTS.HR.PAYROLL.OFF_CYCLE_RUN, {
+        month: selectedMonth, year: selectedYear,
+        employee_user_ids: offCycleEmpIds, reason: offCycleReason || null,
+      });
+      setOffCycleOpen(false);
+      setCurrentRun(res.data); setRunLines([]); setAttendanceCheck(null); setAttDetailRows([]);
+      setView('run');
+      toast.success('Off-cycle run created — generate the draft');
+    } catch (e: any) {
+      toast.error(getErrorMessage(e, 'Off-cycle run failed'));
+    } finally { setActionLoading(false); }
   };
 
   const startNewRun = async () => {
@@ -743,6 +778,20 @@ export const PayrollHR = () => {
                                )}
                              </div>
 
+                             {/* Reason — required for an audited line edit (W5) */}
+                             {isEditing && currentStep === 4 && (
+                               <div className="flex justify-between text-xs items-center">
+                                 <span className="text-slate-500 font-bold">Reason<span className="text-rose-500">*</span></span>
+                                 <input
+                                   type="text"
+                                   value={lineEditValues.reason}
+                                   onChange={e => setLineEditValues(v => ({ ...v, reason: e.target.value }))}
+                                   placeholder="Why this edit?"
+                                   className="w-40 text-right text-xs font-bold border border-blue-300 rounded-lg px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                 />
+                               </div>
+                             )}
+
                              {/* OT + Night allowance injected from shift-engine entries (read-only) */}
                              {(al.overtime || 0) > 0 && (
                                <div className="flex justify-between text-xs items-center">
@@ -802,6 +851,7 @@ export const PayrollHR = () => {
                                        setLineEditValues({
                                          arrear: String(line.arrear || 0),
                                          incentive: String(line.incentive || 0),
+                                         reason: '',
                                        });
                                      }}
                                      className="w-full text-[9px] font-black text-blue-600 border border-blue-200 rounded-lg py-1 hover:bg-blue-50"
@@ -1152,8 +1202,45 @@ export const PayrollHR = () => {
            <Button onClick={startNewRun} disabled={actionLoading} className="bg-blue-600 hover:bg-blue-700 h-12 px-8 rounded-xl font-black shadow-lg shadow-blue-600/20">
              {actionLoading ? <Loader2 className="animate-spin" /> : <><Plus size={20} className="mr-2" /> Start New Run</>}
            </Button>
+           <Button onClick={openOffCycle} disabled={actionLoading} variant="outline" className="h-12 px-6 rounded-xl font-black border-amber-300 text-amber-700 hover:bg-amber-50">
+             Off-cycle Run
+           </Button>
         </div>
       </div>
+
+      <Dialog open={offCycleOpen} onOpenChange={setOffCycleOpen}>
+        <DialogContent className="max-w-lg p-0 overflow-hidden">
+          <div className="bg-amber-600 px-6 py-5 text-white">
+            <DialogTitle className="text-lg font-black uppercase tracking-tight">Off-cycle Payroll Run</DialogTitle>
+            <p className="text-amber-100 text-[10px] font-bold uppercase tracking-widest mt-1">{selectedMonth}/{selectedYear} · scoped to selected employees</p>
+          </div>
+          <div className="p-6 space-y-4">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Reason</label>
+              <input value={offCycleReason} onChange={e => setOffCycleReason(e.target.value)} placeholder="e.g. joining bonus / correction"
+                className="mt-1.5 w-full h-11 px-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Employees ({offCycleEmpIds.length} selected)</label>
+              <div className="mt-1.5 max-h-64 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-50">
+                {ocEmployees.filter(e => e?.user).map(e => (
+                  <label key={e.user.id} className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 text-sm font-bold text-[#0F172A]">
+                    <input type="checkbox" checked={offCycleEmpIds.includes(e.user.id)}
+                      onChange={ev => setOffCycleEmpIds(ids => ev.target.checked ? [...ids, e.user.id] : ids.filter(x => x !== e.user.id))}
+                      className="w-3.5 h-3.5 accent-amber-600" />
+                    {e.user.full_name || e.employee_id}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Blocked if a monthly run for this period is already finalized (prevents double base-pay).</p>
+          </div>
+          <DialogFooter className="px-6 py-4 bg-slate-50 border-t border-slate-100">
+            <Button variant="ghost" onClick={() => setOffCycleOpen(false)} className="text-[10px] font-black uppercase tracking-widest">Cancel</Button>
+            <Button onClick={startOffCycleRun} disabled={actionLoading} className="bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-black uppercase tracking-widest">Create Off-cycle Run</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
         {[

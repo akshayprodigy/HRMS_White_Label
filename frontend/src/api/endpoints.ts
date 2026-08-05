@@ -409,6 +409,7 @@ export const ENDPOINTS = {
     PAYROLL: {
       DASHBOARD: '/hr/payroll/dashboard',
       CREATE_RUN: '/hr/payroll/run',
+      OFF_CYCLE_RUN: '/hr/payroll/off-cycle-run',
       ATTENDANCE_CHECK: (id: number) => `/hr/payroll/${id}/attendance-check`,
       LOCK_ATTENDANCE: (id: number) => `/hr/payroll/${id}/lock-attendance`,
       LOCK_LEAVES: (id: number) => `/hr/payroll/${id}/lock-leaves`,

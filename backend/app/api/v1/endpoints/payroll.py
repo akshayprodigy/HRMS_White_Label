@@ -32,7 +32,7 @@ from app.services.revisions import (
 )
 from app.schemas.payroll import (
     PayrollRunCreate, PayrollRunRead, PayrollLineRead, PayrollLineUpdate,
-    PayrollDashboard, PayrollActionResponse
+    PayrollDashboard, PayrollActionResponse, OffCycleRunCreate,
 )
 
 router = APIRouter()
@@ -118,12 +118,14 @@ async def create_payroll_run(
     obj_in: PayrollRunCreate,
     current_user: User = Depends(deps.check_permissions([HR_PAYROLL_RUN]))
 ) -> Any:
-    # Check if an active (non-published) run already exists for this period
+    # Check if an active (non-published) MONTHLY run already exists for this
+    # period (off-cycle runs never block / are blocked by the monthly one).
     existing = await db.execute(
         select(PayrollRun).where(
             and_(
                 PayrollRun.month == obj_in.month,
                 PayrollRun.year == obj_in.year,
+                PayrollRun.run_type == "monthly",
                 PayrollRun.status != PayrollRunStatus.PUBLISHED,
             )
         )
@@ -137,12 +139,73 @@ async def create_payroll_run(
     db_obj = PayrollRun(
         month=obj_in.month,
         year=obj_in.year,
-        status=PayrollRunStatus.DRAFT
+        status=PayrollRunStatus.DRAFT,
+        created_by_id=current_user.id,
     )
     db.add(db_obj)
     await db.commit()
     await db.refresh(db_obj)
     return db_obj
+
+
+@router.post("/off-cycle-run", response_model=PayrollRunRead)
+async def create_off_cycle_run(
+    *,
+    db: deps.DBDep,
+    obj_in: OffCycleRunCreate,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([HR_PAYROLL_RUN])),
+) -> Any:
+    """W5: create an off-cycle payroll run scoped to specific employees
+    (new hire / correction / bonus). Lands at LEAVES_LOCKED so the caller
+    then runs generate-draft → finalize → accounts-approve → publish.
+
+    Double-pay guard: refuses if a monthly run for the same period is already
+    FINALIZED or PUBLISHED (base pay would otherwise be paid twice)."""
+    if not obj_in.employee_user_ids:
+        raise HTTPException(400, "Select at least one employee")
+
+    clash = (await db.execute(
+        select(PayrollRun).where(and_(
+            PayrollRun.month == obj_in.month,
+            PayrollRun.year == obj_in.year,
+            PayrollRun.run_type == "monthly",
+            PayrollRun.status.in_([
+                PayrollRunStatus.FINALIZED,
+                PayrollRunStatus.ACCOUNTS_APPROVED,
+                PayrollRunStatus.PUBLISHED,
+            ]),
+        ))
+    )).scalar_one_or_none()
+    if clash is not None:
+        raise HTTPException(
+            400,
+            "A monthly run for this period is already finalized/published — "
+            "an off-cycle run would double-pay base salary. Use a separate "
+            "period or adjust the monthly run.",
+        )
+
+    run = PayrollRun(
+        month=obj_in.month, year=obj_in.year,
+        status=PayrollRunStatus.LEAVES_LOCKED,
+        run_type="off_cycle",
+        scope_user_ids=list(obj_in.employee_user_ids),
+        reason=obj_in.reason,
+        created_by_id=current_user.id,
+        attendance_locked_at=datetime.now(timezone.utc),
+        leaves_locked_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    await db.flush()
+    log_audit(
+        db, current_user.id, "OFF_CYCLE_RUN_CREATE", "payroll_run",
+        str(run.id),
+        {"period": f"{run.month}/{run.year}", "employees": len(obj_in.employee_user_ids), "reason": obj_in.reason},
+        request,
+    )
+    await db.commit()
+    await db.refresh(run)
+    return run
 
 
 @router.get("/{run_id}/attendance-check")
@@ -282,11 +345,12 @@ async def generate_draft(
         )
     )
     
-    # 2. Get all active employees
-    employees_res = await db.execute(
-        select(Employee).where(Employee.status == "active")
-    )
-    employees = employees_res.scalars().all()
+    # 2. Get active employees — scoped for an off-cycle run (W5), whole
+    #    active roster for a monthly run (scope_user_ids NULL => unchanged).
+    emp_q = select(Employee).where(Employee.status == "active")
+    if run.scope_user_ids:
+        emp_q = emp_q.where(Employee.user_id.in_(run.scope_user_ids))
+    employees = (await db.execute(emp_q)).scalars().all()
 
     # Unified statutory engine — one bulk load of StatutoryConfig,
     # PT slabs, tax slabs, declarations and FY-to-date actuals; the
@@ -550,7 +614,8 @@ async def generate_draft(
             )
             net = round(gross - total_ded, 2)
 
-        # Auto-recover active salary advances
+        # Auto-recover active salary advances — ONLY on the monthly run (W5).
+        # An off-cycle (bonus/correction) run must not auto-deduct an EMI.
         advance_deduction = 0.0
         active_advances_res = await db.execute(
             select(SalaryAdvance).where(
@@ -559,8 +624,8 @@ async def generate_draft(
                     SalaryAdvance.status == AdvanceStatus.ACTIVE,
                 )
             )
-        )
-        for adv in active_advances_res.scalars().all():
+        ) if run.run_type != "off_cycle" else None
+        for adv in (active_advances_res.scalars().all() if active_advances_res else []):
             outstanding = adv.amount - adv.recovered_amount
             if outstanding <= 0:
                 continue
@@ -857,6 +922,7 @@ async def update_payroll_line(
     run_id: int,
     line_id: int,
     payload: PayrollLineUpdate,
+    request: Request,
     db: deps.DBDep,
     current_user: User = Depends(deps.check_permissions([HR_PAYROLL_RUN]))
 ) -> Any:
@@ -1049,6 +1115,18 @@ async def update_payroll_line(
 
     user_res = await db.execute(select(User).where(User.id == line.user_id))
     user = user_res.scalar_one_or_none()
+
+    # W5: audit every manual line edit with old/new totals + the reason.
+    log_audit(
+        db, current_user.id, "PAYROLL_LINE_EDIT", "payroll_line",
+        str(line.id),
+        {
+            "run_id": run_id, "user_id": line.user_id, "reason": payload.reason,
+            "old_gross": old_gross, "new_gross": line.gross_pay,
+            "old_net": old_net, "new_net": line.net_pay,
+        },
+        request,
+    )
 
     await db.commit()
     await db.refresh(line)

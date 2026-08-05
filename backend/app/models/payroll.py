@@ -56,6 +56,16 @@ class PayrollRun(Base):
         Integer, ForeignKey("user.id")
     )
 
+    # W5: off-cycle payroll. run_type "monthly" (default, whole active roster)
+    # or "off_cycle" (scoped to scope_user_ids). scope_user_ids NULL => whole
+    # org, so monthly runs are unchanged.
+    run_type: Mapped[str] = mapped_column(String(20), default="monthly", index=True)
+    scope_user_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    created_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id"), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from enum import Enum
 
 
@@ -23,6 +23,12 @@ class PayrollRunCreate(PayrollRunBase):
     pass
 
 
+class OffCycleRunCreate(PayrollRunBase):
+    """W5: off-cycle run scoped to specific employees (by user id)."""
+    employee_user_ids: List[int]
+    reason: Optional[str] = None
+
+
 class PayrollRunRead(PayrollRunBase):
     id: int
     status: PayrollRunStatus
@@ -36,6 +42,8 @@ class PayrollRunRead(PayrollRunBase):
     finalized_by_id: Optional[int] = None
     accounts_approved_at: Optional[datetime] = None
     accounts_approved_by_id: Optional[int] = None
+    run_type: str = "monthly"
+    reason: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -100,6 +108,8 @@ class PayrollLineUpdate(BaseModel):
     incentive: Optional[float] = None
     guest_house: Optional[float] = None
     tds: Optional[float] = None
+    # W5: an audited reason is required for every manual line edit.
+    reason: str = Field(..., min_length=1, max_length=500)
 
 
 class PayslipRead(BaseModel):
