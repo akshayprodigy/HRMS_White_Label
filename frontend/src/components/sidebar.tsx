@@ -32,7 +32,6 @@ import {
   Network,
   Wallet,
   UserCog,
-  ShieldCheck,
   AlarmClock,
   ScrollText,
   MapPin,
@@ -220,7 +219,7 @@ const menuItems: MenuItem[] = [
     id: "hr-leave",
     label: "Leave Approvals",
     icon: CalendarDays,
-    roles: ["pm", "dept head"],
+    roles: ["hr", "super admin", "admin", "ceo", "pm", "dept head"],
     group: "Time & Attendance",
   },
   {
