@@ -173,6 +173,49 @@ async def _notify_geo_flag(
         ))
 
 
+async def _notify_unscheduled_login(
+    db, *, employee: "UserModel", attendance_id: int, work_date, flag: str,
+) -> None:
+    """W8: alert HR + the functional head when someone logs in with no
+    scheduled shift (NO_SHIFT) or outside their shift window (OUTSIDE_WINDOW).
+    Best-effort — never blocks the punch. Deep-links to Attendance review."""
+    from app.models.employee import Employee
+    from app.services.functional_head import resolve_head_for_department
+
+    label = "no scheduled shift" if flag == "no_shift" else "outside shift window"
+    title = "Unscheduled login"
+    message = (
+        f"{employee.full_name or employee.email} logged in on {work_date} "
+        f"with {label}."
+    )
+
+    recipient_ids: set[int] = set()
+    hr_role = (await db.execute(select(Role).where(Role.name == "HR"))).scalars().first()
+    if hr_role is not None:
+        hr_users = (await db.execute(
+            select(UserModel).join(UserModel.roles)
+            .where(Role.id == hr_role.id, UserModel.is_active.is_(True))
+        )).scalars().all()
+        recipient_ids.update(int(u.id) for u in hr_users)
+
+    # Functional head of the employee's department.
+    emp = (await db.execute(
+        select(Employee).where(Employee.user_id == employee.id)
+    )).scalars().first()
+    if emp and emp.department:
+        head = await resolve_head_for_department(db, emp.department)
+        if head is not None:
+            recipient_ids.add(int(head.id))
+
+    recipient_ids.discard(int(employee.id))
+    for uid in recipient_ids:
+        db.add(Notification(
+            user_id=uid, title=title, message=message, type="warning",
+            resource_type="attendance", resource_id=str(attendance_id),
+            event_type="attendance_unscheduled",
+        ))
+
+
 # --- shift lookup helpers -----------------------------------------------
 
 
@@ -534,6 +577,16 @@ async def mark_attendance(
                 attendance_id=db_obj.id,
                 decision=decision,
                 when="punch_in",
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    # W8: unscheduled-login alert (no shift / outside window). Best-effort.
+    if flag in ("no_shift", "outside_window"):
+        try:
+            await _notify_unscheduled_login(
+                db, employee=current_user, attendance_id=db_obj.id,
+                work_date=work_date, flag=flag,
             )
         except Exception:  # pragma: no cover - defensive
             pass

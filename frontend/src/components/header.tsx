@@ -76,6 +76,7 @@ export const Header = ({ title, userName, userRole, avatarUrl, onLogout, onNavig
     leave: 'leave',
     task: 'tasks',
     timesheet: 'timesheet',
+    attendance: 'hr-attendance',
     payroll: 'hr-payroll',
     payslip: 'my-payslips',
     saved_report: 'reports',
