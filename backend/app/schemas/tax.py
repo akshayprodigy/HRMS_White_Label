@@ -284,6 +284,12 @@ class Form24QRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class Form24QStatusUpdate(BaseModel):
+    """Advance a Form 24Q export through its filing lifecycle (W6)."""
+    action: str = Field(..., pattern="^(submitted|accepted|rejected)$")
+    challan_number: Optional[str] = Field(None, max_length=100)
+
+
 # ----- Gratuity -----------------------------------------------------
 
 

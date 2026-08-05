@@ -33,7 +33,7 @@ from app.schemas.tax import (
     CompanyLiabilityReport, DeclarationCreate, DeclarationRead,
     DeclarationUpdate, ExitGratuityResult, Form16GenerateRequest,
     Form16GenerateResult, Form16Read, Form16TracesUpload,
-    Form24QGenerateRequest, Form24QRead, GratuityConfigCreate,
+    Form24QGenerateRequest, Form24QRead, Form24QStatusUpdate, GratuityConfigCreate,
     GratuityConfigRead, GratuityConfigUpdate, GratuityResultRead,
     RegimeComparisonRead, SectionLimitCreate, SectionLimitRead,
     SectionLimitUpdate, TaxComputationRead, TaxSlabConfigCreate,
@@ -865,16 +865,35 @@ async def list_form16(
     db: deps.DBDep,
     fy: Optional[str] = Query(None),
     employee_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     stmt = select(Form16Record)
     if fy: stmt = stmt.where(Form16Record.fy == fy)
+    if status: stmt = stmt.where(Form16Record.status == status)
     if not _user_can_view_all(current_user):
         emp = await _current_employee(db, current_user)
         if emp is None: return []
         stmt = stmt.where(Form16Record.employee_id == emp.id)
     elif employee_id is not None:
         stmt = stmt.where(Form16Record.employee_id == employee_id)
+    rows = (await db.execute(stmt.order_by(Form16Record.fy.desc()))).scalars().all()
+    return [await _enrich_form16(db, r) for r in rows]
+
+
+@router.get("/form16/my", response_model=List[Form16Read])
+async def my_form16(
+    db: deps.DBDep,
+    fy: Optional[str] = Query(None),
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Employee self-service: my own Form 16s (W6)."""
+    emp = await _current_employee(db, current_user)
+    if emp is None:
+        return []
+    stmt = select(Form16Record).where(Form16Record.employee_id == emp.id)
+    if fy:
+        stmt = stmt.where(Form16Record.fy == fy)
     rows = (await db.execute(stmt.order_by(Form16Record.fy.desc()))).scalars().all()
     return [await _enrich_form16(db, r) for r in rows]
 
@@ -1035,6 +1054,16 @@ async def _build_24q_annexure_i(
     return rows, emps
 
 
+def _form24q_read(obj: Form24QExport) -> Form24QRead:
+    """Serialize a Form24QExport for the API WITHOUT the raw CSV bytes
+    (summary._bytes_hex) — that stays server-side for the download route."""
+    data = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+    summ = data.get("summary")
+    if isinstance(summ, dict) and "_bytes_hex" in summ:
+        data["summary"] = {k: v for k, v in summ.items() if k != "_bytes_hex"}
+    return Form24QRead.model_validate(data)
+
+
 @router.post("/form24q/generate", response_model=Form24QRead)
 async def generate_24q(
     payload: Form24QGenerateRequest,
@@ -1093,7 +1122,7 @@ async def generate_24q(
     )
     await db.commit()
     await db.refresh(obj)
-    return obj
+    return _form24q_read(obj)
 
 
 @router.get("/form24q", response_model=List[Form24QRead])
@@ -1104,9 +1133,50 @@ async def list_24q(
     stmt = select(Form24QExport)
     if fy:
         stmt = stmt.where(Form24QExport.fy == fy)
-    return list((await db.execute(
+    rows = (await db.execute(
         stmt.order_by(Form24QExport.fy.desc(), Form24QExport.quarter.desc())
-    )).scalars().all())
+    )).scalars().all()
+    return [_form24q_read(o) for o in rows]
+
+
+@router.post("/form24q/{qid}/status", response_model=Form24QRead)
+async def update_24q_status(
+    qid: int, payload: Form24QStatusUpdate, db: deps.DBDep, request: Request,
+    current_user: User = Depends(deps.check_permissions([PERM_GENERATE])),
+) -> Any:
+    """Advance a 24Q export through its filing lifecycle (W6). Guarded state
+    machine: generated → submitted → accepted/rejected."""
+    from app.models.tax import Form24QStatus
+    obj = await db.get(Form24QExport, qid)
+    if obj is None:
+        raise HTTPException(404, "24Q export not found")
+
+    allowed = {
+        "submitted": {Form24QStatus.GENERATED},
+        "accepted": {Form24QStatus.SUBMITTED},
+        "rejected": {Form24QStatus.SUBMITTED},
+    }
+    if obj.status not in allowed[payload.action]:
+        raise HTTPException(400, f"Cannot mark '{payload.action}' from status '{obj.status}'")
+
+    if payload.action == "submitted":
+        obj.status = Form24QStatus.SUBMITTED
+        obj.submitted_at = datetime.now(timezone.utc)
+        if payload.challan_number:
+            obj.challan_number = payload.challan_number
+    elif payload.action == "accepted":
+        obj.status = Form24QStatus.ACCEPTED
+        obj.accepted_at = datetime.now(timezone.utc)
+    else:
+        obj.status = Form24QStatus.REJECTED
+
+    await log_audit(
+        db, current_user.id, f"FORM24Q_{payload.action.upper()}", "form_24q_export",
+        str(obj.id), {"challan": payload.challan_number}, request,
+    )
+    await db.commit()
+    await db.refresh(obj)
+    return _form24q_read(obj)
 
 
 @router.get("/form24q/{qid}/download")

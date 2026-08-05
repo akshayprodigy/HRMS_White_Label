@@ -137,6 +137,14 @@ export const Form16Workspace: React.FC = () => {
     finally { setBusy(false); }
   };
 
+  const update24QStatus = async (q: Form24Q, action: string) => {
+    try {
+      await client.post(ENDPOINTS.TAX.FORM24Q_STATUS(q.id), { action });
+      toast.success(`Marked ${action}`);
+      fetchAll();
+    } catch (e: any) { toast.error(errMsg(e, 'Status update failed')); }
+  };
+
   const download24Q = async (q: Form24Q) => {
     try {
       const res = await client.get(ENDPOINTS.TAX.FORM24Q_DOWNLOAD(q.id), { responseType: 'blob' });
@@ -281,11 +289,20 @@ export const Form16Workspace: React.FC = () => {
                             {q.summary?.employee_count != null && `${q.summary.employee_count} emps`}
                             {q.summary?.total_tds_deducted != null && ` · TDS ₹${q.summary.total_tds_deducted.toLocaleString('en-IN')}`}
                           </td>
-                          <td className="p-3 text-right">
+                          <td className="p-3 text-right space-x-1">
                             {q.file_name && (
                               <Button size="sm" variant="outline" onClick={() => download24Q(q)}>
                                 <Download className="w-3 h-3" />
                               </Button>
+                            )}
+                            {q.status === 'generated' && (
+                              <Button size="sm" variant="outline" onClick={() => update24QStatus(q, 'submitted')}>Mark Submitted</Button>
+                            )}
+                            {q.status === 'submitted' && (
+                              <>
+                                <Button size="sm" variant="outline" onClick={() => update24QStatus(q, 'accepted')}>Accept</Button>
+                                <Button size="sm" variant="outline" onClick={() => update24QStatus(q, 'rejected')}>Reject</Button>
+                              </>
                             )}
                           </td>
                         </tr>

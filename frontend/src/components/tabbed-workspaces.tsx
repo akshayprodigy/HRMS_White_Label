@@ -33,6 +33,7 @@ import { OvertimeApprovalQueue } from './overtime-approval-queue';
 import { SalaryRevisionsView } from './salary-revisions';
 import { RevisionCyclesView } from './revision-cycles';
 import { MyPayslips } from './my-payslips';
+import { MyForm16View } from './my-form16';
 import { MyRevisionsView } from './my-revisions';
 import { MyTaxDeclarationView } from './my-tax-declaration';
 import { StatutoryFilingsView } from './statutory-filings';
@@ -313,6 +314,12 @@ export const MyPayWorkspace: React.FC = () => (
         label: 'Tax Declaration',
         icon: FileCheck,
         render: () => <MyTaxDeclarationView />,
+      },
+      {
+        id: 'form16',
+        label: 'My Form 16',
+        icon: FileText,
+        render: () => <MyForm16View />,
       },
     ]}
   />
