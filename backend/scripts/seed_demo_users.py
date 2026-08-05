@@ -138,6 +138,8 @@ async def seed_demo_roles():
             {"name": "expense category admin", "description": "Manage expense categories + policy caps"},
             {"name": "department head write", "description": "Assign functional head / deputy to a department"},
             {"name": "payroll accounts verify", "description": "Accounts: verify/approve finalized payroll before payment"},
+            {"name": "late mark rule write", "description": "Configure late-mark rules + process late-mark deductions"},
+            {"name": "accounts payment verify", "description": "Accounts: verify expense/advance/travel payouts before payment"},
         ]
         
         db_perms = {}
@@ -225,6 +227,7 @@ async def seed_demo_roles():
             db_perms["overtime rule write"],
             db_perms["overtime approve"],
             db_perms["overtime view all"],
+            db_perms["late mark rule write"],
             db_perms["designation master write"],
             db_perms["revision write"],
             db_perms["revision approve"],
@@ -285,6 +288,7 @@ async def seed_demo_roles():
             db_perms["overtime rule write"],
             db_perms["overtime approve"],
             db_perms["overtime view all"],
+            db_perms["late mark rule write"],
             db_perms["designation master write"],
             db_perms["revision write"],
             db_perms["revision approve"],
@@ -403,6 +407,8 @@ async def seed_demo_roles():
             # Verifies finalized payroll before payment; owns income-tax/TDS
             # config (HR keeps PF/ESI/PT + salary structure).
             db_perms["payroll accounts verify"],
+            # Verifies expense/advance/travel payouts (W13).
+            db_perms["accounts payment verify"],
             db_perms["hr payroll view"],
             db_perms["tax config write"],
             db_perms["tax view all"],

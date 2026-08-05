@@ -10,6 +10,7 @@ class PayrollRunStatus(str, Enum):
     LEAVES_LOCKED = "leaves_locked"
     DRAFT_GENERATED = "draft_generated"
     FINALIZED = "finalized"
+    ACCOUNTS_APPROVED = "accounts_approved"  # F6 Accounts gate
     PUBLISHED = "published"
 
 
