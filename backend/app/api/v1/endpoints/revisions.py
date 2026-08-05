@@ -26,9 +26,11 @@ from app.models.revision import (
     SalaryRevision,
 )
 from app.models.user import User
+from app.models.approval_chain import ChainEntityType
 from app.schemas.revision import (
     ActionRequest,
     ApplyDueResult,
+    SalaryRevisionSelectRequest, SalaryRevisionValueRequest,
     BulkActionResult,
     CompensationHistoryEntry,
     CycleBulkDraftRequest,
@@ -103,15 +105,17 @@ def _ensure_can_approve(user: User, rev: SalaryRevision) -> None:
 async def _enrich_revision(
     db, rev: SalaryRevision
 ) -> SalaryRevisionRead:
-    emp = await db.get(Employee, rev.employee_id, options=[
-        selectinload(Employee.user),
-    ])
+    emp = await db.get(Employee, rev.employee_id)
     full_name = code = dept = None
     if emp:
         code = emp.employee_id
         dept = emp.department
-        if emp.user:
-            full_name = emp.user.full_name
+        # Load the user by id (async-safe) instead of a lazy relationship
+        # access — Session.get() ignores selectinload on identity-map hits,
+        # which would trigger a sync lazy-load (MissingGreenlet) here.
+        emp_user = await db.get(User, emp.user_id) if emp.user_id else None
+        if emp_user:
+            full_name = emp_user.full_name
 
     def _title(_id: Optional[int]) -> Optional[str]:
         return None if _id is None else None  # placeholder; resolved below
@@ -416,6 +420,117 @@ async def create_revision(
         str(rev.id),
         {"employee_id": rev.employee_id, "type": rev.revision_type},
         request,
+    )
+    await db.commit()
+    await db.refresh(rev)
+    return await _enrich_revision(db, rev)
+
+
+# ------------------------- W11 multi-stage flow -------------------------
+
+async def _ensure_can_enter_value(db, user: User, emp: Employee) -> None:
+    """Only the functional head of the employee's department (or HR/superuser)
+    may author the value on a multi-stage revision."""
+    if user.is_superuser or _user_has_perm(user, PERM_REV_WRITE):
+        return
+    from app.services.functional_head import resolve_head_for_department
+    head = await resolve_head_for_department(db, emp.department) if emp.department else None
+    if head is None or head.id != user.id:
+        raise HTTPException(
+            403, "Only the functional head of this department can enter the value",
+        )
+
+
+@router.post("/revisions/select", response_model=SalaryRevisionRead)
+async def select_revision(
+    payload: SalaryRevisionSelectRequest,
+    db: deps.DBDep,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([PERM_REV_WRITE])),
+) -> Any:
+    """W11 step 1 — HR selects an employee for a multi-stage revision. Creates
+    an AWAITING_VALUE row (old snapshot only); the functional head fills the
+    value next."""
+    emp = await db.get(Employee, payload.employee_id)
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+    snap = await _snapshot_current_employee(db, emp)
+    rev = SalaryRevision(
+        employee_id=payload.employee_id,
+        revision_type=payload.revision_type,
+        effective_from=payload.effective_from,
+        reason=payload.reason,
+        # New side seeded equal to old until the head authors the value.
+        new_designation_id=snap["old_designation_id"],
+        new_grade_id=snap["old_grade_id"],
+        new_basic=snap["old_basic"], new_conveyance=snap["old_conveyance"],
+        new_hra=snap["old_hra"], new_other_allowance=snap["old_other_allowance"],
+        new_ctc=snap["old_ctc"],
+        status=RevisionStatus.AWAITING_VALUE,
+        is_multistage=True,
+        created_by_id=current_user.id,
+        **snap,
+    )
+    await _save_with_derivation(db, rev)
+    db.add(rev)
+    await db.flush()
+    await log_audit(
+        db, current_user.id, "REVISION_SELECT", "salary_revision",
+        str(rev.id), {"employee_id": rev.employee_id}, request,
+    )
+    await db.commit()
+    await db.refresh(rev)
+    return await _enrich_revision(db, rev)
+
+
+@router.post("/revisions/{rev_id}/enter-value", response_model=SalaryRevisionRead)
+async def enter_value(
+    rev_id: int,
+    payload: SalaryRevisionValueRequest,
+    db: deps.DBDep,
+    request: Request,
+    current_user: deps.CurrentUser,
+) -> Any:
+    """W11 step 2 — the functional head authors the new components. This
+    instantiates the CEO/MD approval chain (entity_type=salary_revision)."""
+    rev = await db.get(SalaryRevision, rev_id)
+    if rev is None:
+        raise HTTPException(404, "Revision not found")
+    if not rev.is_multistage or rev.status != RevisionStatus.AWAITING_VALUE:
+        raise HTTPException(400, "Revision is not awaiting a value")
+    emp = await db.get(Employee, rev.employee_id)
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+    await _ensure_can_enter_value(db, current_user, emp)
+
+    rev.new_designation_id = payload.new_designation_id
+    rev.new_grade_id = payload.new_grade_id
+    rev.new_basic = payload.new_basic
+    rev.new_conveyance = payload.new_conveyance
+    rev.new_hra = payload.new_hra
+    rev.new_other_allowance = payload.new_other_allowance
+    rev.new_ctc = (
+        payload.new_basic + payload.new_conveyance
+        + payload.new_hra + payload.new_other_allowance
+    )
+    rev.value_authored_by_id = current_user.id
+    rev.value_authored_at = datetime.now(timezone.utc)
+    await _save_with_derivation(db, rev)
+    rev.status = RevisionStatus.PENDING
+    await db.flush()
+
+    # Instantiate the generic approval chain (CEO/MD sign-off).
+    from app.api.v1.endpoints.approval_chains import instantiate_for_entity
+    instance = await instantiate_for_entity(
+        db=db, entity_type=ChainEntityType.SALARY_REVISION, entity_id=rev.id,
+        submitter=current_user, amount_paise=int(round(rev.new_ctc * 100)),
+        department=emp.department,
+        context={"employee_id": emp.id, "kind": "salary_revision"},
+    )
+    rev.chain_instance_id = instance.id
+    await log_audit(
+        db, current_user.id, "REVISION_ENTER_VALUE", "salary_revision",
+        str(rev.id), {"new_ctc": rev.new_ctc, "chain_instance_id": instance.id}, request,
     )
     await db.commit()
     await db.refresh(rev)

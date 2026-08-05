@@ -38,6 +38,9 @@ class RevisionType:
 
 class RevisionStatus:
     DRAFT = "draft"
+    # W11: HR selected the employee; the functional head must author the
+    # new value before it enters the CEO/MD approval chain.
+    AWAITING_VALUE = "awaiting_value"
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -156,6 +159,21 @@ class SalaryRevision(Base):
     approval_item_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("approvalitem.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # W11: multi-stage path (HR select -> functional head value -> CEO/MD
+    # chain -> HR commit). When False this is the legacy single-stage flow.
+    is_multistage: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, index=True
+    )
+    chain_instance_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("chained_approval_instance.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    value_authored_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True,
+    )
+    value_authored_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
     )
     rejected_reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     applied_at: Mapped[Optional[datetime]] = mapped_column(

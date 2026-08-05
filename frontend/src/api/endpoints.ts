@@ -273,6 +273,8 @@ export const ENDPOINTS = {
     UNMATCHED: '/hr/designations/unmatched-employees',
     REVISIONS: '/hr/revisions',
     REVISION_DETAIL: (id: number) => `/hr/revisions/${id}`,
+    SELECT: '/hr/revisions/select',
+    ENTER_VALUE: (id: number) => `/hr/revisions/${id}/enter-value`,
     SUBMIT: (id: number) => `/hr/revisions/${id}/submit`,
     ACTION: (id: number) => `/hr/revisions/${id}/action`,
     APPLY: (id: number) => `/hr/revisions/${id}/apply`,

@@ -896,6 +896,30 @@ async def _entity_summary(
             "reason": row.reason,
             "employee_id": row.user_id,
         }
+    if entity_type == ChainEntityType.SALARY_REVISION:
+        from app.models.revision import SalaryRevision
+        from app.models.employee import Employee as _Emp
+        rev = (await db.execute(
+            select(SalaryRevision).where(SalaryRevision.id == entity_id)
+        )).scalar_one_or_none()
+        if not rev:
+            return None
+        emp = await db.get(_Emp, rev.employee_id)
+        emp_user = await db.get(User, emp.user_id) if emp else None
+        return {
+            "kind": "salary_revision",
+            "id": rev.id,
+            "title": (
+                f"Salary revision: {emp_user.full_name if emp_user else '?'}"
+                f" — ₹{rev.old_ctc:,.0f} → ₹{rev.new_ctc:,.0f}"
+                f" ({rev.hike_percent:+.1f}%)"
+            ),
+            "employee_id": rev.employee_id,
+            "old_ctc": rev.old_ctc, "new_ctc": rev.new_ctc,
+            "hike_percent": rev.hike_percent,
+            "effective_from": rev.effective_from,
+            "amount_paise": int(round(rev.new_ctc * 100)),
+        }
     return {"kind": entity_type, "id": entity_id}
 
 
@@ -1051,6 +1075,20 @@ async def act_on_step(
                 else:
                     req.status = ShiftChangeStatus.REJECTED
                     req.decided_at = datetime.now(timezone.utc)
+        elif instance.entity_type == ChainEntityType.SALARY_REVISION:
+            from app.models.revision import SalaryRevision, RevisionStatus
+            rev = (await db.execute(
+                select(SalaryRevision).where(SalaryRevision.id == instance.entity_id)
+            )).scalar_one_or_none()
+            # Chain approval flips PENDING -> APPROVED (HR then commits via
+            # apply_now); rejection ends it. Guard on PENDING so we never
+            # override an already-committed/cancelled revision.
+            if rev and rev.status == RevisionStatus.PENDING:
+                rev.status = (
+                    RevisionStatus.APPROVED
+                    if outcome.next_status == ChainedApprovalStatus.APPROVED
+                    else RevisionStatus.REJECTED
+                )
         # Notify submitter.
         if instance.submitter_id:
             db.add(Notification(

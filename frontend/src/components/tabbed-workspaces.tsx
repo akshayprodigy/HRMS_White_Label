@@ -32,6 +32,7 @@ import { NightAllowanceRulesAdmin } from './night-allowance-rules-admin';
 import { OvertimeApprovalQueue } from './overtime-approval-queue';
 import { SalaryRevisionsView } from './salary-revisions';
 import { RevisionCyclesView } from './revision-cycles';
+import { MultiStageRevisionsView } from './multistage-revisions';
 import { MyPayslips } from './my-payslips';
 import { MyForm16View } from './my-form16';
 import { MyRevisionsView } from './my-revisions';
@@ -215,6 +216,12 @@ export const RevisionsWorkspace: React.FC<{ role?: UserRole }> = ({ role }) => (
         label: 'Revisions',
         icon: Trophy,
         render: () => <SalaryRevisionsView />,
+      },
+      {
+        id: 'multistage',
+        label: 'Multi-stage',
+        icon: Trophy,
+        render: () => <MultiStageRevisionsView />,
       },
       {
         id: 'cycles',

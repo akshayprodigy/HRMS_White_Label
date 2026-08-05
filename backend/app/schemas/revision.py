@@ -186,6 +186,26 @@ class SalaryRevisionUpdate(BaseModel):
     new_ctc: Optional[float] = Field(None, ge=0)
 
 
+class SalaryRevisionSelectRequest(BaseModel):
+    """W11 step 1 — HR selects an employee for a multi-stage revision."""
+    employee_id: int
+    revision_type: str = Field(
+        "increment", pattern="^(increment|promotion|correction|demotion)$"
+    )
+    effective_from: date
+    reason: Optional[str] = None
+
+
+class SalaryRevisionValueRequest(BaseModel):
+    """W11 step 2 — the functional head authors the new components."""
+    new_designation_id: Optional[int] = None
+    new_grade_id: Optional[int] = None
+    new_basic: float = Field(..., ge=0)
+    new_conveyance: float = Field(..., ge=0)
+    new_hra: float = Field(..., ge=0)
+    new_other_allowance: float = Field(..., ge=0)
+
+
 class SalaryRevisionRead(BaseModel):
     id: int
     employee_id: int
@@ -214,6 +234,10 @@ class SalaryRevisionRead(BaseModel):
     band_warning: Optional[str] = None
 
     approval_item_id: Optional[int] = None
+    is_multistage: bool = False
+    chain_instance_id: Optional[int] = None
+    value_authored_by_id: Optional[int] = None
+    value_authored_at: Optional[datetime] = None
     rejected_reason: Optional[str] = None
     applied_at: Optional[datetime] = None
     applied_by_id: Optional[int] = None
