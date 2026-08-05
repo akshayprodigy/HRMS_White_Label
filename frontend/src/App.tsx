@@ -51,6 +51,7 @@ import { EmploymentTypesAdmin } from './components/employment-types-admin';
 import { SalaryStructureAdmin } from './components/salary-structure-admin';
 import { DepartmentHeadsAdmin } from './components/department-heads-admin';
 import { AccountsApprovals } from './components/accounts-approvals';
+import { AccountsPayouts } from './components/accounts-payouts';
 import { LateMarkAdmin } from './components/late-mark-admin';
 import { LeavePoliciesAdmin } from './components/leave-policies-admin';
 import { SalaryRevisionsView } from './components/salary-revisions';
@@ -485,6 +486,8 @@ const App = () => {
         return <DepartmentHeadsAdmin />;
       case 'accounts-approvals':
         return <AccountsApprovals />;
+      case 'accounts-payouts':
+        return <AccountsPayouts />;
       case 'late-marks':
         return <LateMarkAdmin />;
       case 'leave-policies':
@@ -590,6 +593,7 @@ const App = () => {
       'salary-structure': 'Salary Structure',
       'department-heads': 'Department Heads',
       'accounts-approvals': 'Accounts — Payroll Approval',
+      'accounts-payouts': 'Accounts — Payout Verification',
       'late-marks': 'Late-Mark Rules',
       'leave-policies': 'Leave Policy Matrix',
       'shift-templates': 'Shift Templates',

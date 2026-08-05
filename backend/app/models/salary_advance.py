@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 
 
 class AdvanceStatus:
+    # W13: a new advance waits for Accounts verification before it is
+    # treated as disbursed/active (and thus recoverable in payroll).
+    PENDING_ACCOUNTS = "pending_accounts"
     ACTIVE = "active"
     FULLY_RECOVERED = "fully_recovered"
     WRITTEN_OFF = "written_off"
@@ -43,6 +46,13 @@ class SalaryAdvance(Base):
     )
     approved_by_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("user.id"), nullable=False
+    )
+    # W13: Accounts verification stamp (PENDING_ACCOUNTS -> ACTIVE).
+    accounts_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    accounts_verified_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id"), nullable=True
     )
     remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

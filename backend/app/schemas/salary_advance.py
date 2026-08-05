@@ -80,6 +80,8 @@ class SalaryAdvanceRead(BaseModel):
     recovered_amount: float
     status: str
     approved_by_id: int
+    accounts_verified_at: Optional[datetime] = None
+    accounts_verified_by_id: Optional[int] = None
     remarks: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None

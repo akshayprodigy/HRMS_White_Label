@@ -46,6 +46,7 @@ router = APIRouter()
 
 PERM_CATEGORY_ADMIN = "expense category admin"
 PERM_FINANCE_REIMBURSE = "finance reimburse"
+PERM_ACCOUNTS_VERIFY = "accounts payment verify"
 
 
 def _has_perm(user: User, name: str) -> bool:
@@ -203,6 +204,8 @@ def _claim_dict(c: ExpenseClaim) -> dict:
         "reimbursement_mode": c.reimbursement_mode,
         "reimbursed_at": c.reimbursed_at,
         "reimbursed_reference": c.reimbursed_reference,
+        "accounts_verified_at": c.accounts_verified_at,
+        "accounts_verified_by_id": c.accounts_verified_by_id,
         "payroll_run_id": c.payroll_run_id,
         "linked_travel_request_id": c.linked_travel_request_id,
         "policy_flags_json": c.policy_flags_json or {},
@@ -458,6 +461,58 @@ class ReimburseIn(BaseModel):
     payroll_run_id: Optional[int] = None
 
 
+def _is_accounts(user: User) -> bool:
+    """Accounts verifier: holds the accounts-payment-verify permission (W13),
+    or is a superuser. Reuses the F6 Accounts role."""
+    if getattr(user, "is_superuser", False):
+        return True
+    return _has_perm(user, PERM_ACCOUNTS_VERIFY)
+
+
+@router.get("/accounts/queue")
+async def accounts_queue(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """W13: approved claims awaiting Accounts verification before payout."""
+    if not _is_accounts(current_user):
+        raise HTTPException(403, "Accounts only")
+    stmt = (
+        select(ExpenseClaim)
+        .where(ExpenseClaim.status == ExpenseClaimStatus.APPROVED)
+        .options(selectinload(ExpenseClaim.line_items))
+        .order_by(ExpenseClaim.claim_date.desc())
+    )
+    rows = (await db.execute(stmt)).scalars().unique().all()
+    return [_claim_dict(c) for c in rows]
+
+
+@router.post("/claims/{claim_id}/accounts-verify")
+async def accounts_verify_claim(
+    claim_id: int,
+    db: deps.DBDep,
+    request: Request,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """W13: Accounts verifies an approved claim → unlocks Finance reimburse."""
+    if not _is_accounts(current_user):
+        raise HTTPException(403, "Accounts only")
+    claim = (await db.execute(
+        select(ExpenseClaim).where(ExpenseClaim.id == claim_id)
+        .options(selectinload(ExpenseClaim.line_items))
+    )).scalar_one_or_none()
+    if not claim:
+        raise HTTPException(404, "Claim not found")
+    if claim.status != ExpenseClaimStatus.APPROVED:
+        raise HTTPException(400, "Only approved claims can be verified by Accounts")
+    claim.status = ExpenseClaimStatus.ACCOUNTS_VERIFIED
+    claim.accounts_verified_at = datetime.now(timezone.utc)
+    claim.accounts_verified_by_id = current_user.id
+    await db.commit()
+    await db.refresh(claim)
+    return _claim_dict(claim)
+
+
 @router.get("/finance/queue")
 async def finance_queue(
     db: deps.DBDep,
@@ -467,7 +522,8 @@ async def finance_queue(
         raise HTTPException(403, "Finance only")
     stmt = (
         select(ExpenseClaim)
-        .where(ExpenseClaim.status == ExpenseClaimStatus.APPROVED)
+        # W13: Finance now pays only Accounts-verified claims.
+        .where(ExpenseClaim.status == ExpenseClaimStatus.ACCOUNTS_VERIFIED)
         .options(selectinload(ExpenseClaim.line_items))
         .order_by(ExpenseClaim.claim_date.desc())
     )
@@ -566,12 +622,55 @@ def _travel_dict(t: TravelRequest) -> dict:
         "estimated_cost_paise": t.estimated_cost_paise,
         "advance_requested_paise": t.advance_requested_paise,
         "advance_paid_paise": t.advance_paid_paise,
+        "advance_paid_at": t.advance_paid_at,
+        "accounts_verified_by_id": t.accounts_verified_by_id,
         "status": t.status,
         "approval_instance_id": t.approval_instance_id,
         "notes": t.notes,
         "created_at": t.created_at,
         "submitted_at": t.submitted_at,
     }
+
+
+@router.get("/travel/accounts-queue")
+async def travel_accounts_queue(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """W13: approved travel with a requested advance, awaiting Accounts payout."""
+    if not _is_accounts(current_user):
+        raise HTTPException(403, "Accounts only")
+    stmt = (
+        select(TravelRequest).where(and_(
+            TravelRequest.status == TravelRequestStatus.APPROVED,
+            TravelRequest.advance_requested_paise > 0,
+            TravelRequest.advance_paid_at.is_(None),
+        )).order_by(TravelRequest.start_date.desc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return [_travel_dict(t) for t in rows]
+
+
+@router.post("/travel/{travel_id}/accounts-verify")
+async def travel_accounts_verify(
+    travel_id: int,
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """W13: Accounts confirms the travel advance is paid out."""
+    if not _is_accounts(current_user):
+        raise HTTPException(403, "Accounts only")
+    t = await db.get(TravelRequest, travel_id)
+    if not t:
+        raise HTTPException(404, "Travel request not found")
+    if t.status != TravelRequestStatus.APPROVED:
+        raise HTTPException(400, "Only approved travel can be verified by Accounts")
+    t.advance_paid_paise = t.advance_requested_paise
+    t.advance_paid_at = datetime.now(timezone.utc)
+    t.accounts_verified_by_id = current_user.id
+    await db.commit()
+    await db.refresh(t)
+    return _travel_dict(t)
 
 
 @router.get("/travel")

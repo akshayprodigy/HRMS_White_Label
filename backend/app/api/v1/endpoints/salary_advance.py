@@ -33,6 +33,7 @@ router = APIRouter()
 HR_WRITE = "hr employee write"
 HR_READ = "hr employee read"
 HR_PAYROLL_RUN = "hr payroll run"
+PERM_ACCOUNTS_VERIFY = "accounts payment verify"
 
 
 def _log_audit(db, user_id, action, resource_type, resource_id, details, request):
@@ -46,6 +47,25 @@ def _log_audit(db, user_id, action, resource_type, resource_id, details, request
         details=audit_details,
         ip_address=request.client.host if request.client else None,
     ))
+
+
+async def _enrich_advance(db, adv) -> SalaryAdvanceRead:
+    """Build a SalaryAdvanceRead with joined employee/approver + derived amounts."""
+    emp = await db.get(Employee, adv.employee_id)
+    emp_user = await db.get(User, emp.user_id) if emp else None
+    approver = await db.get(User, adv.approved_by_id)
+    item = SalaryAdvanceRead.model_validate(adv)
+    item.employee_name = emp_user.full_name if emp_user else None
+    item.employee_code = emp.employee_id if emp else None
+    item.department = emp.department if emp else None
+    item.approved_by_name = approver.full_name if approver else None
+    item.outstanding = max(0.0, adv.amount - adv.recovered_amount)
+    item.monthly_emi = (
+        round(adv.amount / adv.installment_months, 2)
+        if adv.installment_months > 0
+        else adv.amount - adv.recovered_amount
+    )
+    return item
 
 
 # ─── Salary Advance CRUD ───────────────────────────────────────────
@@ -118,7 +138,8 @@ async def create_advance(
         installment_months=obj_in.installment_months,
         remarks=obj_in.remarks,
         approved_by_id=current_user.id,
-        status=AdvanceStatus.ACTIVE,
+        # W13: awaits Accounts verification before it's disbursed/recoverable.
+        status=AdvanceStatus.PENDING_ACCOUNTS,
     )
     db.add(advance)
     await db.flush()
@@ -145,6 +166,45 @@ async def create_advance(
         else advance.amount
     )
     return item
+
+
+@router.get("/advances/pending-accounts", response_model=List[SalaryAdvanceRead])
+async def list_pending_accounts_advances(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.check_permissions([PERM_ACCOUNTS_VERIFY])),
+) -> Any:
+    """W13: advances awaiting Accounts verification before disbursement."""
+    rows = (await db.execute(
+        select(SalaryAdvance).where(SalaryAdvance.status == AdvanceStatus.PENDING_ACCOUNTS)
+        .order_by(SalaryAdvance.created_at.desc())
+    )).scalars().all()
+    return [await _enrich_advance(db, a) for a in rows]
+
+
+@router.post("/advances/{advance_id}/accounts-verify", response_model=SalaryAdvanceRead)
+async def accounts_verify_advance(
+    advance_id: int,
+    db: deps.DBDep,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([PERM_ACCOUNTS_VERIFY])),
+) -> Any:
+    """W13: Accounts confirms the advance is disbursed → status becomes ACTIVE
+    (only then does payroll recover it)."""
+    adv = await db.get(SalaryAdvance, advance_id)
+    if not adv:
+        raise HTTPException(status_code=404, detail="Advance not found")
+    if adv.status != AdvanceStatus.PENDING_ACCOUNTS:
+        raise HTTPException(status_code=400, detail="Advance is not pending Accounts verification")
+    adv.status = AdvanceStatus.ACTIVE
+    adv.accounts_verified_at = datetime.now(timezone.utc)
+    adv.accounts_verified_by_id = current_user.id
+    _log_audit(
+        db, current_user.id, "ACCOUNTS_VERIFY_ADVANCE", "salary_advance",
+        str(adv.id), {"amount": adv.amount}, request,
+    )
+    await db.commit()
+    await db.refresh(adv)
+    return await _enrich_advance(db, adv)
 
 
 @router.get("/advances/my", response_model=List[SalaryAdvanceRead])
@@ -305,7 +365,8 @@ async def cancel_advance(
     adv = await db.get(SalaryAdvance, advance_id)
     if not adv:
         raise HTTPException(status_code=404, detail="Advance not found")
-    if adv.status != AdvanceStatus.ACTIVE:
+    # W13: a not-yet-verified advance can also be cancelled.
+    if adv.status not in (AdvanceStatus.ACTIVE, AdvanceStatus.PENDING_ACCOUNTS):
         raise HTTPException(status_code=400, detail="Advance is not active")
     if adv.recovered_amount > 0:
         raise HTTPException(

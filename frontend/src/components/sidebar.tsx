@@ -309,6 +309,13 @@ const menuItems: MenuItem[] = [
     roles: ["accounts", "super admin", "ceo"],
     group: "Payroll & Compensation",
   },
+  {
+    id: "accounts-payouts",
+    label: "Accounts Payouts",
+    icon: Wallet,
+    roles: ["accounts", "super admin", "ceo"],
+    group: "Payroll & Compensation",
+  },
 
   // ---- Compliance ----------------------------------------------------------
   {

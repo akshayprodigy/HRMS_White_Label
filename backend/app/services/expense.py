@@ -141,12 +141,12 @@ def decide_reimbursement(
             can_reimburse=False,
             reason=f"unknown reimbursement mode {requested_mode!r}",
         )
-    if claim_status != "approved":
+    if claim_status != "accounts_verified":
         return ReimbursementDecision(
             can_reimburse=False,
             reason=(
                 f"cannot reimburse from status {claim_status!r} — "
-                "must be approved"
+                "must be Accounts-verified"
             ),
         )
     already_direct = (

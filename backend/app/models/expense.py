@@ -30,6 +30,8 @@ class ExpenseClaimStatus:
     DRAFT = "draft"
     SUBMITTED = "submitted"
     APPROVED = "approved"
+    # W13: Accounts verifies an approved claim before Finance can reimburse.
+    ACCOUNTS_VERIFIED = "accounts_verified"
     REJECTED = "rejected"
     REIMBURSED = "reimbursed"
     PUSHED_TO_PAYROLL = "pushed_to_payroll"
@@ -116,6 +118,13 @@ class ExpenseClaim(Base):
         DateTime(timezone=True)
     )
     reimbursed_reference: Mapped[Optional[str]] = mapped_column(String(120))
+    # W13: Accounts verification stamp (before Finance reimburses).
+    accounts_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    accounts_verified_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete=SET_NULL)
+    )
     payroll_run_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey("payrollrun.id", ondelete=SET_NULL),
@@ -190,6 +199,13 @@ class TravelRequest(Base):
     estimated_cost_paise: Mapped[int] = mapped_column(Integer, default=0)
     advance_requested_paise: Mapped[int] = mapped_column(Integer, default=0)
     advance_paid_paise: Mapped[int] = mapped_column(Integer, default=0)
+    # W13: Accounts verifies the travel advance before it is marked paid.
+    advance_paid_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    accounts_verified_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete=SET_NULL)
+    )
 
     status: Mapped[str] = mapped_column(
         String(16), default=TravelRequestStatus.DRAFT, index=True,

@@ -14,6 +14,7 @@ import { ENDPOINTS } from '../api/endpoints';
 import type { SalaryAdvance, AdvanceRecovery } from '../types/erp';
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
+  pending_accounts: { label: 'Pending Accounts', color: 'bg-amber-100 text-amber-700', icon: Clock },
   active: { label: 'Active', color: 'bg-blue-100 text-blue-700', icon: Clock },
   fully_recovered: { label: 'Fully Recovered', color: 'bg-green-100 text-green-700', icon: CheckCircle2 },
   written_off: { label: 'Written Off', color: 'bg-amber-100 text-amber-700', icon: FileX },

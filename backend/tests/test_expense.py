@@ -108,7 +108,7 @@ def test_sum_empty_returns_zero():
 
 def test_can_reimburse_approved_claim_first_time():
     d = decide_reimbursement(
-        claim_status="approved",
+        claim_status="accounts_verified",
         reimbursement_mode=None, reimbursed_at=None,
         payroll_run_id=None, requested_mode="direct",
     )
@@ -123,12 +123,12 @@ def test_cannot_reimburse_draft_claim():
         payroll_run_id=None,
     )
     assert not d.can_reimburse
-    assert "must be approved" in (d.reason or "")
+    assert "must be Accounts-verified" in (d.reason or "")
 
 
 def test_cannot_double_pay_direct_then_direct():
     d = decide_reimbursement(
-        claim_status="approved",
+        claim_status="accounts_verified",
         reimbursement_mode="direct",
         reimbursed_at="2026-07-01",
         payroll_run_id=None,
@@ -140,7 +140,7 @@ def test_cannot_double_pay_direct_then_direct():
 
 def test_cannot_double_pay_payroll_after_direct():
     d = decide_reimbursement(
-        claim_status="approved",
+        claim_status="accounts_verified",
         reimbursement_mode="direct",
         reimbursed_at="2026-07-01",
         payroll_run_id=None,
@@ -151,7 +151,7 @@ def test_cannot_double_pay_payroll_after_direct():
 
 def test_cannot_reimburse_after_payroll_push():
     d = decide_reimbursement(
-        claim_status="approved",
+        claim_status="accounts_verified",
         reimbursement_mode="payroll",
         reimbursed_at=None,
         payroll_run_id=42,
@@ -162,7 +162,7 @@ def test_cannot_reimburse_after_payroll_push():
 
 def test_unknown_mode_rejected():
     d = decide_reimbursement(
-        claim_status="approved",
+        claim_status="accounts_verified",
         reimbursement_mode=None, reimbursed_at=None,
         payroll_run_id=None, requested_mode="cash-under-table",
     )
