@@ -92,7 +92,8 @@ export const PayrollHR = () => {
     try {
       const res = await client.post(ENDPOINTS.HR.DISBURSE_ALL(currentRun.id));
       const d = res.data as any;
-      toast.success(`Paid ${d.paid_count} employee(s) — ₹${Math.round(d.total_amount).toLocaleString('en-IN')}`);
+      const heldNote = d.held_count > 0 ? ` · ${d.held_count} held salary skipped` : '';
+      toast.success(`Paid ${d.paid_count} employee(s) — ₹${Math.round(d.total_amount).toLocaleString('en-IN')}${heldNote}`);
       const linesRes = await client.get(ENDPOINTS.HR.PAYROLL.LINES(currentRun.id));
       setRunLines(linesRes.data);
     } catch (error: any) {

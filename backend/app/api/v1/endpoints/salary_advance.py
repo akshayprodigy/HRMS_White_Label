@@ -655,14 +655,24 @@ async def disburse_all(
     if not run:
         raise HTTPException(status_code=404, detail="Payroll run not found")
 
+    # Row-lock the lines so two concurrent 'Pay All' clicks can't both read a
+    # zero disbursed_amount and each pay the full amount (ledger double-pay).
     lines = (await db.execute(
         select(PayrollLine).where(PayrollLine.payroll_run_id == run_id)
+        .with_for_update()
     )).scalars().all()
 
     paid_count = 0
     skipped_count = 0
+    held_count = 0
     total_amount = 0.0
     for line in lines:
+        # Never auto-sweep a DELIBERATELY held amount — it carries a reason and
+        # must be released explicitly via release-held. (A plain unpaid
+        # remainder from a partial payment has no held_reason and IS paid.)
+        if line.held_reason and not line.held_released and (line.held_amount or 0) > 0.01:
+            held_count += 1
+            continue
         payable = line.net_pay - line.advance_deduction
         remaining = round(payable - line.disbursed_amount, 2)
         if remaining <= 0.01:
@@ -684,13 +694,14 @@ async def disburse_all(
     _log_audit(
         db, current_user.id, "DISBURSE_ALL", "payroll_run", str(run_id),
         {"paid_count": paid_count, "skipped_count": skipped_count,
-         "total_amount": total_amount}, request,
+         "held_count": held_count, "total_amount": total_amount}, request,
     )
     await db.commit()
     return {
         "run_id": run_id,
         "paid_count": paid_count,
         "skipped_count": skipped_count,
+        "held_count": held_count,
         "total_amount": total_amount,
     }
 
