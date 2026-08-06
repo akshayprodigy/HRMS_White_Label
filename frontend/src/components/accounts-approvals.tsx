@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   RefreshCw, ShieldCheck, CheckCircle2, Clock, IndianRupee,
-  ChevronDown, ChevronRight, Download, Users,
+  ChevronDown, ChevronRight, Download, Users, Pencil,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
@@ -60,6 +60,11 @@ export const AccountsApprovals: React.FC = () => {
   const [linesByRun, setLinesByRun] = useState<Record<number, Line[]>>({});
   const [loadingLines, setLoadingLines] = useState<number | null>(null);
 
+  // Line edit
+  const [edit, setEdit] = useState<{ runId: number; line: Line } | null>(null);
+  const [editForm, setEditForm] = useState({ arrear: '', incentive: '', guest_house: '', tds: '', reason: '' });
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const fetchRuns = async () => {
     setLoading(true);
     try {
@@ -90,6 +95,49 @@ export const AccountsApprovals: React.FC = () => {
       } finally {
         setLoadingLines(null);
       }
+    }
+  };
+
+  const reloadLines = async (runId: number) => {
+    try {
+      const res = await client.get<Line[]>(ENDPOINTS.HR.PAYROLL.LINES(runId));
+      setLinesByRun(prev => ({ ...prev, [runId]: res.data || [] }));
+    } catch { /* keep old */ }
+  };
+
+  const openEdit = (runId: number, line: Line) => {
+    setEditForm({
+      arrear: String(alw(line, 'arrear') || ''),
+      incentive: String(alw(line, 'incentive') || ''),
+      guest_house: String(ded(line, 'guest_house') || ''),
+      tds: String(ded(line, 'tds') || ''),
+      reason: '',
+    });
+    setEdit({ runId, line });
+  };
+
+  const saveEdit = async () => {
+    if (!edit) return;
+    if (editForm.reason.trim().length < 1) {
+      toast.error('A reason is required for a payroll line edit');
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const payload: any = { reason: editForm.reason.trim() };
+      (['arrear', 'incentive', 'guest_house', 'tds'] as const).forEach(k => {
+        if (editForm[k] !== '') payload[k] = Number(editForm[k]);
+      });
+      await client.patch(ENDPOINTS.HR.PAYROLL.LINE_UPDATE(edit.runId, edit.line.id), payload);
+      toast.success('Payroll line updated');
+      const runId = edit.runId;
+      setEdit(null);
+      await reloadLines(runId);
+      await fetchRuns(); // refresh the run summary (gross/net/deductions)
+    } catch (e: any) {
+      toast.error(errMsg(e, 'Failed to update line'));
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -133,7 +181,7 @@ export const AccountsApprovals: React.FC = () => {
     window.URL.revokeObjectURL(url);
   };
 
-  const EmployeeSheet = ({ run }: { run: Run }) => {
+  const EmployeeSheet = ({ run, editable }: { run: Run; editable: boolean }) => {
     const lines = linesByRun[run.id];
     if (loadingLines === run.id) {
       return <div className="py-8 text-center text-[10px] font-black uppercase tracking-widest text-slate-400 animate-pulse">Loading employee breakdown…</div>;
@@ -180,7 +228,17 @@ export const AccountsApprovals: React.FC = () => {
             <tbody className="divide-y divide-slate-50">
               {lines.map(l => (
                 <tr key={l.id} className="hover:bg-slate-50/60 tabular-nums">
-                  <td className="px-3 py-2 text-left font-bold text-[#0F172A] sticky left-0 bg-white">{l.user_full_name || `#${l.user_id}`}</td>
+                  <td className="px-3 py-2 text-left font-bold text-[#0F172A] sticky left-0 bg-white">
+                    <span className="inline-flex items-center gap-1.5">
+                      {editable && (
+                        <button type="button" onClick={() => openEdit(run.id, l)}
+                          className="text-slate-400 hover:text-blue-600" title="Edit this line">
+                          <Pencil size={12} />
+                        </button>
+                      )}
+                      {l.user_full_name || `#${l.user_id}`}
+                    </span>
+                  </td>
                   <td className="px-3 py-2 text-slate-600">{l.payable_days}</td>
                   <td className={cn('px-3 py-2', l.lop_days > 0 ? 'text-rose-600 font-bold' : 'text-slate-400')}>{l.lop_days}</td>
                   <td className="px-3 py-2 text-slate-600">{num(alw(l, 'basic_salary_actual') || l.base_salary)}</td>
@@ -249,7 +307,7 @@ export const AccountsApprovals: React.FC = () => {
         </tr>
         {isOpen && (
           <tr>
-            <td colSpan={6} className="p-0"><EmployeeSheet run={r} /></td>
+            <td colSpan={6} className="p-0"><EmployeeSheet run={r} editable={canApprove} /></td>
           </tr>
         )}
       </>
@@ -315,6 +373,48 @@ export const AccountsApprovals: React.FC = () => {
           <RunTable list={approved} canApprove={false} />
         </Card>
       )}
+
+      {/* Line edit dialog */}
+      <Dialog open={!!edit} onOpenChange={(o) => !o && setEdit(null)}>
+        <DialogContent className="max-w-md">
+          <DialogTitle className="flex items-center gap-2 text-base font-black uppercase tracking-tight text-[#0F172A]">
+            <Pencil size={15} className="text-blue-600" /> Edit payroll line
+          </DialogTitle>
+          {edit && (
+            <p className="text-[10px] font-bold text-slate-500 -mt-1">
+              {edit.line.user_full_name} · gross recalculates on save
+            </p>
+          )}
+          <div className="space-y-3 pt-1">
+            <div className="grid grid-cols-2 gap-3">
+              {(['arrear', 'incentive', 'guest_house', 'tds'] as const).map(k => (
+                <div key={k} className="space-y-1">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                    {k === 'guest_house' ? 'Guest House (−)' : k === 'tds' ? 'TDS (−)' : k}
+                  </label>
+                  <input type="number" value={(editForm as any)[k]}
+                    onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })}
+                    placeholder="0"
+                    className="w-full h-10 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-500 bg-white" />
+                </div>
+              ))}
+            </div>
+            <div className="space-y-1">
+              <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Reason (required · audited)</label>
+              <textarea value={editForm.reason} onChange={(e) => setEditForm({ ...editForm, reason: e.target.value })}
+                placeholder="e.g. Approved arrear for prior-month correction"
+                className="w-full h-16 px-3 py-2 rounded-lg border border-slate-200 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-500 bg-white" />
+            </div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Arrear / incentive add to gross; guest house / TDS are deductions. Statutory PF / ESI / PT recompute automatically.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEdit(null)} className="text-[10px] font-black uppercase tracking-widest">Cancel</Button>
+            <Button onClick={saveEdit} isLoading={savingEdit} className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase tracking-widest">Save &amp; Recalculate</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!confirm} onOpenChange={(o) => !o && setConfirm(null)}>
         <DialogContent className="max-w-md p-0 overflow-hidden">

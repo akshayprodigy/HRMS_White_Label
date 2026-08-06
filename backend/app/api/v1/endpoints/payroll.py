@@ -924,14 +924,34 @@ async def update_payroll_line(
     payload: PayrollLineUpdate,
     request: Request,
     db: deps.DBDep,
-    current_user: User = Depends(deps.check_permissions([HR_PAYROLL_RUN]))
+    current_user: User = Depends(deps.get_current_user)
 ) -> Any:
-    """Update arrear/incentive/guest_house/tds on a draft payroll line and recalculate."""
+    """Update arrear/incentive/guest_house/tds on a payroll line and recalculate.
+
+    Editable by HR (`hr payroll run`) while the run is DRAFT_GENERATED, and by
+    Accounts (`payroll accounts verify`) while it is FINALIZED — so Accounts can
+    correct a value during their pre-payment review, then approve. Every edit is
+    audited with a required reason (W5).
+    """
+    user_perms = {
+        p.name for r in current_user.roles for p in r.permissions
+    }
+    if not (current_user.is_superuser
+            or user_perms & {HR_PAYROLL_RUN, PAYROLL_ACCOUNTS_VERIFY}):
+        raise HTTPException(
+            status_code=403,
+            detail="Not enough permissions to edit payroll lines",
+        )
     run = await db.get(PayrollRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail=ERR_RUN_NOT_FOUND)
-    if run.status != PayrollRunStatus.DRAFT_GENERATED:
-        raise HTTPException(status_code=400, detail="Can only edit lines in DRAFT_GENERATED status")
+    if run.status not in (
+        PayrollRunStatus.DRAFT_GENERATED, PayrollRunStatus.FINALIZED,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Lines can only be edited while the run is DRAFT_GENERATED or FINALIZED",
+        )
 
     line_res = await db.execute(
         select(PayrollLine).where(
@@ -1110,8 +1130,10 @@ async def update_payroll_line(
     }
 
     # Update run totals using old values (line totals already include OT/night).
-    run.total_gross = run.total_gross - old_gross + line.gross_pay
-    run.total_net = run.total_net - old_net + line.net_pay
+    run.total_gross = round(run.total_gross - old_gross + line.gross_pay, 2)
+    run.total_net = round(run.total_net - old_net + line.net_pay, 2)
+    # Keep the summary's deductions column consistent with the new gross/net.
+    run.total_deductions = round(run.total_gross - run.total_net, 2)
 
     user_res = await db.execute(select(User).where(User.id == line.user_id))
     user = user_res.scalar_one_or_none()
