@@ -85,10 +85,12 @@ def resolve_earnings_from_template(
     resolved_basic = float(employee_basic or 0.0)
     lines = list(lines)
 
-    # First pass: a template may pin an absolute basic.
+    # First pass: a template may pin an absolute basic. A pinned basic is
+    # clamped to its component's bounds too (else basic-slot min/max would be
+    # a silent no-op while other slots are clamped).
     for ln in lines:
         if ln.slot == "basic" and ln.calc_method == CALC_FLAT and ln.value is not None:
-            resolved_basic = float(ln.value)
+            resolved_basic = _clamp_amount(float(ln.value), ln)
 
     slots = {"conveyance": 0.0, "hra": 0.0, "other": 0.0}
     for ln in lines:

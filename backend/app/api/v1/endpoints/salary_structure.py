@@ -105,6 +105,14 @@ async def update_salary_component(
         if field == "name" and value is not None:
             value = value.strip()
         setattr(db_obj, field, value)
+    # Validate the MERGED bounds (a single-field PATCH must still hold min<=max
+    # against the persisted counterpart — the Update schema can't see it).
+    if (db_obj.min_amount is not None and db_obj.max_amount is not None
+            and db_obj.min_amount > db_obj.max_amount):
+        raise HTTPException(
+            status_code=400,
+            detail="min_amount cannot be greater than max_amount",
+        )
     db.add(db_obj)
     await db.commit()
     await db.refresh(db_obj)
