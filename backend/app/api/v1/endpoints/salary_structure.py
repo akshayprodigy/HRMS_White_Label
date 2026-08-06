@@ -35,21 +35,6 @@ def _can_manage_structure(current_user: deps.CurrentUser) -> User:
     raise HTTPException(status_code=403, detail="Not enough permissions for salary structure")
 
 
-def _validate_percent_in_bounds(comp: SalaryComponent, percent) -> None:
-    """A template line's percent must sit within the component's configured
-    [min_percent, max_percent] guardrail, when set."""
-    if percent is None:
-        return
-    if comp.min_percent is not None and percent < comp.min_percent:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{comp.name}: {percent}% is below the allowed minimum {comp.min_percent}%",
-        )
-    if comp.max_percent is not None and percent > comp.max_percent:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{comp.name}: {percent}% is above the allowed maximum {comp.max_percent}%",
-        )
 
 
 def _validate_slot(slot):
@@ -94,7 +79,7 @@ async def create_salary_component(
         slot=obj_in.slot, default_calc_method=obj_in.default_calc_method,
         default_percent=obj_in.default_percent, is_taxable=obj_in.is_taxable,
         display_order=obj_in.display_order, is_active=obj_in.is_active,
-        min_percent=obj_in.min_percent, max_percent=obj_in.max_percent,
+        min_amount=obj_in.min_amount, max_amount=obj_in.max_amount,
     )
     db.add(db_obj)
     await db.commit()
@@ -253,9 +238,6 @@ async def set_template_components(
             )
         seen.add(line.component_id)
         await _assert_component_usable(db, line.component_id)
-        if line.calc_method == "percent_of_basic":
-            comp = await db.get(SalaryComponent, line.component_id)
-            _validate_percent_in_bounds(comp, line.percent)
     # Clear + re-add (cascade delete-orphan handles removals).
     for existing in list(tmpl.components):
         await db.delete(existing)

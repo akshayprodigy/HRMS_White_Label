@@ -18,8 +18,8 @@ interface SalaryComponent {
   slot: string | null;
   default_calc_method: string;
   default_percent: number | null;
-  min_percent: number | null;
-  max_percent: number | null;
+  min_amount: number | null;
+  max_amount: number | null;
   is_taxable: boolean;
   display_order: number;
   is_active: boolean;
@@ -58,7 +58,7 @@ const selectCls =
 const emptyComp = {
   code: '', name: '', component_type: 'earning', slot: '' as string,
   default_calc_method: 'flat', default_percent: '' as string,
-  min_percent: '' as string, max_percent: '' as string,
+  min_amount: '' as string, max_amount: '' as string,
   is_taxable: true, is_active: true,
 };
 
@@ -90,8 +90,8 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
       code: it.code, name: it.name, component_type: it.component_type,
       slot: it.slot || '', default_calc_method: it.default_calc_method,
       default_percent: it.default_percent == null ? '' : String(it.default_percent),
-      min_percent: it.min_percent == null ? '' : String(it.min_percent),
-      max_percent: it.max_percent == null ? '' : String(it.max_percent),
+      min_amount: it.min_amount == null ? '' : String(it.min_amount),
+      max_amount: it.max_amount == null ? '' : String(it.max_amount),
       is_taxable: it.is_taxable, is_active: it.is_active,
     });
     setModalOpen(true);
@@ -103,8 +103,8 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
       name: form.name, component_type: form.component_type,
       slot: form.slot || null, default_calc_method: form.default_calc_method,
       default_percent: form.default_percent.trim() === '' ? null : Number(form.default_percent),
-      min_percent: form.min_percent.trim() === '' ? null : Number(form.min_percent),
-      max_percent: form.max_percent.trim() === '' ? null : Number(form.max_percent),
+      min_amount: form.min_amount.trim() === '' ? null : Number(form.min_amount),
+      max_amount: form.max_amount.trim() === '' ? null : Number(form.max_amount),
       is_taxable: form.is_taxable, is_active: form.is_active,
     };
     setSubmitting(true);
@@ -169,8 +169,13 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
                   <td className="px-6 py-3 text-[11px] font-bold text-slate-500 uppercase">{it.slot || 'other (folded)'}</td>
                   <td className="px-6 py-3 text-[11px] font-bold text-slate-600">
                     {it.default_calc_method === 'percent_of_basic'
-                      ? `${it.default_percent ?? '—'}% of basic${(it.min_percent != null || it.max_percent != null) ? ` (${it.min_percent ?? 0}–${it.max_percent ?? 100}%)` : ''}`
+                      ? `${it.default_percent ?? '—'}% of basic`
                       : 'flat'}
+                    {(it.min_amount != null || it.max_amount != null) && (
+                      <span className="block text-[9px] text-amber-600 font-black uppercase tracking-widest">
+                        {it.min_amount != null ? `min ₹${it.min_amount}` : ''}{it.min_amount != null && it.max_amount != null ? ' · ' : ''}{it.max_amount != null ? `max ₹${it.max_amount}` : ''}
+                      </span>
+                    )}
                   </td>
                   <td className="px-6 py-3">
                     <Badge variant={it.is_active ? 'success' : 'neutral'} className="text-[8px] uppercase">{it.is_active ? 'Active' : 'Inactive'}</Badge>
@@ -219,26 +224,24 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
               </select>
             </div>
             {form.default_calc_method === 'percent_of_basic' && (
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Default %</label>
-                  <Input type="number" value={form.default_percent} onChange={(e: any) => setForm({ ...form, default_percent: e.target.value })} placeholder="e.g. 50" className="mt-1.5" />
-                </div>
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Min %</label>
-                  <Input type="number" value={form.min_percent} onChange={(e: any) => setForm({ ...form, min_percent: e.target.value })} placeholder="e.g. 40" className="mt-1.5" />
-                </div>
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Max %</label>
-                  <Input type="number" value={form.max_percent} onChange={(e: any) => setForm({ ...form, max_percent: e.target.value })} placeholder="e.g. 50" className="mt-1.5" />
-                </div>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Default % of basic</label>
+                <Input type="number" value={form.default_percent} onChange={(e: any) => setForm({ ...form, default_percent: e.target.value })} placeholder="e.g. 50" className="mt-1.5" />
               </div>
             )}
-            {form.default_calc_method === 'percent_of_basic' && (
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest -mt-1">
-                Min/Max bound what a template can set for this component. Payroll uses the template's % within these limits.
-              </p>
-            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Min ₹ (floor)</label>
+                <Input type="number" value={form.min_amount} onChange={(e: any) => setForm({ ...form, min_amount: e.target.value })} placeholder="e.g. 100" className="mt-1.5" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Max ₹ (cap)</label>
+                <Input type="number" value={form.max_amount} onChange={(e: any) => setForm({ ...form, max_amount: e.target.value })} placeholder="e.g. 1500" className="mt-1.5" />
+              </div>
+            </div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest -mt-1">
+              Hard rupee floor / cap on the computed value — e.g. HRA = 50% of basic, but never below ₹100 or above ₹1500. Leave blank for no limit.
+            </p>
             <label className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-[#0F172A] cursor-pointer">
               <input type="checkbox" checked={form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} className="w-3.5 h-3.5 accent-blue-600" />
               Active

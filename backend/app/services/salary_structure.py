@@ -28,11 +28,14 @@ from app.models.salary_template import SalaryTemplate, SalaryTemplateComponent
 @dataclass
 class ResolvedLine:
     """A flattened template line: the component's slot plus the effective
-    calc method / value / percent (template override in force)."""
+    calc method / value / percent (template override in force), and the
+    component's hard rupee bounds (clamp applied to the resolved amount)."""
     slot: Optional[str]           # one of CANONICAL_SLOTS, or None (-> other)
     calc_method: str
     value: Optional[float]
     percent: Optional[float]
+    min_amount: Optional[float] = None
+    max_amount: Optional[float] = None
 
 
 @dataclass
@@ -48,12 +51,22 @@ class ResolvedEarnings:
         return self.basic + self.conveyance + self.hra + self.other_allowance
 
 
+def _clamp_amount(amount: float, line: ResolvedLine) -> float:
+    """Apply the component's hard rupee floor/cap. NULL bound = no clamp."""
+    if line.min_amount is not None:
+        amount = max(amount, float(line.min_amount))
+    if line.max_amount is not None:
+        amount = min(amount, float(line.max_amount))
+    return amount
+
+
 def _line_amount(line: ResolvedLine, basic: float) -> float:
-    """Absolute rupee amount contributed by a non-basic line."""
+    """Absolute rupee amount contributed by a non-basic line, after clamping
+    to the component's [min_amount, max_amount] hard bounds."""
     if line.calc_method == CALC_PERCENT_OF_BASIC and line.percent is not None:
-        return basic * line.percent / 100.0
+        return _clamp_amount(basic * line.percent / 100.0, line)
     if line.calc_method == CALC_FLAT and line.value is not None:
-        return float(line.value)
+        return _clamp_amount(float(line.value), line)
     return 0.0
 
 
@@ -122,6 +135,8 @@ async def load_template_map(db: AsyncSession) -> dict[int, list[ResolvedLine]]:
                 calc_method=tc.calc_method,
                 value=tc.value,
                 percent=tc.percent,
+                min_amount=comp.min_amount,
+                max_amount=comp.max_amount,
             )
         )
     return out

@@ -76,10 +76,11 @@ test.describe('Accounts demo — read-only', () => {
     await page.waitForTimeout(400);
     await main.getByRole('button', { name: /Add Component/i }).click();
     const dlg = page.getByRole('dialog');
-    // Switch to percent-of-basic → the Min %/Max % bound fields appear.
+    // Hard rupee floor/cap fields are present; percent-of-basic adds Default %.
+    await expect(dlg.getByText('Min ₹ (floor)')).toBeVisible();
+    await expect(dlg.getByText('Max ₹ (cap)')).toBeVisible();
     await dlg.getByRole('combobox').nth(1).selectOption('percent_of_basic');
-    await expect(dlg.getByText(/Min %/i)).toBeVisible();
-    await expect(dlg.getByText(/Max %/i)).toBeVisible();
+    await expect(dlg.getByText('Default % of basic')).toBeVisible();
     await dlg.getByRole('button', { name: /Cancel/i }).click();
   });
 
