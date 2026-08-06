@@ -427,6 +427,7 @@ export const ENDPOINTS = {
     RELEASE_HELD: (runId: number) => `/hr/salary/payroll/${runId}/release-held`,
     HELD_SALARIES: '/hr/salary/payroll/held-salaries',
     DISBURSE: (lineId: number) => `/hr/salary/payroll/lines/${lineId}/disburse`,
+    DISBURSE_ALL: (runId: number) => `/hr/salary/payroll/${runId}/disburse-all`,
     DISBURSEMENTS: (lineId: number) => `/hr/salary/payroll/lines/${lineId}/disbursements`,
     PAYROLL: {
       DASHBOARD: '/hr/payroll/dashboard',

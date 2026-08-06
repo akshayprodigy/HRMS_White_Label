@@ -17,7 +17,8 @@ import {
   AlertCircle,
   Lock,
   ArrowLeft,
-  Loader2
+  Loader2,
+  IndianRupee
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
@@ -75,6 +76,29 @@ export const PayrollHR = () => {
       toast.error(getErrorMessage(error, 'Failed to export salary register'));
     } finally {
       setExporting(false);
+    }
+  };
+
+  const payAllRemaining = async () => {
+    if (!currentRun) return;
+    const pendingCount = runLines.filter(l => {
+      const payable = l.payable_amount ?? (l.net_pay - l.advance_deduction);
+      const pending = l.pending_amount ?? (payable - l.disbursed_amount);
+      return pending > 0.01;
+    }).length;
+    if (pendingCount === 0) { toast.info('Nothing pending — everyone is fully paid'); return; }
+    if (!window.confirm(`Pay the full remaining amount to ${pendingCount} employee(s) in one go?`)) return;
+    setActionLoading(true);
+    try {
+      const res = await client.post(ENDPOINTS.HR.DISBURSE_ALL(currentRun.id));
+      const d = res.data as any;
+      toast.success(`Paid ${d.paid_count} employee(s) — ₹${Math.round(d.total_amount).toLocaleString('en-IN')}`);
+      const linesRes = await client.get(ENDPOINTS.HR.PAYROLL.LINES(currentRun.id));
+      setRunLines(linesRes.data);
+    } catch (error: any) {
+      toast.error(getErrorMessage(error, 'Bulk payment failed'));
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -632,6 +656,18 @@ export const PayrollHR = () => {
                        <p className="text-slate-500 font-bold">{currentStep === 4 ? 'Pay employees in full or partial amounts before finalizing.' : 'Disburse any remaining amounts, then publish payslips.'}</p>
                     </div>
                     <div className="flex items-end gap-4">
+                      <Button
+                        onClick={payAllRemaining}
+                        disabled={actionLoading}
+                        className="h-11 px-5 rounded-xl font-black text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                      >
+                        {actionLoading ? (
+                          <Loader2 size={14} className="animate-spin mr-1.5" />
+                        ) : (
+                          <IndianRupee size={14} className="mr-1.5" />
+                        )}
+                        Pay All Remaining
+                      </Button>
                       <Button
                         variant="outline"
                         onClick={exportSalaryRegister}

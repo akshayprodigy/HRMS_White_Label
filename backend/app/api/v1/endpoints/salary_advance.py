@@ -638,6 +638,63 @@ async def record_disbursement(
     return result
 
 
+@router.post("/payroll/{run_id}/disburse-all")
+async def disburse_all(
+    run_id: int,
+    *,
+    db: deps.DBDep,
+    request: Request,
+    payment_mode: str = Query("bank_transfer"),
+    reference: Optional[str] = Query(None),
+    current_user: User = Depends(deps.check_permissions([HR_PAYROLL_RUN])),
+) -> Any:
+    """Bulk 'Pay All': disburse the full remaining payable for every line in
+    the run in one action. Lines already fully paid are skipped. Idempotent —
+    re-running only pays whatever is still pending."""
+    run = await db.get(PayrollRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Payroll run not found")
+
+    lines = (await db.execute(
+        select(PayrollLine).where(PayrollLine.payroll_run_id == run_id)
+    )).scalars().all()
+
+    paid_count = 0
+    skipped_count = 0
+    total_amount = 0.0
+    for line in lines:
+        payable = line.net_pay - line.advance_deduction
+        remaining = round(payable - line.disbursed_amount, 2)
+        if remaining <= 0.01:
+            skipped_count += 1
+            continue
+        db.add(SalaryDisbursement(
+            payroll_line_id=line.id,
+            amount=remaining,
+            payment_mode=payment_mode,
+            reference=reference,
+            remarks="Bulk pay-all",
+            disbursed_by_id=current_user.id,
+        ))
+        line.disbursed_amount = round(line.disbursed_amount + remaining, 2)
+        line.held_amount = round(payable - line.disbursed_amount, 2)
+        paid_count += 1
+        total_amount = round(total_amount + remaining, 2)
+
+    _log_audit(
+        db, current_user.id, "DISBURSE_ALL", "payroll_run", str(run_id),
+        {"paid_count": paid_count, "skipped_count": skipped_count,
+         "total_amount": total_amount}, request,
+    )
+    await db.commit()
+    return {
+        "run_id": run_id,
+        "paid_count": paid_count,
+        "skipped_count": skipped_count,
+        "total_amount": total_amount,
+    }
+
+
 @router.get(
     "/payroll/lines/{line_id}/disbursements",
     response_model=List[SalaryDisbursementRead],
