@@ -9,7 +9,7 @@ from app.api.v1.endpoints import (
     salary_advance, shifts, geofence, overtime, revisions, statutory, tax,
     performance, approval_chains, expenses, dashboard, plumbing,
     notifications_admin, functional_head, employment_types,
-    salary_structure, late_mark, leave_policies,
+    salary_structure, late_mark, leave_policies, roster,
 )
 
 api_router = APIRouter()
@@ -145,6 +145,12 @@ api_router.include_router(
     shifts.router,
     prefix="/shifts",
     tags=["shifts"],
+    dependencies=[Depends(deps.verify_attendance)],
+)
+api_router.include_router(
+    roster.router,
+    prefix="/roster",
+    tags=["roster"],
     dependencies=[Depends(deps.verify_attendance)],
 )
 api_router.include_router(

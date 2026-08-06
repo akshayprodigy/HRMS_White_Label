@@ -1,0 +1,609 @@
+"""Roster planner API (W7), mounted at /roster (attendance-gated).
+
+Write access is scoped through services/roster.py: superusers / `roster
+manage` holders touch everyone, functional heads only their team. Plain
+employees use the /my* + /change-requests* self-service paths.
+
+PRECEDENCE: this is a planning layer. Published roster entries do NOT feed
+attendance / overtime / payroll (those still read EmployeeShiftAssignment).
+"""
+from datetime import date as pydate, datetime, timedelta, timezone
+from typing import Any, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import or_, select
+from sqlalchemy.orm import selectinload
+
+from app.api import deps
+from app.api.v1.endpoints.hr import log_audit
+from app.models.employee import Employee
+from app.models.roster import (
+    RosterEntry, RosterChangeRequest, RosterStatus, RosterChangeStatus,
+)
+from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
+from app.models.user import User
+from app.schemas.roster import (
+    RosterGridResponse, RosterBulkRequest, RosterBulkResult,
+    RosterEntryInput, RosterEntryRead, RosterEntryUpdate,
+    RosterChangeRequestCreate, RosterChangeRequestRead, RosterChangeDecision,
+)
+from app.services import roster as roster_svc
+
+router = APIRouter()
+
+
+# ----------------------------- helpers -----------------------------
+
+async def _entry_read(db, entry: RosterEntry) -> RosterEntryRead:
+    tpl = (
+        await db.get(ShiftTemplate, entry.shift_template_id)
+        if entry.shift_template_id else None
+    )
+    u = await db.get(User, entry.employee_id)
+    return RosterEntryRead(
+        id=entry.id,
+        employee_id=entry.employee_id,
+        work_date=entry.work_date,
+        shift_template_id=entry.shift_template_id,
+        is_week_off=entry.is_week_off,
+        status=entry.status,
+        note=entry.note,
+        assigned_by_id=entry.assigned_by_id,
+        employee_name=u.full_name if u else None,
+        shift_template_name=tpl.name if tpl else None,
+        shift_start=tpl.start_time.strftime("%H:%M") if tpl else None,
+        shift_end=tpl.end_time.strftime("%H:%M") if tpl else None,
+    )
+
+
+async def _require_manage(db, user: User, employee_user_id: int) -> None:
+    if not await roster_svc.can_manage_employee(db, user, employee_user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="This employee is outside your roster scope.",
+        )
+
+
+# ----------------------------- planner -----------------------------
+
+@router.get("/plan", response_model=RosterGridResponse)
+async def get_plan(
+    db: deps.DBDep,
+    start: pydate = Query(...),
+    end: pydate = Query(...),
+    department: Optional[str] = None,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    if start > end:
+        raise HTTPException(status_code=400, detail="start must be <= end")
+    if (end - start).days > 62:
+        raise HTTPException(status_code=400, detail="range too large (max 62 days)")
+    dept_names = await roster_svc.scope_department_names(db, current_user)
+    if dept_names is not None and not dept_names:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not head any department — no roster to plan.",
+        )
+    return await roster_svc.build_grid(db, current_user, start, end, department)
+
+
+@router.post("/bulk", response_model=RosterBulkResult)
+async def bulk_plan(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: RosterBulkRequest,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Assign a pattern (weekday->template) or explicit entries across a
+    range for a scoped team. Out-of-scope employees are reported, never
+    written."""
+    result = RosterBulkResult()
+
+    # Resolve target user ids
+    if body.entries is not None:
+        target_ids = {e.employee_id for e in body.entries}
+    elif body.employee_ids is not None:
+        target_ids = set(body.employee_ids)
+    else:
+        emps = await roster_svc.scoped_employees(
+            db, current_user, body.department
+        )
+        target_ids = {e.user_id for e in emps}
+
+    # Scope-filter
+    allowed: set = set()
+    for uid in target_ids:
+        if await roster_svc.can_manage_employee(db, current_user, uid):
+            allowed.add(uid)
+        else:
+            result.out_of_scope.append(uid)
+
+    if not allowed:
+        return result
+
+    # Department snapshot per user (for scoped filtering later)
+    dept_by_uid = {}
+    emp_rows = (await db.execute(
+        select(Employee).where(Employee.user_id.in_(allowed))
+    )).scalars().all()
+    for e in emp_rows:
+        dept_by_uid[e.user_id] = e.department
+
+    async def _apply(uid, wd, tpl_id, week_off):
+        _entry, outcome = await roster_svc.upsert_entry(
+            db,
+            employee_id=uid,
+            work_date=wd,
+            shift_template_id=tpl_id,
+            is_week_off=week_off,
+            status=body.status,
+            actor_id=current_user.id,
+            department=dept_by_uid.get(uid),
+            overwrite=body.overwrite,
+        )
+        if outcome == "created":
+            result.created += 1
+        elif outcome == "updated":
+            result.updated += 1
+        else:
+            result.skipped += 1
+
+    if body.entries is not None:
+        for ein in body.entries:
+            if ein.employee_id not in allowed:
+                continue
+            await _apply(
+                ein.employee_id, ein.work_date,
+                ein.shift_template_id, ein.is_week_off,
+            )
+    else:
+        cells = roster_svc.expand_pattern(body.pattern, body.start, body.end)
+        for uid in allowed:
+            for (wd, tpl_id, week_off) in cells:
+                await _apply(uid, wd, tpl_id, week_off)
+
+    await db.commit()
+    await log_audit(
+        db, current_user.id, "roster.bulk_publish",
+        "roster_entry", None,
+        {
+            "created": result.created,
+            "updated": result.updated,
+            "skipped": result.skipped,
+            "out_of_scope": len(result.out_of_scope),
+            "start": body.start.isoformat(),
+            "end": body.end.isoformat(),
+            "status": body.status,
+        },
+        request,
+    )
+    return result
+
+
+@router.post("/entries", response_model=RosterEntryRead)
+async def upsert_single_entry(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: RosterEntryInput,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    await _require_manage(db, current_user, body.employee_id)
+    emp = (await db.execute(
+        select(Employee).where(Employee.user_id == body.employee_id)
+    )).scalars().first()
+    entry, outcome = await roster_svc.upsert_entry(
+        db,
+        employee_id=body.employee_id,
+        work_date=body.work_date,
+        shift_template_id=body.shift_template_id,
+        is_week_off=body.is_week_off,
+        status=RosterStatus.PUBLISHED,
+        actor_id=current_user.id,
+        department=emp.department if emp else None,
+        overwrite=True,
+    )
+    await db.commit()
+    await db.refresh(entry)
+    await log_audit(
+        db, current_user.id, "roster.entry.upsert",
+        "roster_entry", str(entry.id),
+        {"outcome": outcome, "work_date": body.work_date.isoformat()},
+        request,
+    )
+    return await _entry_read(db, entry)
+
+
+@router.patch("/entries/{entry_id}", response_model=RosterEntryRead)
+async def update_entry(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    entry_id: int,
+    body: RosterEntryUpdate,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    entry = await db.get(RosterEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Roster entry not found")
+    await _require_manage(db, current_user, entry.employee_id)
+    changes = body.model_dump(exclude_unset=True)
+    for k, v in changes.items():
+        setattr(entry, k, v)
+    entry.assigned_by_id = current_user.id
+    await db.commit()
+    await db.refresh(entry)
+    await log_audit(
+        db, current_user.id, "roster.entry.update",
+        "roster_entry", str(entry.id),
+        {"changed": list(changes.keys())}, request,
+    )
+    return await _entry_read(db, entry)
+
+
+@router.delete("/entries/{entry_id}")
+async def delete_entry(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    entry_id: int,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    entry = await db.get(RosterEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Roster entry not found")
+    await _require_manage(db, current_user, entry.employee_id)
+    await db.delete(entry)
+    await db.commit()
+    await log_audit(
+        db, current_user.id, "roster.entry.delete",
+        "roster_entry", str(entry_id), {}, request,
+    )
+    return {"status": "deleted", "id": entry_id}
+
+
+# ----------------------------- employee self-service -----------------------------
+
+@router.get("/my", response_model=List[RosterEntryRead])
+async def my_roster(
+    db: deps.DBDep,
+    start: Optional[pydate] = Query(None),
+    end: Optional[pydate] = Query(None),
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    today = pydate.today()
+    s = start or (today - timedelta(days=today.weekday()))
+    e = end or (s + timedelta(days=6))
+    rows = (await db.execute(
+        select(RosterEntry).where(
+            RosterEntry.employee_id == current_user.id,
+            RosterEntry.work_date >= s,
+            RosterEntry.work_date <= e,
+            RosterEntry.status == RosterStatus.PUBLISHED,
+        ).order_by(RosterEntry.work_date)
+    )).scalars().all()
+    return [await _entry_read(db, r) for r in rows]
+
+
+@router.get("/my/week")
+async def my_roster_week(
+    db: deps.DBDep,
+    start: Optional[pydate] = Query(None),
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Seven-day roster outlook — RosterEntry first, then falling back to the
+    effective assignment, then the org default. Mirrors shifts.get_my_week
+    with holiday/leave enrichment."""
+    from app.models.hr import HolidayCalendar
+    from app.models.leave import LeaveRequest, LeaveStatus
+    from app.services.time_rules import build_default_shift, get_time_rules
+
+    today = pydate.today()
+    week_start = start or (today - timedelta(days=today.weekday()))
+    days = [week_start + timedelta(days=i) for i in range(7)]
+
+    entries = {
+        r.work_date: r
+        for r in (await db.execute(
+            select(RosterEntry).where(
+                RosterEntry.employee_id == current_user.id,
+                RosterEntry.work_date >= days[0],
+                RosterEntry.work_date <= days[-1],
+                RosterEntry.status == RosterStatus.PUBLISHED,
+            )
+        )).scalars().all()
+    }
+    tpl_ids = {r.shift_template_id for r in entries.values() if r.shift_template_id}
+    tpls = {}
+    if tpl_ids:
+        for t in (await db.execute(
+            select(ShiftTemplate).where(ShiftTemplate.id.in_(tpl_ids))
+        )).scalars().all():
+            tpls[t.id] = t
+
+    assignments = list((await db.execute(
+        select(EmployeeShiftAssignment)
+        .options(selectinload(EmployeeShiftAssignment.shift_template))
+        .where(
+            EmployeeShiftAssignment.employee_id == current_user.id,
+            EmployeeShiftAssignment.effective_from <= days[-1],
+            or_(
+                EmployeeShiftAssignment.effective_to.is_(None),
+                EmployeeShiftAssignment.effective_to >= days[0],
+            ),
+        )
+        .order_by(EmployeeShiftAssignment.effective_from.desc())
+    )).scalars().all())
+
+    holidays = {
+        h.date: h.name
+        for h in (await db.execute(
+            select(HolidayCalendar).where(HolidayCalendar.date.in_(days))
+        )).scalars().all()
+    }
+    leaves = list((await db.execute(
+        select(LeaveRequest)
+        .options(selectinload(LeaveRequest.leave_type))
+        .where(
+            LeaveRequest.employee_id == current_user.id,
+            LeaveRequest.status == LeaveStatus.APPROVED,
+            LeaveRequest.start_date <= days[-1],
+            LeaveRequest.end_date >= days[0],
+        )
+    )).scalars().all())
+    default_shift = build_default_shift(await get_time_rules(db))
+
+    out = []
+    for d in days:
+        entry = entries.get(d)
+        lv = next((l for l in leaves if l.start_date <= d <= l.end_date), None)
+        if entry is not None and entry.is_week_off:
+            shift = {"name": "Week off", "start_time": None,
+                     "end_time": None, "is_overnight": False, "source": "roster"}
+        elif entry is not None and entry.shift_template_id:
+            tpl = tpls.get(entry.shift_template_id)
+            shift = {
+                "name": tpl.name if tpl else "Shift",
+                "start_time": tpl.start_time.strftime("%H:%M") if tpl else None,
+                "end_time": tpl.end_time.strftime("%H:%M") if tpl else None,
+                "is_overnight": tpl.is_overnight if tpl else False,
+                "source": "roster",
+            }
+        else:
+            asg = next(
+                (a for a in assignments
+                 if a.effective_from <= d
+                 and (a.effective_to is None or a.effective_to >= d)),
+                None,
+            )
+            tpl = asg.shift_template if asg else None
+            if tpl is not None:
+                shift = {
+                    "name": tpl.name,
+                    "start_time": tpl.start_time.strftime("%H:%M"),
+                    "end_time": tpl.end_time.strftime("%H:%M"),
+                    "is_overnight": tpl.is_overnight,
+                    "source": "assigned",
+                }
+            else:
+                shift = {
+                    "name": "Default hours",
+                    "start_time": default_shift.start_time.strftime("%H:%M"),
+                    "end_time": default_shift.end_time.strftime("%H:%M"),
+                    "is_overnight": default_shift.is_overnight,
+                    "source": "default",
+                }
+        out.append({
+            "date": d.isoformat(),
+            "is_today": d == today,
+            "is_weekend": d.weekday() == 6,
+            "holiday_name": holidays.get(d),
+            "on_leave": lv is not None,
+            "leave_type": (
+                lv.leave_type.name if lv is not None and lv.leave_type else None
+            ),
+            "shift": shift,
+        })
+    return {"start": week_start.isoformat(), "days": out}
+
+
+# ----------------------------- change requests -----------------------------
+
+async def _cr_read(db, cr: RosterChangeRequest) -> RosterChangeRequestRead:
+    u = await db.get(User, cr.employee_id)
+    req_tpl = (
+        await db.get(ShiftTemplate, cr.requested_shift_template_id)
+        if cr.requested_shift_template_id else None
+    )
+    cur_tpl = (
+        await db.get(ShiftTemplate, cr.current_shift_template_id)
+        if cr.current_shift_template_id else None
+    )
+    decider = await db.get(User, cr.decided_by_id) if cr.decided_by_id else None
+    return RosterChangeRequestRead(
+        id=cr.id,
+        employee_id=cr.employee_id,
+        work_date=cr.work_date,
+        current_shift_template_id=cr.current_shift_template_id,
+        requested_shift_template_id=cr.requested_shift_template_id,
+        requested_week_off=cr.requested_week_off,
+        reason=cr.reason,
+        status=cr.status,
+        decided_by_id=cr.decided_by_id,
+        decided_at=cr.decided_at.isoformat() if cr.decided_at else None,
+        decision_note=cr.decision_note,
+        employee_name=u.full_name if u else None,
+        current_shift_name=cur_tpl.name if cur_tpl else None,
+        requested_shift_name=req_tpl.name if req_tpl else None,
+        decided_by_name=decider.full_name if decider else None,
+    )
+
+
+@router.post("/change-requests", response_model=RosterChangeRequestRead)
+async def create_change_request(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: RosterChangeRequestCreate,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    # One pending request per (employee, date)
+    dup = (await db.execute(
+        select(RosterChangeRequest).where(
+            RosterChangeRequest.employee_id == current_user.id,
+            RosterChangeRequest.work_date == body.work_date,
+            RosterChangeRequest.status == RosterChangeStatus.PENDING,
+        )
+    )).scalars().first()
+    if dup is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="You already have a pending request for this date.",
+        )
+    # Snapshot the current cell
+    existing = (await db.execute(
+        select(RosterEntry).where(
+            RosterEntry.employee_id == current_user.id,
+            RosterEntry.work_date == body.work_date,
+        )
+    )).scalars().first()
+    cr = RosterChangeRequest(
+        employee_id=current_user.id,
+        roster_entry_id=existing.id if existing else None,
+        work_date=body.work_date,
+        current_shift_template_id=(
+            existing.shift_template_id if existing else None
+        ),
+        requested_shift_template_id=body.requested_shift_template_id,
+        requested_week_off=body.requested_week_off,
+        reason=body.reason,
+        status=RosterChangeStatus.PENDING,
+    )
+    db.add(cr)
+    await db.commit()
+    await db.refresh(cr)
+    await log_audit(
+        db, current_user.id, "roster.change.create",
+        "roster_change_request", str(cr.id),
+        {"work_date": body.work_date.isoformat()}, request,
+    )
+    return await _cr_read(db, cr)
+
+
+@router.get("/change-requests/my", response_model=List[RosterChangeRequestRead])
+async def my_change_requests(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    rows = (await db.execute(
+        select(RosterChangeRequest).where(
+            RosterChangeRequest.employee_id == current_user.id
+        ).order_by(RosterChangeRequest.created_at.desc())
+    )).scalars().all()
+    return [await _cr_read(db, r) for r in rows]
+
+
+@router.get("/change-requests", response_model=List[RosterChangeRequestRead])
+async def scoped_change_requests(
+    db: deps.DBDep,
+    status: Optional[str] = Query(None),
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Change requests for the current user's scoped team (heads see their
+    team; admins see all)."""
+    emps = await roster_svc.scoped_employees(db, current_user)
+    team_ids = {e.user_id for e in emps}
+    admin = roster_svc.is_roster_admin(current_user)
+    q = select(RosterChangeRequest).order_by(
+        RosterChangeRequest.created_at.desc()
+    )
+    if status:
+        q = q.where(RosterChangeRequest.status == status)
+    if not admin:
+        if not team_ids:
+            return []
+        q = q.where(RosterChangeRequest.employee_id.in_(team_ids))
+    rows = (await db.execute(q)).scalars().all()
+    return [await _cr_read(db, r) for r in rows]
+
+
+@router.post(
+    "/change-requests/{cr_id}/decide",
+    response_model=RosterChangeRequestRead,
+)
+async def decide_change_request(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    cr_id: int,
+    body: RosterChangeDecision,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    cr = await db.get(RosterChangeRequest, cr_id)
+    if not cr:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if cr.status != RosterChangeStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Request already decided")
+    await _require_manage(db, current_user, cr.employee_id)
+
+    if body.action == "approve":
+        emp = (await db.execute(
+            select(Employee).where(Employee.user_id == cr.employee_id)
+        )).scalars().first()
+        await roster_svc.upsert_entry(
+            db,
+            employee_id=cr.employee_id,
+            work_date=cr.work_date,
+            shift_template_id=(
+                None if cr.requested_week_off
+                else cr.requested_shift_template_id
+            ),
+            is_week_off=cr.requested_week_off,
+            status=RosterStatus.PUBLISHED,
+            actor_id=current_user.id,
+            department=emp.department if emp else None,
+            overwrite=True,
+        )
+        cr.status = RosterChangeStatus.APPROVED
+    else:
+        cr.status = RosterChangeStatus.REJECTED
+    cr.decided_by_id = current_user.id
+    cr.decided_at = datetime.now(timezone.utc)
+    cr.decision_note = body.decision_note
+    await db.commit()
+    await db.refresh(cr)
+    await log_audit(
+        db, current_user.id, "roster.change.decide",
+        "roster_change_request", str(cr.id),
+        {"action": body.action}, request,
+    )
+    return await _cr_read(db, cr)
+
+
+@router.post(
+    "/change-requests/{cr_id}/cancel",
+    response_model=RosterChangeRequestRead,
+)
+async def cancel_change_request(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    cr_id: int,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    cr = await db.get(RosterChangeRequest, cr_id)
+    if not cr:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if cr.employee_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your request")
+    if cr.status != RosterChangeStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only pending requests can be cancelled")
+    cr.status = RosterChangeStatus.CANCELLED
+    await db.commit()
+    await db.refresh(cr)
+    await log_audit(
+        db, current_user.id, "roster.change.cancel",
+        "roster_change_request", str(cr.id), {}, request,
+    )
+    return await _cr_read(db, cr)

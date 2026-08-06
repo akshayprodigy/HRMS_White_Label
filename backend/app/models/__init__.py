@@ -46,6 +46,9 @@ from .shift import (
     ShiftTemplate, EmployeeShiftAssignment, ShiftChangeRequest,
     ShiftChangeStatus,
 )
+from .roster import (
+    RosterEntry, RosterChangeRequest, RosterStatus, RosterChangeStatus,
+)
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
 )
@@ -159,6 +162,8 @@ __all__ = [
     "LateMarkDeduction",
     "ShiftTemplate",
     "EmployeeShiftAssignment",
+    "RosterEntry",
+    "RosterChangeRequest",
     "GeoFenceLocation",
     "EmployeeGeoConfig",
     "EmployeeGeoFenceLink",

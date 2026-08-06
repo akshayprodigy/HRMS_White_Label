@@ -102,6 +102,18 @@ export const ENDPOINTS = {
     CHANGE_REQUESTS_MY: '/shifts/change-requests/my',
     CHANGE_REQUEST_CANCEL: (id: number) => `/shifts/change-requests/${id}/cancel`,
   },
+  ROSTER: {
+    PLAN: '/roster/plan',
+    BULK: '/roster/bulk',
+    ENTRIES: '/roster/entries',
+    ENTRY_DETAIL: (id: number) => `/roster/entries/${id}`,
+    MY: '/roster/my',
+    MY_WEEK: '/roster/my/week',
+    CHANGE_REQUESTS: '/roster/change-requests',
+    CHANGE_REQUESTS_MY: '/roster/change-requests/my',
+    CHANGE_REQUEST_DECIDE: (id: number) => `/roster/change-requests/${id}/decide`,
+    CHANGE_REQUEST_CANCEL: (id: number) => `/roster/change-requests/${id}/cancel`,
+  },
   GEO: {
     FENCES: '/geo/fences',
     FENCE_DETAIL: (id: number) => `/geo/fences/${id}`,

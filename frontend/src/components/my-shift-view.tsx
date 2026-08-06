@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
   CalendarClock,
+  CalendarDays,
   Clock3,
   Moon,
   RefreshCw,
@@ -50,24 +51,89 @@ export const MyShiftView: React.FC = () => {
     reason: '',
   });
 
+  // W7: roster week + per-day change requests
+  const [rosterWeek, setRosterWeek] = useState<any | null>(null);
+  const [rosterReqs, setRosterReqs] = useState<any[]>([]);
+  const [rosterReqOpen, setRosterReqOpen] = useState(false);
+  const [rosterBusy, setRosterBusy] = useState(false);
+  const [rosterForm, setRosterForm] = useState({
+    work_date: '',
+    requested_shift_template_id: '' as number | '',
+    requested_week_off: false,
+    reason: '',
+  });
+
   const refresh = async () => {
     setLoading(true);
     try {
-      const [cur, hist, reqs, tpls] = await Promise.all([
+      const [cur, hist, reqs, tpls, rWeek, rReqs] = await Promise.all([
         client.get(ENDPOINTS.SHIFTS.MY_CURRENT).catch(() => ({ data: null })),
         client.get(ENDPOINTS.SHIFTS.MY_HISTORY).catch(() => ({ data: [] })),
         client.get(ENDPOINTS.SHIFTS.CHANGE_REQUESTS_MY).catch(() => ({ data: [] })),
         client.get(ENDPOINTS.SHIFTS.TEMPLATES).catch(() => ({ data: [] })),
+        client.get(ENDPOINTS.ROSTER.MY_WEEK).catch(() => ({ data: null })),
+        client.get(ENDPOINTS.ROSTER.CHANGE_REQUESTS_MY).catch(() => ({ data: [] })),
       ]);
       setCurrent(cur.data);
       setHistory(hist.data || []);
       setRequests(reqs.data || []);
       setTemplates((tpls.data || []).filter((t: any) => t.is_active));
+      setRosterWeek(rWeek.data);
+      setRosterReqs(rReqs.data || []);
     } finally {
       setLoading(false);
     }
   };
   useEffect(() => { refresh(); }, []);
+
+  const openRosterReq = (workDate: string) => {
+    setRosterForm({
+      work_date: workDate,
+      requested_shift_template_id: '',
+      requested_week_off: false,
+      reason: '',
+    });
+    setRosterReqOpen(true);
+  };
+
+  const submitRosterReq = async () => {
+    if (!rosterForm.requested_week_off && !rosterForm.requested_shift_template_id) {
+      toast.error('Pick a shift or choose week-off.');
+      return;
+    }
+    if (rosterForm.reason.trim().length < 5) {
+      toast.error('Please give a reason (at least 5 characters).');
+      return;
+    }
+    setRosterBusy(true);
+    try {
+      await client.post(ENDPOINTS.ROSTER.CHANGE_REQUESTS, {
+        work_date: rosterForm.work_date,
+        requested_shift_template_id: rosterForm.requested_week_off
+          ? null
+          : rosterForm.requested_shift_template_id,
+        requested_week_off: rosterForm.requested_week_off,
+        reason: rosterForm.reason.trim(),
+      });
+      toast.success('Roster change requested — sent to your team head');
+      setRosterReqOpen(false);
+      await refresh();
+    } catch (e: any) {
+      toast.error(errMsg(e, 'Failed to submit roster request'));
+    } finally {
+      setRosterBusy(false);
+    }
+  };
+
+  const cancelRosterReq = async (id: number) => {
+    try {
+      await client.post(ENDPOINTS.ROSTER.CHANGE_REQUEST_CANCEL(id));
+      toast.success('Roster request cancelled');
+      await refresh();
+    } catch (e: any) {
+      toast.error(errMsg(e, 'Failed to cancel request'));
+    }
+  };
 
   const hasPending = requests.some((r) => r.status === 'pending');
 
@@ -175,6 +241,84 @@ export const MyShiftView: React.FC = () => {
           </div>
         )}
       </Card>
+
+      {/* W7: My Roster — this week */}
+      {rosterWeek?.days?.length ? (
+        <Card className="p-5 border-slate-200 bg-white">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-[#0F172A] flex items-center gap-1.5">
+              <CalendarDays size={13} className="text-indigo-600" /> My Roster · This Week
+            </p>
+            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              tap a day to request a change
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+            {rosterWeek.days.map((d: any) => (
+              <button
+                key={d.date}
+                type="button"
+                onClick={() => openRosterReq(d.date)}
+                className={cn(
+                  'text-left border rounded-xl p-2.5 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40',
+                  d.is_today ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-100',
+                )}
+              >
+                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                  {new Date(d.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit' })}
+                </p>
+                <p className="text-[11px] font-black text-[#0F172A] mt-1 truncate">
+                  {d.on_leave ? 'On leave' : d.shift?.name}
+                </p>
+                {d.shift?.start_time && !d.on_leave && (
+                  <p className="text-[9px] font-bold text-slate-500 tabular-nums">
+                    {d.shift.start_time}–{d.shift.end_time}
+                  </p>
+                )}
+                {d.holiday_name && (
+                  <p className="text-[8px] font-bold text-rose-500 uppercase tracking-widest mt-0.5 truncate">
+                    {d.holiday_name}
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {rosterReqs.length > 0 && (
+            <div className="mt-4 space-y-2">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                My Roster Requests
+              </p>
+              {rosterReqs.map((r) => (
+                <div key={r.id} className="flex items-center justify-between border border-slate-100 rounded-xl p-2.5">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-black text-[#0F172A]">
+                      {r.work_date} →{' '}
+                      {r.requested_week_off ? 'Week off' : r.requested_shift_name || 'Shift'}
+                    </p>
+                    <p className="text-[10px] text-slate-600 italic truncate">"{r.reason}"</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Badge variant={STATUS_TONE[r.status] || 'neutral'} className="text-[8px] uppercase">
+                      {r.status}
+                    </Badge>
+                    {r.status === 'pending' && (
+                      <button
+                        type="button"
+                        onClick={() => cancelRosterReq(r.id)}
+                        className="text-rose-500 hover:text-rose-700"
+                        title="Cancel"
+                      >
+                        <XCircle size={13} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* My requests */}
@@ -309,6 +453,75 @@ export const MyShiftView: React.FC = () => {
                 Cancel
               </Button>
               <Button onClick={submit} isLoading={busy}>
+                Submit Request
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Roster change dialog (W7) */}
+      {rosterReqOpen && (
+        <Dialog open onOpenChange={(o) => !o && setRosterReqOpen(false)}>
+          <DialogContent className="max-w-md">
+            <DialogTitle className="flex items-center gap-2 text-base font-black uppercase tracking-tight text-[#0F172A]">
+              <CalendarDays size={15} className="text-indigo-600" /> Request Roster Change
+            </DialogTitle>
+            <p className="text-[10px] font-bold text-slate-500 -mt-1">
+              For {rosterForm.work_date} · approved by your team head
+            </p>
+            <div className="space-y-3 pt-1">
+              <label className="flex items-center gap-2 text-[11px] font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={rosterForm.requested_week_off}
+                  onChange={(e) =>
+                    setRosterForm({ ...rosterForm, requested_week_off: e.target.checked })
+                  }
+                />
+                Request this day as a week-off
+              </label>
+              {!rosterForm.requested_week_off && (
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                    Preferred shift
+                  </label>
+                  <select
+                    className={inputCls}
+                    value={rosterForm.requested_shift_template_id}
+                    onChange={(e) =>
+                      setRosterForm({
+                        ...rosterForm,
+                        requested_shift_template_id: e.target.value ? Number(e.target.value) : '',
+                      })
+                    }
+                  >
+                    <option value="">Select a shift…</option>
+                    {templates.map((t: any) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="space-y-1">
+                <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                  Reason (required)
+                </label>
+                <textarea
+                  className={inputCls + ' h-20 py-2 resize-none'}
+                  placeholder="e.g. Doctor's appointment that morning"
+                  value={rosterForm.reason}
+                  onChange={(e) => setRosterForm({ ...rosterForm, reason: e.target.value })}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRosterReqOpen(false)} disabled={rosterBusy}>
+                Cancel
+              </Button>
+              <Button onClick={submitRosterReq} isLoading={rosterBusy}>
                 Submit Request
               </Button>
             </DialogFooter>

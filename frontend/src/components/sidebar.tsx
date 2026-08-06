@@ -246,6 +246,13 @@ const menuItems: MenuItem[] = [
     group: "Time & Attendance",
   },
   {
+    id: "roster-planner",
+    label: "Roster Planner",
+    icon: CalendarDays,
+    roles: ["hr", "pm", "dept head", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
     id: "geo-workspace",
     label: "Geo Attendance",
     icon: MapPin,

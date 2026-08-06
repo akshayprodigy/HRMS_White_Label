@@ -168,6 +168,22 @@ test.describe('Workforce expansion — UI smoke', () => {
     assertNoConsoleErrors(page);
   });
 
+  test('W7 Roster Planner: grid + apply-pattern dialog', async ({ page }) => {
+    await openTab(page, TIMEATT, 'Roster Planner');
+    await expect(page.getByRole('heading', { name: /Roster Planner/i }).first()).toBeVisible();
+    const main = page.getByRole('main');
+    // Grid header + at least one employee row (admin sees all)
+    await expect(main.getByText('Employee', { exact: true })).toBeVisible();
+    await page.waitForTimeout(600);
+    // Apply-pattern dialog opens with weekday rows
+    await main.getByRole('button', { name: /Apply Pattern/i }).click();
+    const dlg = page.getByRole('dialog');
+    await expect(dlg.getByText(/Apply weekday pattern/i)).toBeVisible();
+    await expect(dlg.getByText('Mon', { exact: true })).toBeVisible();
+    await dlg.getByRole('button', { name: /Cancel/i }).click();
+    assertNoConsoleErrors(page);
+  });
+
   test('W10b Celebrations report: filters + tables + counts', async ({ page }) => {
     await openTab(page, PEOPLE, 'Celebrations');
     await expect(page.getByRole('heading', { name: /Celebrations.*Events/i }).first()).toBeVisible();
