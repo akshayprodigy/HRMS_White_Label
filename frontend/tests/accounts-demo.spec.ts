@@ -84,6 +84,22 @@ test.describe('Accounts demo — read-only', () => {
     await dlg.getByRole('button', { name: /Cancel/i }).click();
   });
 
+  test('Template editor: redesigned lines + per-line min/max cap checkbox', async ({ page }) => {
+    await openTab(page, PAYCOMP, 'Salary Structure');
+    const main = page.getByRole('main');
+    // Templates tab is default; edit the seeded template.
+    await main.getByRole('button', { name: /^Edit$/i }).first().click();
+    const dlg = page.getByRole('dialog');
+    await expect(dlg.getByText(/Edit Template/i)).toBeVisible();
+    await expect(dlg.getByText(/Component Lines/i)).toBeVisible();
+    // Per-line cap checkbox → reveals Min/Max ₹ fields.
+    await expect(dlg.getByText(/Set hard min \/ max cap/i).first()).toBeVisible();
+    await dlg.locator('input[type="checkbox"]').first().check();
+    await expect(dlg.getByText('Min ₹ (floor)').first()).toBeVisible();
+    await expect(dlg.getByText('Max ₹ (cap)').first()).toBeVisible();
+    await dlg.getByRole('button', { name: /Cancel/i }).click();
+  });
+
   test('Accounts Payouts: all three queues show seeded items', async ({ page }) => {
     await openTab(page, PAYCOMP, 'Accounts Payouts');
     await expect(page.getByRole('heading', { name: /Accounts.*Payout Verification/i }).first()).toBeVisible();

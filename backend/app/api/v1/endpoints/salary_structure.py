@@ -200,6 +200,7 @@ async def create_salary_template(
             template_id=tmpl.id, component_id=line.component_id,
             calc_method=line.calc_method, value=line.value,
             percent=line.percent, display_order=line.display_order,
+            min_amount=line.min_amount, max_amount=line.max_amount,
         ))
     await db.commit()
     return await _get_template_or_404(db, tmpl.id)
@@ -255,6 +256,7 @@ async def set_template_components(
             template_id=template_id, component_id=line.component_id,
             calc_method=line.calc_method, value=line.value,
             percent=line.percent, display_order=line.display_order,
+            min_amount=line.min_amount, max_amount=line.max_amount,
         ))
     await db.commit()
     return await _get_template_or_404(db, template_id)

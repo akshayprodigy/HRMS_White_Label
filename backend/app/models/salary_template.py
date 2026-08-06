@@ -56,6 +56,9 @@ class SalaryTemplateComponent(Base):
     calc_method: Mapped[str] = mapped_column(String(20), default="flat", nullable=False)
     value: Mapped[float | None] = mapped_column(Float, nullable=True)      # flat amount
     percent: Mapped[float | None] = mapped_column(Float, nullable=True)    # percent_of_basic
+    # Per-line hard rupee floor/cap; overrides the component's bounds when set.
+    min_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     template: Mapped["SalaryTemplate"] = relationship(

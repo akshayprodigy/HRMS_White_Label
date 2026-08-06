@@ -59,15 +59,20 @@ class SalaryTemplateComponentBase(BaseModel):
     calc_method: str = Field(default="flat", pattern="^(flat|percent_of_basic)$")
     value: Optional[float] = None
     percent: Optional[float] = None
+    min_amount: Optional[float] = Field(default=None, ge=0)
+    max_amount: Optional[float] = Field(default=None, ge=0)
     display_order: int = 0
 
     @model_validator(mode="after")
-    def _percent_requires_value(self):
+    def _validate_line(self):
         # A percent_of_basic line with no percent silently contributes zero
         # to payroll — reject it. (A flat line with value=None is allowed:
         # the basic slot uses it to mean "use the employee's own basic".)
         if self.calc_method == "percent_of_basic" and self.percent is None:
             raise ValueError("percent is required when calc_method is 'percent_of_basic'")
+        if (self.min_amount is not None and self.max_amount is not None
+                and self.min_amount > self.max_amount):
+            raise ValueError("min_amount cannot be greater than max_amount")
         return self
 
 

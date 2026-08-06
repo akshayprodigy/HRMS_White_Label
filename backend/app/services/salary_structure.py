@@ -137,8 +137,9 @@ async def load_template_map(db: AsyncSession) -> dict[int, list[ResolvedLine]]:
                 calc_method=tc.calc_method,
                 value=tc.value,
                 percent=tc.percent,
-                min_amount=comp.min_amount,
-                max_amount=comp.max_amount,
+                # Per-line bound wins; else fall back to the component default.
+                min_amount=tc.min_amount if tc.min_amount is not None else comp.min_amount,
+                max_amount=tc.max_amount if tc.max_amount is not None else comp.max_amount,
             )
         )
     return out

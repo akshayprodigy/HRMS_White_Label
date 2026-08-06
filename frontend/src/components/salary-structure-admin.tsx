@@ -31,7 +31,10 @@ interface TemplateLine {
   calc_method: string;
   value: number | null;
   percent: number | null;
+  min_amount?: number | null;
+  max_amount?: number | null;
   display_order: number;
+  _capOpen?: boolean; // UI-only: is the min/max cap section expanded
 }
 
 interface SalaryTemplate {
@@ -295,7 +298,9 @@ const TemplatesTab: React.FC<{ components: SalaryComponent[] }> = ({ components 
   const openEdit = (t: SalaryTemplate) => {
     setEditing(t);
     setMeta({ code: t.code, name: t.name, description: t.description || '', is_active: t.is_active });
-    setLines((t.components || []).map(l => ({ ...l })));
+    setLines((t.components || []).map(l => ({
+      ...l, _capOpen: (l.min_amount != null || l.max_amount != null),
+    })));
     setModalOpen(true);
   };
 
@@ -304,7 +309,9 @@ const TemplatesTab: React.FC<{ components: SalaryComponent[] }> = ({ components 
     setLines([...lines, {
       component_id: firstComp?.id ?? 0,
       calc_method: firstComp?.default_calc_method || 'percent_of_basic',
-      value: null, percent: firstComp?.default_percent ?? 0, display_order: lines.length,
+      value: null, percent: firstComp?.default_percent ?? 0,
+      min_amount: null, max_amount: null, _capOpen: false,
+      display_order: lines.length,
     }]);
   };
   const updateLine = (i: number, patch: Partial<TemplateLine>) => {
@@ -317,6 +324,8 @@ const TemplatesTab: React.FC<{ components: SalaryComponent[] }> = ({ components 
     calc_method: l.calc_method,
     value: l.calc_method === 'flat' ? Number(l.value ?? 0) : null,
     percent: l.calc_method === 'percent_of_basic' ? Number(l.percent ?? 0) : null,
+    min_amount: l._capOpen && l.min_amount !== null && l.min_amount !== ('' as any) ? Number(l.min_amount) : null,
+    max_amount: l._capOpen && l.max_amount !== null && l.max_amount !== ('' as any) ? Number(l.max_amount) : null,
     display_order: i,
   }));
 
@@ -454,25 +463,63 @@ const TemplatesTab: React.FC<{ components: SalaryComponent[] }> = ({ components 
                   No lines — the employee's basic will be the only earning
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {lines.map((l, i) => (
-                    <div key={i} className="flex items-center gap-2 p-2 border border-slate-200 rounded-xl">
-                      <select value={l.component_id} onChange={e => updateLine(i, { component_id: Number(e.target.value) })} className="h-9 px-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#0F172A] outline-none flex-1">
-                        {activeComps.map(c => <option key={c.id} value={c.id}>{c.name} [{c.slot || 'other'}]</option>)}
-                      </select>
-                      <select value={l.calc_method} onChange={e => updateLine(i, { calc_method: e.target.value })} className="h-9 px-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#0F172A] outline-none w-40">
-                        {CALC_METHODS.map(m => <option key={m} value={m}>{m === 'flat' ? 'Flat ₹' : '% of basic'}</option>)}
-                      </select>
-                      {l.calc_method === 'percent_of_basic' ? (
-                        <input type="number" value={l.percent ?? ''} onChange={e => updateLine(i, { percent: e.target.value === '' ? null : Number(e.target.value) })} placeholder="%" className="h-9 px-2 w-24 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#0F172A] outline-none" />
-                      ) : (
-                        <input type="number" value={l.value ?? ''} onChange={e => updateLine(i, { value: e.target.value === '' ? null : Number(e.target.value) })} placeholder="₹" className="h-9 px-2 w-24 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#0F172A] outline-none" />
-                      )}
-                      <button type="button" onClick={() => removeLine(i)} className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg" aria-label="Remove line">
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
+                <div className="space-y-3">
+                  {lines.map((l, i) => {
+                    const comp = compById[l.component_id];
+                    const isBasic = comp?.slot === 'basic';
+                    const fieldCls = 'h-9 px-2.5 w-full bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#0F172A] outline-none focus:ring-2 focus:ring-blue-600/10';
+                    const tinyLabel = 'block text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1';
+                    return (
+                      <div key={i} className="p-3 border border-slate-200 rounded-xl bg-slate-50/40 space-y-2.5">
+                        <div className="flex items-center gap-2">
+                          <select value={l.component_id} onChange={e => updateLine(i, { component_id: Number(e.target.value) })} className={cn(fieldCls, 'flex-1')}>
+                            {activeComps.map(c => <option key={c.id} value={c.id}>{c.name} [{c.slot || 'other'}]</option>)}
+                          </select>
+                          <button type="button" onClick={() => removeLine(i)} className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg shrink-0" aria-label="Remove line">
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className={tinyLabel}>Calculation</label>
+                            <select value={l.calc_method} onChange={e => updateLine(i, { calc_method: e.target.value })} className={fieldCls}>
+                              {CALC_METHODS.map(m => <option key={m} value={m}>{m === 'flat' ? 'Flat ₹' : '% of basic'}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className={tinyLabel}>{l.calc_method === 'percent_of_basic' ? '% of basic' : isBasic ? 'Fixed basic ₹ (blank = own salary)' : 'Amount ₹'}</label>
+                            {l.calc_method === 'percent_of_basic' ? (
+                              <input type="number" value={l.percent ?? ''} onChange={e => updateLine(i, { percent: e.target.value === '' ? null : Number(e.target.value) })} placeholder="e.g. 50" className={fieldCls} />
+                            ) : (
+                              <input type="number" value={l.value ?? ''} onChange={e => updateLine(i, { value: e.target.value === '' ? null : Number(e.target.value) })} placeholder="₹" className={fieldCls} />
+                            )}
+                          </div>
+                        </div>
+                        {!isBasic && (
+                          <>
+                            <label className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-600 cursor-pointer">
+                              <input type="checkbox" checked={!!l._capOpen}
+                                onChange={e => updateLine(i, e.target.checked ? { _capOpen: true } : { _capOpen: false, min_amount: null, max_amount: null })}
+                                className="w-3.5 h-3.5 accent-blue-600" />
+                              Set hard min / max cap (₹)
+                            </label>
+                            {l._capOpen && (
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={tinyLabel}>Min ₹ (floor)</label>
+                                  <input type="number" value={l.min_amount ?? ''} onChange={e => updateLine(i, { min_amount: e.target.value === '' ? null : Number(e.target.value) })} placeholder="e.g. 100" className={fieldCls} />
+                                </div>
+                                <div>
+                                  <label className={tinyLabel}>Max ₹ (cap)</label>
+                                  <input type="number" value={l.max_amount ?? ''} onChange={e => updateLine(i, { max_amount: e.target.value === '' ? null : Number(e.target.value) })} placeholder="e.g. 1500" className={fieldCls} />
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
