@@ -321,7 +321,7 @@ const menuItems: MenuItem[] = [
     id: "salary-structure",
     label: "Salary Structure",
     icon: Wallet,
-    roles: ["hr", "admin", "super admin"],
+    roles: ["hr", "admin", "super admin", "accounts"],
     group: "Payroll & Compensation",
   },
   {

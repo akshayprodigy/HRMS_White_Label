@@ -18,6 +18,8 @@ interface SalaryComponent {
   slot: string | null;
   default_calc_method: string;
   default_percent: number | null;
+  min_percent: number | null;
+  max_percent: number | null;
   is_taxable: boolean;
   display_order: number;
   is_active: boolean;
@@ -55,7 +57,9 @@ const selectCls =
 
 const emptyComp = {
   code: '', name: '', component_type: 'earning', slot: '' as string,
-  default_calc_method: 'flat', default_percent: '' as string, is_taxable: true, is_active: true,
+  default_calc_method: 'flat', default_percent: '' as string,
+  min_percent: '' as string, max_percent: '' as string,
+  is_taxable: true, is_active: true,
 };
 
 const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
@@ -86,6 +90,8 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
       code: it.code, name: it.name, component_type: it.component_type,
       slot: it.slot || '', default_calc_method: it.default_calc_method,
       default_percent: it.default_percent == null ? '' : String(it.default_percent),
+      min_percent: it.min_percent == null ? '' : String(it.min_percent),
+      max_percent: it.max_percent == null ? '' : String(it.max_percent),
       is_taxable: it.is_taxable, is_active: it.is_active,
     });
     setModalOpen(true);
@@ -97,6 +103,8 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
       name: form.name, component_type: form.component_type,
       slot: form.slot || null, default_calc_method: form.default_calc_method,
       default_percent: form.default_percent.trim() === '' ? null : Number(form.default_percent),
+      min_percent: form.min_percent.trim() === '' ? null : Number(form.min_percent),
+      max_percent: form.max_percent.trim() === '' ? null : Number(form.max_percent),
       is_taxable: form.is_taxable, is_active: form.is_active,
     };
     setSubmitting(true);
@@ -160,7 +168,9 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
                   <td className="px-6 py-3 text-sm font-black text-[#0F172A]">{it.name}</td>
                   <td className="px-6 py-3 text-[11px] font-bold text-slate-500 uppercase">{it.slot || 'other (folded)'}</td>
                   <td className="px-6 py-3 text-[11px] font-bold text-slate-600">
-                    {it.default_calc_method === 'percent_of_basic' ? `${it.default_percent ?? '—'}% of basic` : 'flat'}
+                    {it.default_calc_method === 'percent_of_basic'
+                      ? `${it.default_percent ?? '—'}% of basic${(it.min_percent != null || it.max_percent != null) ? ` (${it.min_percent ?? 0}–${it.max_percent ?? 100}%)` : ''}`
+                      : 'flat'}
                   </td>
                   <td className="px-6 py-3">
                     <Badge variant={it.is_active ? 'success' : 'neutral'} className="text-[8px] uppercase">{it.is_active ? 'Active' : 'Inactive'}</Badge>
@@ -201,6 +211,34 @@ const ComponentsTab: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
                 {SLOTS.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Default Calculation</label>
+              <select value={form.default_calc_method} onChange={e => setForm({ ...form, default_calc_method: e.target.value })} className={selectCls}>
+                <option value="flat">Flat amount</option>
+                <option value="percent_of_basic">Percent of basic</option>
+              </select>
+            </div>
+            {form.default_calc_method === 'percent_of_basic' && (
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Default %</label>
+                  <Input type="number" value={form.default_percent} onChange={(e: any) => setForm({ ...form, default_percent: e.target.value })} placeholder="e.g. 50" className="mt-1.5" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Min %</label>
+                  <Input type="number" value={form.min_percent} onChange={(e: any) => setForm({ ...form, min_percent: e.target.value })} placeholder="e.g. 40" className="mt-1.5" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">Max %</label>
+                  <Input type="number" value={form.max_percent} onChange={(e: any) => setForm({ ...form, max_percent: e.target.value })} placeholder="e.g. 50" className="mt-1.5" />
+                </div>
+              </div>
+            )}
+            {form.default_calc_method === 'percent_of_basic' && (
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest -mt-1">
+                Min/Max bound what a template can set for this component. Payroll uses the template's % within these limits.
+              </p>
+            )}
             <label className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-[#0F172A] cursor-pointer">
               <input type="checkbox" checked={form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} className="w-3.5 h-3.5 accent-blue-600" />
               Active

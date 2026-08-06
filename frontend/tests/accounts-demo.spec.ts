@@ -60,6 +60,27 @@ test.describe('Accounts demo — read-only', () => {
     await expect(main.getByText(/Employee-wise breakdown/i)).toBeVisible();
     await expect(main.getByText(/Demo Employee/i).first()).toBeVisible();
     await expect(main.getByRole('button', { name: /Download sheet/i })).toBeVisible();
+    // Editable: pencil opens the reason-gated edit modal.
+    await main.getByRole('button', { name: /Edit this line/i }).first().click();
+    const editDlg = page.getByRole('dialog');
+    await expect(editDlg.getByText(/Edit payroll line/i)).toBeVisible();
+    await expect(editDlg.getByText(/Reason/i).first()).toBeVisible();
+    await editDlg.getByRole('button', { name: /Cancel/i }).click();
+  });
+
+  test('Salary Structure is accessible to Accounts with min/max % config', async ({ page }) => {
+    await openTab(page, PAYCOMP, 'Salary Structure');
+    await expect(page.getByRole('heading', { name: /Salary Structure/i }).first()).toBeVisible();
+    const main = page.getByRole('main');
+    await main.getByRole('button', { name: /^Components$/i }).click();
+    await page.waitForTimeout(400);
+    await main.getByRole('button', { name: /Add Component/i }).click();
+    const dlg = page.getByRole('dialog');
+    // Switch to percent-of-basic → the Min %/Max % bound fields appear.
+    await dlg.getByRole('combobox').nth(1).selectOption('percent_of_basic');
+    await expect(dlg.getByText(/Min %/i)).toBeVisible();
+    await expect(dlg.getByText(/Max %/i)).toBeVisible();
+    await dlg.getByRole('button', { name: /Cancel/i }).click();
   });
 
   test('Accounts Payouts: all three queues show seeded items', async ({ page }) => {

@@ -40,6 +40,11 @@ class SalaryComponent(Base):
     # Default calc method / percent — a template component may override these.
     default_calc_method: Mapped[str] = mapped_column(String(20), default=CALC_FLAT, nullable=False)
     default_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Config guardrails (F3+): the allowed range for this component's
+    # percent-of-basic. When set, a template line's percent must fall within
+    # [min_percent, max_percent] — so Accounts/HR can bound HRA, etc.
+    min_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_taxable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True, nullable=False)

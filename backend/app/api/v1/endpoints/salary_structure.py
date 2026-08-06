@@ -22,6 +22,34 @@ from app.schemas.salary_structure import (
 router = APIRouter()
 
 HR_WRITE = "hr employee write"
+PAYROLL_ACCOUNTS_VERIFY = "payroll accounts verify"
+
+
+def _can_manage_structure(current_user: deps.CurrentUser) -> User:
+    """Salary-structure config is managed by HR (`hr employee write`) AND by
+    Accounts (`payroll accounts verify`) — Accounts owns how components/
+    percentages/bounds drive the payroll calculation."""
+    perms = {p.name for r in current_user.roles for p in r.permissions}
+    if current_user.is_superuser or ({HR_WRITE, PAYROLL_ACCOUNTS_VERIFY} & perms):
+        return current_user
+    raise HTTPException(status_code=403, detail="Not enough permissions for salary structure")
+
+
+def _validate_percent_in_bounds(comp: SalaryComponent, percent) -> None:
+    """A template line's percent must sit within the component's configured
+    [min_percent, max_percent] guardrail, when set."""
+    if percent is None:
+        return
+    if comp.min_percent is not None and percent < comp.min_percent:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{comp.name}: {percent}% is below the allowed minimum {comp.min_percent}%",
+        )
+    if comp.max_percent is not None and percent > comp.max_percent:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{comp.name}: {percent}% is above the allowed maximum {comp.max_percent}%",
+        )
 
 
 def _validate_slot(slot):
@@ -52,7 +80,7 @@ async def create_salary_component(
     *,
     db: deps.DBDep,
     obj_in: SalaryComponentCreate,
-    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+    current_user: User = Depends(_can_manage_structure),
 ) -> Any:
     _validate_slot(obj_in.slot)
     code = obj_in.code.strip().lower()
@@ -66,6 +94,7 @@ async def create_salary_component(
         slot=obj_in.slot, default_calc_method=obj_in.default_calc_method,
         default_percent=obj_in.default_percent, is_taxable=obj_in.is_taxable,
         display_order=obj_in.display_order, is_active=obj_in.is_active,
+        min_percent=obj_in.min_percent, max_percent=obj_in.max_percent,
     )
     db.add(db_obj)
     await db.commit()
@@ -79,7 +108,7 @@ async def update_salary_component(
     db: deps.DBDep,
     comp_id: int,
     obj_in: SalaryComponentUpdate,
-    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+    current_user: User = Depends(_can_manage_structure),
 ) -> Any:
     db_obj = await db.get(SalaryComponent, comp_id)
     if not db_obj:
@@ -158,7 +187,7 @@ async def create_salary_template(
     *,
     db: deps.DBDep,
     obj_in: SalaryTemplateCreate,
-    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+    current_user: User = Depends(_can_manage_structure),
 ) -> Any:
     code = obj_in.code.strip().lower()
     clash = (await db.execute(
@@ -189,7 +218,7 @@ async def update_salary_template(
     db: deps.DBDep,
     template_id: int,
     obj_in: SalaryTemplateUpdate,
-    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+    current_user: User = Depends(_can_manage_structure),
 ) -> Any:
     tmpl = await _get_template_or_404(db, template_id)
     data = obj_in.model_dump(exclude_unset=True)
@@ -211,7 +240,7 @@ async def set_template_components(
     db: deps.DBDep,
     template_id: int,
     lines: List[SalaryTemplateComponentBase],
-    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+    current_user: User = Depends(_can_manage_structure),
 ) -> Any:
     """Replace the template's component set wholesale (idempotent editor)."""
     tmpl = await _get_template_or_404(db, template_id)
@@ -224,6 +253,9 @@ async def set_template_components(
             )
         seen.add(line.component_id)
         await _assert_component_usable(db, line.component_id)
+        if line.calc_method == "percent_of_basic":
+            comp = await db.get(SalaryComponent, line.component_id)
+            _validate_percent_in_bounds(comp, line.percent)
     # Clear + re-add (cascade delete-orphan handles removals).
     for existing in list(tmpl.components):
         await db.delete(existing)

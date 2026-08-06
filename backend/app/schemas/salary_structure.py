@@ -13,9 +13,23 @@ class SalaryComponentBase(BaseModel):
     slot: Optional[str] = Field(default=None, max_length=20)
     default_calc_method: str = Field(default="flat", pattern="^(flat|percent_of_basic)$")
     default_percent: Optional[float] = None
+    min_percent: Optional[float] = Field(default=None, ge=0, le=100)
+    max_percent: Optional[float] = Field(default=None, ge=0, le=100)
     is_taxable: bool = True
     display_order: int = 0
     is_active: bool = True
+
+    @model_validator(mode="after")
+    def _bounds_ordered(self):
+        if (self.min_percent is not None and self.max_percent is not None
+                and self.min_percent > self.max_percent):
+            raise ValueError("min_percent cannot be greater than max_percent")
+        if (self.default_percent is not None):
+            if self.min_percent is not None and self.default_percent < self.min_percent:
+                raise ValueError("default_percent is below min_percent")
+            if self.max_percent is not None and self.default_percent > self.max_percent:
+                raise ValueError("default_percent is above max_percent")
+        return self
 
 
 class SalaryComponentCreate(SalaryComponentBase):
@@ -28,6 +42,8 @@ class SalaryComponentUpdate(BaseModel):
     slot: Optional[str] = Field(default=None, max_length=20)
     default_calc_method: Optional[str] = Field(default=None, pattern="^(flat|percent_of_basic)$")
     default_percent: Optional[float] = None
+    min_percent: Optional[float] = Field(default=None, ge=0, le=100)
+    max_percent: Optional[float] = Field(default=None, ge=0, le=100)
     is_taxable: Optional[bool] = None
     display_order: Optional[int] = None
     is_active: Optional[bool] = None
