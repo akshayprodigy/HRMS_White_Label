@@ -90,6 +90,60 @@ class EmployeeLetterRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class LetterTemplateBase(BaseModel):
+    name: str
+    category: str = "custom"
+    description: Optional[str] = None
+    body: str
+    is_active: bool = True
+
+
+class LetterTemplateCreate(LetterTemplateBase):
+    pass
+
+
+class LetterTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    body: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class LetterTemplateRead(LetterTemplateBase):
+    id: int
+    created_by_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LetterTemplateGenerateRequest(BaseModel):
+    employee_id: int
+    title: Optional[str] = None
+    extra_context: Optional[Dict[str, str]] = None
+    date: Optional[date] = None
+
+
+class LetterTemplatePreviewRequest(BaseModel):
+    employee_id: int
+    extra_context: Optional[Dict[str, str]] = None
+    date: Optional[date] = None
+
+
+class LetterPreviewResponse(BaseModel):
+    rendered_body: str
+    missing_placeholders: List[str]
+    reference_number: Optional[str] = None
+
+
+class LetterSendRequest(BaseModel):
+    to_email: Optional[str] = None
+    subject: Optional[str] = None
+    message: Optional[str] = None
+
+
 class ActivityItem(BaseModel):
     name: str
     identifier: str

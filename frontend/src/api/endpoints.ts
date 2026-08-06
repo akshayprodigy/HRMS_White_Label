@@ -367,6 +367,16 @@ export const ENDPOINTS = {
     LETTER_TYPES: '/hr/letters/types',
     LETTER_GENERATE: '/hr/letters/generate',
     LETTER_DOWNLOAD: (id: number) => `/hr/letters/${id}/download`,
+    LETTER_SEND: (id: number) => `/hr/letters/${id}/send`,
+    // Custom letter templates (W10a)
+    LETTER_TEMPLATES: '/hr/letter-templates',
+    LETTER_TEMPLATE_DETAIL: (id: number) => `/hr/letter-templates/${id}`,
+    LETTER_TEMPLATE_PLACEHOLDERS: '/hr/letter-templates/placeholders',
+    LETTER_TEMPLATE_PREVIEW: (id: number) => `/hr/letter-templates/${id}/preview`,
+    LETTER_TEMPLATE_GENERATE: (id: number) => `/hr/letter-templates/${id}/generate`,
+    // Celebration event report + bulk letters (W10b)
+    CELEBRATIONS_REPORT: '/hr/celebrations/report',
+    CELEBRATION_LETTERS_BULK: '/hr/celebrations/letters/bulk',
     SALARY_CALCULATE: (empId: number) => `/hr/employees/${empId}/salary-calculate`,
     SALARY_PREVIEW: '/hr/salary/preview',
     // Per-employment-type leave policy (W1)

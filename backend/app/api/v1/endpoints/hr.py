@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import pandas as pd
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Dict, List
@@ -25,7 +26,7 @@ from app.models.user import User, Role
 from app.models.audit import AuditLog
 from app.models.hr import (
     HolidayCalendar, PolicyDocument, PolicyAcknowledgement,
-    EmployeeLetter, LetterType
+    EmployeeLetter, LetterType, LetterTemplate
 )
 from app.models.recruitment import ManpowerRequisition, RequisitionStatus, ApplicantStatus, Applicant
 from app.models.attendance import (
@@ -48,9 +49,17 @@ from app.schemas.hr import (
     PolicyDocumentCreate, PolicyDocumentRead,
     PolicyAcknowledgementCreate, PolicyAcknowledgementRead,
     HRDashboardStats, ActivityItem,
-    LetterGenerateRequest, EmployeeLetterRead
+    LetterGenerateRequest, EmployeeLetterRead,
+    LetterTemplateCreate, LetterTemplateUpdate, LetterTemplateRead,
+    LetterTemplateGenerateRequest, LetterTemplatePreviewRequest,
+    LetterPreviewResponse, LetterSendRequest,
 )
 from app.services.letter_pdf import generate_letter, LETTER_GENERATORS
+from app.services.letter_template import (
+    PLACEHOLDER_CATALOG, build_employee_context,
+    render as render_letter_body,
+)
+from app.services.notifications_delivery import get_email_provider
 from app.services.salary_calculator import calculate_salary
 from app.services import employment_type as employment_type_service
 from app.schemas.attendance import (
@@ -2871,6 +2880,320 @@ async def download_letter(
     )
 
 
+# ─── Custom Letter Templates (W10a) ───────────────────────────
+
+async def _next_letter_ref(db, letter_type: str) -> str:
+    """UEIPL/<PREFIX>/<year>/<0000> — same scheme as built-in letters."""
+    from datetime import datetime as _dt
+    year_str = _dt.now(timezone.utc).strftime("%Y")
+    count = (await db.execute(
+        select(func.count(EmployeeLetter.id)).where(
+            EmployeeLetter.letter_type == letter_type
+        )
+    )).scalar() or 0
+    prefix = letter_type.upper().replace("_", "-")
+    return f"UEIPL/{prefix}/{year_str}/{count + 1:04d}"
+
+
+@router.get("/letter-templates/placeholders")
+async def get_letter_placeholders(
+    current_user: User = Depends(deps.check_permissions([HR_READ]))
+) -> Any:
+    """Placeholder catalog for the template editor palette. Declared
+    BEFORE the /{template_id} route so 'placeholders' isn't captured as
+    a path param."""
+    return PLACEHOLDER_CATALOG
+
+
+@router.get(
+    "/letter-templates", response_model=List[LetterTemplateRead]
+)
+async def list_letter_templates(
+    db: deps.DBDep,
+    category: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    current_user: User = Depends(deps.check_permissions([HR_READ])),
+) -> Any:
+    query = select(LetterTemplate).order_by(LetterTemplate.name)
+    if category:
+        query = query.where(LetterTemplate.category == category)
+    if is_active is not None:
+        query = query.where(LetterTemplate.is_active.is_(is_active))
+    return (await db.execute(query)).scalars().all()
+
+
+@router.post(
+    "/letter-templates", response_model=LetterTemplateRead
+)
+async def create_letter_template(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: LetterTemplateCreate,
+    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+) -> Any:
+    tpl = LetterTemplate(
+        name=body.name,
+        category=body.category or "custom",
+        description=body.description,
+        body=body.body,
+        is_active=body.is_active,
+        created_by_id=current_user.id,
+    )
+    db.add(tpl)
+    await db.commit()
+    await db.refresh(tpl)
+    await log_audit(
+        db, current_user.id, "CREATE_LETTER_TEMPLATE",
+        "letter_template", str(tpl.id),
+        {"name": tpl.name, "category": tpl.category}, request,
+    )
+    return tpl
+
+
+@router.get(
+    "/letter-templates/{template_id}",
+    response_model=LetterTemplateRead,
+)
+async def get_letter_template(
+    *,
+    db: deps.DBDep,
+    template_id: int,
+    current_user: User = Depends(deps.check_permissions([HR_READ])),
+) -> Any:
+    tpl = await db.get(LetterTemplate, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tpl
+
+
+@router.patch(
+    "/letter-templates/{template_id}",
+    response_model=LetterTemplateRead,
+)
+async def update_letter_template(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    template_id: int,
+    body: LetterTemplateUpdate,
+    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+) -> Any:
+    tpl = await db.get(LetterTemplate, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    changes = body.model_dump(exclude_unset=True)
+    for k, v in changes.items():
+        setattr(tpl, k, v)
+    await db.commit()
+    await db.refresh(tpl)
+    await log_audit(
+        db, current_user.id, "UPDATE_LETTER_TEMPLATE",
+        "letter_template", str(tpl.id),
+        {"changed": list(changes.keys())}, request,
+    )
+    return tpl
+
+
+@router.delete("/letter-templates/{template_id}")
+async def delete_letter_template(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    template_id: int,
+    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+) -> Any:
+    """Soft-delete (is_active=False) so previously generated letters keep
+    their audit trail and any template reference stays resolvable."""
+    tpl = await db.get(LetterTemplate, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    tpl.is_active = False
+    await db.commit()
+    await log_audit(
+        db, current_user.id, "DELETE_LETTER_TEMPLATE",
+        "letter_template", str(template_id),
+        {"name": tpl.name}, request,
+    )
+    return {"status": "deactivated", "id": template_id}
+
+
+async def _load_template_and_employee(db, template_id: int, employee_id: int):
+    tpl = await db.get(LetterTemplate, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    emp = (await db.execute(
+        select(Employee).where(Employee.id == employee_id)
+        .options(selectinload(Employee.user))
+    )).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
+    return tpl, emp
+
+
+@router.post(
+    "/letter-templates/{template_id}/preview",
+    response_model=LetterPreviewResponse,
+)
+async def preview_letter_template(
+    *,
+    db: deps.DBDep,
+    template_id: int,
+    body: LetterTemplatePreviewRequest,
+    current_user: User = Depends(deps.check_permissions([HR_READ])),
+) -> Any:
+    """Render the template against an employee WITHOUT persisting, so HR
+    can see the filled text + any unresolved placeholders."""
+    tpl, emp = await _load_template_and_employee(
+        db, template_id, body.employee_id
+    )
+    context = build_employee_context(
+        emp, emp.user, letter_date=body.date,
+        overrides=body.extra_context,
+    )
+    rendered, missing = render_letter_body(tpl.body, context)
+    return LetterPreviewResponse(
+        rendered_body=rendered, missing_placeholders=missing,
+    )
+
+
+@router.post("/letter-templates/{template_id}/generate")
+async def generate_from_letter_template(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    template_id: int,
+    body: LetterTemplateGenerateRequest,
+    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+) -> Any:
+    """Fill the template, produce a branded PDF, persist it as an
+    EmployeeLetter(letter_type='custom') and stream the PDF back."""
+    tpl, emp = await _load_template_and_employee(
+        db, template_id, body.employee_id
+    )
+    ref_number = await _next_letter_ref(db, LetterType.CUSTOM)
+    context = build_employee_context(
+        emp, emp.user, reference_number=ref_number,
+        letter_date=body.date, overrides=body.extra_context,
+    )
+    rendered, _missing = render_letter_body(tpl.body, context)
+
+    payload = {
+        "reference_number": ref_number,
+        "date": (body.date or date.today()).isoformat(),
+        "title": body.title or tpl.name,
+        "rendered_body": rendered,
+        "template_id": tpl.id,
+        "template_name": tpl.name,
+    }
+    pdf_bytes = generate_letter(LetterType.CUSTOM, payload)
+
+    letter_record = EmployeeLetter(
+        employee_id=emp.id,
+        letter_type=LetterType.CUSTOM,
+        reference_number=ref_number,
+        generated_by_id=current_user.id,
+        template_data=json.dumps(payload),
+        status="generated",
+    )
+    db.add(letter_record)
+    await db.commit()
+    await db.refresh(letter_record)
+
+    await log_audit(
+        db, current_user.id, "GENERATE_LETTER",
+        "employee_letter", str(letter_record.id),
+        {
+            "letter_type": LetterType.CUSTOM,
+            "template_id": tpl.id,
+            "employee_id": emp.id,
+            "ref": ref_number,
+        },
+        request,
+    )
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ref_number.replace("/", "_")}.pdf"'
+            )
+        },
+    )
+
+
+@router.post("/letters/{letter_id}/send")
+async def send_letter_email(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    letter_id: int,
+    body: LetterSendRequest,
+    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+) -> Any:
+    """Email a generated letter as a PDF attachment. Re-renders the PDF
+    from the stored template_data (no file storage). Resolves the
+    recipient from body.to_email or the employee's user email."""
+    letter = await db.get(EmployeeLetter, letter_id)
+    if not letter:
+        raise HTTPException(status_code=404, detail="Letter not found")
+
+    emp = (await db.execute(
+        select(Employee).where(Employee.id == letter.employee_id)
+        .options(selectinload(Employee.user))
+    )).scalar_one_or_none()
+
+    to_email = body.to_email or (
+        emp.user.email if emp and emp.user else None
+    )
+    if not to_email:
+        raise HTTPException(
+            status_code=400,
+            detail="No recipient email — supply to_email or set the "
+                   "employee's user email.",
+        )
+
+    template_data = json.loads(letter.template_data or "{}")
+    pdf_bytes = generate_letter(letter.letter_type, template_data)
+    ref = letter.reference_number or f"letter_{letter_id}"
+
+    label = letter.letter_type.replace("_", " ").title()
+    subject = body.subject or f"{label} — {ref}"
+    message = body.message or (
+        f"Dear {emp.user.full_name if emp and emp.user else 'Employee'},<br><br>"
+        f"Please find attached your {label} ({ref}).<br><br>"
+        f"Regards,<br>HR Department"
+    )
+
+    result = await get_email_provider().send(
+        to=[to_email],
+        subject=subject,
+        body_html=message,
+        body_text=re.sub(r"<[^>]+>", " ", message),
+        attachments=[{
+            "filename": f"{ref.replace('/', '_')}.pdf",
+            "content": pdf_bytes,
+            "mime_type": "application/pdf",
+        }],
+    )
+
+    if result.ok:
+        letter.status = "sent"
+        await db.commit()
+    await log_audit(
+        db, current_user.id, "SEND_LETTER",
+        "employee_letter", str(letter_id),
+        {"to": to_email, "ok": result.ok, "provider": get_email_provider().name},
+        request,
+    )
+    return {
+        "status": "sent" if result.ok else "failed",
+        "provider": get_email_provider().name,
+        "message_id": result.provider_message_id,
+        "error": result.error,
+    }
+
+
 # ─── Employee Documents ───────────────────────────────────────
 
 # Allowlisted MIME types for employee document uploads. Anything outside this
@@ -3567,6 +3890,278 @@ async def upcoming_celebrations(
     birthdays.sort(key=lambda x: x["days_away"])
     anniversaries.sort(key=lambda x: x["days_away"])
     return {"birthdays": birthdays, "anniversaries": anniversaries}
+
+
+def _project_occurrences(d: date, start: date, end: date) -> List[date]:
+    """Project a recurring month-day event into every year touching the
+    [start, end] range and return the occurrences that land inside it.
+    Feb-29 falls back to Feb-28 in non-leap years (same idiom as
+    upcoming_celebrations)."""
+    out: List[date] = []
+    for year in range(start.year, end.year + 1):
+        try:
+            proj = d.replace(year=year)
+        except ValueError:
+            proj = d.replace(year=year, day=28)
+        if start <= proj <= end:
+            out.append(proj)
+    return out
+
+
+@router.get("/celebrations/report")
+async def celebration_report(
+    *,
+    db: deps.DBDep,
+    current_user: User = Depends(deps.check_permissions([HR_READ])),
+    start: date = Query(...),
+    end: date = Query(...),
+    kind: str = Query("all", pattern="^(all|birthday|anniversary)$"),
+    department: Optional[str] = None,
+) -> Any:
+    """Birthdays + work anniversaries projected into an arbitrary
+    [start, end] range, with per-department counts and a per-row
+    letter_generated flag."""
+    if start > end:
+        raise HTTPException(status_code=400, detail="start must be <= end")
+    if (end - start).days > 400:
+        raise HTTPException(
+            status_code=400, detail="Range too large (max 400 days)"
+        )
+
+    emp_q = (
+        select(Employee).options(selectinload(Employee.user))
+        .where(Employee.status == "active")
+    )
+    if department:
+        emp_q = emp_q.where(Employee.department == department)
+    employees = (await db.execute(emp_q)).scalars().all()
+    emp_ids = [e.id for e in employees]
+
+    # letter_generated lookup: (employee_id, year) sets per greeting type
+    async def _load_generated(letter_type: str) -> set:
+        if not emp_ids:
+            return set()
+        rows = (await db.execute(
+            select(
+                EmployeeLetter.employee_id,
+                func.year(EmployeeLetter.generated_at),
+            ).where(
+                EmployeeLetter.letter_type == letter_type,
+                EmployeeLetter.employee_id.in_(emp_ids),
+            )
+        )).all()
+        return {(r[0], r[1]) for r in rows}
+
+    bday_generated = (
+        await _load_generated(LetterType.BIRTHDAY)
+        if kind in ("all", "birthday") else set()
+    )
+    anniv_generated = (
+        await _load_generated(LetterType.WORK_ANNIVERSARY)
+        if kind in ("all", "anniversary") else set()
+    )
+
+    today = date.today()
+    birthdays: List[Dict[str, Any]] = []
+    anniversaries: List[Dict[str, Any]] = []
+    by_department: Dict[str, Dict[str, int]] = {}
+
+    def _bucket(dept: str, key: str) -> None:
+        b = by_department.setdefault(dept or "—", {"birthdays": 0, "anniversaries": 0})
+        b[key] += 1
+
+    for emp in employees:
+        if not emp.user:
+            continue
+        dob = emp.user.date_of_birth
+        if kind in ("all", "birthday") and dob:
+            for proj in _project_occurrences(dob, start, end):
+                birthdays.append({
+                    "id": emp.id,
+                    "user_id": emp.user.id,
+                    "employee_code": emp.employee_id,
+                    "full_name": emp.user.full_name,
+                    "designation": emp.designation,
+                    "department": emp.department,
+                    "date": proj.isoformat(),
+                    "original_date": dob.isoformat(),
+                    "days_away": (proj - today).days,
+                    "age": proj.year - dob.year,
+                    "letter_generated": (emp.id, proj.year) in bday_generated,
+                })
+                _bucket(emp.department, "birthdays")
+        doj = emp.date_of_joining
+        if kind in ("all", "anniversary") and doj:
+            for proj in _project_occurrences(doj, start, end):
+                if proj.year <= doj.year:
+                    continue  # skip the joining year itself
+                anniversaries.append({
+                    "id": emp.id,
+                    "user_id": emp.user.id,
+                    "employee_code": emp.employee_id,
+                    "full_name": emp.user.full_name,
+                    "designation": emp.designation,
+                    "department": emp.department,
+                    "date": proj.isoformat(),
+                    "original_date": doj.isoformat(),
+                    "days_away": (proj - today).days,
+                    "years": proj.year - doj.year,
+                    "letter_generated": (emp.id, proj.year) in anniv_generated,
+                })
+                _bucket(emp.department, "anniversaries")
+
+    birthdays.sort(key=lambda x: x["date"])
+    anniversaries.sort(key=lambda x: x["date"])
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "birthdays": birthdays,
+        "anniversaries": anniversaries,
+        "counts": {
+            "birthdays": len(birthdays),
+            "anniversaries": len(anniversaries),
+            "total": len(birthdays) + len(anniversaries),
+            "by_department": by_department,
+        },
+    }
+
+
+class CelebrationLetterBatchRequest(BaseModel):
+    start: date
+    end: date
+    kind: str
+    employee_ids: Optional[List[int]] = None
+
+
+@router.post("/celebrations/letters/bulk")
+async def bulk_generate_celebration_letters(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: CelebrationLetterBatchRequest,
+    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+) -> Any:
+    """Idempotently generate + persist greeting letters for everyone with
+    a birthday/anniversary in the range. Skips (employee, year) pairs that
+    already have a letter of that type."""
+    if body.kind not in ("birthday", "anniversary"):
+        raise HTTPException(
+            status_code=400, detail="kind must be birthday or anniversary"
+        )
+    if body.start > body.end:
+        raise HTTPException(status_code=400, detail="start must be <= end")
+
+    if body.kind == "birthday":
+        letter_type = LetterType.BIRTHDAY
+    else:
+        letter_type = LetterType.WORK_ANNIVERSARY
+
+    emp_q = (
+        select(Employee).options(selectinload(Employee.user))
+        .where(Employee.status == "active")
+    )
+    if body.employee_ids:
+        emp_q = emp_q.where(Employee.id.in_(body.employee_ids))
+    employees = (await db.execute(emp_q)).scalars().all()
+    emp_ids = [e.id for e in employees]
+
+    # Existing (employee_id, year) for idempotency
+    existing: set = set()
+    if emp_ids:
+        rows = (await db.execute(
+            select(
+                EmployeeLetter.employee_id,
+                func.year(EmployeeLetter.generated_at),
+            ).where(
+                EmployeeLetter.letter_type == letter_type,
+                EmployeeLetter.employee_id.in_(emp_ids),
+            )
+        )).all()
+        existing = {(r[0], r[1]) for r in rows}
+
+    from datetime import datetime as _dt
+    year_str = _dt.now(timezone.utc).strftime("%Y")
+    prefix = letter_type.upper().replace("_", "-")
+    base = (await db.execute(
+        select(func.count(EmployeeLetter.id)).where(
+            EmployeeLetter.letter_type == letter_type
+        )
+    )).scalar() or 0
+
+    created: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    seq = 0
+    batch_keys: set = set()
+
+    for emp in employees:
+        if not emp.user:
+            continue
+        src = (
+            emp.user.date_of_birth if body.kind == "birthday"
+            else emp.date_of_joining
+        )
+        if not src:
+            continue
+        for proj in _project_occurrences(src, body.start, body.end):
+            if body.kind == "anniversary" and proj.year <= src.year:
+                continue
+            key = (emp.id, proj.year)
+            if key in existing or key in batch_keys:
+                skipped.append({
+                    "employee_id": emp.id,
+                    "year": proj.year,
+                    "reason": "already_generated",
+                })
+                continue
+            batch_keys.add(key)
+            seq += 1
+            ref = f"UEIPL/{prefix}/{year_str}/{base + seq:04d}"
+            template_data = {
+                "reference_number": ref,
+                "date": proj.isoformat(),
+                "employee_name": emp.user.full_name,
+                "employee_code": emp.employee_id,
+                "designation": emp.designation,
+                "department": emp.department,
+                "occasion_date": proj.isoformat(),
+            }
+            if body.kind == "anniversary":
+                template_data["years"] = proj.year - src.year
+            # bytes discarded — regenerated on download
+            generate_letter(letter_type, template_data)
+            rec = EmployeeLetter(
+                employee_id=emp.id,
+                letter_type=letter_type,
+                reference_number=ref,
+                generated_by_id=current_user.id,
+                template_data=json.dumps(template_data),
+                status="generated",
+            )
+            db.add(rec)
+            await db.flush()
+            created.append({
+                "employee_id": emp.id,
+                "letter_id": rec.id,
+                "reference_number": ref,
+            })
+
+    await db.commit()
+    await log_audit(
+        db, current_user.id, "BULK_GENERATE_CELEBRATION_LETTERS",
+        "employee_letter", None,
+        {
+            "kind": body.kind,
+            "count": len(created),
+            "start": body.start.isoformat(),
+            "end": body.end.isoformat(),
+        },
+        request,
+    )
+    return {
+        "generated": created,
+        "skipped": skipped,
+        "counts": {"generated": len(created), "skipped": len(skipped)},
+    }
 
 
 # ─── Employee Assets ──────────────────────────────────────────

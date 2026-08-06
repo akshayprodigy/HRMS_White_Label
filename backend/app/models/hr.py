@@ -69,6 +69,9 @@ class LetterType:
     RELIEVING = "relieving_letter"
     PROMOTION = "promotion_letter"
     SALARY_REVISION = "salary_revision_letter"
+    CUSTOM = "custom"
+    BIRTHDAY = "birthday_greeting"
+    WORK_ANNIVERSARY = "work_anniversary_letter"
 
 
 class EmployeeLetter(Base):
@@ -91,3 +94,32 @@ class EmployeeLetter(Base):
 
     employee: Mapped["Employee"] = relationship("Employee")
     generated_by: Mapped["User"] = relationship("User")
+
+
+class LetterTemplate(Base):
+    """HR-authored custom letter template. Body holds free text with
+    {{token}} placeholders that are filled from the employee record at
+    render time (see services/letter_template.py). Rendered output is
+    persisted as an EmployeeLetter row with letter_type='custom' so it
+    reuses the existing letters list / download / send flow unchanged."""
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(150), index=True, nullable=False)
+    category: Mapped[str] = mapped_column(
+        String(50), index=True, nullable=False, default="custom"
+    )
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    created_by: Mapped[Optional["User"]] = relationship("User")

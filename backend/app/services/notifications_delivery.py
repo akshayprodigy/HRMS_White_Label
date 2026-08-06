@@ -138,6 +138,21 @@ class SMTPEmailProvider(EmailProvider):
         msg.set_content(body_text or "")
         if body_html:
             msg.add_alternative(body_html, subtype="html")
+        # Honor attachments (e.g. a generated letter PDF). Each entry:
+        # {filename, content (bytes), mime_type ('application/pdf')}.
+        for a in (attachments or []):
+            content = a.get("content")
+            if content is None:
+                continue
+            maintype, _, subtype = (
+                a.get("mime_type") or "application/octet-stream"
+            ).partition("/")
+            msg.add_attachment(
+                content,
+                maintype=maintype or "application",
+                subtype=subtype or "octet-stream",
+                filename=a.get("filename") or "attachment",
+            )
         try:
             # smtplib is sync — run in a threadpool so we don't block
             # the event loop.

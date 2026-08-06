@@ -29,6 +29,8 @@ import { RecruitmentHR } from './components/recruitment-hr';
 import { OnboardingHR, PolicyCenter } from './components/onboarding-hr';
 import { HRReports } from './components/hr-reports';
 import { LettersHR } from './components/letters-hr';
+import { LetterTemplatesHR } from './components/letter-templates';
+import { CelebrationsReport } from './components/celebrations-report';
 import { ExecutiveReports } from './components/executive-reports';
 import { AdminView } from './components/admin-view';
 import { OrgChartView } from './components/org-chart-view';
@@ -450,6 +452,10 @@ const App = () => {
         return <HolidayManagement />;
       case 'hr-letters':
         return <LettersHR />;
+      case 'hr-letter-templates':
+        return <LetterTemplatesHR />;
+      case 'hr-celebrations':
+        return <CelebrationsReport />;
       case 'policies':
         return <PolicyView />;
       case 'admin':
@@ -586,6 +592,8 @@ const App = () => {
       'hr-onboarding': 'New Joiner Tracker',
       'hr-holidays': 'Holiday Calendar Management',
       'hr-letters': 'Employee Letter Generation',
+      'hr-letter-templates': 'Custom Letter Templates',
+      'hr-celebrations': 'Celebrations & Events',
       'policies': 'Policy Center',
       'admin': 'Admin Panel',
       'functional-areas': 'Functional Areas',

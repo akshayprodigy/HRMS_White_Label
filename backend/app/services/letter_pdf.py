@@ -809,6 +809,118 @@ def generate_form16_part_b(data: Dict[str, Any]) -> bytes:
     return lc.finalize()
 
 
+def generate_custom_letter(data: Dict[str, Any]) -> bytes:
+    """Render an HR-authored custom template (W10a). `rendered_body` is the
+    placeholder-filled text produced by services/letter_template.render;
+    paragraphs are split on blank lines. Falls back gracefully when the
+    optional title is absent."""
+    lc = LetterCanvas()
+    ref = data.get("reference_number", "")
+    dt = _fmt_date(data.get("date"))
+
+    if ref:
+        lc.field_row("Ref:", ref)
+    lc.field_row("Date:", dt)
+    lc.spacer()
+
+    title = data.get("title")
+    if title:
+        lc.title(str(title))
+        lc.spacer()
+
+    body = data.get("rendered_body") or ""
+    for para in body.split("\n\n"):
+        para = para.strip("\n")
+        if para.strip() == "":
+            lc.spacer(3 * mm)
+            continue
+        lc.text(para)
+        lc.spacer(3 * mm)
+
+    lc.signature_block()
+    return lc.finalize()
+
+
+def generate_birthday_greeting(data: Dict[str, Any]) -> bytes:
+    """Warm birthday greeting letter (W10b)."""
+    lc = LetterCanvas()
+    ref = data.get("reference_number", "")
+    dt = _fmt_date(data.get("date"))
+    name = data.get("employee_name", "_______________")
+
+    if ref:
+        lc.field_row("Ref:", ref)
+    lc.field_row("Date:", dt)
+    lc.spacer()
+
+    lc.title("HAPPY BIRTHDAY!")
+    lc.spacer()
+
+    lc.text(f"Dear {name},")
+    lc.spacer(3 * mm)
+    lc.text(
+        f"On behalf of the entire {COMPANY_NAME} family, we extend our "
+        "warmest wishes to you on your birthday. May the year ahead bring "
+        "you good health, happiness and continued success in all that you do."
+    )
+    lc.spacer(3 * mm)
+    lc.text(
+        "We are grateful to have you as a valued member of our team and "
+        "look forward to celebrating many more milestones together."
+    )
+    lc.spacer(3 * mm)
+    lc.text("Warm regards and best wishes,")
+
+    lc.signature_block()
+    return lc.finalize()
+
+
+def generate_work_anniversary_letter(data: Dict[str, Any]) -> bytes:
+    """Work-anniversary appreciation letter (W10b)."""
+    lc = LetterCanvas()
+    ref = data.get("reference_number", "")
+    dt = _fmt_date(data.get("date"))
+    name = data.get("employee_name", "_______________")
+    try:
+        years = int(data.get("years") or 0)
+    except (TypeError, ValueError):
+        years = 0
+
+    if ref:
+        lc.field_row("Ref:", ref)
+    lc.field_row("Date:", dt)
+    lc.spacer()
+
+    lc.title("WORK ANNIVERSARY")
+    lc.spacer()
+
+    lc.text(f"Dear {name},")
+    lc.spacer(3 * mm)
+    if years > 0:
+        milestone = (
+            f"completing {years} {'year' if years == 1 else 'years'} "
+            f"with {COMPANY_NAME}"
+        )
+    else:
+        milestone = f"your work anniversary with {COMPANY_NAME}"
+    lc.text(
+        f"Congratulations on {milestone}! We take this opportunity to "
+        "thank you for your dedication, commitment and the valuable "
+        "contribution you have made throughout your journey with us."
+    )
+    lc.spacer(3 * mm)
+    lc.text(
+        "Your hard work and loyalty are deeply appreciated. We look "
+        "forward to your continued association and to achieving many "
+        "more milestones together."
+    )
+    lc.spacer(3 * mm)
+    lc.text("With appreciation,")
+
+    lc.signature_block()
+    return lc.finalize()
+
+
 LETTER_GENERATORS = {
     "offer_letter": generate_offer_letter,
     "appointment_letter": generate_appointment_letter,
@@ -818,6 +930,9 @@ LETTER_GENERATORS = {
     "promotion_letter": generate_promotion_letter,
     "salary_revision_letter": generate_salary_revision_letter,
     "form16_part_b": generate_form16_part_b,
+    "custom": generate_custom_letter,
+    "birthday_greeting": generate_birthday_greeting,
+    "work_anniversary_letter": generate_work_anniversary_letter,
 }
 
 

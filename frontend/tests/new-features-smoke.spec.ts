@@ -149,4 +149,36 @@ test.describe('Workforce expansion — UI smoke', () => {
     await expect(page.getByText(/Payroll/i).first()).toBeVisible();
     assertNoConsoleErrors(page);
   });
+
+  test('W10a Letter Templates: manage + editor + generate view', async ({ page }) => {
+    await openTab(page, PEOPLE, 'Letter Templates');
+    await expect(page.getByRole('heading', { name: /Letter Templates/i }).first()).toBeVisible();
+    const main = page.getByRole('main');
+    // Editor opens with the placeholder palette
+    await main.getByRole('button', { name: /New Template/i }).click();
+    await expect(page.getByText(/New Template/i).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: '{{employee_name}}', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /Cancel/i }).click();
+    // Generate view renders template picker + preview panel
+    await main.getByRole('button', { name: /Generate Letter/i }).click();
+    await page.waitForTimeout(400);
+    await expect(
+      page.getByText(/Select a template and employee, then click Preview/i)
+    ).toBeVisible();
+    assertNoConsoleErrors(page);
+  });
+
+  test('W10b Celebrations report: filters + tables + counts', async ({ page }) => {
+    await openTab(page, PEOPLE, 'Celebrations');
+    await expect(page.getByRole('heading', { name: /Celebrations.*Events/i }).first()).toBeVisible();
+    // Set a full-year range and apply so the seeded anniversaries surface
+    const main = page.getByRole('main');
+    await main.locator('input[type=date]').first().fill('2026-01-01');
+    await main.locator('input[type=date]').nth(1).fill('2026-12-31');
+    await main.getByRole('button', { name: /Apply/i }).click();
+    await page.waitForTimeout(900);
+    await expect(page.getByText(/Work Anniversaries/i).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: /Generate All/i }).first()).toBeVisible();
+    assertNoConsoleErrors(page);
+  });
 });

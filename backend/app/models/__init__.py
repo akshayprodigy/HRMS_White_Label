@@ -6,7 +6,10 @@ from .task import Task
 from .leave import LeaveRequest
 from .employee import Employee
 from .audit import AuditLog
-from .hr import HolidayCalendar, PolicyDocument, PolicyAcknowledgement
+from .hr import (
+    HolidayCalendar, PolicyDocument, PolicyAcknowledgement,
+    EmployeeLetter, LetterTemplate,
+)
 from .approval import ApprovalItem, ApprovalStep
 from .notification import Notification
 from .bd import (
@@ -111,6 +114,8 @@ __all__ = [
     "HolidayCalendar",
     "PolicyDocument",
     "PolicyAcknowledgement",
+    "EmployeeLetter",
+    "LetterTemplate",
     "ApprovalItem",
     "ApprovalStep",
     "Notification",
