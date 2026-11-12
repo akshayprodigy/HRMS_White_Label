@@ -11,6 +11,7 @@ import {
   Repeat,
   Copy,
   History,
+  PhoneCall,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
@@ -42,6 +43,7 @@ import { ViewToggle, type RosterView } from './roster/view-toggle';
 import { useRequests } from './roster/use-requests';
 import { RequestsView } from './roster/requests-view';
 import { OpenShiftDialog, type OpenShiftPrefill } from './roster/open-shift-dialog';
+import { OnCallPanel } from './roster/on-call-panel';
 import { useAvailability, expandMarks, availabilityKey } from './roster/use-availability';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -107,6 +109,7 @@ export const RosterPlanner = () => {
   // Pattern dialog
   const [patternOpen, setPatternOpen] = useState(false);
   const [covOpen, setCovOpen] = useState(false);
+  const [onCallOpen, setOnCallOpen] = useState(false);
   const [osPrefill, setOsPrefill] = useState<OpenShiftPrefill | null>(null);
   const [osOpen, setOsOpen] = useState(false);
   const { loaded: availLoaded, load: loadAvailability } = useAvailability();
@@ -487,6 +490,10 @@ export const RosterPlanner = () => {
             <Repeat className="w-4 h-4" />
             Rotations
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setOnCallOpen((o) => !o)} aria-pressed={onCallOpen} disabled={!grid} className="gap-1.5">
+            <PhoneCall className="w-4 h-4" />
+            On-call
+          </Button>
           {isAdmin && (
             <Button variant="outline" size="sm" onClick={() => setCovOpen(true)} disabled={loading} className="gap-1.5">
               <Users className="w-4 h-4" />
@@ -512,6 +519,16 @@ export const RosterPlanner = () => {
         refreshKey={prKey}
         onChanged={refresh}
       />
+
+      {grid && onCallOpen && (
+        <OnCallPanel
+          start={grid.start}
+          end={grid.end}
+          department={appliedDept}
+          isAdmin={!!grid.is_admin}
+          employees={grid.rows.filter((r) => r.in_scope).map((r) => ({ id: r.employee_id, name: r.full_name || `User #${r.employee_id}` }))}
+        />
+      )}
 
       {grid && (
         <PublishBar

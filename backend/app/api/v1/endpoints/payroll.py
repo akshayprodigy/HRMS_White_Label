@@ -3,7 +3,7 @@ from datetime import datetime, date, timezone
 from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from sqlalchemy import select, and_, func, delete
+from sqlalchemy import select, and_, func, delete, update as sa_update
 from app.api import deps
 from app.models.payroll import (
     PayrollRun, PayrollLine, Payslip, PayrollRunStatus, SalaryDisbursement
@@ -30,6 +30,7 @@ from app.models.overtime import (
     OvertimeEntry, NightAllowanceEntry, OvertimeStatus,
 )
 from app.models.revision import SalaryRevision, RevisionStatus
+from app.models.shift_allowance import ShiftAllowanceEntry, ShiftAllowanceKind
 from app.services.revisions import (
     effective_components_for_month, compute_arrears_for_revision,
 )
@@ -404,6 +405,30 @@ async def generate_draft(
     for r in night_rows:
         night_by_user.setdefault(r.user_id, []).append(r)
 
+    # On-call / call-back allowances (Roadmap v2 Phase 2, T5): same contract
+    # as night allowance — unstamped rows in the month window only.
+    # Re-generating this same run: its lines were just deleted, so release
+    # the entries it stamped last time (otherwise they would silently drop
+    # out of the regenerated lines). Entries stamped by OTHER runs are never
+    # touched.
+    await db.execute(
+        sa_update(ShiftAllowanceEntry)
+        .where(ShiftAllowanceEntry.payroll_run_id == run_id)
+        .values(payroll_run_id=None)
+    )
+    sa_rows = (await db.execute(
+        select(ShiftAllowanceEntry).where(
+            and_(
+                ShiftAllowanceEntry.work_date >= start_of_month,
+                ShiftAllowanceEntry.work_date <= end_of_month,
+                ShiftAllowanceEntry.payroll_run_id.is_(None),
+            )
+        )
+    )).scalars().all()
+    sa_by_user: dict[int, list[ShiftAllowanceEntry]] = {}
+    for r in sa_rows:
+        sa_by_user.setdefault(r.user_id, []).append(r)
+
     injected_ot_users = 0
     injected_night_users = 0
     injected_arrear_users = 0
@@ -551,6 +576,14 @@ async def generate_draft(
         )
         night_minutes = sum(e.night_minutes for e in emp_night_entries)
 
+        emp_sa_entries = sa_by_user.get(emp.user_id, [])
+        oncall_entries = [
+            e for e in emp_sa_entries if e.kind == ShiftAllowanceKind.ON_CALL]
+        callback_entries = [
+            e for e in emp_sa_entries if e.kind == ShiftAllowanceKind.CALLBACK]
+        oncall_amount = round(sum(e.amount for e in oncall_entries), 2)
+        callback_amount = round(sum(e.amount for e in callback_entries), 2)
+
         if ot_amount > 0:
             injected_ot_users += 1
         if night_amount > 0:
@@ -588,18 +621,21 @@ async def generate_draft(
         gross = (
             breakdown["total_actual_earnings"]
             + ot_amount + night_amount + arrears_amount
+            + oncall_amount + callback_amount
         )
         if is_contractual:
             # Legacy flat-10% contractual path — out of P0 scope.
             net = (
                 breakdown["net_salary"]
                 + ot_amount + night_amount + arrears_amount
+                + oncall_amount + callback_amount
             )
             stat = None
             total_ded = breakdown["total_deductions"]
         else:
             # Unified engine: ESIC / PT / TDS on the FULL gross
-            # (incl. OT + night + arrears), PF on capped basic.
+            # (incl. OT + night + on-call/callback + arrears), PF on capped
+            # basic.
             stat = compute_statutory(
                 stat_ctx, emp,
                 basic_actual=breakdown["basic_salary_actual"],
@@ -683,6 +719,14 @@ async def generate_draft(
                 "revision_arrears": arrears_amount,
                 "revision_arrears_detail": arrears_meta,
                 "effective_components_source": eff.source,
+                # Only present when the employee has such entries, so lines
+                # without them are byte-identical to pre-T5 output.
+                **({"on_call": oncall_amount,
+                    "on_call_minutes": sum(e.minutes for e in oncall_entries)}
+                   if oncall_entries else {}),
+                **({"callback": callback_amount,
+                    "callback_minutes": sum(e.minutes for e in callback_entries)}
+                   if callback_entries else {}),
             },
             deductions=(
                 {
@@ -741,6 +785,8 @@ async def generate_draft(
             e.payroll_run_id = run_id
         for e in emp_night_entries:
             e.payroll_run_id = run_id
+        for e in emp_sa_entries:
+            e.payroll_run_id = run_id
 
     run.status = PayrollRunStatus.DRAFT_GENERATED
     run.total_gross = total_gross
@@ -762,6 +808,10 @@ async def generate_draft(
                 sum(e.amount for e in night_rows), 2
             ),
             "arrear_users_injected": injected_arrear_users,
+            "shift_allowance_entries_injected": len(sa_rows),
+            "shift_allowance_total_amount": round(
+                sum(e.amount for e in sa_rows), 2
+            ),
         },
         request
     )
@@ -1035,14 +1085,18 @@ async def update_payroll_line(
     existing_allow = line.allowances or {}
     prev_ot = float(existing_allow.get("overtime", 0.0))
     prev_night = float(existing_allow.get("night_allowance", 0.0))
+    prev_on_call = float(existing_allow.get("on_call", 0.0))
+    prev_callback = float(existing_allow.get("callback", 0.0))
 
     line.arrear = new_arrear
     line.incentive = new_incentive
     line.gross_pay = (
         breakdown["total_actual_earnings"] + prev_ot + prev_night
+        + prev_on_call + prev_callback
     )
     if is_contractual:
-        line.net_pay = breakdown["net_salary"] + prev_ot + prev_night
+        line.net_pay = (breakdown["net_salary"] + prev_ot + prev_night
+                        + prev_on_call + prev_callback)
         line.deductions = {
             **(line.deductions or {}),
             "employee_esi": breakdown["employee_esi"],

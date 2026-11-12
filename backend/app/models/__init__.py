@@ -60,6 +60,8 @@ from .open_shift import ShiftDropRequest, DropStatus
 from .calendar_feed import CalendarFeedToken
 from .no_show import NoShowAlert
 from .late_notice import LateNotice
+from .on_call import OnCallRule, OnCallAssignment, OnCallPayout
+from .shift_allowance import ShiftAllowanceEntry, ShiftAllowanceKind
 from .coverage_requirement import CoverageRequirement
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,

@@ -126,6 +126,8 @@ def build_payslip_pdf(
         ("Incentive", al.get("incentive")),
         ("Overtime", al.get("overtime")),
         ("Night Allowance", al.get("night_allowance")),
+        ("On-call Allowance", al.get("on_call")),
+        ("Call-back Allowance", al.get("callback")),
     ]
     dedns = [
         ("Provident Fund", ded.get("employee_pf")),

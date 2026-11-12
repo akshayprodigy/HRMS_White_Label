@@ -856,6 +856,32 @@ export const PayrollHR = () => {
                                  <span className="font-black text-indigo-700">{fmt(al.night_allowance)}</span>
                                </div>
                              )}
+                             {(al.on_call || 0) > 0 && (
+                               <div className="flex justify-between text-xs items-center">
+                                 <span className="text-slate-500 font-bold">
+                                   On-call Allowance
+                                   {al.on_call_minutes ? (
+                                     <span className="text-[9px] text-slate-400 font-normal ml-1">
+                                       ({Math.round(al.on_call_minutes / 60 * 10) / 10}h)
+                                     </span>
+                                   ) : null}
+                                 </span>
+                                 <span className="font-black text-indigo-700">{fmt(al.on_call)}</span>
+                               </div>
+                             )}
+                             {(al.callback || 0) > 0 && (
+                               <div className="flex justify-between text-xs items-center">
+                                 <span className="text-slate-500 font-bold">
+                                   Call-back Allowance
+                                   {al.callback_minutes ? (
+                                     <span className="text-[9px] text-slate-400 font-normal ml-1">
+                                       ({Math.round(al.callback_minutes / 60 * 10) / 10}h)
+                                     </span>
+                                   ) : null}
+                                 </span>
+                                 <span className="font-black text-indigo-700">{fmt(al.callback)}</span>
+                               </div>
+                             )}
 
                              <div className="flex justify-between text-xs pt-1 border-t border-slate-100 mt-1">
                                <span className="font-black text-slate-700 uppercase text-[9px] tracking-widest">Total Gross</span>
