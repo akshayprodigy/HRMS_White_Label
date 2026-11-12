@@ -1,0 +1,29 @@
+"""Payroll attendance lock check shared by HR edits and regularization."""
+from datetime import date
+
+from fastapi import HTTPException
+from sqlalchemy import select
+
+
+async def assert_attendance_editable(db, work_date: date) -> None:
+    """Refuse edits once a payroll run has locked attendance for that
+    month (user rule: 'edit should be before payroll is clicked')."""
+    from app.models.payroll import PayrollRun, PayrollRunStatus
+
+    run = (await db.execute(
+        select(PayrollRun).where(
+            PayrollRun.month == work_date.month,
+            PayrollRun.year == work_date.year,
+            PayrollRun.status != PayrollRunStatus.DRAFT,
+        )
+    )).scalars().first()
+    if run:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Attendance for {work_date.isoformat()} is locked by the "
+                f"{run.month:02d}/{run.year} payroll run "
+                f"(status: {run.status.value}). Punch edits must happen "
+                "before payroll locks attendance."
+            ),
+        )

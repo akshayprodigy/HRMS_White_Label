@@ -42,6 +42,7 @@ from .employment_type_leave_policy import EmploymentTypeLeavePolicy
 from .salary_component import SalaryComponent
 from .salary_template import SalaryTemplate, SalaryTemplateComponent
 from .late_mark import LateMarkRule, LateMarkDeduction
+from .attendance_regularization import AttendanceRegularization, RegularizationStatus
 from .shift import (
     ShiftTemplate, EmployeeShiftAssignment, ShiftChangeRequest,
     ShiftChangeStatus,
@@ -160,6 +161,8 @@ __all__ = [
     "SalaryTemplateComponent",
     "LateMarkRule",
     "LateMarkDeduction",
+    "AttendanceRegularization",
+    "RegularizationStatus",
     "ShiftTemplate",
     "EmployeeShiftAssignment",
     "RosterEntry",

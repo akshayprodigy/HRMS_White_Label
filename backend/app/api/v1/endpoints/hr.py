@@ -61,6 +61,7 @@ from app.services.letter_template import (
 )
 from app.services.notifications_delivery import get_email_provider
 from app.services.salary_calculator import calculate_salary
+from app.services.attendance_lock import assert_attendance_editable
 from app.services import employment_type as employment_type_service
 from app.schemas.attendance import (
     AttendanceCorrectionCreate, AttendanceCorrectionRead,
@@ -2235,30 +2236,6 @@ def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-async def _assert_attendance_editable(db, work_date: date) -> None:
-    """Refuse edits once a payroll run has locked attendance for that
-    month (user rule: 'edit should be before payroll is clicked')."""
-    from app.models.payroll import PayrollRun, PayrollRunStatus
-
-    run = (await db.execute(
-        select(PayrollRun).where(
-            PayrollRun.month == work_date.month,
-            PayrollRun.year == work_date.year,
-            PayrollRun.status != PayrollRunStatus.DRAFT,
-        )
-    )).scalars().first()
-    if run:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Attendance for {work_date.isoformat()} is locked by the "
-                f"{run.month:02d}/{run.year} payroll run "
-                f"(status: {run.status.value}). Punch edits must happen "
-                "before payroll locks attendance."
-            ),
-        )
-
-
 def _require_reason(reason: str) -> str:
     cleaned = (reason or "").strip()
     if len(cleaned) < 5:
@@ -2295,7 +2272,7 @@ async def edit_attendance_times(
     if not att:
         raise HTTPException(status_code=404, detail="Attendance not found")
 
-    await _assert_attendance_editable(db, att.work_date)
+    await assert_attendance_editable(db, att.work_date)
 
     new_in = _as_utc(obj_in.punch_in_time) or _as_utc(att.captured_at)
     new_out = (
@@ -2363,7 +2340,7 @@ async def create_manual_attendance(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await _assert_attendance_editable(db, obj_in.work_date)
+    await assert_attendance_editable(db, obj_in.work_date)
 
     punch_in = _as_utc(obj_in.punch_in_time)
     punch_out = _as_utc(obj_in.punch_out_time)

@@ -10,11 +10,17 @@ from app.api.v1.endpoints import (
     performance, approval_chains, expenses, dashboard, plumbing,
     notifications_admin, functional_head, employment_types,
     salary_structure, late_mark, leave_policies, roster,
+    attendance_regularization,
 )
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["health"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(
+    attendance_regularization.router,
+    prefix="/attendance/regularizations",
+    tags=["attendance-regularization"],
+)
 api_router.include_router(
     attendance.router, prefix="/attendance", tags=["attendance"]
 )
