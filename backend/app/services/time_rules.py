@@ -43,7 +43,8 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
     "attendance.weekoff_comp_off_enabled": (
         "0",
         "Grant a comp-off accrual (manager -> HR approval) for working a "
-        "rostered week-off (1/0)",
+        "roster or shift-assignment week-off; org default weekly offs for "
+        "employees with no shift do not qualify (1/0)",
     ),
     "attendance.default_weekly_offs": (
         "6",

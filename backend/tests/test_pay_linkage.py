@@ -46,7 +46,7 @@ HOLIDAY = date(2030, 6, 12)        # Wed
 SUN = date(2030, 6, 16)            # weekday 6 (template weekly off)
 SAT = date(2030, 6, 15)            # weekday 5 (working day on templates)
 PARITY_TAGS = ("wd", "wo", "hol", "ovn", "nos")
-ALL_TAGS = PARITY_TAGS + ("rwo", "rchg", "cmp")
+ALL_TAGS = PARITY_TAGS + ("rwo", "rchg", "cmp", "nsn")
 
 
 def at(d, h, m=0):
@@ -122,7 +122,7 @@ async def world():
                 HolidayCalendar(name=f"PLH{sfx}", date=HOLIDAY, location="All"),
             ])
             await db.commit()
-            for t in ("wd", "wo", "hol", "rwo", "cmp"):
+            for t in ("wd", "wo", "hol", "rwo", "cmp", "nsn"):
                 db.add(EmployeeShiftAssignment(
                     employee_id=us[t].id, shift_template_id=t_day.id,
                     effective_from=date(2030, 1, 1)))
@@ -342,13 +342,13 @@ async def test_night_allowance_with_rule_and_naive_db_datetimes(world, client):
     assert nt[0]["amount"] == 200.0 and nt[0]["rule"] == "PLNT-org"
 
 
-async def test_nightly_job_processes_yesterday_only(world):
+async def test_nightly_job_processes_lookback_window_only(world):
     from app.services.scheduler import REGISTRY
     spec = REGISTRY["overtime_recompute_yesterday"]
     assert spec.default_cadence_cron == "30 1 * * *"
     i = world["ids"]
     today = datetime.now(UTC).date()
-    yday, d2 = today - timedelta(days=1), today - timedelta(days=2)
+    yday, d2 = today - timedelta(days=1), today - timedelta(days=5)
     async with SessionLocal() as db:  # keep the job off real data
         for r in (await db.execute(select(OvertimeRule).where(
                 OvertimeRule.name == f"PLOT-org-{world['sfx']}"))).scalars():
@@ -432,3 +432,144 @@ async def test_weekoff_rule_validation_and_default(world):
         out = await set_time_rules(db, {WEEKOFF_KEY: " 1 "})
         assert out[WEEKOFF_KEY] == "1"
         assert (await get_time_rules(db))[WEEKOFF_KEY] == "1"
+
+
+async def _deactivate_org_rule(w):
+    async with SessionLocal() as db:  # keep the job off real data
+        for r in (await db.execute(select(OvertimeRule).where(
+                OvertimeRule.name == f"PLOT-org-{w['sfx']}"))).scalars():
+            r.is_active = False
+        await db.commit()
+
+
+async def _entries(w, tag):
+    async with SessionLocal() as db:
+        return (await db.execute(select(OvertimeEntry).where(
+            OvertimeEntry.user_id == w["ids"][tag]))).scalars().all()
+
+
+async def test_assignment_present_snapshot_null_keeps_legacy_numbers(world, client):
+    """I1: no roster -> the baseline is the snapshot only (None stays None),
+    exactly like a no-assignment employee: org rule, fallback hours."""
+    i = world["ids"]
+    await _punch(i["nsn"], MON, None, at(MON, 9), at(MON, 20))
+    await _recompute(client, world, ("nsn",), MON, MON)
+    got = (await _snapshot(world, ("nsn",)))["ot"]
+    gold = [e for e in json.loads(GOLDEN.read_text())["ot"] if e["user"] == "nos"]
+    assert len(got) == 1 and len(gold) == 1
+    got[0]["user"] = "nos"
+    assert got == gold
+
+
+async def test_nightly_job_retries_punch_opened_on_earlier_night(world):
+    from app.services.scheduler import REGISTRY
+    fn = REGISTRY["overtime_recompute_yesterday"].fn
+    i = world["ids"]
+    await _deactivate_org_rule(world)
+    d1 = datetime.now(UTC).date() - timedelta(days=2)
+    aid = await _punch(i["wd"], d1, i["t_day"], at(d1, 9), None)
+    async with SessionLocal() as db:
+        await fn(db)
+    assert await _entries(world, "wd") == []
+    async with SessionLocal() as db:
+        a = await db.get(Attendance, aid)
+        a.punch_out_time = at(d1, 19, 30)
+        await db.commit()
+    async with SessionLocal() as db:
+        r1 = await fn(db)
+    ents = await _entries(world, "wd")
+    assert len(ents) == 1 and ents[0].ot_minutes == 90
+    async with SessionLocal() as db:  # idempotent
+        r2 = await fn(db)
+    assert r2["ot_created"] == 0 and len(await _entries(world, "wd")) == 1
+
+
+async def _lock_entries(tag, w, year):
+    from app.models.payroll import PayrollRun
+    async with SessionLocal() as db:
+        run = PayrollRun(month=1, year=year)
+        db.add(run)
+        await db.flush()
+        for e in (await db.execute(select(OvertimeEntry).where(
+                OvertimeEntry.user_id == w["ids"][tag]))).scalars():
+            e.payroll_run_id = run.id
+        await db.commit()
+        return run.id
+
+
+async def test_payroll_locked_entry_untouched_by_recompute_and_job(world):
+    from app.api.v1.endpoints.overtime import recompute_range
+    from app.models.payroll import PayrollRun
+    from app.services.scheduler import REGISTRY
+    fn = REGISTRY["overtime_recompute_yesterday"].fn
+    i = world["ids"]
+    await _deactivate_org_rule(world)
+    yday = datetime.now(UTC).date() - timedelta(days=1)
+    run_ids = []
+    try:
+        for tag, d in (("wd", MON), ("wo", yday)):
+            await _punch(i[tag], d, i["t_day"], at(d, 9), at(d, 19, 30))
+            async with SessionLocal() as db:
+                if d == yday:
+                    await fn(db)
+                else:
+                    await recompute_range(db, d, d, [i[tag]], i["admin"])
+                    await db.commit()
+            before = [(e.ot_minutes, e.ot_amount, e.day_type, e.rule_id)
+                      for e in await _entries(world, tag)]
+            assert len(before) == 1
+            run_ids.append(await _lock_entries(tag, world, 2031 + len(run_ids)))
+            # roster change after lock: published week-off + shorter shift
+            await _roster(i[tag], d, week_off=True)
+            async with SessionLocal() as db:
+                if d == yday:
+                    await fn(db)
+                    res = None
+                else:
+                    res = await recompute_range(db, d, d, [i[tag]], i["admin"])
+                    await db.commit()
+            after = [(e.ot_minutes, e.ot_amount, e.day_type, e.rule_id)
+                     for e in await _entries(world, tag)]
+            assert after == before
+            if res is not None:
+                assert res["ot_skipped_finalized"] == 1
+                assert res["ot_updated"] == 0
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(OvertimeEntry).where(
+                OvertimeEntry.user_id.in_([i["wd"], i["wo"]])))
+            if run_ids:
+                await db.execute(delete(PayrollRun).where(
+                    PayrollRun.id.in_(run_ids)))
+            await db.commit()
+
+
+async def test_pending_ot_approver_job_vs_manual(world, client):
+    from app.api.v1.endpoints.overtime import recompute_range
+    i = world["ids"]
+    await _punch(i["nos"], MON, None, at(MON, 9), at(MON, 20))  # org rule: pending
+    async with SessionLocal() as db:
+        await recompute_range(db, MON, MON, [i["nos"]], None)  # job-style
+        await db.commit()
+    async with SessionLocal() as db:
+        hr = (await db.execute(select(Role.id).where(Role.name == "HR"))).scalar_one()
+        e = (await db.execute(select(OvertimeEntry).where(
+            OvertimeEntry.user_id == i["nos"]))).scalar_one()
+        st = (await db.execute(select(ApprovalStep).where(
+            ApprovalStep.approval_item_id == e.approval_item_id))).scalar_one()
+        assert st.role_id == hr and st.approver_id is None
+        # reset and take the manual endpoint path
+        iid = e.approval_item_id
+        await db.execute(delete(ApprovalStep).where(
+            ApprovalStep.approval_item_id == iid))
+        e.approval_item_id = None
+        await db.flush()
+        await db.execute(delete(ApprovalItem).where(ApprovalItem.id == iid))
+        await db.commit()
+    await _recompute(client, world, ("nos",), MON, MON)
+    async with SessionLocal() as db:
+        e = (await db.execute(select(OvertimeEntry).where(
+            OvertimeEntry.user_id == i["nos"]))).scalar_one()
+        st = (await db.execute(select(ApprovalStep).where(
+            ApprovalStep.approval_item_id == e.approval_item_id))).scalar_one()
+        assert st.approver_id == i["admin"] and st.role_id is None

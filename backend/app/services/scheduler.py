@@ -738,26 +738,32 @@ register_job(JobSpec(
 
 
 async def _job_overtime_recompute_yesterday(session: AsyncSession) -> Dict[str, Any]:
-    """Recompute OT + night allowance for yesterday (UTC) for every
-    attendance row that has a punch-out. Idempotent; never touches entries
-    already attached to a payroll run. No requesting user: PENDING OT for
-    employees without a manager is routed to the HR role."""
+    """Recompute OT + night allowance for a lookback window of
+    yesterday-2 .. yesterday (UTC) for every attendance row that has a
+    punch-out, so a punch that was still open on an earlier night is picked
+    up once closed. Idempotent; never touches entries already attached to a
+    payroll run. No requesting user: PENDING OT for employees without a
+    manager is routed to the HR role.
+
+    work_date is a UTC date throughout (product convention; no org
+    timezone yet)."""
     from app.api.v1.endpoints.overtime import recompute_range
 
     yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
     counts = await recompute_range(
-        session, yesterday, yesterday,
+        session, yesterday - timedelta(days=2), yesterday,
         user_ids=None, requested_by_id=None, require_punch_out=True,
     )
     await session.commit()
-    return {"work_date": yesterday.isoformat(), **counts}
+    return {"work_date": yesterday.isoformat(),
+            "from_date": (yesterday - timedelta(days=2)).isoformat(), **counts}
 
 
 register_job(JobSpec(
     name="overtime_recompute_yesterday",
     display_name="Nightly overtime / night-allowance recompute",
     description=(
-        "Daily: recompute overtime and night-shift allowance for yesterday's "
+        "Daily: recompute overtime and night-shift allowance for the last 3 days' "
         "(UTC) completed attendance using the effective (roster-aware) "
         "shift. Entries already in a payroll run are never modified."
     ),

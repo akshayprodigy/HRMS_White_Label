@@ -725,8 +725,9 @@ async def _resolve_one(
         eff = await effective_shift_on(db, user_id, work_date)
 
     # Baseline shift. A published roster is authoritative (it may have
-    # changed after the punch was stamped); otherwise keep the shift
-    # snapshotted on the attendance row, falling back to the effective one.
+    # changed after the punch was stamped); otherwise exactly the legacy
+    # behaviour: the shift snapshotted on the attendance row (None stays
+    # None - no assignment fallback, to preserve historical numbers).
     snap_shift = None
     if attendance.shift_template_id:
         snap_shift = await db.get(ShiftTemplate, attendance.shift_template_id)
@@ -734,7 +735,7 @@ async def _resolve_one(
         # roster week-off has no shift of its own -> keep the snapshot.
         shift = eff.shift if eff.shift is not None else snap_shift
     else:
-        shift = snap_shift or eff.shift
+        shift = snap_shift
     shift_id = shift.id if shift is not None else attendance.shift_template_id
 
     basic = await _basic_for(db, user_id)
