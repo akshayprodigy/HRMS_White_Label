@@ -66,11 +66,35 @@ async def create_my(
         raise HTTPException(
             status_code=400,
             detail=f"At most {MAX_RULES} availability rules per employee")
+    await _check_duplicate(
+        db, current_user.id, body.kind, body.weekday, body.specific_date,
+        body.shift_template_id, body.valid_from, body.valid_to)
     row = EmployeeAvailability(user_id=current_user.id, **body.model_dump())
     db.add(row)
     await commit_or_409(db)
     await db.refresh(row)
     return row
+
+
+async def _check_duplicate(
+    db, user_id, kind, weekday, specific_date, tpl, vfrom, vto,
+    exclude_id: Optional[int] = None,
+) -> None:
+    def eq(col, v):
+        return col.is_(None) if v is None else col == v
+    q = select(EmployeeAvailability.id).where(
+        EmployeeAvailability.user_id == user_id,
+        EmployeeAvailability.kind == kind,
+        eq(EmployeeAvailability.weekday, weekday),
+        eq(EmployeeAvailability.specific_date, specific_date),
+        eq(EmployeeAvailability.shift_template_id, tpl),
+        eq(EmployeeAvailability.valid_from, vfrom),
+        eq(EmployeeAvailability.valid_to, vto),
+    )
+    if exclude_id is not None:
+        q = q.where(EmployeeAvailability.id != exclude_id)
+    if (await db.execute(q)).first() is not None:
+        raise HTTPException(status_code=409, detail="This rule already exists")
 
 
 async def _own(db, rule_id: int, user: User) -> EmployeeAvailability:
@@ -97,6 +121,8 @@ async def update_my(
         data["specific_date"] = None
     if data.get("specific_date") is not None and "weekday" not in data:
         data["weekday"] = None
+        data.setdefault("valid_from", None)
+        data.setdefault("valid_to", None)
     if data.get("kind") is None:
         data.pop("kind", None)
     merged = {
@@ -108,6 +134,10 @@ async def update_my(
                   "vfrom" if k == "valid_from" else
                   "vto" if k == "valid_to" else k): v
                  for k, v in merged.items()})
+    await _check_duplicate(
+        db, row.user_id, merged["kind"], merged["weekday"],
+        merged["specific_date"], merged["shift_template_id"],
+        merged["valid_from"], merged["valid_to"], exclude_id=row.id)
     if "shift_template_id" in data:
         await validate_templates(db, [data["shift_template_id"]])
     for k, v in data.items():

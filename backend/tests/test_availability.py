@@ -97,6 +97,7 @@ async def client():
 async def world():
     sfx = uuid.uuid4().hex[:8]
     dept_x, dept_y = f"AX{sfx}", f"AY{sfx}"
+    ids = {}
     try:
         async with SessionLocal() as db:
             def mk(tag, **kw):
@@ -145,9 +146,8 @@ async def world():
             await db.execute(delete(Employee).where(Employee.user_id.in_(uids)))
             await db.execute(delete(Department).where(
                 Department.name.in_([dept_x, dept_y])))
-            tids = (await db.execute(select(ShiftTemplate.id).where(
-                ShiftTemplate.name.like(f"AVT_{sfx}")))).scalars().all()
-            await purge_shift_templates(db, tids)
+            await purge_shift_templates(
+                db, [ids["t1"], ids["t2"], ids["t3"]])
             await db.execute(delete(User).where(User.id.in_(uids)))
             await db.commit()
 
@@ -287,3 +287,52 @@ async def test_insights_unavailable_violation(client, world):
     un = [v for v in r.json()["violations"] if v["rule"] == "unavailable"]
     assert [(v["user_id"], v["work_date"]) for v in un] == [
         (w["ids"]["e1"], dd(0))]  # e2's rule is for t2 only
+
+
+async def test_patch_switch_clears_other_fields(client, world):
+    w = world
+    h = await _login(client, w["e1_email"])
+    url = f"{ROSTER}/availability/my"
+    r = await client.post(url, headers=h, json={
+        "kind": "unavailable", "weekday": 0,
+        "valid_from": dd(0), "valid_to": dd(30)})
+    assert r.status_code == 200, r.text
+    rid = r.json()["id"]
+    r = await client.patch(f"{url}/{rid}", headers=h, json={"specific_date": dd(2)})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert (j["weekday"], j["valid_from"], j["valid_to"]) == (None, None, None)
+    assert j["specific_date"] == dd(2)
+    r = await client.patch(f"{url}/{rid}", headers=h, json={"weekday": 3})
+    assert r.status_code == 200, r.text
+    assert r.json()["weekday"] == 3 and r.json()["specific_date"] is None
+
+
+async def test_clear_template_on_preferred_422(client, world):
+    w = world
+    h = await _login(client, w["e1_email"])
+    url = f"{ROSTER}/availability/my"
+    r = await client.post(url, headers=h, json={
+        "kind": "preferred", "weekday": 1, "shift_template_id": w["ids"]["t1"]})
+    rid = r.json()["id"]
+    r = await client.patch(f"{url}/{rid}", headers=h, json={"shift_template_id": None})
+    assert r.status_code == 422
+
+
+async def test_duplicates_409(client, world):
+    w = world
+    h = await _login(client, w["e1_email"])
+    url = f"{ROSTER}/availability/my"
+    body = {"kind": "unavailable", "weekday": 2}
+    a = await client.post(url, headers=h, json=body)
+    assert a.status_code == 200
+    assert (await client.post(url, headers=h, json=body)).status_code == 409
+    # note differences do not make a rule distinct
+    assert (await client.post(url, headers=h, json={**body, "note": "x"})).status_code == 409
+    b = await client.post(url, headers=h, json={"kind": "unavailable", "weekday": 3})
+    assert b.status_code == 200
+    r = await client.patch(f"{url}/{b.json()['id']}", headers=h, json={"weekday": 2})
+    assert r.status_code == 409
+    # another user may have the same rule
+    h2 = await _login(client, w["e2_email"])
+    assert (await client.post(url, headers=h2, json=body)).status_code == 200
