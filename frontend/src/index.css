@@ -4751,4 +4751,5 @@ html {
   .col-span-2 { grid-column: span 2 / span 2; }
   .list-disc { list-style-type: disc; }
   .list-inside { list-style-position: inside; }
+  .ml-\[280px\] { margin-left: 280px; }
 }

@@ -697,7 +697,7 @@ const App = () => {
 
         <main className={cn(
           "flex-1 flex flex-col min-w-0 transition-all duration-300",
-          sidebarCollapsed ? "ml-20" : "ml-0 lg:ml-[280px]"
+          sidebarCollapsed ? "ml-20" : "ml-[280px]"
         )}>
           <Header 
             title={getPageTitle()} 
