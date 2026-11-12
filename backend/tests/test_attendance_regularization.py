@@ -393,3 +393,32 @@ async def test_non_superuser_role_with_permission(client, world):
                 await db.execute(delete(Permission).where(
                     Permission.id == perm_id))
             await db.commit()
+
+
+async def test_non_utc_offset_converted(client, world):
+    _, em = world
+    he = await _login(client, em["emp"])
+    b = {"work_date": WD.isoformat(),
+         "requested_punch_in": "2019-03-12T09:30:00+05:30",
+         "reason": "ist punch"}
+    r = await client.post(f"{BASE}", json=b, headers=he)
+    assert r.status_code == 200, r.text
+    got = datetime.fromisoformat(r.json()["requested_punch_in"])
+    assert got == datetime(2019, 3, 12, 4, 0, tzinfo=timezone.utc)
+    assert got.utcoffset() == timedelta(0)
+    # list responses carry an explicit offset too, no redirect on either form
+    for url in (f"{BASE}/my", f"{BASE}", f"{BASE}/"):
+        lr = await client.get(url, headers=he, follow_redirects=False)
+        assert lr.status_code == 200, (url, lr.status_code)
+    my = (await client.get(f"{BASE}/my", headers=he)).json()
+    assert my[0]["requested_punch_in"].endswith(("+00:00", "Z"))
+
+
+def test_hr_as_utc_converts_offsets():
+    from app.api.v1.endpoints.hr import _as_utc
+    ist = datetime.fromisoformat("2019-03-12T09:30:00+05:30")
+    assert _as_utc(ist) == datetime(2019, 3, 12, 4, 0, tzinfo=timezone.utc)
+    assert _as_utc(ist).utcoffset() == timedelta(0)
+    naive = datetime(2019, 3, 12, 4, 0)
+    assert _as_utc(naive) == datetime(2019, 3, 12, 4, 0, tzinfo=timezone.utc)
+    assert _as_utc(None) is None

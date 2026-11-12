@@ -46,9 +46,12 @@ async def _get_locked(db, reg_id: int) -> AttendanceRegularization:
 
 
 def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Naive -> assume UTC; aware -> convert to UTC."""
     if dt is None:
         return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 async def _notify(
@@ -70,6 +73,8 @@ async def _notify(
 
 def _row_to_read(reg, name, code) -> RegularizationRead:
     out = RegularizationRead.model_validate(reg)
+    for f in ("requested_punch_in", "requested_punch_out", "decided_at", "created_at"):
+        setattr(out, f, _as_utc(getattr(out, f)))
     out.requester_name = name
     out.requester_employee_code = code
     return out
@@ -85,7 +90,8 @@ async def _load_read(db, reg_id: int) -> RegularizationRead:
     return _row_to_read(*row)
 
 
-@router.post("/", response_model=RegularizationRead)
+@router.post("", response_model=RegularizationRead)
+@router.post("/", response_model=RegularizationRead, include_in_schema=False)
 async def create_regularization(
     *,
     db: deps.DBDep,
@@ -174,7 +180,8 @@ async def my_regularizations(
     return [_row_to_read(*r) for r in rows]
 
 
-@router.get("/", response_model=List[RegularizationRead])
+@router.get("", response_model=List[RegularizationRead])
+@router.get("/", response_model=List[RegularizationRead], include_in_schema=False)
 async def approver_queue(
     db: deps.DBDep,
     current_user: deps.CurrentUser,

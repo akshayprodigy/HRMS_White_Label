@@ -2230,10 +2230,13 @@ ATTENDANCE_EDIT = "attendance edit"
 
 
 def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
-    """MariaDB round-trips DATETIME columns as naive; treat them as UTC."""
+    """MariaDB round-trips DATETIME columns as naive; treat them as UTC.
+    Aware values are converted to UTC (e.g. 09:30+05:30 -> 04:00Z)."""
     if dt is None:
         return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _require_reason(reason: str) -> str:
