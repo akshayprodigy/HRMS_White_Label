@@ -932,7 +932,8 @@ async def recompute_range(
             Attendance.work_date <= end,
         )
     )
-    if user_ids:
+    if user_ids is not None:
+        # [] means "no users" (zero counts); None means everyone.
         att_q = att_q.where(Attendance.user_id.in_(user_ids))
     if require_punch_out:
         att_q = att_q.where(Attendance.punch_out_time.isnot(None))

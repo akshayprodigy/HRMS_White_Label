@@ -7,7 +7,8 @@ from sqlalchemy import func, select
 
 from app.api import deps
 from app.api.v1.endpoints.roster_common import (
-    check_window, commit_or_409, guard_conflicts, validate_templates,
+    check_window, commit_or_409, guard_conflicts, lock_user_rows,
+    validate_templates,
 )
 from app.models.availability import EmployeeAvailability
 from app.models.user import User
@@ -59,16 +60,21 @@ async def create_my(
     _validate(body.kind, body.weekday, body.specific_date,
               body.shift_template_id, body.valid_from, body.valid_to)
     await validate_templates(db, [body.shift_template_id])
-    count = (await db.execute(
-        select(func.count(EmployeeAvailability.id)).where(
-            EmployeeAvailability.user_id == current_user.id))).scalar_one()
+    # Serialize concurrent creates for this user; the reads below must be
+    # locking reads because the REPEATABLE READ snapshot predates the lock.
+    await lock_user_rows(db, [current_user.id])
+    count = len((await db.execute(
+        select(EmployeeAvailability.id).where(
+            EmployeeAvailability.user_id == current_user.id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().all())
     if count >= MAX_RULES:
         raise HTTPException(
             status_code=400,
             detail=f"At most {MAX_RULES} availability rules per employee")
     await _check_duplicate(
         db, current_user.id, body.kind, body.weekday, body.specific_date,
-        body.shift_template_id, body.valid_from, body.valid_to)
+        body.shift_template_id, body.valid_from, body.valid_to, lock=True)
     row = EmployeeAvailability(user_id=current_user.id, **body.model_dump())
     db.add(row)
     await commit_or_409(db)
@@ -78,7 +84,7 @@ async def create_my(
 
 async def _check_duplicate(
     db, user_id, kind, weekday, specific_date, tpl, vfrom, vto,
-    exclude_id: Optional[int] = None,
+    exclude_id: Optional[int] = None, lock: bool = False,
 ) -> None:
     def eq(col, v):
         return col.is_(None) if v is None else col == v
@@ -93,6 +99,8 @@ async def _check_duplicate(
     )
     if exclude_id is not None:
         q = q.where(EmployeeAvailability.id != exclude_id)
+    if lock:
+        q = q.with_for_update().execution_options(populate_existing=True)
     if (await db.execute(q)).first() is not None:
         raise HTTPException(status_code=409, detail="This rule already exists")
 
@@ -170,9 +178,11 @@ async def list_scoped(
     """Raw rules of employees the caller may manage. start/end bound the
     window (<= 62 days) and filter out rules that cannot apply in it."""
     check_window(start, end)
-    scoped = await roster_svc.scoped_employees(db, current_user, department)
+    scoped = await roster_svc.scoped_employees(db, current_user)
     if not scoped and not roster_svc.is_roster_admin(current_user):
         raise HTTPException(status_code=403, detail="You have no roster scope.")
+    if department:
+        scoped = [e for e in scoped if e.department == department]
     ids = await roster_svc.manageable_subset(
         db, current_user, {e.user_id for e in scoped})
     names = {e.user_id: (e.user.full_name if e.user else None) for e in scoped}

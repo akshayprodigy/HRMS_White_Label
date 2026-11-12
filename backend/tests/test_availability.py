@@ -336,3 +336,33 @@ async def test_duplicates_409(client, world):
     # another user may have the same rule
     h2 = await _login(client, w["e2_email"])
     assert (await client.post(url, headers=h2, json=body)).status_code == 200
+
+
+async def test_concurrent_identical_create_single_winner(client, world):
+    import asyncio
+    w = world
+    h = await _login(client, w["e1_email"])
+    body = {"kind": "unavailable", "weekday": 3}
+    rs = await asyncio.gather(*[
+        client.post(f"{ROSTER}/availability/my", headers=h, json=body)
+        for _ in range(6)])
+    codes = sorted(r.status_code for r in rs)
+    assert codes.count(200) == 1, codes
+    r = await client.get(f"{ROSTER}/availability/my", headers=h)
+    assert len(r.json()) == 1
+
+
+async def test_scoped_list_out_of_scope_department_is_empty(client, world):
+    w = world
+    async with SessionLocal() as db:
+        db.add(ScheduleDelegation(
+            grantee_id=w["ids"]["deleg"], scope_type=DelegationScope.EMPLOYEES,
+            employee_ids=[w["ids"]["e1"]], can_publish=False,
+            valid_from=TODAY - timedelta(days=1)))
+        await db.commit()
+    hd = await _login(client, w["deleg_email"])
+    q = f"?start={dd(0)}&end={dd(13)}"
+    r = await client.get(f"{ROSTER}/availability{q}&department=AY{w['sfx']}",
+                         headers=hd)
+    assert r.status_code == 200, r.text
+    assert r.json() == []

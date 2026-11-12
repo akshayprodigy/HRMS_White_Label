@@ -430,3 +430,15 @@ def test_classify_day_type_is_week_off_override():
     assert classify_day_type(mon, None, set(), is_week_off=True) == DayType.WEEKLY_OFF
     # holiday still wins
     assert classify_day_type(mon, shift, {mon}, is_week_off=True) == DayType.HOLIDAY
+
+
+async def test_recompute_range_empty_user_ids_means_no_users():
+    from datetime import date as _d
+    from app.db.session import SessionLocal
+    from app.api.v1.endpoints.overtime import recompute_range
+    async with SessionLocal() as db:
+        try:
+            res = await recompute_range(db, _d(2000, 1, 1), _d(2100, 1, 1), [], None)
+        finally:
+            await db.rollback()
+    assert all(v == 0 for v in res.values()), res
