@@ -504,6 +504,17 @@ async def _cr_read(db, cr: RosterChangeRequest) -> RosterChangeRequestRead:
     )
 
 
+async def _lock_cr(db, cr_id: int):
+    """Row-lock the change request (fresh state) so status checks and the
+    decision are atomic against concurrent decide/cancel."""
+    return (await db.execute(
+        select(RosterChangeRequest)
+        .where(RosterChangeRequest.id == cr_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().first()
+
+
 @router.post("/change-requests", response_model=RosterChangeRequestRead)
 async def create_change_request(
     *,
@@ -606,7 +617,7 @@ async def decide_change_request(
     body: RosterChangeDecision,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    cr = await db.get(RosterChangeRequest, cr_id)
+    cr = await _lock_cr(db, cr_id)
     if not cr:
         raise HTTPException(status_code=404, detail="Request not found")
     if cr.status != RosterChangeStatus.PENDING:
@@ -700,7 +711,7 @@ async def cancel_change_request(
     cr_id: int,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    cr = await db.get(RosterChangeRequest, cr_id)
+    cr = await _lock_cr(db, cr_id)
     if not cr:
         raise HTTPException(status_code=404, detail="Request not found")
     if cr.employee_id != current_user.id:
