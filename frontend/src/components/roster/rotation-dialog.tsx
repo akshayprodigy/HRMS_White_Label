@@ -11,6 +11,7 @@ import {
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
+import { daysBetween } from './roster-api';
 import type {
   BulkResult,
   RosterGridRow,
@@ -58,6 +59,8 @@ export const RotationDialog = ({
   const [offsets, setOffsets] = useState<Record<number, string>>({});
   const [status, setStatus] = useState<'draft' | 'published'>('draft');
   const [applying, setApplying] = useState(false);
+  const [confirmDel, setConfirmDel] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const id = ++reqId.current;
@@ -134,6 +137,7 @@ export const RotationDialog = ({
   };
 
   const remove = async (p: RotationPattern) => {
+    setDeleting(p.id);
     try {
       await client.delete(ENDPOINTS.ROSTER.ROTATION_DETAIL(p.id));
       toast.success('Rotation deleted');
@@ -141,6 +145,9 @@ export const RotationDialog = ({
       load();
     } catch (err: any) {
       toast.error(errMsg(err, 'Failed to delete rotation'));
+    } finally {
+      setDeleting(null);
+      setConfirmDel(null);
     }
   };
 
@@ -155,6 +162,14 @@ export const RotationDialog = ({
   const apply = async () => {
     if (patternId === '' || selected.size === 0) {
       toast.error('Pick a pattern and at least one employee');
+      return;
+    }
+    if (aStart > aEnd) {
+      toast.error('Start must be on or before end');
+      return;
+    }
+    if (daysBetween(aStart, aEnd) > 62) {
+      toast.error('Range too large (max 62 days)');
       return;
     }
     const offs: Record<number, number> = {};
@@ -191,7 +206,7 @@ export const RotationDialog = ({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o: boolean) => !o && onClose()}>
+    <Dialog open={open} onOpenChange={(o: boolean) => !o && !applying && onClose()}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -219,11 +234,28 @@ export const RotationDialog = ({
                       {p.cycle.map(tplName).join(' · ')}
                     </div>
                   </div>
-                  {isAdmin && (
-                    <Button size="sm" variant="outline" onClick={() => remove(p)} aria-label={`Delete ${p.name}`}>
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  )}
+                  {isAdmin &&
+                    (confirmDel === p.id ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-xs text-gray-600">Delete?</span>
+                        <Button
+                          size="sm"
+                          disabled={deleting === p.id}
+                          onClick={() => remove(p)}
+                          className="bg-red-600 hover:bg-red-700 text-white"
+                        >
+                          {deleting === p.id && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                          Yes
+                        </Button>
+                        <Button size="sm" variant="outline" disabled={deleting === p.id} onClick={() => setConfirmDel(null)}>
+                          No
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => setConfirmDel(p.id)} aria-label={`Delete ${p.name}`}>
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    ))}
                 </li>
               ))}
             </ul>
@@ -234,8 +266,8 @@ export const RotationDialog = ({
           <section className="space-y-2 border-t pt-3">
             <h3 className="text-sm font-semibold text-gray-800">Create pattern</h3>
             <div className="flex flex-wrap gap-2">
-              <input className={inputCls} placeholder="Name" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
-              <input className={`${inputCls} flex-1 min-w-[160px]`} placeholder="Description (optional)" value={desc} maxLength={255} onChange={(e) => setDesc(e.target.value)} />
+              <input aria-label="Pattern name" className={inputCls} placeholder="Name" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+              <input aria-label="Pattern description" className={`${inputCls} flex-1 min-w-[160px]`} placeholder="Description (optional)" value={desc} maxLength={255} onChange={(e) => setDesc(e.target.value)} />
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="text-gray-500">Presets:</span>
@@ -260,6 +292,7 @@ export const RotationDialog = ({
                 <div key={i} className="flex items-center gap-0.5 border rounded px-1 py-0.5">
                   <span className="text-[10px] text-gray-400 w-4">{i + 1}</span>
                   <select
+                    aria-label={`Cycle day ${i + 1}`}
                     value={v === null ? '' : String(v)}
                     onChange={(e) =>
                       setCycle((c) => c.map((x, j) => (j === i ? (e.target.value ? Number(e.target.value) : null) : x)))
@@ -299,20 +332,20 @@ export const RotationDialog = ({
         <section className="space-y-2 border-t pt-3">
           <h3 className="text-sm font-semibold text-gray-800">Apply pattern</h3>
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <select className={inputCls} value={patternId} onChange={(e) => setPatternId(e.target.value ? Number(e.target.value) : '')}>
+            <select aria-label="Pattern to apply" className={inputCls} value={patternId} onChange={(e) => setPatternId(e.target.value ? Number(e.target.value) : '')}>
               <option value="">Select pattern…</option>
               {patterns.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
             <label className="flex items-center gap-1 text-gray-600">Start
-              <input type="date" className={inputCls} value={aStart} onChange={(e) => setAStart(e.target.value)} />
+              <input type="date" aria-label="Start date" className={inputCls} value={aStart} onChange={(e) => setAStart(e.target.value)} />
             </label>
             <label className="flex items-center gap-1 text-gray-600">End
-              <input type="date" className={inputCls} value={aEnd} onChange={(e) => setAEnd(e.target.value)} />
+              <input type="date" aria-label="End date" className={inputCls} value={aEnd} onChange={(e) => setAEnd(e.target.value)} />
             </label>
             <label className="flex items-center gap-1 text-gray-600">Anchor
-              <input type="date" className={inputCls} value={aAnchor} onChange={(e) => setAAnchor(e.target.value)} />
+              <input type="date" aria-label="Anchor date" className={inputCls} value={aAnchor} onChange={(e) => setAAnchor(e.target.value)} />
             </label>
           </div>
           <div className="flex items-center gap-3 text-sm text-gray-600">
@@ -329,6 +362,10 @@ export const RotationDialog = ({
               </label>
             ))}
           </div>
+          <p className="text-xs text-amber-700">
+            Existing cells in the range, including published ones (when saving
+            as Published), are overwritten and recorded in history as "bulk re-plan".
+          </p>
           <div className="border rounded-lg max-h-56 overflow-y-auto">
             <table className="w-full text-sm">
               <thead>
@@ -349,12 +386,13 @@ export const RotationDialog = ({
                 {rows.map((r) => (
                   <tr key={r.employee_id} className="border-b last:border-0">
                     <td className="p-2">
-                      <input type="checkbox" checked={selected.has(r.employee_id)} onChange={() => toggle(r.employee_id)} />
+                      <input type="checkbox" aria-label={`Select ${r.full_name || r.employee_id}`} checked={selected.has(r.employee_id)} onChange={() => toggle(r.employee_id)} />
                     </td>
                     <td>{r.full_name || `User #${r.employee_id}`}</td>
                     <td>
                       <input
                         type="number"
+                        aria-label={`Offset for ${r.full_name || r.employee_id}`}
                         value={offsets[r.employee_id] ?? '0'}
                         onChange={(e) => setOffsets((o) => ({ ...o, [r.employee_id]: e.target.value }))}
                         className="w-20 px-2 py-1 border rounded text-sm"
@@ -366,7 +404,7 @@ export const RotationDialog = ({
             </table>
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose}>Close</Button>
+            <Button variant="outline" onClick={onClose} disabled={applying}>Close</Button>
             <Button
               onClick={apply}
               disabled={applying || patternId === '' || selected.size === 0}

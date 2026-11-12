@@ -29,8 +29,9 @@ export const PublishRequestsPanel = ({ isAdmin, refreshKey, onChanged }: Props) 
         { params: { status: 'pending' } }
       );
       if (id === reqId.current) setItems(data || []);
-    } catch {
-      if (id === reqId.current) setItems([]);
+    } catch (err: any) {
+      // keep the previous list; just tell the user
+      if (id === reqId.current) toast.error(errMsg(err, 'Failed to load publish requests'));
     }
   }, []);
 

@@ -64,9 +64,11 @@ const shortDate = (isoStr: string) => {
 export const RosterPlanner = () => {
   const [mode, setMode] = useState<'week' | 'month'>('week');
   const [anchor, setAnchor] = useState<Date>(mondayOf(new Date()));
-  const [department, setDepartment] = useState('');
+  const [deptInput, setDeptInput] = useState('');
+  const [appliedDept, setAppliedDept] = useState('');
   const [grid, setGrid] = useState<RosterGrid | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [view, setView] = useState<'planner' | 'delegations'>('planner');
   // null until the first response; latched so a later failed fetch doesn't unmount Delegations.
@@ -102,14 +104,16 @@ export const RosterPlanner = () => {
     return { start: iso(start), end: iso(end) };
   }, [mode, anchor]);
 
-  const fetchGrid = useCallback(async () => {
+  // background=true keeps the current grid on screen (post-edit refresh).
+  const fetchGrid = useCallback(async (background = false) => {
     const reqId = ++gridReq.current;
-    setLoading(true);
+    if (background) setRefreshing(true);
+    else setLoading(true);
     setLoadError(null);
     try {
       const { start, end } = range();
       const params = new URLSearchParams({ start, end });
-      if (department) params.set('department', department);
+      if (appliedDept) params.set('department', appliedDept);
       const res = await client.get<RosterGrid>(
         ENDPOINTS.ROSTER.PLAN + '?' + params.toString()
       );
@@ -124,9 +128,17 @@ export const RosterPlanner = () => {
       setGrid(null);
       setIsAdmin((prev) => (prev === null ? false : prev));
     } finally {
-      if (reqId === gridReq.current) setLoading(false);
+      if (reqId === gridReq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [range, department]);
+  }, [range, appliedDept]);
+  const refresh = useCallback(() => fetchGrid(true), [fetchGrid]);
+  const commitDept = () => {
+    const v = deptInput.trim();
+    if (v !== appliedDept) setAppliedDept(v); // effect below refetches
+  };
 
   useEffect(() => {
     if (isAdmin !== false) return; // admins don't need the banner
@@ -139,13 +151,17 @@ export const RosterPlanner = () => {
   useEffect(() => {
     fetchGrid();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, anchor]);
+  }, [mode, anchor, appliedDept]);
 
   const navigate = (dir: number) => {
-    const next = new Date(anchor);
-    if (mode === 'week') next.setDate(next.getDate() + dir * 7);
-    else next.setMonth(next.getMonth() + dir);
-    setAnchor(mode === 'week' ? mondayOf(next) : next);
+    if (mode === 'week') {
+      const next = new Date(anchor);
+      next.setDate(next.getDate() + dir * 7);
+      setAnchor(mondayOf(next));
+    } else {
+      // day 1 avoids month-length overflow (e.g. Mar 31 -> Feb)
+      setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() + dir, 1));
+    }
   };
 
   const cellValue = (c: RosterCell): string => {
@@ -195,7 +211,7 @@ export const RosterPlanner = () => {
         if (res.data?.notice) toast.info(res.data.notice);
       }
       setPendingEdit(null);
-      await fetchGrid();
+      await fetchGrid(true);
     } catch (err: any) {
       toast.error(errMsg(err, 'Failed to save cell'));
     } finally {
@@ -203,13 +219,18 @@ export const RosterPlanner = () => {
     }
   };
 
+  // Derived from the loaded grid (not the navigation state) so it always
+  // matches what the user sees.
   const previousWindow = () => {
-    const { start, end } = range();
-    if (mode === 'week') return { start: addDays(start, -7), end: addDays(end, -7) };
-    const d = new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1);
-    const ps = iso(d);
-    const pe = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0));
-    const cap = addDays(ps, 30);
+    if (!grid) return null;
+    const len = daysBetween(grid.start, grid.end) + 1;
+    if (mode === 'week') {
+      return { start: addDays(grid.start, -7), end: addDays(grid.end, -7) };
+    }
+    const [y, m] = grid.start.split('-').map(Number);
+    const ps = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 10);
+    const pe = new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10);
+    const cap = addDays(ps, Math.min(len, 31) - 1);
     return { start: ps, end: daysBetween(pe, cap) < 0 ? cap : pe };
   };
 
@@ -234,7 +255,7 @@ export const RosterPlanner = () => {
       const res = await client.post(ENDPOINTS.ROSTER.BULK, {
         start,
         end,
-        department: department || null,
+        department: appliedDept || null,
         status: effStatus,
         overwrite: true,
         pattern: pat,
@@ -248,7 +269,7 @@ export const RosterPlanner = () => {
       );
       if (r.errors?.length) toast.error(r.errors.slice(0, 3).join('; '));
       setPatternOpen(false);
-      fetchGrid();
+      refresh();
     } catch (err: any) {
       toast.error(errMsg(err, 'Failed to apply pattern'));
     } finally {
@@ -351,6 +372,7 @@ export const RosterPlanner = () => {
             </Button>
             <span className="text-sm text-gray-700 min-w-[180px] text-center font-medium">
               {rangeLabel}
+              {refreshing && <RefreshCw className="w-3 h-3 animate-spin inline ml-1.5 text-gray-400" aria-label="Refreshing" />}
             </span>
             <Button variant="outline" size="sm" onClick={() => navigate(1)}>
               <ChevronRight className="w-4 h-4" />
@@ -360,10 +382,11 @@ export const RosterPlanner = () => {
           <input
             type="text"
             placeholder="Filter department"
-            value={department}
-            onChange={(e) => setDepartment(e.target.value)}
-            onBlur={fetchGrid}
-            onKeyDown={(e) => e.key === 'Enter' && fetchGrid()}
+            value={deptInput}
+            onChange={(e) => setDeptInput(e.target.value)}
+            onBlur={commitDept}
+            onKeyDown={(e) => e.key === 'Enter' && commitDept()}
+            aria-label="Filter department"
             className="px-3 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
           />
 
@@ -372,10 +395,13 @@ export const RosterPlanner = () => {
           <Button
             variant="outline"
             size="sm"
-            onClick={fetchGrid}
+            onClick={() => {
+              fetchGrid(true);
+              setPrKey((k) => k + 1);
+            }}
             className="gap-1.5"
           >
-            <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
+            <RefreshCw className={cn('w-4 h-4', (loading || refreshing) && 'animate-spin')} />
             Refresh
           </Button>
           <div className="flex items-center gap-1.5 text-sm text-gray-600">
@@ -385,7 +411,11 @@ export const RosterPlanner = () => {
                 <button
                   key={st}
                   disabled={st === 'published' && !canPublish}
-                  title={st === 'published' && !canPublish ? 'Publishing requires HR approval' : undefined}
+                  title={
+                    st === 'published' && !canPublish
+                      ? 'Publishing is disabled because some visible employees need HR approval'
+                      : undefined
+                  }
                   onClick={() => setSaveAs(st)}
                   aria-pressed={effStatus === st}
                   className={cn(
@@ -398,16 +428,17 @@ export const RosterPlanner = () => {
               ))}
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={() => setCopyOpen(true)} disabled={!grid} className="gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => setCopyOpen(true)} disabled={!grid || loading} className="gap-1.5">
             <Copy className="w-4 h-4" />
             Copy previous
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setRotOpen(true)} disabled={!grid} className="gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => setRotOpen(true)} disabled={!grid || loading} className="gap-1.5">
             <Repeat className="w-4 h-4" />
             Rotations
           </Button>
           <Button
             size="sm"
+            disabled={!grid || loading}
             onClick={() => {
               setPattern({});
               setPatternOpen(true);
@@ -423,7 +454,7 @@ export const RosterPlanner = () => {
       <PublishRequestsPanel
         isAdmin={!!grid?.is_admin}
         refreshKey={prKey}
-        onChanged={fetchGrid}
+        onChanged={refresh}
       />
 
       {grid && (
@@ -432,9 +463,10 @@ export const RosterPlanner = () => {
           canPublish={canPublish}
           start={grid.start}
           end={grid.end}
-          department={department}
+          department={appliedDept}
+          disabled={loading}
           onDone={() => {
-            fetchGrid();
+            fetchGrid(true);
             setPrKey((k) => k + 1);
           }}
         />
@@ -535,6 +567,7 @@ export const RosterPlanner = () => {
                             </div>
                           )}
                           <select
+                            aria-label={`${row.full_name || 'Employee'}, ${c.work_date}`}
                             value={val}
                             disabled={savingCell === key || lockedPublished}
                             title={lockedPublished ? 'Published — publishing requires HR approval' : undefined}
@@ -601,7 +634,10 @@ export const RosterPlanner = () => {
         title="Change a published schedule"
         description={
           pendingEdit
-            ? `${pendingEdit.row.full_name || 'Employee'} on ${pendingEdit.c.work_date} is already published. Employees will be notified.`
+            ? `${pendingEdit.row.full_name || 'Employee'} on ${pendingEdit.c.work_date} is already published. ` +
+              (effStatus === 'draft' && pendingEdit.value !== ''
+                ? 'Saving as Draft will unpublish this cell and hide it from the employee until it is published again.'
+                : 'The employee will be notified of the change.')
             : undefined
         }
         label="Reason for change"
@@ -622,15 +658,16 @@ export const RosterPlanner = () => {
         rows={grid?.rows || []}
         start={grid?.start || ''}
         end={grid?.end || ''}
-        onApplied={fetchGrid}
+        onApplied={refresh}
       />
       <CopyDialog
         open={copyOpen}
-        source={grid ? previousWindow() : null}
+        source={previousWindow()}
         target={{ start: grid?.start || '', end: grid?.end || '' }}
-        department={department}
+        department={appliedDept}
+        mode={mode}
         onClose={() => setCopyOpen(false)}
-        onDone={fetchGrid}
+        onDone={refresh}
       />
       <HistoryDialog employee={historyEmp} onClose={() => setHistoryEmp(null)} />
 
@@ -647,6 +684,10 @@ export const RosterPlanner = () => {
             <p className="text-sm text-gray-500">
               Assign a shift (or week-off) to each weekday across the current{' '}
               {mode}. Leave a weekday blank to keep it unchanged.
+            </p>
+            <p className="text-xs text-amber-700">
+              Existing cells in this period, including published ones, are
+              overwritten (recorded in history as "bulk re-plan").
             </p>
             {WEEKDAYS.map((label, wd) => (
               <div key={wd} className="flex items-center gap-3">

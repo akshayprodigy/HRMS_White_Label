@@ -5,6 +5,13 @@ import { Button } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '../ui/dialog';
 import { ReasonDialog } from './reason-dialog';
 import type { PublishResult } from './roster-api';
 
@@ -14,6 +21,7 @@ interface Props {
   start: string;
   end: string;
   department: string;
+  disabled?: boolean;
   onDone: () => void;
 }
 
@@ -23,10 +31,12 @@ export const PublishBar = ({
   start,
   end,
   department,
+  disabled,
   onDone,
 }: Props) => {
   const [busy, setBusy] = useState(false);
   const [reqOpen, setReqOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const body = { start, end, department: department || null };
 
   const publish = async () => {
@@ -41,6 +51,7 @@ export const PublishBar = ({
         `Published ${data.published} cell${data.published === 1 ? '' : 's'} for ${data.employees} employee${data.employees === 1 ? '' : 's'}` +
           (np ? `; ${np} not permitted` : '')
       );
+      setConfirmOpen(false);
       onDone();
     } catch (err: any) {
       toast.error(errMsg(err, 'Failed to publish'));
@@ -77,8 +88,8 @@ export const PublishBar = ({
       {canPublish ? (
         <Button
           size="sm"
-          onClick={publish}
-          disabled={busy || draftCount === 0}
+          onClick={() => setConfirmOpen(true)}
+          disabled={disabled || busy || draftCount === 0}
           className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5"
         >
           {busy ? (
@@ -92,13 +103,39 @@ export const PublishBar = ({
         <Button
           size="sm"
           onClick={() => setReqOpen(true)}
-          disabled={busy || draftCount === 0}
+          disabled={disabled || busy || draftCount === 0}
           className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5"
         >
           <Send className="w-4 h-4" />
           Request publish
         </Button>
       )}
+      <Dialog open={confirmOpen} onOpenChange={(o: boolean) => !o && !busy && setConfirmOpen(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Publish drafts</DialogTitle>
+          </DialogHeader>
+          <p className="py-2 text-sm text-gray-700">
+            Publish <b>{draftCount}</b> draft cell{draftCount === 1 ? '' : 's'} for{' '}
+            <b>{start} → {end}</b>
+            {department ? <> in <b>{department}</b></> : null}? Affected
+            employees will be notified.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={publish}
+              disabled={busy}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2"
+            >
+              {busy && <RefreshCw className="w-4 h-4 animate-spin" />}
+              Publish
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ReasonDialog
         open={reqOpen}
         title="Request publish"

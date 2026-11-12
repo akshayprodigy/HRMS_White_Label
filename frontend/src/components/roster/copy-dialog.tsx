@@ -12,19 +12,22 @@ import {
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
-import type { BulkResult } from './roster-api';
+import { daysBetween, type BulkResult } from './roster-api';
 
 interface Props {
   open: boolean;
   source: { start: string; end: string } | null;
   target: { start: string; end: string };
   department: string;
+  mode: 'week' | 'month';
   onClose: () => void;
   onDone: () => void;
 }
 
-export const CopyDialog = ({ open, source, target, department, onClose, onDone }: Props) => {
+export const CopyDialog = ({ open, source, target, department, mode, onClose, onDone }: Props) => {
   const [busy, setBusy] = useState(false);
+  const srcLen = source ? daysBetween(source.start, source.end) + 1 : 0;
+  const tgtLen = daysBetween(target.start, target.end) + 1;
   const run = async () => {
     if (!source) return;
     setBusy(true);
@@ -63,6 +66,19 @@ export const CopyDialog = ({ open, source, target, department, onClose, onDone }
             Copy <b>{source?.start} → {source?.end}</b> into{' '}
             <b>{target.start} → {target.end}</b> as drafts.
           </p>
+          {srcLen > 0 && srcLen < tgtLen && (
+            <p className="text-xs text-amber-700">
+              The source period is shorter ({srcLen} days) than the target
+              ({tgtLen} days), so the last {tgtLen - srcLen} day
+              {tgtLen - srcLen === 1 ? '' : 's'} of the target will not be filled.
+            </p>
+          )}
+          {mode === 'month' && (
+            <p className="text-xs text-gray-500">
+              Month copy maps calendar dates (day 1 to day 1, and so on), so
+              weekday patterns may shift.
+            </p>
+          )}
           <p className="text-xs text-gray-500">
             Existing cells in the target period are kept; published cells are never overwritten.
           </p>

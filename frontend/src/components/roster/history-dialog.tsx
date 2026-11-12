@@ -9,7 +9,7 @@ import {
 } from '../ui/dialog';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
-import { errMsg } from '../schedule-delegations-utils';
+import { errMsg, parseServerDate } from '../schedule-delegations-utils';
 import { HistoryRow, sideLabel } from './roster-api';
 
 interface Props {
@@ -22,8 +22,13 @@ export const HistoryDialog = ({ employee, onClose }: Props) => {
   const [loading, setLoading] = useState(false);
   const reqId = useRef(0);
 
+  const [shown, setShown] = useState(employee);
   useEffect(() => {
-    if (!employee) return;
+    if (!employee) {
+      reqId.current++; // drop in-flight responses after close
+      return;
+    }
+    setShown(employee);
     const id = ++reqId.current;
     setLoading(true);
     setRows([]);
@@ -42,7 +47,7 @@ export const HistoryDialog = ({ employee, onClose }: Props) => {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <History className="w-5 h-5 text-indigo-600" />
-            Change history — {employee?.name}
+            Change history — {shown?.name}
           </DialogTitle>
         </DialogHeader>
         <p className="text-xs text-gray-500">Changes in the last 30 days.</p>
@@ -75,7 +80,7 @@ export const HistoryDialog = ({ employee, onClose }: Props) => {
                 rows.map((h) => (
                   <tr key={h.id} className="border-b align-top">
                     <td className="py-1.5 pr-2 whitespace-nowrap text-gray-500">
-                      {new Date(h.changed_at).toLocaleString()}
+                      {parseServerDate(h.changed_at).toLocaleString()}
                     </td>
                     <td className="pr-2 capitalize">{h.action}</td>
                     <td className="pr-2 whitespace-nowrap">{h.work_date}</td>

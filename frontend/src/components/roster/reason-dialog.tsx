@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '../ui-elements';
 import {
@@ -34,6 +34,7 @@ export const ReasonDialog = ({
   onClose,
 }: Props) => {
   const [text, setText] = useState('');
+  const fieldId = useId();
   useEffect(() => {
     if (open) setText('');
   }, [open]);
@@ -49,22 +50,23 @@ export const ReasonDialog = ({
           {description && (
             <p className="text-sm text-gray-500">{description}</p>
           )}
-          <label className="text-sm font-medium text-gray-700">
+          <label htmlFor={fieldId} className="text-sm font-medium text-gray-700">
             {label}
             {minLength === 0 ? ' (optional)' : ''}
           </label>
           <textarea
+            id={fieldId}
             value={text}
             onChange={(e) => setText(e.target.value)}
             maxLength={500}
             rows={3}
             className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
           />
-          {minLength > 0 && !valid && text.length > 0 && (
-            <p className="text-xs text-red-600">
-              At least {minLength} characters required.
-            </p>
-          )}
+          <div aria-live="polite" className="text-xs text-red-600 min-h-[1rem]">
+            {minLength > 0 && !valid && text.length > 0
+              ? `At least ${minLength} characters required.`
+              : ''}
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>

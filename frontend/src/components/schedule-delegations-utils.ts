@@ -54,3 +54,7 @@ export const scopeLabel = (d: {
       }`;
   }
 };
+
+// Server datetimes may be naive (UTC, no offset) or carry Z / an offset.
+export const parseServerDate = (iso: string) =>
+  new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);

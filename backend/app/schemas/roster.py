@@ -2,6 +2,7 @@
 from datetime import date as pydate, datetime
 from typing import Dict, List, Optional
 
+from app.core.datetime_utils import as_utc
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 
@@ -325,6 +326,11 @@ class PublishRequestRead(BaseModel):
     publish_result: Optional[RosterPublishResult] = None
     message: Optional[str] = None
 
+    @field_validator("decided_at", "created_at", mode="after")
+    @classmethod
+    def _utc(cls, v):
+        return as_utc(v)
+
 
 class RosterCopyRequest(BaseModel):
     source_start: pydate
@@ -351,3 +357,8 @@ class RosterHistoryRead(BaseModel):
     changed_by_id: Optional[int] = None
     changed_by_name: Optional[str] = None
     changed_at: datetime
+
+    @field_validator("changed_at", mode="after")
+    @classmethod
+    def _utc(cls, v):
+        return as_utc(v)
