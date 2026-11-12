@@ -24,7 +24,12 @@ from app.models.shift import ShiftTemplate
 from app.models.user import (
     Permission, Role, User, role_permissions, user_roles,
 )
+from app.models.open_shift import OpenShift, OpenShiftStatus
 from app.services import coverage_gaps as gap_svc
+from app.services.manual_attendance import (
+    ManualAttendanceExists, create_manual_attendance_row,
+)
+from fastapi import HTTPException
 
 API = f"{settings.API_V1_STR}/attendance/bulk-mark"
 MANUAL = f"{settings.API_V1_STR}/hr/attendance/manual"
@@ -145,7 +150,7 @@ async def _login(client, email):
 def body(w, tags, d=TODAY, **kw):
     return {"work_date": d.isoformat(),
             "user_ids": [w["ids"][t] for t in tags],
-            "punch_in_time": "09:00", "reason": "Punch system outage", **kw}
+            "punch_in_time": "00:01", "reason": "Punch system outage", **kw}
 
 
 def by_user(resp, w):
@@ -197,7 +202,7 @@ async def test_authorization_matrix(client, world):
         assert {a.edited_by_id for a in rows} == {w["ids"]["sx"], w["ids"]["hr"]}
         e1 = next(a for a in rows if a.user_id == w["ids"]["e1"])
         assert e1.captured_at.replace(tzinfo=timezone.utc) == datetime.combine(
-            TODAY, time(9), tzinfo=timezone.utc)
+            TODAY, time(0, 1), tzinfo=timezone.utc)
         audits = (await db.execute(select(AuditLog).where(
             AuditLog.action == "BULK_MARK_ATTENDANCE",
             AuditLog.user_id.in_([w["ids"]["sx"], w["ids"]["hr"]])))
@@ -212,7 +217,7 @@ async def test_validation(client, world):
     hr = await _login(client, w["email"]("hr"))
     for bad in ({"reason": "abc"}, {"user_ids": []},
                 {"punch_in_time": "nope"},
-                {"punch_out_time": f"{OLD_A}T08:00:00Z"}, {"user_ids": list(range(1, 202))}):
+                {"punch_out_time": f"{OLD_A}T00:00:00Z"}, {"user_ids": list(range(1, 202))}):
         r = await client.post(API, json={**body(w, ["e1"], OLD_A), **bad},
                               headers=hr)
         assert r.status_code == 422, (bad, r.text)
@@ -323,3 +328,102 @@ async def test_marking_dismisses_open_noshow_gap(client, world):
         assert g1.note == "Marked present by supervisor"
         assert g1.resolved_by_id == w["ids"]["sx"]
         assert g2.status == GapStatus.OPEN  # only no_show gaps are dismissed
+
+
+async def test_snapshot_staleness_existing_row_and_lock_detected(world):
+    """A row/payroll lock committed by another session AFTER this session's
+    snapshot must still be detected (locking, fresh reads)."""
+    w = world
+    uid = w["ids"]["e1"]
+    actor = type("A", (), {"id": w["ids"]["hr"]})()
+    pin = datetime.combine(OLD_A, time(9), tzinfo=timezone.utc)
+    async with SessionLocal() as db1:
+        # establish the REPEATABLE READ snapshot
+        await db1.execute(select(Attendance).where(Attendance.user_id == uid))
+        async with SessionLocal() as db2:
+            db2.add(Attendance(user_id=uid, mode="web", captured_at=pin,
+                               work_date=OLD_A))
+            await db2.commit()
+        with pytest.raises(ManualAttendanceExists):
+            await create_manual_attendance_row(
+                db1, actor, uid, OLD_A, pin, None, "reason", mode="manual_bulk")
+        await db1.rollback()
+    async with SessionLocal() as db1:
+        await db1.execute(select(PayrollRun).where(PayrollRun.id == 0))
+        async with SessionLocal() as db2:
+            run = PayrollRun(month=LOCKED.month, year=LOCKED.year,
+                             status=PayrollRunStatus.LEAVES_LOCKED)
+            db2.add(run)
+            await db2.commit()
+            run_id = run.id
+        try:
+            with pytest.raises(HTTPException) as ei:
+                await create_manual_attendance_row(
+                    db1, actor, w["ids"]["e2"], LOCKED,
+                    datetime.combine(LOCKED, time(9), tzinfo=timezone.utc),
+                    None, "reason", mode="manual_bulk")
+            assert ei.value.status_code == 409
+            await db1.rollback()
+        finally:
+            async with SessionLocal() as db3:
+                await db3.execute(delete(PayrollRun).where(
+                    PayrollRun.id == run_id))
+                await db3.commit()
+
+
+async def test_time_bounds(client, world):
+    w = world
+    sx = await _login(client, w["email"]("sx"))
+    hr = await _login(client, w["email"]("hr"))
+    fut = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    # future punch-in: refused for HR and supervisors
+    for h in (sx, hr):
+        r = await client.post(API, json=body(
+            w, ["e1"], TODAY, punch_in_time=fut), headers=h)
+        assert r.status_code == 422, r.text
+    # supervisor: punch-in far outside work date window
+    r = await client.post(API, json=body(
+        w, ["e1"], TODAY - timedelta(days=1),
+        punch_in_time=f"{TODAY - timedelta(days=3)}T10:00:00Z"), headers=sx)
+    assert r.status_code == 422
+    # >24h session refused for HR
+    r = await client.post(API, json=body(
+        w, ["e1"], OLD_A, punch_in_time=f"{OLD_A}T01:00:00Z",
+        punch_out_time=f"{OLD_B}T02:00:00Z"), headers=hr)
+    assert r.status_code == 422
+    # equal HH:MM in/out
+    r = await client.post(API, json=body(
+        w, ["e1"], OLD_A, punch_in_time="09:00", punch_out_time="09:00"),
+        headers=hr)
+    assert r.status_code == 422
+    # night shift rollover still fine for supervisor
+    d = TODAY - timedelta(days=1)
+    r = await client.post(API, json=body(
+        w, ["e1"], d, punch_in_time="22:00", punch_out_time="06:00"),
+        headers=sx)
+    assert r.status_code == 200 and by_user(r, w)["e1"]["status"] == "created"
+
+
+async def test_dismiss_cancels_linked_open_shift(client, world):
+    w = world
+    async with SessionLocal() as db:
+        sh = OpenShift(work_date=TODAY, shift_template_id=w["ids"]["tpl"],
+                       status=OpenShiftStatus.OPEN)
+        db.add(sh)
+        await db.flush()
+        g = await gap_svc.open_gap(
+            db, work_date=TODAY, shift_template_id=w["ids"]["tpl"],
+            absent_user_id=w["ids"]["e1"], source=GapSource.NO_SHOW,
+            notify=False)
+        g.open_shift_id = sh.id
+        await db.commit()
+        sid, gid = sh.id, g.id
+    sx = await _login(client, w["email"]("sx"))
+    r = await client.post(API, json=body(w, ["e1"]), headers=sx)
+    assert r.status_code == 200
+    async with SessionLocal() as db:
+        assert (await db.get(OpenShift, sid)).status == OpenShiftStatus.CANCELLED
+        assert (await db.get(CoverageGap, gid)).status == GapStatus.DISMISSED
+        await db.execute(delete(CoverageGap).where(CoverageGap.id == gid))
+        await db.execute(delete(OpenShift).where(OpenShift.id == sid))
+        await db.commit()

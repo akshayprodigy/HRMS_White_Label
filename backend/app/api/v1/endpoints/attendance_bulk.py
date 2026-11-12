@@ -74,10 +74,29 @@ async def bulk_mark_present(
     if body.punch_out_time:
         punch_out = parse_time_input(body.punch_out_time, body.work_date)
         if punch_out <= punch_in and len(body.punch_out_time.strip()) <= 5:
+            if punch_out == punch_in:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Punch-out must be after punch-in.")
             punch_out += timedelta(days=1)  # HH:MM past midnight (night shift)
     if punch_out is not None and punch_out <= punch_in:
         raise HTTPException(
             status_code=422, detail="Punch-out must be after punch-in.")
+    now = datetime.now(timezone.utc)
+    if punch_in > now + timedelta(minutes=5):
+        raise HTTPException(
+            status_code=422, detail="Punch-in cannot be in the future.")
+    if punch_out is not None and punch_out - punch_in > timedelta(hours=24):
+        raise HTTPException(
+            status_code=422,
+            detail="Punch-out must be within 24 hours of punch-in.")
+    if not is_hr:
+        day0 = datetime.combine(body.work_date, time(0), tzinfo=timezone.utc)
+        if not (day0 <= punch_in <= day0 + timedelta(days=1, hours=12)):
+            raise HTTPException(
+                status_code=422,
+                detail="Punch-in must fall on the work date (or before noon "
+                       "the next day for night shifts).")
 
     ids = list(dict.fromkeys(body.user_ids))
     allowed = set(ids) if is_hr else await roster_svc.manageable_subset(
@@ -98,10 +117,14 @@ async def bulk_mark_present(
                             "message": "Not an active employee."})
             continue
         try:
+            # Savepoint per user. log_audit only db.add()s (no commit), so
+            # the audit row rolls back with the savepoint on failure and is
+            # committed with the batch by the single commit below.
             async with db.begin_nested():
                 await lock_user_rows(db, [uid])
                 try:
-                    await assert_attendance_editable(db, body.work_date)
+                    await assert_attendance_editable(
+                        db, body.work_date, fresh=True)
                 except HTTPException as exc:
                     results.append({"user_id": uid, "status": "locked",
                                     "message": exc.detail})

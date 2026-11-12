@@ -249,14 +249,19 @@ export const LiveBoard: React.FC = () => {
       selectedRows.forEach((r) => byDate.set(r.work_date, [...(byDate.get(r.work_date) ?? []), r.user_id]));
       const all: BulkResult[] = [];
       for (const [work_date, user_ids] of byDate) {
-        const res = await client.post<{ results: BulkResult[] }>(ENDPOINTS.ATTENDANCE.BULK_MARK, {
-          work_date,
-          user_ids,
-          punch_in_time: punchIn,
-          punch_out_time: punchOut || null,
-          reason: reason.trim(),
-        });
-        all.push(...res.data.results);
+        try {
+          const res = await client.post<{ results: BulkResult[] }>(ENDPOINTS.ATTENDANCE.BULK_MARK, {
+            work_date,
+            user_ids,
+            punch_in_time: punchIn,
+            punch_out_time: punchOut || null,
+            reason: reason.trim(),
+          });
+          all.push(...res.data.results);
+        } catch (err: any) {
+          const message = errMsg(err, 'Could not mark attendance');
+          user_ids.forEach((user_id) => all.push({ user_id, status: 'error', message }));
+        }
       }
       setMarkResults(all);
       setSelected(new Set());

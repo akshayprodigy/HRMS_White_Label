@@ -202,6 +202,12 @@ async def dismiss_noshow_gap_if_present(
         "Coverage gap changed concurrently; retry")
     if gap is None:
         return 0
+    if gap.open_shift_id != (shift.id if shift else None):
+        # The link moved between peek and lock: lock and cancel the real one.
+        shift = (await lock_row(
+            db, select(OpenShift).where(OpenShift.id == gap.open_shift_id),
+            "Coverage gap changed concurrently; retry")
+            if gap.open_shift_id else None)
     if shift is not None and shift.status == OpenShiftStatus.OPEN:
         shift.status = OpenShiftStatus.CANCELLED
         await os_svc.reject_pending(

@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.core.datetime_utils import as_utc
 from app.models.attendance import Attendance
@@ -30,7 +31,13 @@ async def create_manual_attendance_row(
 
     Raises 409 (payroll lock / existing row) or 422 (punch-out order).
     `reason` is validated by the caller; it is not stored on the row."""
-    await assert_attendance_editable(db, work_date)
+    # Serialize with concurrent writers for this user, then read FRESH
+    # (locking reads see rows committed after the request snapshot,
+    # including punches). No unique constraint: a day may hold several
+    # punch sessions, so the lock + locking read is the guard.
+    from app.api.v1.endpoints.roster_common import lock_user_rows
+    await lock_user_rows(db, [user_id])
+    await assert_attendance_editable(db, work_date, fresh=True)
 
     punch_in = as_utc(punch_in)
     punch_out = as_utc(punch_out)
@@ -38,12 +45,19 @@ async def create_manual_attendance_row(
         raise HTTPException(
             status_code=422, detail="Punch-out must be after punch-in.")
 
-    existing = (await db.execute(
-        select(Attendance).where(
-            Attendance.user_id == user_id,
-            Attendance.work_date == work_date,
-        )
-    )).scalars().first()
+    try:
+        existing = (await db.execute(
+            select(Attendance).where(
+                Attendance.user_id == user_id,
+                Attendance.work_date == work_date,
+            ).with_for_update().execution_options(populate_existing=True)
+        )).scalars().first()
+    except OperationalError as exc:
+        # MariaDB 1020: a row for this user/day was committed after our
+        # snapshot -> it exists now.
+        if getattr(exc.orig, "args", (None,))[0] != 1020:
+            raise
+        raise ManualAttendanceExists(work_date) from exc
     if existing:
         raise ManualAttendanceExists(work_date)
 
