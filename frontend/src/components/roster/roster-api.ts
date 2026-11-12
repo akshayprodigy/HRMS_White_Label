@@ -79,6 +79,39 @@ export interface HistoryRow {
   changed_at: string;
 }
 
+export interface Violation {
+  user_id: number;
+  work_date: string;
+  rule: string;
+  message: string;
+  employee_name?: string | null;
+}
+export interface CoverageCell {
+  date: string;
+  shift_template_id: number;
+  shift_name?: string | null;
+  department: string | null;
+  location: string | null;
+  required_min: number;
+  required_max: number | null;
+  scheduled: number;
+  status: 'under' | 'ok' | 'over';
+}
+export interface Insights {
+  violations: Violation[];
+  coverage: CoverageCell[];
+}
+export interface CoverageRequirement {
+  id: number;
+  department: string | null;
+  location: string | null;
+  shift_template_id: number;
+  weekday: number | null;
+  min_headcount: number;
+  max_headcount: number | null;
+  is_active: boolean;
+}
+
 export const WEEKOFF = '__weekoff__';
 
 /** Human label of a history side: shift name, "Week off" or "—". */

@@ -4712,4 +4712,9 @@ html {
   .-mt-1 { margin-top: -0.25rem; }
   .text-red-700 { color: #b91c1c; }
   .tracking-wide { letter-spacing: 0.025em; }
+  .font-normal { font-weight: 400; }
+  .max-h-60 { max-height: 15rem; }
+  .max-h-\[70vh\] { max-height: 70vh; }
+  .pb-3 { padding-bottom: 0.75rem; }
+  .text-amber-900 { color: #78350f; }
 }

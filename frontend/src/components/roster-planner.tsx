@@ -4,6 +4,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Wand2,
+  Users,
+  AlertTriangle,
   RefreshCw,
   Info,
   Repeat,
@@ -12,13 +14,6 @@ import {
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from './ui/dialog';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { ScheduleDelegations } from './schedule-delegations';
@@ -37,6 +32,11 @@ import { PublishRequestsPanel } from './roster/publish-requests-panel';
 import { RotationDialog } from './roster/rotation-dialog';
 import { CopyDialog } from './roster/copy-dialog';
 import { HistoryDialog } from './roster/history-dialog';
+import { PatternDialog } from './roster/pattern-dialog';
+import { CoverageRequirementsDialog } from './roster/coverage-requirements-dialog';
+import { CoverageRows } from './roster/coverage-strip';
+import { ViolationsPanel, violationKey } from './roster/violations-panel';
+import { useInsights } from './roster/use-insights';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -86,11 +86,11 @@ export const RosterPlanner = () => {
   const [historyEmp, setHistoryEmp] = useState<{ id: number; name: string } | null>(null);
   const [prKey, setPrKey] = useState(0);
   const gridReq = useRef(0);
+  const { state: insights, error: insightsErr, load: loadInsights } = useInsights();
 
   // Pattern dialog
   const [patternOpen, setPatternOpen] = useState(false);
-  const [pattern, setPattern] = useState<Record<number, string>>({});
-  const [applying, setApplying] = useState(false);
+  const [covOpen, setCovOpen] = useState(false);
 
   const range = useCallback(() => {
     if (mode === 'week') {
@@ -114,6 +114,7 @@ export const RosterPlanner = () => {
       const { start, end } = range();
       const params = new URLSearchParams({ start, end });
       if (appliedDept) params.set('department', appliedDept);
+      loadInsights(start, end, appliedDept, background); // independent; never breaks the grid
       const res = await client.get<RosterGrid>(
         ENDPOINTS.ROSTER.PLAN + '?' + params.toString()
       );
@@ -135,7 +136,7 @@ export const RosterPlanner = () => {
         setRefreshing(false);
       }
     }
-  }, [range, appliedDept]);
+  }, [range, appliedDept, loadInsights]);
   const refresh = useCallback(() => fetchGrid(true), [fetchGrid]);
   const commitDept = () => {
     const v = deptInput.trim();
@@ -241,45 +242,17 @@ export const RosterPlanner = () => {
     0
   );
 
-  const applyPattern = async () => {
-    const { start, end } = range();
-    const pat: Record<number, number | null> = {};
-    Object.entries(pattern).forEach(([wd, val]) => {
-      if (val === '') return; // untouched weekday
-      pat[Number(wd)] = val === WEEKOFF ? null : Number(val);
-    });
-    if (Object.keys(pat).length === 0) {
-      toast.error('Set at least one weekday in the pattern');
-      return;
-    }
-    setApplying(true);
-    try {
-      const res = await client.post(ENDPOINTS.ROSTER.BULK, {
-        start,
-        end,
-        department: appliedDept || null,
-        status: effStatus,
-        overwrite: true,
-        pattern: pat,
-      });
-      const r = res.data as any;
-      toast.success(
-        `Roster applied — ${r.created} created, ${r.updated} updated` +
-          (r.out_of_scope.length
-            ? `, ${r.out_of_scope.length} out of scope`
-            : '')
-      );
-      if (r.errors?.length) toast.error(r.errors.slice(0, 3).join('; '));
-      setPatternOpen(false);
-      refresh();
-    } catch (err: any) {
-      toast.error(errMsg(err, 'Failed to apply pattern'));
-    } finally {
-      setApplying(false);
-    }
-  };
-
   const templates = grid?.shift_templates || [];
+  // Only show insights that match the grid on screen.
+  const ins =
+    insights && grid && insights.start === grid.start && insights.end === grid.end
+      ? insights.data
+      : null;
+  const violationsByCell = new Map<string, string[]>();
+  (ins?.violations || []).forEach((v) => {
+    const k = violationKey(v.user_id, v.work_date);
+    violationsByCell.set(k, [...(violationsByCell.get(k) || []), v.message]);
+  });
   const rangeLabel = grid ? `${grid.start} → ${grid.end}` : '';
 
   return (
@@ -438,11 +411,16 @@ export const RosterPlanner = () => {
             <Repeat className="w-4 h-4" />
             Rotations
           </Button>
+          {grid?.is_admin && (
+            <Button variant="outline" size="sm" onClick={() => setCovOpen(true)} disabled={loading} className="gap-1.5">
+              <Users className="w-4 h-4" />
+              Coverage rules
+            </Button>
+          )}
           <Button
             size="sm"
             disabled={!grid || loading}
             onClick={() => {
-              setPattern({});
               setPatternOpen(true);
             }}
             className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5"
@@ -473,6 +451,13 @@ export const RosterPlanner = () => {
           }}
         />
       )}
+
+      {insightsErr && (
+        <div role="status" className="text-xs text-red-700">
+          Coverage and rule warnings unavailable: {insightsErr}
+        </div>
+      )}
+      {ins && <ViolationsPanel violations={ins.violations} />}
 
       {/* Grid */}
       <Card className="overflow-hidden">
@@ -521,7 +506,14 @@ export const RosterPlanner = () => {
                   </td>
                 </tr>
               ) : (
-                grid.rows.map((row) => (
+                [
+                  <CoverageRows
+                    key="coverage"
+                    dates={grid.dates}
+                    templates={templates}
+                    coverage={ins?.coverage || []}
+                  />,
+                  ...grid.rows.map((row) => (
                   <tr key={row.employee_id} className="border-b hover:bg-gray-50">
                     <td className="sticky left-0 z-10 bg-white px-3 py-2 border-r">
                       <div className="flex items-start gap-1.5">
@@ -553,6 +545,7 @@ export const RosterPlanner = () => {
                       const val = cellValue(c);
                       const isFallback = c.source !== 'roster';
                       const isDraft = c.status === 'draft';
+                      const warns = violationsByCell.get(key);
                       const lockedPublished =
                         !canPublish && c.source === 'roster' && c.status === 'published';
                       return (
@@ -563,6 +556,16 @@ export const RosterPlanner = () => {
                             c.is_week_off && 'bg-amber-50'
                           )}
                         >
+                          {warns && (
+                            <div
+                              className="text-amber-600 leading-none mb-0.5 flex justify-center"
+                              title={warns.join('\n')}
+                              aria-label={`Rule warning: ${warns.join('; ')}`}
+                              role="img"
+                            >
+                              <AlertTriangle className="w-3 h-3" />
+                            </div>
+                          )}
                           {isDraft && (
                             <div className="text-[9px] uppercase tracking-wide text-amber-600 leading-none mb-0.5">
                               Draft
@@ -601,7 +604,8 @@ export const RosterPlanner = () => {
                       );
                     })}
                   </tr>
-                ))
+                )),
+                ]
               )}
             </tbody>
           </table>
@@ -673,66 +677,22 @@ export const RosterPlanner = () => {
       />
       <HistoryDialog employee={historyEmp} onClose={() => setHistoryEmp(null)} />
 
-      {/* Pattern dialog */}
-      <Dialog open={patternOpen} onOpenChange={setPatternOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Wand2 className="w-5 h-5 text-indigo-600" />
-              Apply weekday pattern
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 py-2">
-            <p className="text-sm text-gray-500">
-              Assign a shift (or week-off) to each weekday across the current{' '}
-              {mode}. Leave a weekday blank to keep it unchanged.
-            </p>
-            <p className="text-xs text-amber-700">
-              Existing cells in this period, including published ones, are
-              overwritten (recorded in history as "bulk re-plan").
-            </p>
-            {WEEKDAYS.map((label, wd) => (
-              <div key={wd} className="flex items-center gap-3">
-                <span className="w-12 text-sm font-medium text-gray-700">
-                  {label}
-                </span>
-                <select
-                  value={pattern[wd] ?? ''}
-                  onChange={(e) =>
-                    setPattern((p) => ({ ...p, [wd]: e.target.value }))
-                  }
-                  className="flex-1 px-3 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                >
-                  <option value="">— unchanged —</option>
-                  {templates.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} ({t.start_time}–{t.end_time})
-                    </option>
-                  ))}
-                  <option value={WEEKOFF}>Week off</option>
-                </select>
-              </div>
-            ))}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPatternOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={applyPattern}
-              disabled={applying}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2"
-            >
-              {applying ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Wand2 className="w-4 h-4" />
-              )}
-              Apply to {mode}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <PatternDialog
+        open={patternOpen}
+        mode={mode}
+        templates={templates}
+        range={range}
+        department={appliedDept}
+        status={effStatus}
+        onClose={() => setPatternOpen(false)}
+        onDone={refresh}
+      />
+      <CoverageRequirementsDialog
+        open={covOpen}
+        templates={templates}
+        onClose={() => setCovOpen(false)}
+        onChanged={refresh}
+      />
       </>
       )}
     </div>

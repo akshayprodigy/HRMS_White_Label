@@ -43,6 +43,13 @@ const FIELDS: {
   },
 ];
 
+const SCHEDULE_FIELDS: { key: string; label: string; hint: string; max: number }[] = [
+  { key: 'schedule.min_rest_hours', label: 'Minimum Rest (hours)', hint: 'Minimum gap between consecutive shifts. 0 = off (range 0–24)', max: 24 },
+  { key: 'schedule.max_consecutive_days', label: 'Max Consecutive Days', hint: 'Longest run of working days. 0 = off (range 0–31)', max: 31 },
+  { key: 'schedule.max_consecutive_nights', label: 'Max Consecutive Nights', hint: 'Longest run of night shifts. 0 = off (range 0–31)', max: 31 },
+  { key: 'schedule.max_weekly_hours', label: 'Max Weekly Hours', hint: 'Scheduled hours per week. 0 = off (range 0–168)', max: 168 },
+];
+
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-slate-200 text-sm text-[#0F172A] ' +
   'focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-500 bg-white';
@@ -71,6 +78,15 @@ export const TimeRulesTab: React.FC = () => {
   );
 
   const save = async () => {
+    for (const f of SCHEDULE_FIELDS) {
+      const raw = (rules[f.key] ?? '').toString().trim();
+      if (raw === '') continue; // unset = backend default
+      const n = Number(raw);
+      if (!/^\d+$/.test(raw) || !Number.isInteger(n) || n < 0 || n > f.max) {
+        toast.error(`${f.label} must be a whole number from 0 to ${f.max}`);
+        return;
+      }
+    }
     setBusy(true);
     try {
       const res = await client.put(ENDPOINTS.HR.TIME_RULES, { rules });
@@ -191,6 +207,41 @@ export const TimeRulesTab: React.FC = () => {
               Comma-separated weekdays off for employees with no shift (Mon=0 … Sun=6)
             </p>
           </div>
+        </div>
+      </Card>
+
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
+        <div>
+          <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+            <Clock3 size={15} className="text-blue-600" /> Scheduling rules
+          </h3>
+          <p className="text-[10px] font-bold text-slate-500 mt-1">
+            Roster planner warns when a schedule breaks these limits. Warnings
+            never block saving. Whole numbers; 0 = off.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {SCHEDULE_FIELDS.map((f) => (
+            <div key={f.key} className="space-y-1">
+              <label
+                htmlFor={f.key}
+                className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+              >
+                {f.label}
+              </label>
+              <input
+                id={f.key}
+                type="number"
+                min={0}
+                max={f.max}
+                step={1}
+                className={inputCls}
+                value={rules[f.key] ?? ''}
+                onChange={(e) => setRules({ ...rules, [f.key]: e.target.value })}
+              />
+              <p className="text-[9px] font-bold text-slate-400">{f.hint}</p>
+            </div>
+          ))}
         </div>
       </Card>
 

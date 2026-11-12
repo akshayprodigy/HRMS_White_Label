@@ -133,6 +133,9 @@ export const ENDPOINTS = {
     ROTATIONS: '/roster/rotations',
     ROTATION_DETAIL: (id: number) => `/roster/rotations/${id}`,
     ROTATION_APPLY: (id: number) => `/roster/rotations/${id}/apply`,
+    INSIGHTS: '/roster/insights',
+    COVERAGE_REQUIREMENTS: '/roster/coverage-requirements',
+    COVERAGE_REQUIREMENT: (id: number) => `/roster/coverage-requirements/${id}`,
   },
   GEO: {
     FENCES: '/geo/fences',
