@@ -161,6 +161,8 @@ export interface OpenShiftClaim {
   user_name: string | null;
   status: string;
   eligibility_reason: string | null;
+  /** false for the viewer's own claim unless they are a roster admin */
+  can_decide?: boolean;
 }
 export type SchedOpenShift = OpenShift & {
   shift_template_id: number;

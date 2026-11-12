@@ -166,12 +166,13 @@ interface Props {
   /** roster changed (swap/drop/claim approved): refresh planner grid too */
   onRosterChanged: () => void;
   onNewOpenShift: () => void;
+  canPostOpenShift?: boolean;
 }
 
 interface Result { title: string; lines: string[]; warn: boolean }
 
 export const RequestsView: React.FC<Props> = ({
-  swaps, drops, shifts, loading, errors, reload, onRosterChanged, onNewOpenShift,
+  swaps, drops, shifts, loading, errors, reload, onRosterChanged, onNewOpenShift, canPostOpenShift,
 }) => {
   const [pending, setPending] = useState<Pending>(new Map());
   // outcome of the latest decision (warnings / skipped reasons stay visible)
@@ -285,6 +286,7 @@ export const RequestsView: React.FC<Props> = ({
         error={errors.shifts}
         onRetry={() => reload()}
         onNew={onNewOpenShift}
+        canPost={canPostOpenShift}
         onResult={(title, lines) => setResult({ title, lines, warn: lines.length > 0 })}
         onChanged={async () => { onRosterChanged(); await reload(); }}
       />

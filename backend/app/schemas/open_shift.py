@@ -45,6 +45,8 @@ class OpenShiftClaimRead(BaseModel):
     created_at: Optional[datetime] = None
     # Why the claimant could not be confirmed right now (pending claims only).
     eligibility_reason: Optional[str] = None
+    # False for the viewer's own claim unless they are a roster admin.
+    can_decide: bool = True
 
     @field_validator("decided_at", "created_at")
     @classmethod

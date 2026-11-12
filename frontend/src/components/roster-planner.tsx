@@ -194,6 +194,11 @@ export const RosterPlanner = () => {
   };
 
   const canPublish = !!grid?.can_publish;
+  const osDepartments = Array.from(new Set([
+    ...(grid?.rows || []).map((r) => r.department),
+    appliedDept,
+    osPrefill?.department,
+  ].filter((d): d is string => !!d))).sort();
   const effStatus = canPublish ? saveAs : 'draft';
 
   const requestEdit = (row: RosterGridRow, c: RosterCell, value: string) => {
@@ -329,6 +334,7 @@ export const RosterPlanner = () => {
           reload={reqs.reload}
           onRosterChanged={refresh}
           onNewOpenShift={() => openShiftDialog(null)}
+          canPostOpenShift={canPublish}
         />
       )}
 
@@ -337,6 +343,7 @@ export const RosterPlanner = () => {
         templates={templates}
         prefill={osPrefill}
         defaultDepartment={appliedDept}
+        departments={osDepartments}
         onClose={() => setOsOpen(false)}
         onCreated={() => {
           reqs.reload();
@@ -398,7 +405,7 @@ export const RosterPlanner = () => {
             <Button variant="outline" size="sm" onClick={() => navigate(-1)} aria-label="Previous period">
               <ChevronLeft className="w-4 h-4" />
             </Button>
-            <span className="text-sm text-gray-700 min-w-[180px] text-center font-medium">
+            <span className="text-sm text-gray-700 min-w-[180px] text-center font-medium px-2">
               {rangeLabel}
               {refreshing && <RefreshCw className="w-3 h-3 animate-spin inline ml-1.5 text-gray-400" aria-label="Refreshing" />}
             </span>

@@ -78,6 +78,7 @@ const hhmmss = (d: Date) =>
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
+    timeZone: 'UTC',
   });
 
 const unique = (xs: (string | null)[]) =>
@@ -179,7 +180,7 @@ export const LiveBoard: React.FC = () => {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-500" aria-live="polite">
-            {updated ? `Updated ${hhmmss(updated)}` : ''}
+            {updated ? `Updated ${hhmmss(updated)} UTC` : ''}
           </span>
           <Button
             variant="outline"

@@ -106,6 +106,8 @@ async def _read_many(
                 decided_by_id=c.decided_by_id, decided_at=c.decided_at,
                 created_at=c.created_at,
                 eligibility_reason=(reasons.get(s.id) or {}).get(c.user_id),
+                can_decide=(c.user_id != viewer.id
+                            or roster_svc.is_roster_admin(viewer)),
             ) for c in shown],
             warnings=list(warnings or []),
         ))

@@ -14,13 +14,15 @@ interface Props {
   onRetry: () => void;
   onChanged: () => void | Promise<void>;
   onNew: () => void;
+  /** viewer may publish (planner grid can_publish); gates posting */
+  canPost?: boolean;
   /** report a decision outcome (and any warnings) to the result area */
   onResult: (title: string, lines: string[]) => void;
 }
 
 /** Scheduler list of open shifts with claim decisions. */
 export const OpenShiftsSchedulerPanel: React.FC<Props> = ({
-  shifts, error, onRetry, onChanged, onNew, onResult,
+  shifts, error, onRetry, onChanged, onNew, onResult, canPost = true,
 }) => {
   // key -> pending action, so only the clicked button spins
   const [busy, setBusy] = useState<Map<string, string>>(new Map());
@@ -50,9 +52,15 @@ export const OpenShiftsSchedulerPanel: React.FC<Props> = ({
             Unfilled shifts in the next {OPEN_SHIFT_HORIZON_DAYS} days and their claims.
           </p>
         </div>
-        <Button size="sm" onClick={onNew} className="gap-1.5" aria-label="Post a new open shift">
-          <Plus size={14} /> Post open shift
-        </Button>
+        {canPost ? (
+          <Button size="sm" onClick={onNew} className="gap-1.5" aria-label="Post a new open shift">
+            <Plus size={14} /> Post open shift
+          </Button>
+        ) : (
+          <span className="text-[10px] text-slate-500">
+            You can't post open shifts (publish permission required).
+          </span>
+        )}
       </div>
       {error && (
         <div role="alert" className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 flex items-center gap-3">
@@ -110,6 +118,9 @@ export const OpenShiftsSchedulerPanel: React.FC<Props> = ({
                       <li key={c.id} className="flex items-center justify-between gap-3 flex-wrap">
                         <div className="min-w-0">
                           <span className="text-[11px] font-bold text-slate-800">{who}</span>
+                          {c.can_decide === false && c.status === 'pending' && (
+                            <span className="text-[10px] text-slate-500 ml-2">(your claim, another approver decides)</span>
+                          )}
                           <Badge variant={STATUS_TONE[c.status] || 'neutral'} className="text-[8px] uppercase ml-2">
                             {statusLabel(c.status)}
                           </Badge>
@@ -117,7 +128,7 @@ export const OpenShiftsSchedulerPanel: React.FC<Props> = ({
                             <p className="text-[10px] text-amber-700">Cannot be confirmed now: {c.eligibility_reason}</p>
                           )}
                         </div>
-                        {c.status === 'pending' && (
+                        {c.status === 'pending' && c.can_decide !== false && (
                           <div className="flex items-center gap-2">
                             <Button size="sm" className="h-8" isLoading={pending === 'approve'} disabled={!!pending}
                               aria-label={`Approve claim by ${who}`}

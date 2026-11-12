@@ -793,3 +793,14 @@ async def test_list_includes_claimed_shifts_for_delegate_and_can_cancel(client, 
     # creator keeps own shift and can cancel it
     mine = await _mk(client, w, work_date=dd(2))
     assert mine["can_cancel"] is True
+
+
+async def test_claim_can_decide_flag_hides_own_claim_actions(client, world):
+    w = world
+    j = await _mk(client, w)
+    r = await _claim(client, w, j["id"], "e1")
+    assert r.status_code == 200, r.text
+    assert r.json()["claims"][0]["can_decide"] is False  # claimant's own view
+    r = await _decide(client, w, r.json()["my_claim_id"], action="reject")
+    assert r.status_code == 200, r.text
+    assert r.json()["claims"][0]["can_decide"] is True  # scheduler's view

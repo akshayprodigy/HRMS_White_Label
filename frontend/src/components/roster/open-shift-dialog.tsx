@@ -23,12 +23,14 @@ interface Props {
   templates: ShiftTemplateLite[];
   prefill?: OpenShiftPrefill | null;
   defaultDepartment?: string;
+  /** known departments (from the planner) for the scope select */
+  departments?: string[];
   onClose: () => void;
   onCreated: () => void;
 }
 
 export const OpenShiftDialog: React.FC<Props> = ({
-  open, templates, prefill, defaultDepartment = '', onClose, onCreated,
+  open, templates, prefill, defaultDepartment = '', departments = [], onClose, onCreated,
 }) => {
   const [date, setDate] = useState(todayIso());
   const [tpl, setTpl] = useState('');
@@ -55,6 +57,12 @@ export const OpenShiftDialog: React.FC<Props> = ({
 
   const n = Number(slots);
   const maxDate = addDays(todayIso(), OPEN_SHIFT_HORIZON_DAYS);
+  const dateMsg = !date ? '' : date < todayIso()
+    ? 'That date is in the past. Pick today or later.'
+    : date > maxDate
+      ? `Open shifts can be posted up to ${OPEN_SHIFT_HORIZON_DAYS} days ahead (latest ${maxDate}).`
+      : '';
+  const deptOptions = dept && !departments.includes(dept) ? [...departments, dept] : departments;
   const valid = !!date && date >= todayIso() && date <= maxDate && !!tpl && Number.isInteger(n) && n >= 1 && n <= 50;
 
   const submit = async () => {
@@ -94,7 +102,11 @@ export const OpenShiftDialog: React.FC<Props> = ({
           <div className="space-y-1">
             <label htmlFor="os-date" className={labelCls}>Date</label>
             <input id="os-date" type="date" className={inputCls} min={todayIso()} max={maxDate} value={date}
-              onChange={(e) => setDate(e.target.value)} />
+              onChange={(e) => setDate(e.target.value)}
+              aria-invalid={!!dateMsg} aria-describedby={dateMsg ? 'os-date-err' : undefined} />
+            {dateMsg && (
+              <p id="os-date-err" role="alert" className="text-[10px] font-bold text-rose-600">{dateMsg}</p>
+            )}
           </div>
           <div className="space-y-1">
             <label htmlFor="os-shift" className={labelCls}>Shift</label>
@@ -107,8 +119,11 @@ export const OpenShiftDialog: React.FC<Props> = ({
           </div>
           <div className="space-y-1">
             <label htmlFor="os-dept" className={labelCls}>Department (optional)</label>
-            <input id="os-dept" className={inputCls} maxLength={100} value={dept}
-              onChange={(e) => setDept(e.target.value)} placeholder="All departments" />
+            <select id="os-dept" className={inputCls} value={dept}
+              onChange={(e) => setDept(e.target.value)}>
+              <option value="">All departments</option>
+              {deptOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
           </div>
           <div className="space-y-1">
             <label htmlFor="os-loc" className={labelCls}>Location (optional)</label>

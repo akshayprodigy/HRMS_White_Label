@@ -182,6 +182,7 @@ export const TimeRulesTab: React.FC = () => {
           <label className="inline-flex items-center gap-2 cursor-pointer select-none shrink-0">
             <input
               type="checkbox"
+              aria-label="Count unexplained absences as LOP in payroll"
               checked={absenceLop}
               onChange={(e) =>
                 setRules({
@@ -210,6 +211,7 @@ export const TimeRulesTab: React.FC = () => {
           <label className="inline-flex items-center gap-2 cursor-pointer select-none shrink-0">
             <input
               type="checkbox"
+              aria-label="Grant comp-off for work on a rostered week-off"
               checked={weekoffCompOff}
               onChange={(e) =>
                 setRules({
