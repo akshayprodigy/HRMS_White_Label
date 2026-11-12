@@ -20,7 +20,8 @@ from app.services import employment_type as employment_type_service
 from app.services import salary_structure as salary_structure_service
 from app.services import late_mark as late_mark_service
 from app.services.absence_lop import (
-    absence_days_for_period, unpaid_leave_lop_days,
+    absence_days_for_period, absence_lop_applies, default_offs_from_rules,
+    unpaid_leave_lop_days,
 )
 from app.services.time_rules import get_time_rules
 from app.services.payroll_engine import (
@@ -436,14 +437,13 @@ async def generate_draft(
     # Unexplained-absence LOP (opt-in via time rule; never for off-cycle).
     time_rules = await get_time_rules(db)
     absence_map: dict[int, float] = {}
-    if (
-        str(time_rules.get("attendance.absence_lop_enabled", "0")).strip().lower()
-        in ("1", "true", "yes", "on")
-        and run.run_type != "off_cycle"
-    ):
+    if absence_lop_applies(time_rules, run.run_type):
         absence_map = await absence_days_for_period(
             db, employees, start_of_month, end_of_month,
+            # UTC is intentional: codebase dates are UTC end-to-end; an
+            # undercount near midnight IST is conservative.
             datetime.now(timezone.utc).date(),
+            default_offs_from_rules(time_rules),
         )
 
     for emp in employees:

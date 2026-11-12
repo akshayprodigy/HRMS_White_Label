@@ -62,7 +62,16 @@ async def get_time_rules(db: AsyncSession) -> Dict[str, str]:
 async def set_time_rules(
     db: AsyncSession, updates: Dict[str, str]
 ) -> Dict[str, str]:
-    """Upsert the given time-rule keys. Unknown keys are ignored."""
+    """Upsert the given time-rule keys. Unknown keys are ignored.
+    Raises ValueError (before any write) on an invalid value."""
+    offs = updates.get("attendance.default_weekly_offs")
+    if offs is not None:
+        toks = [t.strip() for t in str(offs).split(",")]
+        if not toks or not all(t.isdigit() and 0 <= int(t) <= 6 for t in toks):
+            raise ValueError(
+                "attendance.default_weekly_offs must be comma-separated "
+                "weekday numbers 0-6 (Mon=0..Sun=6), e.g. '6' or '5,6'"
+            )
     for key, value in updates.items():
         if key not in TIME_RULE_DEFAULTS:
             continue

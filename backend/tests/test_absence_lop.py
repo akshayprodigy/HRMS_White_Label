@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timezone
 import pytest
 from sqlalchemy import delete
 
+from app.services.effective_shift import EffectiveShift
 from app.db.session import SessionLocal
 from app.models.attendance import Attendance
 from app.models.employee import Employee
@@ -16,6 +17,9 @@ from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import User
 from app.services.absence_lop import (
     absence_days_for_period,
+    absence_lop_applies,
+    count_absent_days,
+    default_offs_from_rules,
     unpaid_leave_lop_days,
 )
 
@@ -53,6 +57,64 @@ def test_no_overlap_is_zero():
     assert unpaid_leave_lop_days(
         date(2031, 5, 1), date(2031, 5, 2), False,
         date(2031, 3, 1), date(2031, 3, 31)) == 0.0
+
+
+# ---------- pure per-employee loop ----------
+
+def _count(first, last, **kw):
+    base = dict(user_id=1, location="HQ", shifts={}, default_offs={6},
+                punched=set(), full_leave=set(), half_leave=set(),
+                holidays=set())
+    base.update(kw)
+    return count_absent_days(first=first, last=last, **base)
+
+
+def test_pure_week_off_with_punch_and_default_off():
+    sun = date(2031, 3, 9)
+    # no shift entry -> default off Sunday excused
+    assert _count(sun, sun) == 0.0
+    # roster week-off excuses even with no punch
+    off = {(1, START): EffectiveShift(None, True, "roster")}
+    assert _count(START, START, shifts=off) == 0.0
+    # source "none" on a Monday is NOT a default off
+    none = {(1, START): EffectiveShift(None, False, "none")}
+    assert _count(START, START, shifts=none) == 1.0
+    # punch on a working day
+    assert _count(START, START, punched={(1, START)}) == 0.0
+
+
+def test_pure_half_and_full_leave_overlap_and_holiday():
+    d = START
+    k = (1, d)
+    assert _count(d, d, half_leave={k}) == 0.5
+    assert _count(d, d, half_leave={k}, full_leave={k}) == 0.0
+    assert _count(d, d, half_leave={k}, punched={k}) == 0.0
+    assert _count(d, d, holidays={("All", d)}) == 0.0
+    assert _count(d, d, holidays={("HQ", d)}) == 0.0
+    assert _count(d, d, holidays={("Elsewhere", d)}) == 1.0
+
+
+def test_absence_lop_applies():
+    k = "attendance.absence_lop_enabled"
+    assert absence_lop_applies({k: "0"}, "monthly") is False
+    assert absence_lop_applies({}, "monthly") is False
+    assert absence_lop_applies({k: "1"}, "monthly") is True
+    assert absence_lop_applies({k: "TRUE"}, "monthly") is True
+    assert absence_lop_applies({k: "1"}, "off_cycle") is False
+
+
+def test_default_offs_fallback():
+    assert default_offs_from_rules({"attendance.default_weekly_offs": "5, 6"}) == {5, 6}
+    assert default_offs_from_rules({"attendance.default_weekly_offs": ""}) == {6}
+    assert default_offs_from_rules({"attendance.default_weekly_offs": "x,9"}) == {6}
+
+
+async def test_set_time_rules_rejects_bad_weekly_offs():
+    from app.services.time_rules import set_time_rules
+    async with SessionLocal() as db:
+        for bad in ("", "7", "a", "5,,6", "-1"):
+            with pytest.raises(ValueError):
+                await set_time_rules(db, {"attendance.default_weekly_offs": bad})
 
 
 # ---------- DB-backed ----------
@@ -123,7 +185,7 @@ async def _emp(db, emp_id):
 async def _run(env, emp_id, start=START, end=END, today=FAR_TODAY):
     db = env["db"]
     emp = await db.get(Employee, emp_id)
-    return await absence_days_for_period(db, [emp], start, end, today)
+    return await absence_days_for_period(db, [emp], start, end, today, {6})
 
 
 def _punch(uid, d):
@@ -223,6 +285,22 @@ async def test_half_day_leave_no_punch(env):
     assert res[uid] == 0.5
 
 
+async def test_unpaid_half_day_leave_absence_side_is_half(env):
+    # The payroll loop adds 0.5 for the unpaid half; absence side adds the
+    # other unexplained 0.5 (total 1.0 for the day, intended).
+    db = env["db"]
+    uid, eid = await env["mk"](1)
+    lt = await db.get(LeaveType, env["lt_id"])
+    lt.unpaid_allowed = True
+    db.add(LeaveRequest(
+        employee_id=uid, leave_type_id=env["lt_id"],
+        start_date=date(2031, 3, 4), end_date=date(2031, 3, 4), is_half_day=True,
+        reason="r", status=LeaveStatus.APPROVED, created_by_user_id=uid))
+    await db.commit()
+    res = await _run(env, eid, start=date(2031, 3, 4), end=date(2031, 3, 4))
+    assert res[uid] == 0.5
+
+
 async def test_half_day_leave_with_punch(env):
     db = env["db"]
     uid, eid = await env["mk"](1)
@@ -267,7 +345,7 @@ async def test_after_last_working_day_excluded(env):
         notice_period_days=30))
     await db.commit()
     emps = [await db.get(Employee, i) for i in (eid, eid2, eid3)]
-    res = await absence_days_for_period(db, emps, START, END, FAR_TODAY)
+    res = await absence_days_for_period(db, emps, START, END, FAR_TODAY, {6})
     assert res[uid] == 2.0   # Mon, Tue
     assert res[uid2] == 5.0
     assert res[uid3] == 5.0

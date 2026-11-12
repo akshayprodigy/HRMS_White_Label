@@ -66,7 +66,9 @@ export const TimeRulesTab: React.FC = () => {
   }, []);
 
   const enabled = rules['attendance.enable_late_flags'] === '1';
-  const absenceLop = rules['attendance.absence_lop_enabled'] === '1';
+  const absenceLop = ['1', 'true', 'yes', 'on'].includes(
+    (rules['attendance.absence_lop_enabled'] ?? '').trim().toLowerCase(),
+  );
 
   const save = async () => {
     setBusy(true);
@@ -141,12 +143,6 @@ export const TimeRulesTab: React.FC = () => {
             </div>
           ))}
         </div>
-
-        <div className="flex justify-end pt-1">
-          <Button onClick={save} isLoading={busy}>
-            <Save size={13} className="mr-2" /> Save Rules
-          </Button>
-        </div>
       </Card>
       <Card className="p-6 border-slate-200 bg-white space-y-5">
         <div className="flex items-start justify-between gap-4">
@@ -185,7 +181,7 @@ export const TimeRulesTab: React.FC = () => {
             <input
               type="text"
               className={inputCls}
-              placeholder="6"
+              placeholder="e.g. 6 for Sunday, 5,6 for Sat+Sun"
               value={rules['attendance.default_weekly_offs'] ?? ''}
               onChange={(e) =>
                 setRules({ ...rules, 'attendance.default_weekly_offs': e.target.value })
@@ -196,13 +192,13 @@ export const TimeRulesTab: React.FC = () => {
             </p>
           </div>
         </div>
-
-        <div className="flex justify-end pt-1">
-          <Button onClick={save} isLoading={busy}>
-            <Save size={13} className="mr-2" /> Save Rules
-          </Button>
-        </div>
       </Card>
+
+      <div className="flex justify-end pt-1">
+        <Button onClick={save} isLoading={busy}>
+          <Save size={13} className="mr-2" /> Save Rules
+        </Button>
+      </div>
     </div>
   );
 };

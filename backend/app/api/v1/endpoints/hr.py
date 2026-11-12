@@ -2443,7 +2443,10 @@ async def update_time_rules_endpoint(
     from app.services.time_rules import get_time_rules, set_time_rules
 
     before = await get_time_rules(db)
-    after = await set_time_rules(db, obj_in.rules)
+    try:
+        after = await set_time_rules(db, obj_in.rules)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     changed = {
         k: {"from": before[k], "to": after[k]}
         for k in after if before.get(k) != after[k]

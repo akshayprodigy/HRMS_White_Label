@@ -5,16 +5,20 @@ no week-off and no approved leave counts as LOP. Everything is loaded in
 batched queries (attendance, leaves, holidays, resignations, plus the two
 inside effective_shifts_for_range) -- never per employee or per day.
 
-Unpaid leave is counted by the payroll loop itself; because ANY approved
-leave excuses the day here, nothing is double counted.
+Unpaid leave is counted by the payroll loop itself. A full-day approved
+leave (any type) excuses the day here, so there is no overlap. A half-day
+leave with no punch counts 0.5 here (the unexplained other half); if that
+leave is UNPAID the payroll loop adds its own 0.5, so the day totals 1.0 --
+intended semantics.
 
 Id spaces: Attendance.user_id / LeaveRequest.employee_id are User ids;
 Resignation.employee_id is the Employee PK.
 """
-from datetime import date, datetime, timedelta
+import logging
+from datetime import date, timedelta
 from typing import Iterable
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 
 from app.models.attendance import Attendance
 from app.models.employee import Employee
@@ -22,12 +26,15 @@ from app.models.exit_management import Resignation, ResignationStatus
 from app.models.hr import HolidayCalendar
 from app.models.leave import LeaveRequest, LeaveStatus
 from app.services.effective_shift import effective_shifts_for_range
-from app.services.time_rules import get_time_rules
 
-_IGNORED_RESIGNATION = (
-    ResignationStatus.WITHDRAWN,
-    ResignationStatus.REJECTED,
-    ResignationStatus.SUBMITTED,
+logger = logging.getLogger(__name__)
+
+_EFFECTIVE_RESIGNATION = (
+    ResignationStatus.ACCEPTED,
+    ResignationStatus.NOTICE_PERIOD,
+    ResignationStatus.EXIT_INTERVIEW,
+    ResignationStatus.CLEARANCE,
+    ResignationStatus.RELEASED,
 )
 
 
@@ -54,12 +61,65 @@ def parse_weekdays(raw: str | None) -> set[int]:
     return out
 
 
-def _as_date(v) -> date:
-    return v.date() if isinstance(v, datetime) else v
+def default_offs_from_rules(rules: dict) -> set[int]:
+    """Parsed default weekly offs; empty/garbage falls back to {6} (Sunday)
+    so a bad setting can never turn every weekday into an LOP day."""
+    offs = parse_weekdays(rules.get("attendance.default_weekly_offs"))
+    if not offs:
+        logger.warning(
+            "attendance.default_weekly_offs is empty/invalid; using Sunday"
+        )
+        return {6}
+    return offs
+
+
+def absence_lop_applies(rules: dict, run_type: str) -> bool:
+    """Whether generate_draft should add unexplained-absence LOP."""
+    on = str(rules.get("attendance.absence_lop_enabled", "0")).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    return on and run_type != "off_cycle"
+
+
+def count_absent_days(
+    *,
+    first: date,
+    last: date,
+    user_id: int,
+    location: str,
+    shifts: dict,
+    default_offs: set[int],
+    punched: set[tuple[int, date]],
+    full_leave: set[tuple[int, date]],
+    half_leave: set[tuple[int, date]],
+    holidays: set[tuple[str, date]],
+) -> float:
+    """Pure per-employee loop over [first, last]. `shifts` maps
+    (user_id, date) -> EffectiveShift (missing == no shift)."""
+    total = 0.0
+    d = first
+    while d <= last:
+        key = (user_id, d)
+        eff = shifts.get(key)
+        if ("All", d) in holidays or (location, d) in holidays:
+            pass
+        elif eff is not None and eff.is_week_off:
+            pass
+        elif (eff is None or eff.source == "none") and d.weekday() in default_offs:
+            pass
+        elif key in punched or key in full_leave:
+            pass
+        elif key in half_leave:
+            total += 0.5
+        else:
+            total += 1.0
+        d += timedelta(days=1)
+    return total
 
 
 async def absence_days_for_period(
-    db, employees: Iterable[Employee], start: date, end: date, today: date
+    db, employees: Iterable[Employee], start: date, end: date, today: date,
+    default_weekly_offs: set[int],
 ) -> dict[int, float]:
     """Absent (LOP) days per user_id in [start, end], never reaching today."""
     emps = list(employees)
@@ -68,31 +128,17 @@ async def absence_days_for_period(
         return {e.user_id: 0.0 for e in emps}
 
     user_ids = [e.user_id for e in emps]
-    rules = await get_time_rules(db)
-    default_offs = parse_weekdays(rules.get("attendance.default_weekly_offs"))
-
     shifts = await effective_shifts_for_range(db, user_ids, start, last_day)
 
-    # Attendance: set of (user_id, day). work_date is the logical date;
-    # fall back to captured_at's date if it is ever NULL.
+    # Attendance.work_date is NOT NULL, so no captured_at fallback needed.
     att_rows = (await db.execute(
-        select(Attendance.user_id, Attendance.work_date, Attendance.captured_at)
-        .where(
+        select(Attendance.user_id, Attendance.work_date).where(
             Attendance.user_id.in_(user_ids),
-            or_(
-                and_(Attendance.work_date >= start,
-                     Attendance.work_date <= last_day),
-                and_(Attendance.work_date.is_(None),
-                     Attendance.captured_at >= datetime.combine(start, datetime.min.time()),
-                     Attendance.captured_at < datetime.combine(
-                         last_day + timedelta(days=1), datetime.min.time())),
-            ),
+            Attendance.work_date >= start,
+            Attendance.work_date <= last_day,
         )
     )).all()
-    punched: set[tuple[int, date]] = set()
-    for uid, wd, cap in att_rows:
-        d = wd if wd is not None else _as_date(cap)
-        punched.add((uid, d))
+    punched: set[tuple[int, date]] = {(u, d) for u, d in att_rows}
 
     leave_rows = (await db.execute(
         select(LeaveRequest).where(
@@ -124,36 +170,25 @@ async def absence_days_for_period(
     res_rows = (await db.execute(
         select(Resignation.employee_id, Resignation.last_working_day).where(
             Resignation.employee_id.in_([e.id for e in emps]),
-            Resignation.status.notin_(_IGNORED_RESIGNATION),
+            Resignation.status.in_(_EFFECTIVE_RESIGNATION),
         )
     )).all()
-    lwd_by_emp = {eid: lwd for eid, lwd in res_rows}
+    lwd_by_emp: dict[int, date] = {}
+    for eid, lwd in res_rows:
+        if eid not in lwd_by_emp or lwd < lwd_by_emp[eid]:
+            lwd_by_emp[eid] = lwd
 
     out: dict[int, float] = {}
     for e in emps:
-        first = max(start, e.date_of_joining)
         stop = last_day
         lwd = lwd_by_emp.get(e.id)
         if lwd is not None:
             stop = min(stop, lwd)
-        loc = e.location or "HQ"
-        total = 0.0
-        d = first
-        while d <= stop:
-            if ("All", d) in holidays or (loc, d) in holidays:
-                d += timedelta(days=1)
-                continue
-            eff = shifts.get((e.user_id, d))
-            if eff is not None and eff.is_week_off:
-                pass
-            elif (eff is None or eff.source == "none") and d.weekday() in default_offs:
-                pass
-            elif (e.user_id, d) in punched or (e.user_id, d) in full_leave:
-                pass
-            elif (e.user_id, d) in half_leave:
-                total += 0.5
-            else:
-                total += 1.0
-            d += timedelta(days=1)
-        out[e.user_id] = total
+        out[e.user_id] = count_absent_days(
+            first=max(start, e.date_of_joining), last=stop,
+            user_id=e.user_id, location=e.location or "HQ",
+            shifts=shifts, default_offs=default_weekly_offs,
+            punched=punched, full_leave=full_leave,
+            half_leave=half_leave, holidays=holidays,
+        )
     return out
