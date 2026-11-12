@@ -10,7 +10,7 @@ from app.api.v1.endpoints import (
     performance, approval_chains, expenses, dashboard, plumbing,
     notifications_admin, functional_head, employment_types,
     salary_structure, late_mark, leave_policies, roster,
-    roster_publish, roster_rules, roster_rotations,
+    roster_publish, roster_rules, roster_rotations, roster_availability,
     attendance_regularization, schedule_delegations,
 )
 
@@ -162,7 +162,7 @@ api_router.include_router(
 # Static paths first: the sub-routers carry no catch-all /{param} routes
 # that could shadow them, and roster.router (with /entries/{id} etc.) is last.
 for _r in (
-    roster_publish.router, roster_rules.router,
+    roster_publish.router, roster_rules.router, roster_availability.router,
     roster_rotations.router, roster.router,
 ):
     api_router.include_router(

@@ -19,6 +19,7 @@ from app.models.coverage_requirement import CoverageRequirement
 from app.services import schedule_rules
 from app.services.time_rules import get_schedule_rules
 from app.services import roster as roster_svc
+from app.services.availability import availability_by_day
 
 from app.api.v1.endpoints.roster_common import (
     require_admin, commit_or_409, check_window,
@@ -98,6 +99,13 @@ async def get_insights(
     leave = await roster_svc.approved_leave_days(db, viol_ids, w_start, w_end)
     viols = schedule_rules.check_rules(v_spans, rules, window_start=start)
     viols += schedule_rules.check_leave_conflicts(v_spans, leave)
+    avail = await availability_by_day(db, viol_ids, start, end)
+    for s_ in v_spans:
+        a_ = avail.get((s_.user_id, s_.work_date))
+        if a_ is not None and a_.blocks(s_.template_id):
+            viols.append(schedule_rules.Violation(
+                s_.user_id, s_.work_date, "unavailable",
+                "Scheduled on a day marked unavailable"))
     viols = sorted((v for v in viols if start <= v.work_date <= end),
                    key=lambda v: (v.work_date, v.user_id, v.rule))
 

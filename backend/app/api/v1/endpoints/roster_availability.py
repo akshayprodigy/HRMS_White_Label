@@ -1,0 +1,167 @@
+"""Employee availability & shift preferences."""
+from datetime import date as pydate
+from typing import Any, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
+
+from app.api import deps
+from app.api.v1.endpoints.roster_common import (
+    check_window, commit_or_409, guard_conflicts, validate_templates,
+)
+from app.models.availability import EmployeeAvailability
+from app.models.user import User
+from app.schemas.availability import (
+    AvailabilityCreate, AvailabilityRead, AvailabilityUpdate,
+)
+from app.schemas.roster import IntId
+from app.services import roster as roster_svc
+
+router = APIRouter()
+
+MAX_RULES = 50
+
+
+def _validate(kind, weekday, specific_date, tpl, vfrom, vto) -> None:
+    if (weekday is None) == (specific_date is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one of weekday or specific_date")
+    if specific_date is not None and (vfrom or vto):
+        raise HTTPException(
+            status_code=422,
+            detail="valid_from/valid_to apply to weekday rules only")
+    if vfrom and vto and vfrom > vto:
+        raise HTTPException(
+            status_code=422, detail="valid_from must be <= valid_to")
+    if kind == "preferred" and tpl is None:
+        raise HTTPException(
+            status_code=422, detail="A preferred rule needs a shift template")
+
+
+@router.get("/availability/my", response_model=List[AvailabilityRead])
+async def list_my(
+    db: deps.DBDep, current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    rows = (await db.execute(
+        select(EmployeeAvailability)
+        .where(EmployeeAvailability.user_id == current_user.id)
+        .order_by(EmployeeAvailability.id))).scalars().all()
+    return rows
+
+
+@router.post("/availability/my", response_model=AvailabilityRead)
+@guard_conflicts
+async def create_my(
+    body: AvailabilityCreate, *, db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    _validate(body.kind, body.weekday, body.specific_date,
+              body.shift_template_id, body.valid_from, body.valid_to)
+    await validate_templates(db, [body.shift_template_id])
+    count = (await db.execute(
+        select(func.count(EmployeeAvailability.id)).where(
+            EmployeeAvailability.user_id == current_user.id))).scalar_one()
+    if count >= MAX_RULES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"At most {MAX_RULES} availability rules per employee")
+    row = EmployeeAvailability(user_id=current_user.id, **body.model_dump())
+    db.add(row)
+    await commit_or_409(db)
+    await db.refresh(row)
+    return row
+
+
+async def _own(db, rule_id: int, user: User) -> EmployeeAvailability:
+    row = (await db.execute(
+        select(EmployeeAvailability).where(
+            EmployeeAvailability.id == rule_id,
+            EmployeeAvailability.user_id == user.id))).scalars().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return row
+
+
+@router.patch("/availability/my/{rule_id}", response_model=AvailabilityRead)
+@guard_conflicts
+async def update_my(
+    rule_id: IntId, body: AvailabilityUpdate, *, db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    row = await _own(db, rule_id, current_user)
+    data = body.model_dump(exclude_unset=True)
+    # Switching between weekday / one-off: setting one clears the other
+    # unless the caller set both explicitly.
+    if data.get("weekday") is not None and "specific_date" not in data:
+        data["specific_date"] = None
+    if data.get("specific_date") is not None and "weekday" not in data:
+        data["weekday"] = None
+    if data.get("kind") is None:
+        data.pop("kind", None)
+    merged = {
+        k: data.get(k, getattr(row, k))
+        for k in ("kind", "weekday", "specific_date", "shift_template_id",
+                  "valid_from", "valid_to")
+    }
+    _validate(**{("tpl" if k == "shift_template_id" else
+                  "vfrom" if k == "valid_from" else
+                  "vto" if k == "valid_to" else k): v
+                 for k, v in merged.items()})
+    if "shift_template_id" in data:
+        await validate_templates(db, [data["shift_template_id"]])
+    for k, v in data.items():
+        setattr(row, k, v)
+    await commit_or_409(db)
+    await db.refresh(row)
+    return row
+
+
+@router.delete("/availability/my/{rule_id}")
+@guard_conflicts
+async def delete_my(
+    rule_id: IntId, *, db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    row = await _own(db, rule_id, current_user)
+    await db.delete(row)
+    await commit_or_409(db)
+    return {"ok": True}
+
+
+@router.get("/availability", response_model=List[AvailabilityRead])
+async def list_scoped(
+    db: deps.DBDep,
+    start: pydate = Query(...),
+    end: pydate = Query(...),
+    department: Optional[str] = None,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Raw rules of employees the caller may manage. start/end bound the
+    window (<= 62 days) and filter out rules that cannot apply in it."""
+    check_window(start, end)
+    scoped = await roster_svc.scoped_employees(db, current_user, department)
+    if not scoped and not roster_svc.is_roster_admin(current_user):
+        raise HTTPException(status_code=403, detail="You have no roster scope.")
+    ids = await roster_svc.manageable_subset(
+        db, current_user, {e.user_id for e in scoped})
+    names = {e.user_id: (e.user.full_name if e.user else None) for e in scoped}
+    if not ids:
+        return []
+    rows = (await db.execute(
+        select(EmployeeAvailability)
+        .where(EmployeeAvailability.user_id.in_(ids))
+        .order_by(EmployeeAvailability.user_id, EmployeeAvailability.id)
+    )).scalars().all()
+    out = []
+    for r in rows:
+        if r.specific_date is not None and not (start <= r.specific_date <= end):
+            continue
+        if r.valid_from is not None and r.valid_from > end:
+            continue
+        if r.valid_to is not None and r.valid_to < start:
+            continue
+        item = AvailabilityRead.model_validate(r)
+        item.employee_name = names.get(r.user_id)
+        out.append(item)
+    return out
