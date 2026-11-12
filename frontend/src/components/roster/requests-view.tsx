@@ -7,10 +7,12 @@ import { fmtDate, inputCls, labelCls } from '../my-schedule/my-schedule-api';
 import {
   schedulerApi,
   type ApproverSwap,
+  type CoverageGap,
   type SchedDrop,
   type SchedOpenShift,
 } from './roster-api';
 import { OpenShiftsSchedulerPanel } from './open-shifts-panel';
+import { CoverageGapsPanel } from './coverage-gaps-panel';
 import type { QueueKey } from './use-requests';
 
 /** warnings are computed server-side for at most this many swaps */
@@ -160,6 +162,7 @@ interface Props {
   swaps: ApproverSwap[];
   drops: SchedDrop[];
   shifts: SchedOpenShift[];
+  gaps: CoverageGap[];
   loading: boolean;
   errors: Partial<Record<QueueKey, string>>;
   reload: () => void | Promise<void>;
@@ -172,7 +175,7 @@ interface Props {
 interface Result { title: string; lines: string[]; warn: boolean }
 
 export const RequestsView: React.FC<Props> = ({
-  swaps, drops, shifts, loading, errors, reload, onRosterChanged, onNewOpenShift, canPostOpenShift,
+  swaps, drops, shifts, gaps, loading, errors, reload, onRosterChanged, onNewOpenShift, canPostOpenShift,
 }) => {
   const [pending, setPending] = useState<Pending>(new Map());
   // outcome of the latest decision (warnings / skipped reasons stay visible)
@@ -255,6 +258,13 @@ export const RequestsView: React.FC<Props> = ({
           </button>
         </div>
       )}
+      <CoverageGapsPanel
+        gaps={gaps}
+        error={errors.gaps}
+        onRetry={() => reload()}
+        onResult={(title, lines) => setResult({ title, lines, warn: lines.length > 0 })}
+        onChanged={async () => { onRosterChanged(); await reload(); }}
+      />
       <Card className="p-5 border-slate-200 bg-white" aria-label="Swap approvals">
         <p className="text-[10px] font-black uppercase tracking-widest text-[#0F172A] mb-3">
           Swap approvals <Badge variant="neutral" className="ml-2">{swaps.length}</Badge>

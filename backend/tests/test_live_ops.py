@@ -19,6 +19,7 @@ from app.models.hr import HolidayCalendar
 from app.models.leave import HalfDaySession, LeaveRequest, LeaveStatus, LeaveType
 from app.models.employee import Employee, EmployeeStatus
 from app.models.no_show import NoShowAlert
+from app.models.coverage_gap import CoverageGap
 from app.models.notification import Notification
 from app.models.roster import RosterEntry, RosterEntryHistory, RosterStatus
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
@@ -151,6 +152,16 @@ async def world():
         async with SessionLocal() as db:
             uids = list((await db.execute(select(User.id).where(
                 User.email.like(f"lo\\_%\\_{sfx}@t.com")))).scalars().all())
+            gtids = list((await db.execute(select(ShiftTemplate.id).where(
+                ShiftTemplate.name.in_([f"LD{sfx}", f"LN{sfx}"])))).scalars().all())
+            gids = [str(g) for g in (await db.execute(select(CoverageGap.id).where(
+                CoverageGap.shift_template_id.in_(gtids)))).scalars().all()]
+            if gids:  # gap notifications may have gone to real roster admins
+                await db.execute(delete(Notification).where(
+                    Notification.resource_type == "coverage_gap",
+                    Notification.resource_id.in_(gids)))
+            await db.execute(delete(CoverageGap).where(
+                CoverageGap.shift_template_id.in_(gtids)))
             await db.execute(delete(NoShowAlert).where(NoShowAlert.user_id.in_(uids)))
             await db.execute(delete(Attendance).where(Attendance.user_id.in_(uids)))
             await db.execute(delete(RosterEntryHistory).where(
@@ -326,7 +337,8 @@ async def test_job_delegate_and_fallback_and_inactive(world):
         await db.commit()
         await no_show_job(db, now=NOW, user_ids=_emp_ids(world))
     assert await _notes(i["mgr"]) == []           # inactive: skipped
-    assert len(await _notes(i["head"])) == 1       # delegate notified
+    assert len([n for n in await _notes(i["head"])
+                if n.title == "Employee no-show"]) == 1   # delegate notified
     assert len(await _notes(i["admin"])) >= 1      # othr fell back to admins
     head_msgs = [n.message for n in await _notes(i["head"])]
     assert all("LO othr" not in m for m in head_msgs)

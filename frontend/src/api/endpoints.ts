@@ -159,6 +159,11 @@ export const ENDPOINTS = {
     OPEN_SHIFT_CLAIM_DECIDE: (claimId: number) =>
       `/roster/open-shifts/claims/${claimId}/decide`,
     OPEN_SHIFT_CANCEL: (id: number) => `/roster/open-shifts/${id}/cancel`,
+    GAPS: '/roster/gaps',
+    GAP_SUGGESTIONS: (id: number) => `/roster/gaps/${id}/suggestions`,
+    GAP_ASSIGN: (id: number) => `/roster/gaps/${id}/assign`,
+    GAP_BROADCAST: (id: number) => `/roster/gaps/${id}/broadcast`,
+    GAP_DISMISS: (id: number) => `/roster/gaps/${id}/dismiss`,
     AVAILABILITY: '/roster/availability',
     CALENDAR_FEED: '/roster/my/calendar-feed',
   },

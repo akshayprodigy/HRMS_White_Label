@@ -232,3 +232,4 @@ __all__ = [
     "UserQuietHours",
     "NotificationDelivery",
 ]
+from .coverage_gap import CoverageGap, GapSource, GapStatus

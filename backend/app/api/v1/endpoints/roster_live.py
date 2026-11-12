@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 
 from app.api import deps
+from app.models.coverage_gap import CoverageGap, GapSource
 from app.models.user import User
 from app.services import live_ops
 from app.services import roster as roster_svc
@@ -38,6 +40,15 @@ async def live_board(
                    f"or location (max {MAX_EMPLOYEES}).")
     now = datetime.now(timezone.utc)
     rows = await live_ops.live_board(db, ids, now)
+    noshow = [r for r in rows if r.alerted]
+    gaps = {}
+    if noshow:
+        for g in (await db.execute(select(CoverageGap).where(
+                CoverageGap.source == GapSource.NO_SHOW,
+                CoverageGap.absent_user_id.in_({r.user_id for r in noshow}),
+                CoverageGap.work_date.in_({r.work_date for r in noshow})))
+                ).scalars().all():
+            gaps[(g.absent_user_id, g.work_date)] = g
     counts = {s.value: 0 for s in live_ops.LiveStatus}
     for r in rows:
         counts[r.status.value] += 1
@@ -57,5 +68,9 @@ async def live_board(
             "punch_in": r.punch_in.isoformat() if r.punch_in else None,
             "punch_out": r.punch_out.isoformat() if r.punch_out else None,
             "alerted": r.alerted, "half_day_leave": r.half_day_leave,
+            "gap_id": gaps[(r.user_id, r.work_date)].id
+            if (r.user_id, r.work_date) in gaps else None,
+            "gap_status": gaps[(r.user_id, r.work_date)].status
+            if (r.user_id, r.work_date) in gaps else None,
         } for r in rows],
     }

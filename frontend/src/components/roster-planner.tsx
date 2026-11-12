@@ -76,7 +76,16 @@ export const RosterPlanner = () => {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [view, setView] = useState<RosterView>('planner');
+  const [view, setView] = useState<RosterView>(() => {
+    // Live Board "View gap" link asks to open on the Requests tab.
+    try {
+      if (sessionStorage.getItem('roster.openView') === 'requests') {
+        sessionStorage.removeItem('roster.openView');
+        return 'requests';
+      }
+    } catch { /* storage unavailable */ }
+    return 'planner';
+  });
   // null until the first response; latched so a later failed fetch doesn't unmount Delegations.
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [myGrants, setMyGrants] = useState<any[]>([]);
@@ -329,6 +338,7 @@ export const RosterPlanner = () => {
           swaps={reqs.swaps}
           drops={reqs.drops}
           shifts={reqs.shifts}
+          gaps={reqs.gaps}
           loading={reqs.loading}
           errors={reqs.errors}
           reload={reqs.reload}

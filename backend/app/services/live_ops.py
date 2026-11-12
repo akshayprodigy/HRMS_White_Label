@@ -333,6 +333,21 @@ async def no_show_job(
             created.append(r)
         except IntegrityError:
             continue
+    gap_ids = {}
+    from app.services import coverage_gaps as gap_svc
+    for r in created:
+        if r.shift_template_id is None:
+            continue
+        try:
+            async with session.begin_nested():
+                g = await gap_svc.open_gap(
+                    session, work_date=r.work_date,
+                    shift_template_id=r.shift_template_id,
+                    department=r.department, location=r.location,
+                    absent_user_id=r.user_id, source="no_show")
+                gap_ids[r.user_id] = g.id
+        except Exception:  # never let a gap failure drop the alerts
+            logger.warning("no-show gap failed", exc_info=True)
     notified = 0
     if created:
         recips = await _alert_recipients(session, created, now.date())
@@ -354,4 +369,4 @@ async def no_show_job(
         notified = len(notes)
     await session.commit()
     return {"checked": len(rows), "alerts_created": len(created),
-            "notifications": notified}
+            "notifications": notified, "gaps": gap_ids}

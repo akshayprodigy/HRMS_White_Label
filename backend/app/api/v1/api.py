@@ -11,7 +11,7 @@ from app.api.v1.endpoints import (
     notifications_admin, functional_head, employment_types,
     salary_structure, late_mark, leave_policies, roster,
     roster_publish, roster_rules, roster_rotations, roster_availability,
-    roster_swaps, roster_autofill,
+    roster_swaps, roster_autofill, roster_gaps,
     roster_open_shifts, calendar_feed, roster_live,
     attendance_regularization, schedule_delegations,
 )
@@ -170,6 +170,7 @@ for _r in (
     roster_publish.router, roster_rules.router, roster_availability.router,
     roster_rotations.router, roster_swaps.router, roster_open_shifts.router,
     calendar_feed.router, roster_autofill.router, roster_live.router,
+    roster_gaps.router,
     roster.router,
 ):
     api_router.include_router(

@@ -405,6 +405,8 @@ async def cancel_open_shift(
         db, shift, current_user.id,
         f"The open shift on {shift.work_date.isoformat()} was cancelled",
         title="Open shift cancelled")
+    from app.services import coverage_gaps as gap_svc
+    await gap_svc.release_open_shift(db, shift)
     await commit_or_409(db, "Open shift changed concurrently; retry")
     await db.refresh(shift)
     await log_audit(
@@ -651,6 +653,12 @@ async def decide_drop(
                 source_drop_id=drop.id, excluded_user_id=uid,
                 check_scope=False)
             drop.open_shift_id = shift.id
+        if not post:
+            from app.services import coverage_gaps as gap_svc
+            await gap_svc.open_gap(
+                db, work_date=d, shift_template_id=drop.shift_template_id,
+                department=dept, absent_user_id=uid, source="drop",
+                source_id=drop.id)
         drop.post_open_shift = bool(post)
         drop.status = DropStatus.APPROVED
         await roster_svc.notify(

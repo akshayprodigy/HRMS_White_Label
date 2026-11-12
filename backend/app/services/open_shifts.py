@@ -343,6 +343,8 @@ async def confirm_claim(
          f"You were confirmed for the {_label(shift)}", RTYPE, str(shift.id))])
     if shift.filled >= shift.slots:
         shift.status = OpenShiftStatus.FILLED
+        from app.services import coverage_gaps as gap_svc  # lazy: avoids a cycle
+        await gap_svc.mark_filled_by_open_shift(db, shift, uid)
         await reject_pending(
             db, shift, actor_id,
             f"The {_label(shift)} was filled by someone else",

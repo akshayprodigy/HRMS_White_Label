@@ -186,6 +186,38 @@ export type EmployeeAvailabilityRule = AvailabilityRule & {
   employee_name: string | null;
 };
 
+export interface CoverageGap {
+  id: number;
+  work_date: string;
+  shift_template_id: number;
+  shift_name: string | null;
+  shift_start: string | null;
+  shift_end: string | null;
+  department: string | null;
+  location: string | null;
+  absent_user_id: number | null;
+  absent_name: string | null;
+  source: 'emergency_leave' | 'no_show' | 'drop' | 'sick_call' | 'manual';
+  source_id: number | null;
+  status: 'open' | 'filled' | 'dismissed';
+  open_shift_id: number | null;
+  open_shift_status: string | null;
+  filled_by_user_id: number | null;
+  filled_by_name: string | null;
+  note: string | null;
+  warnings?: string[];
+}
+
+export interface GapSuggestion {
+  user_id: number;
+  name: string;
+  department: string | null;
+  score: number;
+  reasons: string[];
+  month_hours: number;
+  ot_headroom_minutes: number | null;
+}
+
 const R = ENDPOINTS.ROSTER;
 const data = async <T,>(p: Promise<{ data: T }>): Promise<T> => (await p).data;
 
@@ -214,6 +246,17 @@ export const schedulerApi = {
     data<SchedOpenShift>(client.post(R.OPEN_SHIFT_CLAIM_DECIDE(claimId), { action })),
   cancelOpenShift: (id: number) =>
     data<SchedOpenShift>(client.post(R.OPEN_SHIFT_CANCEL(id), {})),
+
+  gaps: (status = 'open') =>
+    data<CoverageGap[]>(client.get(R.GAPS, { params: { status } })),
+  gapSuggestions: (id: number) =>
+    data<{ gap: CoverageGap; suggestions: GapSuggestion[] }>(client.get(R.GAP_SUGGESTIONS(id))),
+  assignGap: (id: number, user_id: number) =>
+    data<CoverageGap>(client.post(R.GAP_ASSIGN(id), { user_id })),
+  broadcastGap: (id: number, auto_confirm: boolean) =>
+    data<CoverageGap>(client.post(R.GAP_BROADCAST(id), { auto_confirm })),
+  dismissGap: (id: number, note: string | null) =>
+    data<CoverageGap>(client.post(R.GAP_DISMISS(id), { note })),
 
   availability: (start: string, end: string, department: string) =>
     data<EmployeeAvailabilityRule[]>(

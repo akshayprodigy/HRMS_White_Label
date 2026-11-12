@@ -29,6 +29,8 @@ interface LiveRow {
   punch_out: string | null;
   alerted: boolean;
   half_day_leave: boolean;
+  gap_id: number | null;
+  gap_status: 'open' | 'filled' | 'dismissed' | null;
 };
 
 interface LiveResponse {
@@ -80,6 +82,16 @@ const hhmmss = (d: Date) =>
     hour12: false,
     timeZone: 'UTC',
   });
+
+/** Jump to the planner's Requests tab, where open coverage gaps live. */
+const openGap = () => {
+  try {
+    sessionStorage.setItem('roster.openView', 'requests');
+  } catch {
+    /* storage unavailable: the user lands on the planner */
+  }
+  window.dispatchEvent(new CustomEvent('erp:navigate', { detail: { tab: 'roster-planner' } }));
+};
 
 const unique = (xs: (string | null)[]) =>
   Array.from(new Set(xs.filter((x): x is string => !!x))).sort();
@@ -323,6 +335,20 @@ export const LiveBoard: React.FC = () => {
                       </Badge>
                       {r.half_day_leave && (
                         <span className="text-xs text-gray-500">Half-day leave</span>
+                      )}
+                      {r.gap_id != null && (
+                        <button
+                          type="button"
+                          onClick={() => openGap()}
+                          className="text-xs text-indigo-600 hover:underline"
+                          aria-label={`Coverage gap ${r.gap_status} for ${r.name}, open in Requests`}
+                        >
+                          {r.gap_status === 'open'
+                            ? 'Coverage gap open'
+                            : r.gap_status === 'filled'
+                              ? 'Gap filled'
+                              : 'Gap dismissed'}
+                        </button>
                       )}
                       {r.alerted && (
                         <span
