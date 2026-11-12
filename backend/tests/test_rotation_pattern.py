@@ -414,7 +414,7 @@ async def test_inactive_name_message_and_no_scope_apply(client, world):
     await client.delete(f"{ROSTER}/rotations/{pid}", headers=ha)
     r = await client.post(f"{ROSTER}/rotations", headers=ha, json={
         "name": f"dup{world['sfx']}", "cycle": [None]})
-    assert r.status_code == 409 and "inactive" in r.json()["detail"]
+    assert r.status_code == 409 and "inactive" in r.text
     pid2, _ = await _mkpat(client, world, name="live")
     hd = await _login(client, world["email"])
     r = await client.post(f"{ROSTER}/rotations/{pid2}/apply", headers=hd,
