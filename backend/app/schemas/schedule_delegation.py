@@ -1,15 +1,19 @@
 """Scheduling delegation DTOs (Roadmap v2 Phase 1A)."""
 from datetime import date as pydate, datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.datetime_utils import as_utc
+
+IntId = Annotated[int, Field(ge=1, le=2**31 - 1)]
 
 
 class DelegationCreate(BaseModel):
-    grantee_id: int
+    grantee_id: IntId
     scope_type: str
     scope_value: Optional[str] = Field(None, max_length=100)
-    employee_ids: List[int] = Field(default_factory=list)
+    employee_ids: List[IntId] = Field(default_factory=list)
     can_publish: bool = False
     can_approve_changes: bool = False
     valid_from: pydate
@@ -44,6 +48,11 @@ class DelegationRead(BaseModel):
     note: Optional[str] = None
     created_at: Optional[datetime] = None
     covered_count: int = 0
+
+    @field_validator("revoked_at", "created_at", mode="after")
+    @classmethod
+    def _utc(cls, v):
+        return as_utc(v)
 
 
 class DelegationPreviewRow(BaseModel):

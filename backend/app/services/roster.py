@@ -697,6 +697,13 @@ async def notify_schedule_changed(
     ])
 
 
+def is_lock_conflict(exc: Exception) -> bool:
+    """MariaDB 1020 (snapshot isolation: row changed since our snapshot) or
+    1213 (deadlock): a concurrent writer won; the caller can retry."""
+    orig = getattr(exc, "orig", None)
+    return bool(orig is not None and orig.args and orig.args[0] in (1020, 1213))
+
+
 async def publish_drafts(
     db: AsyncSession, actor: User, user_ids, start: pydate, end: pydate,
 ) -> dict:
@@ -721,9 +728,9 @@ async def publish_drafts(
                 .execution_options(populate_existing=True)
             )).scalars().all())
     except OperationalError as exc:
-        # 1020 (snapshot isolation: row changed since our snapshot) / 1213
-        # (deadlock): a concurrent publish won; the caller can retry.
-        if exc.orig is not None and exc.orig.args and exc.orig.args[0] in (1020, 1213):
+        # a concurrent publish won; the caller can retry.
+        if is_lock_conflict(exc):
+            await db.rollback()
             raise HTTPException(
                 status_code=409, detail="Roster changed concurrently; retry"
             )

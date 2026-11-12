@@ -209,6 +209,8 @@ async def update_delegation(
     d = await db.get(ScheduleDelegation, deleg_id)
     if d is None:
         raise HTTPException(status_code=404, detail="Delegation not found")
+    if d.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="Delegation is revoked")
     changes = body.model_dump(exclude_unset=True)
     for nn in ("can_publish", "can_approve_changes", "valid_from"):
         if nn in changes and changes[nn] is None:

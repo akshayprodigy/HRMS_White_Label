@@ -27,12 +27,12 @@ from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import User
 from app.schemas.roster import (
     RosterGridResponse, RosterBulkRequest, RosterBulkResult,
-    RosterEntryInput, RosterEntryRead, RosterEntryUpdate,
+    RosterEntryInput, RosterEntrySingleInput, RosterEntryRead, RosterEntryUpdate,
     RosterChangeRequestCreate, RosterChangeRequestRead, RosterChangeDecision,
 )
 from app.services import roster as roster_svc
 from app.api.v1.endpoints.roster_common import (
-    entry_read, require_manage, commit_or_409, check_window,
+    entry_read, require_manage, commit_or_409, lock_row, check_window,
     validate_templates, write_cells, NO_PUBLISH_MSG, REASON_MSG, DRAFT_NOTICE,
 )
 
@@ -137,7 +137,7 @@ async def upsert_single_entry(
     *,
     db: deps.DBDep,
     request: Request,
-    body: RosterEntryInput,
+    body: RosterEntrySingleInput,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     await require_manage(db, current_user, body.employee_id)
@@ -253,6 +253,14 @@ async def update_entry(
         and "is_week_off" not in changes
     ):
         changes["is_week_off"] = False
+    if not (
+        changes.get("is_week_off", entry.is_week_off)
+        or changes.get("shift_template_id", entry.shift_template_id)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="A cell needs a shift template or week-off",
+        )
     was_published = entry.status == RosterStatus.PUBLISHED
     reason = roster_svc.clean_reason(reason)
     old_tpl, old_off = entry.shift_template_id, entry.is_week_off
@@ -321,7 +329,7 @@ async def delete_entry(
             db, {entry.employee_id: {entry.work_date}}
         )
     await db.delete(entry)
-    await db.commit()
+    await commit_or_409(db)
     await log_audit(
         db, current_user.id, "roster.entry.delete",
         "roster_entry", str(entry_id), {}, request,
@@ -509,12 +517,9 @@ async def _cr_read(db, cr: RosterChangeRequest) -> RosterChangeRequestRead:
 async def _lock_cr(db, cr_id: int):
     """Row-lock the change request (fresh state) so status checks and the
     decision are atomic against concurrent decide/cancel."""
-    return (await db.execute(
-        select(RosterChangeRequest)
-        .where(RosterChangeRequest.id == cr_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().first()
+    return await lock_row(
+        db, select(RosterChangeRequest).where(RosterChangeRequest.id == cr_id)
+    )
 
 
 @router.post("/change-requests", response_model=RosterChangeRequestRead)
@@ -560,7 +565,7 @@ async def create_change_request(
         status=RosterChangeStatus.PENDING,
     )
     db.add(cr)
-    await db.commit()
+    await commit_or_409(db)
     await db.refresh(cr)
     await log_audit(
         db, current_user.id, "roster.change.create",
@@ -729,7 +734,7 @@ async def cancel_change_request(
     if cr.status != RosterChangeStatus.PENDING:
         raise HTTPException(status_code=409, detail="Only pending requests can be cancelled")
     cr.status = RosterChangeStatus.CANCELLED
-    await db.commit()
+    await commit_or_409(db, "Request already decided")
     await db.refresh(cr)
     await log_audit(
         db, current_user.id, "roster.change.cancel",

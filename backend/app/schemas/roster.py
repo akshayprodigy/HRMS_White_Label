@@ -1,9 +1,12 @@
 """Roster planner DTOs (W7)."""
 from datetime import date as pydate, datetime
-from typing import Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 
 from app.core.datetime_utils import as_utc
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+
+# DB ids are 32-bit ints; bound them so absurd values are a clean 422.
+IntId = Annotated[int, Field(ge=1, le=2**31 - 1)]
 
 
 class RosterCell(BaseModel):
@@ -48,9 +51,9 @@ class RosterGridResponse(BaseModel):
 
 
 class RosterEntryInput(BaseModel):
-    employee_id: int  # user id
+    employee_id: IntId  # user id
     work_date: pydate
-    shift_template_id: Optional[int] = None
+    shift_template_id: Optional[IntId] = None
     is_week_off: bool = False
     status: str = "published"  # back-compat default; may be downgraded
     reason: Optional[str] = Field(default=None, max_length=500)
@@ -63,8 +66,19 @@ class RosterEntryInput(BaseModel):
         return v
 
 
+class RosterEntrySingleInput(RosterEntryInput):
+    """POST /roster/entries: a cell needs a shift or a week-off (bulk entries
+    deliberately allow blanks, which are skipped)."""
+
+    @model_validator(mode="after")
+    def _not_blank(self) -> "RosterEntrySingleInput":
+        if self.shift_template_id is None and not self.is_week_off:
+            raise ValueError("provide shift_template_id or is_week_off")
+        return self
+
+
 class RosterBulkRequest(BaseModel):
-    employee_ids: Optional[List[int]] = None  # None => whole scoped team
+    employee_ids: Optional[List[IntId]] = None  # None => whole scoped team
     department: Optional[str] = None
     start: pydate
     end: pydate
@@ -72,7 +86,7 @@ class RosterBulkRequest(BaseModel):
     overwrite: bool = True
     # EXACTLY ONE of pattern | entries.
     # pattern: weekday int (Mon=0..Sun=6) -> template_id | None (None=week-off)
-    pattern: Optional[Dict[int, Optional[int]]] = None
+    pattern: Optional[Dict[int, Optional[IntId]]] = None
     entries: Optional[List[RosterEntryInput]] = None
 
     @field_validator("status")
@@ -127,18 +141,38 @@ class RosterEntryRead(BaseModel):
 
 
 class RosterEntryUpdate(BaseModel):
-    shift_template_id: Optional[int] = None
+    shift_template_id: Optional[IntId] = None
     is_week_off: Optional[bool] = None
     status: Optional[str] = None
     note: Optional[str] = None
     reason: Optional[str] = Field(default=None, max_length=500)
 
+    @model_validator(mode="after")
+    def _not_blank(self) -> "RosterEntryUpdate":
+        # Only the explicit combination is checkable here; the endpoint
+        # validates the resulting state for partial updates.
+        f = self.model_fields_set
+        if (
+            "shift_template_id" in f and "is_week_off" in f
+            and self.shift_template_id is None and self.is_week_off is False
+        ):
+            raise ValueError("provide shift_template_id or is_week_off")
+        return self
+
 
 class RosterChangeRequestCreate(BaseModel):
     work_date: pydate
-    requested_shift_template_id: Optional[int] = None
+    requested_shift_template_id: Optional[IntId] = None
     requested_week_off: bool = False
     reason: str = Field(..., min_length=5, max_length=500)
+
+    @model_validator(mode="after")
+    def _not_blank(self) -> "RosterChangeRequestCreate":
+        if self.requested_shift_template_id is None and not self.requested_week_off:
+            raise ValueError(
+                "provide requested_shift_template_id or requested_week_off"
+            )
+        return self
 
 
 class RosterChangeDecision(BaseModel):
@@ -169,7 +203,9 @@ class RosterChangeRequestRead(BaseModel):
 class RotationPatternBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=255)
-    cycle: List[Optional[StrictInt]] = Field(..., min_length=1, max_length=56)
+    cycle: List[Optional[Annotated[StrictInt, Field(ge=1, le=2**31 - 1)]]] = Field(
+        ..., min_length=1, max_length=56
+    )
 
 
 class RotationPatternCreate(RotationPatternBase):
@@ -179,7 +215,7 @@ class RotationPatternCreate(RotationPatternBase):
 class RotationPatternUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=255)
-    cycle: Optional[List[Optional[StrictInt]]] = Field(
+    cycle: Optional[List[Optional[Annotated[StrictInt, Field(ge=1, le=2**31 - 1)]]]] = Field(
         default=None, min_length=1, max_length=56
     )
     is_active: Optional[bool] = None
@@ -194,12 +230,12 @@ class RotationPatternRead(RotationPatternBase):
 
 
 class RotationApplyRequest(BaseModel):
-    employee_ids: Optional[List[int]] = None  # None => whole scoped team
+    employee_ids: Optional[List[IntId]] = None  # None => whole scoped team
     department: Optional[str] = None
     start: pydate
     end: pydate
     anchor: pydate
-    offsets: Optional[Dict[int, int]] = None  # user id -> offset
+    offsets: Optional[Dict[IntId, int]] = None  # user id -> offset
     default_offset: int = Field(default=0, ge=-1000, le=1000)
     overwrite: bool = True
     status: str = "draft"
@@ -257,7 +293,7 @@ class RosterInsightsResponse(BaseModel):
 class CoverageRequirementBase(BaseModel):
     department: Optional[str] = Field(default=None, max_length=100)
     location: Optional[str] = Field(default=None, max_length=100)
-    shift_template_id: StrictInt
+    shift_template_id: Annotated[StrictInt, Field(ge=1, le=2**31 - 1)]
     weekday: Optional[StrictInt] = Field(default=None, ge=0, le=6)
     min_headcount: StrictInt = Field(..., ge=0)
     max_headcount: Optional[StrictInt] = Field(default=None, ge=0)
@@ -275,7 +311,7 @@ class CoverageRequirementCreate(CoverageRequirementBase):
 class CoverageRequirementUpdate(BaseModel):
     department: Optional[str] = Field(default=None, max_length=100)
     location: Optional[str] = Field(default=None, max_length=100)
-    shift_template_id: Optional[StrictInt] = None
+    shift_template_id: Optional[Annotated[StrictInt, Field(ge=1, le=2**31 - 1)]] = None
     weekday: Optional[StrictInt] = Field(default=None, ge=0, le=6)
     min_headcount: Optional[StrictInt] = Field(default=None, ge=0)
     max_headcount: Optional[StrictInt] = Field(default=None, ge=0)
@@ -295,7 +331,7 @@ class RosterPublishBody(BaseModel):
     start: pydate
     end: pydate
     department: Optional[str] = Field(default=None, max_length=100)
-    employee_ids: Optional[List[int]] = None
+    employee_ids: Optional[List[IntId]] = None
 
 
 class RosterPublishResult(BaseModel):
@@ -341,9 +377,25 @@ class RosterCopyRequest(BaseModel):
     source_start: pydate
     source_end: pydate
     target_start: pydate
+    # Last day cells may be written to; cells shifted past it are skipped
+    # (e.g. copying March into a 30-day April).
+    target_end: Optional[pydate] = None
     department: Optional[str] = Field(default=None, max_length=100)
-    employee_ids: Optional[List[int]] = None
+    employee_ids: Optional[List[IntId]] = None
     overwrite: bool = False
+
+    @model_validator(mode="after")
+    def _check_target_end(self) -> "RosterCopyRequest":
+        if self.target_end is not None:
+            if self.target_end < self.target_start:
+                raise ValueError("target_end must be >= target_start")
+            if (self.target_end - self.target_start) > (
+                self.source_end - self.source_start
+            ):
+                raise ValueError(
+                    "target window may not be longer than the source window"
+                )
+        return self
 
 
 class RosterHistoryRead(BaseModel):

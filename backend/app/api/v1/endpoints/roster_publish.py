@@ -22,7 +22,7 @@ from app.models.user import Role, Permission
 from app.services import roster as roster_svc
 
 from app.api.v1.endpoints.roster_common import (
-    require_manage, require_admin, commit_or_409,
+    require_manage, require_admin, commit_or_409, lock_row,
     write_cells, check_window, names,
 )
 
@@ -207,12 +207,10 @@ async def decide_publish_request(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     require_admin(current_user)
-    pr = (await db.execute(
-        select(RosterPublishRequest)
-        .where(RosterPublishRequest.id == req_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().first()
+    pr = await lock_row(
+        db, select(RosterPublishRequest).where(
+            RosterPublishRequest.id == req_id)
+    )
     if not pr:
         raise HTTPException(status_code=404, detail="Request not found")
     if pr.status != "pending":
@@ -270,12 +268,10 @@ async def cancel_publish_request(
     req_id: int,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    pr = (await db.execute(
-        select(RosterPublishRequest)
-        .where(RosterPublishRequest.id == req_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().first()
+    pr = await lock_row(
+        db, select(RosterPublishRequest).where(
+            RosterPublishRequest.id == req_id)
+    )
     if not pr:
         raise HTTPException(status_code=404, detail="Request not found")
     if pr.requested_by_id != current_user.id:
@@ -285,7 +281,7 @@ async def cancel_publish_request(
             status_code=409, detail="Only pending requests can be cancelled"
         )
     pr.status = "cancelled"
-    await db.commit()
+    await commit_or_409(db, "Request already decided")
     await log_audit(
         db, current_user.id, "roster.publish_request.cancel",
         "roster_publish_request", str(pr.id), {}, request,
@@ -327,6 +323,10 @@ async def copy_roster(
         for (uid, wd), e in sorted(src.items())
         if e.shift_template_id is not None or e.is_week_off
     ]
+    if body.target_end is not None:
+        kept = [c for c in cells if c[1] <= body.target_end]
+        result.skipped += len(cells) - len(kept)
+        cells = kept
     await write_cells(
         db, current_user, allowed, cells, RosterStatus.DRAFT,
         body.overwrite, result, protect_all_published=True,

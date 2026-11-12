@@ -445,3 +445,15 @@ async def test_change_request_unknown_template_422(client, world):
         "requested_shift_template_id": 99999999,
         "reason": "swap please"})
     assert r.status_code == 422, r.text
+
+
+async def test_patch_revoked_409_and_utc_timestamps(client, world):
+    admin = await _login(client, world["admin_email"])
+    r = await client.post(f"{BASE}/", json=_body(world), headers=admin)
+    d = r.json()
+    assert d["created_at"].endswith(("Z", "+00:00"))
+    rv = await client.post(f"{BASE}/{d['id']}/revoke", headers=admin)
+    assert rv.json()["revoked_at"].endswith(("Z", "+00:00"))
+    up = await client.patch(f"{BASE}/{d['id']}", json={"note": "x"},
+                            headers=admin)
+    assert up.status_code == 409 and "revoked" in up.text

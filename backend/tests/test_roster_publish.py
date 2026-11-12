@@ -18,7 +18,8 @@ from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.notification import Notification
 from app.models.roster import (
-    RosterEntry, RosterEntryHistory, RosterPublishRequest,
+    RosterChangeRequest, RosterEntry, RosterEntryHistory,
+    RosterPublishRequest,
 )
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.shift import ShiftTemplate
@@ -89,6 +90,8 @@ async def world():
                 RosterEntryHistory.employee_id.in_(uids)))
             await db.execute(delete(RosterPublishRequest).where(
                 RosterPublishRequest.id.in_(prids)))
+            await db.execute(delete(RosterChangeRequest).where(
+                RosterChangeRequest.employee_id.in_(uids)))
             await db.execute(delete(RosterEntry).where(
                 RosterEntry.employee_id.in_(uids)))
             await db.execute(delete(Notification).where(
@@ -479,3 +482,173 @@ async def test_grid_can_publish_flag(client, world):
     assert r.status_code == 200 and r.json()["can_publish"] is True
     r = await client.get(f"{ROSTER}/plan", headers=hd, params=q)
     assert r.status_code == 200 and r.json()["can_publish"] is False
+
+
+async def test_concurrent_publish_request_decide(client, world):
+    ha = await _login(client, world["admin_email"])
+    hd = await _login(client, world["email"])
+    await _grant(world, can_publish=False)
+    await _put(client, ha, world, "e1", 0, status="draft")
+    for _ in range(3):
+        pr = (await client.post(f"{ROSTER}/publish-requests", headers=hd,
+                                json={"start": dd(0), "end": dd(6)})).json()
+        url = f"{ROSTER}/publish-requests/{pr['id']}/decide"
+        r1, r2 = await asyncio.gather(
+            client.post(url, headers=ha, json={"approve": True}),
+            client.post(url, headers=ha, json={"approve": True}),
+        )
+        assert sorted([r1.status_code, r2.status_code]) == [200, 409], (
+            r1.text, r2.text)
+        # reset for next loop: back to draft + fresh request
+        async with SessionLocal() as db:
+            await db.execute(RosterEntry.__table__.update().where(
+                RosterEntry.employee_id == world["ids"]["e1"]
+            ).values(status="draft"))
+            await db.commit()
+
+
+async def test_concurrent_publish_request_cancel_vs_decide(client, world):
+    ha = await _login(client, world["admin_email"])
+    hd = await _login(client, world["email"])
+    await _grant(world, can_publish=False)
+    await _put(client, ha, world, "e1", 0, status="draft")
+    pr = (await client.post(f"{ROSTER}/publish-requests", headers=hd,
+                            json={"start": dd(0), "end": dd(6)})).json()
+    base = f"{ROSTER}/publish-requests/{pr['id']}"
+    r1, r2 = await asyncio.gather(
+        client.post(f"{base}/decide", headers=ha, json={"approve": True}),
+        client.post(f"{base}/cancel", headers=hd),
+    )
+    assert sorted([r1.status_code, r2.status_code]) == [200, 409], (
+        r1.text, r2.text)
+
+
+async def test_concurrent_change_request_decide(client, world):
+    ha = await _login(client, world["admin_email"])
+    h1 = await _login(client, world["e1_email"])
+    r = await client.post(f"{ROSTER}/change-requests", headers=h1, json={
+        "work_date": dd(0), "requested_shift_template_id": world["ids"]["t2"],
+        "reason": "need a swap"})
+    assert r.status_code == 200, r.text
+    url = f"{ROSTER}/change-requests/{r.json()['id']}/decide"
+    r1, r2 = await asyncio.gather(
+        client.post(url, headers=ha, json={"action": "approve"}),
+        client.post(url, headers=ha, json={"action": "approve"}),
+    )
+    assert sorted([r1.status_code, r2.status_code]) == [200, 409], (
+        r1.text, r2.text)
+
+
+async def test_concurrent_change_request_cancel_vs_decide(client, world):
+    ha = await _login(client, world["admin_email"])
+    h1 = await _login(client, world["e1_email"])
+    r = await client.post(f"{ROSTER}/change-requests", headers=h1, json={
+        "work_date": dd(1), "requested_week_off": True, "reason": "need a day"})
+    base = f"{ROSTER}/change-requests/{r.json()['id']}"
+    ra, rb = await asyncio.gather(
+        client.post(f"{base}/decide", headers=ha, json={"action": "reject"}),
+        client.post(f"{base}/cancel", headers=h1),
+    )
+    assert sorted([ra.status_code, rb.status_code]) == [200, 409], (
+        ra.text, rb.text)
+
+
+async def test_copy_month_target_end_clamps(client, world):
+    ha = await _login(client, world["admin_email"])
+    e1 = world["ids"]["e1"]
+    src0 = date(2027, 3, 1)
+    for d in (date(2027, 3, 1), date(2027, 3, 31)):
+        r = await client.post(f"{ROSTER}/entries", headers=ha, json={
+            "employee_id": e1, "work_date": d.isoformat(),
+            "shift_template_id": world["ids"]["t1"], "status": "draft"})
+        assert r.status_code == 200, r.text
+    body = {"source_start": "2027-03-01", "source_end": "2027-03-31",
+            "target_start": "2027-04-01", "employee_ids": [e1]}
+    # invalid target_end
+    r = await client.post(f"{ROSTER}/copy", headers=ha, json={
+        **body, "target_end": "2027-03-30"})
+    assert r.status_code == 422
+    r = await client.post(f"{ROSTER}/copy", headers=ha, json={
+        **body, "target_end": "2027-06-30"})
+    assert r.status_code == 422  # window longer than source
+    r = await client.post(f"{ROSTER}/copy", headers=ha, json={
+        **body, "target_end": "2027-04-30"})
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1
+    async with SessionLocal() as db:
+        dates = {x.work_date for x in (await db.execute(select(RosterEntry).where(
+            RosterEntry.employee_id == e1))).scalars().all()}
+    assert date(2027, 4, 1) in dates and date(2027, 5, 1) not in dates
+    assert src0 in dates
+
+
+async def test_blank_cell_rejected(client, world):
+    ha = await _login(client, world["admin_email"])
+    h1 = await _login(client, world["e1_email"])
+    e1 = world["ids"]["e1"]
+    r = await client.post(f"{ROSTER}/entries", headers=ha, json={
+        "employee_id": e1, "work_date": dd(0), "shift_template_id": None,
+        "is_week_off": False, "status": "draft"})
+    assert r.status_code == 422, r.text
+    ok = await _put(client, ha, world, "e1", 0, status="draft")
+    # PATCH resulting in a blank cell
+    r = await client.patch(f"{ROSTER}/entries/{ok['id']}", headers=ha,
+                           json={"shift_template_id": None})
+    assert r.status_code == 422, r.text
+    # PATCH that does not touch the cell content is still fine
+    r = await client.patch(f"{ROSTER}/entries/{ok['id']}", headers=ha,
+                           json={"note": "n"})
+    assert r.status_code == 200, r.text
+    # week-off via PATCH is fine
+    r = await client.patch(f"{ROSTER}/entries/{ok['id']}", headers=ha,
+                           json={"is_week_off": True})
+    assert r.status_code == 200 and r.json()["is_week_off"] is True
+    # change request without anything requested
+    r = await client.post(f"{ROSTER}/change-requests", headers=h1, json={
+        "work_date": dd(2), "reason": "no target given"})
+    assert r.status_code == 422, r.text
+    # bulk with a blank entry keeps its semantics (not a 422)
+    r = await client.post(f"{ROSTER}/bulk", headers=ha, json={
+        "start": dd(0), "end": dd(1), "status": "draft",
+        "entries": [{"employee_id": e1, "work_date": dd(1)}]})
+    assert r.status_code == 200, r.text
+
+
+async def test_huge_id_is_422_not_500(client, world):
+    ha = await _login(client, world["admin_email"])
+    r = await client.post(f"{ROSTER}/entries", headers=ha, json={
+        "employee_id": 10 ** 25, "work_date": dd(0),
+        "shift_template_id": world["ids"]["t1"], "status": "draft"})
+    assert r.status_code == 422, r.text
+
+
+async def test_commit_or_409_maps_dataerror_and_lock_errors():
+    from fastapi import HTTPException
+    from sqlalchemy.exc import DataError, OperationalError
+    from app.api.v1.endpoints.roster_common import commit_or_409
+
+    class Orig(Exception):
+        pass
+
+    class FakeDB:
+        def __init__(self, exc):
+            self.exc, self.rolled = exc, False
+
+        async def commit(self):
+            raise self.exc
+
+        async def rollback(self):
+            self.rolled = True
+
+    db = FakeDB(DataError("s", {}, Orig(1264, "out of range")))
+    with pytest.raises(HTTPException) as ei:
+        await commit_or_409(db)
+    assert ei.value.status_code == 422 and db.rolled
+    for code in (1020, 1213):
+        db = FakeDB(OperationalError("s", {}, Orig(code, "x")))
+        with pytest.raises(HTTPException) as ei:
+            await commit_or_409(db)
+        assert ei.value.status_code == 409 and db.rolled
+    db = FakeDB(OperationalError("s", {}, Orig(2006, "gone")))
+    with pytest.raises(OperationalError):
+        await commit_or_409(db)

@@ -3,7 +3,7 @@ from datetime import date as pydate
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 
 from app.models.employee import Employee
 from app.models.roster import (
@@ -60,11 +60,37 @@ DRAFT_NOTICE = "Saved as draft: publishing requires HR approval"
 async def commit_or_409(
     db, msg: str = "Roster changed concurrently; retry"
 ) -> None:
+    """Commit, mapping concurrency / data errors to clean HTTP errors:
+    IntegrityError and MariaDB 1020/1213 -> 409, DataError -> 422."""
     try:
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail=msg)
+    except DataError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=422, detail="A value is out of range or invalid"
+        )
+    except OperationalError as exc:
+        if roster_svc.is_lock_conflict(exc):
+            await db.rollback()
+            raise HTTPException(status_code=409, detail=msg)
+        raise
+
+
+async def lock_row(db, stmt, msg: str = "Request already decided"):
+    """Run `stmt` as a fresh-state row-locking read (FOR UPDATE). A lost
+    race (MariaDB 1020/1213) rolls the session back and becomes a 409."""
+    try:
+        return (await db.execute(
+            stmt.with_for_update().execution_options(populate_existing=True)
+        )).scalars().first()
+    except OperationalError as exc:
+        if roster_svc.is_lock_conflict(exc):
+            await db.rollback()
+            raise HTTPException(status_code=409, detail=msg)
+        raise
 
 
 async def validate_templates(db, ids) -> None:

@@ -62,12 +62,23 @@ async def create_rotation(
 ) -> Any:
     require_admin(current_user)
     await validate_templates(db, body.cycle)
-    await _check_name(db, body.name)
-    p = RotationPattern(
-        name=body.name, description=body.description,
-        cycle=list(body.cycle), created_by_id=current_user.id,
-    )
-    db.add(p)
+    old = (await db.execute(
+        select(RotationPattern).where(RotationPattern.name == body.name)
+    )).scalars().first()
+    if old is not None and not old.is_active:
+        # Re-using the name of a deleted (inactive) pattern revives that row.
+        p = old
+        p.description = body.description
+        p.cycle = list(body.cycle)
+        p.is_active = True
+        p.created_by_id = current_user.id
+    else:
+        await _check_name(db, body.name)
+        p = RotationPattern(
+            name=body.name, description=body.description,
+            cycle=list(body.cycle), created_by_id=current_user.id,
+        )
+        db.add(p)
     await commit_or_409(db, "Rotation name already exists")
     await db.refresh(p)
     await log_audit(
@@ -127,7 +138,7 @@ async def delete_rotation(
     if not p:
         raise HTTPException(status_code=404, detail="Rotation pattern not found")
     p.is_active = False
-    await db.commit()
+    await commit_or_409(db)
     await log_audit(
         db, current_user.id, "roster.rotation.delete",
         "rotation_pattern", str(p.id), {}, request,
