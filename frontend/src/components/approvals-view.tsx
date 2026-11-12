@@ -68,6 +68,7 @@ export const ApprovalsView = () => {
   const [nextApproverId, setNextApproverId] = useState<string>('');
 
   useEffect(() => {
+    if (resourceType === 'attendance_correction') return; // handled by RegularizationQueue
     fetchApprovals();
   }, [resourceType, statusFilter, dueBefore]);
 
@@ -252,6 +253,7 @@ export const ApprovalsView = () => {
             ))}
           </div>
 
+          {resourceType !== 'attendance_correction' && (
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -296,6 +298,7 @@ export const ApprovalsView = () => {
               <RefreshCw size={14} className="mr-2" /> Refresh
             </Button>
           </div>
+          )}
         </div>
       </div>
 

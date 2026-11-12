@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
-import { MyRegularizations } from './regularization-requests';
+import { MyRegularizations, TeamRegularizations } from './regularization-requests';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 
@@ -394,6 +394,7 @@ export const MyShiftView: React.FC = () => {
       </div>
 
       <MyRegularizations />
+      <TeamRegularizations />
 
       {/* Request dialog */}
       {reqOpen && (

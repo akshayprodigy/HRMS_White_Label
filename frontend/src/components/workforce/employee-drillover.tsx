@@ -687,10 +687,12 @@ const LegendDot: React.FC<{ className: string; label: string }> = ({ className, 
 const CorrectionsView: React.FC<{ corrections: CorrectionRecord[]; onChanged?: () => void }> = ({
   corrections,
   onChanged,
-}) => (
-  <RegularizationList
-    items={corrections}
-    onDecided={() => onChanged?.()}
-    emptyText="No correction requests"
-  />
-);
+}) =>
+  corrections.length === 0 ? (
+    <EmptyState
+      text="No correction requests"
+      icon={<CheckCircle size={28} className="mx-auto text-slate-200 mb-2" />}
+    />
+  ) : (
+    <RegularizationList items={corrections} onDecided={() => onChanged?.()} />
+  );

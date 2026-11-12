@@ -199,7 +199,9 @@ export const RegularizationList: React.FC<{
 // Approver queue (Approvals Center tab)
 // ---------------------------------------------------------------------------
 
-export const RegularizationQueue: React.FC = () => {
+export const RegularizationQueue: React.FC<{ title?: string }> = ({
+  title = 'Attendance Correction Requests',
+}) => {
   const [status, setStatus] = useState<RegularizationStatus | 'all'>('pending');
   const [items, setItems] = useState<Regularization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -224,7 +226,7 @@ export const RegularizationQueue: React.FC = () => {
     <Card className="p-5 border-slate-200 bg-white">
       <div className="flex items-center justify-between gap-2 mb-3">
         <p className="text-[10px] font-black uppercase tracking-widest text-[#0F172A]">
-          Attendance Correction Requests
+          {title}
         </p>
         <div className="flex items-center gap-2">
           <select
@@ -330,7 +332,7 @@ export const RegularizationRequestDialog: React.FC<{
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={open} onOpenChange={(o: boolean) => !o && onClose()}>
       <DialogContent className="max-w-md">
         <DialogTitle className="flex items-center gap-2 text-base font-black uppercase tracking-tight text-[#0F172A]">
           <Wrench size={15} className="text-blue-600" /> Request Attendance Correction
@@ -456,4 +458,22 @@ export const MyRegularizations: React.FC = () => {
       <RegularizationRequestDialog open={open} onClose={() => setOpen(false)} onCreated={load} />
     </Card>
   );
+};
+
+/** Shown only to users who have something to approve (direct reports / HR). */
+export const TeamRegularizations: React.FC = () => {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    regularizationApi
+      .listQueue('all')
+      .then((res) => {
+        if (!cancelled) setShow((res.data || []).length > 0);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return show ? <RegularizationQueue title="Team Correction Requests" /> : null;
 };
