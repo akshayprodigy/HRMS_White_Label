@@ -452,6 +452,7 @@ async def my_roster_week(
                 "end_time": tpl.end_time.strftime("%H:%M") if tpl else None,
                 "is_overnight": tpl.is_overnight if tpl else False,
                 "source": "roster",
+                "shift_template_id": entry.shift_template_id,
             }
         else:
             asg = next(
@@ -468,6 +469,7 @@ async def my_roster_week(
                     "end_time": tpl.end_time.strftime("%H:%M"),
                     "is_overnight": tpl.is_overnight,
                     "source": "assigned",
+                    "shift_template_id": tpl.id,
                 }
             else:
                 shift = {

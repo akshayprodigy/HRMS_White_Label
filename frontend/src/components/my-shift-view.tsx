@@ -538,7 +538,7 @@ export const MyShiftView: React.FC = () => {
         <SwapDialog
           date={swapDay.date}
           shiftName={swapDay.shift?.name}
-          shiftTemplateId={swapDay.shift?.id ?? swapDay.shift?.shift_template_id ?? null}
+          shiftTemplateId={swapDay.shift?.shift_template_id ?? null}
           isWeekOff={swapDay.shift?.name === 'Week off'}
           onClose={() => setSwapDay(null)}
           onDone={() => { setSwapDay(null); setSelfReload((n) => n + 1); setTab('swaps'); }}
