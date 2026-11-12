@@ -74,8 +74,9 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
     ),
     "leave.emergency_proof_days": (
         "3",
-        "Days after an emergency leave ends by which proof must be "
-        "submitted, else it converts to LOP. 0 = no proof required (0-60)",
+        "Days after an emergency leave ends to submit a medical certificate "
+        "the leave type requires (else it converts to LOP). 0 = the "
+        "certificate must be attached upfront (0-60)",
     ),
 }
 

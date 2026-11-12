@@ -107,8 +107,9 @@ export const FileLeaveOnBehalfPanel: React.FC = () => {
           </label>
           {form.is_emergency && (
             <p className="text-[10px] font-bold text-slate-500 mt-1.5">
-              May start up to the configured back-date window in the past. Proof can follow later; if it is not
-              submitted by the due date the leave converts to loss of pay. Schedulers are alerted to cover the shifts.
+              May start up to the configured back-date window in the past. Proof is only needed when the leave type
+              and duration require a medical certificate; it can follow later, and if it is not submitted by the due
+              date the leave converts to loss of pay. Schedulers are alerted to cover the shifts.
             </p>
           )}
         </div>

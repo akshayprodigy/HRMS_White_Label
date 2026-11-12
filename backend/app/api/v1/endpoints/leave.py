@@ -1,4 +1,5 @@
 import io
+import re
 import pandas as pd
 from pathlib import Path
 from typing import Any, List, Optional
@@ -11,7 +12,9 @@ from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
-from app.services.leave_approval import apply_leave_decision, notify_new_leave
+from app.services.leave_approval import (
+    _bump_ledger, apply_leave_decision, notify_new_leave,
+)
 from app.services import emergency_leave as emergency_svc
 from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
 from app.core.config import settings
@@ -369,9 +372,10 @@ async def _validate_leave_request(db, target_user_id: int, leave_in) -> tuple:
     if leave_type.max_consecutive_days and days > leave_type.max_consecutive_days:
         raise HTTPException(status_code=400, detail=f"{leave_type.name} allows max {leave_type.max_consecutive_days} consecutive days")
     # Emergency leave defers proof (proof_due_date) instead of requiring it now.
-    if (not leave_in.is_emergency and leave_type.requires_medical_cert_after
+    if (leave_type.requires_medical_cert_after
             and days >= leave_type.requires_medical_cert_after
-            and not leave_in.attachment_url):
+            and not leave_in.attachment_url
+            and not leave_in.is_emergency):
         raise HTTPException(status_code=400, detail=f"{leave_type.name} requires a medical certificate for {leave_type.requires_medical_cert_after}+ consecutive days")
 
     if leave_type.max_per_month:
@@ -400,13 +404,13 @@ async def _validate_leave_request(db, target_user_id: int, leave_in) -> tuple:
     return leave_type, days
 
 
-async def _emergency_proof_due(db, leave_in) -> Optional[date]:
-    """Back-date window check + proof due date for emergency requests
-    (None for ordinary leave)."""
+async def _proof_due(db, leave_in, leave_type, days) -> Optional[date]:
+    """Deferred-proof due date for emergency leave whose type requires a
+    medical certificate (None otherwise / for ordinary leave)."""
     if not leave_in.is_emergency:
         return None
-    return await emergency_svc.emergency_terms(
-        db, start_date=leave_in.start_date, end_date=leave_in.end_date,
+    return await emergency_svc.proof_due_date(
+        db, leave_type=leave_type, days=days, end_date=leave_in.end_date,
         has_attachment=bool(leave_in.attachment_url))
 
 
@@ -421,8 +425,10 @@ async def apply_leave(
     request: Request
 ) -> Any:
     """Apply for a new leave."""
-    proof_due = await _emergency_proof_due(db, leave_in)
+    if leave_in.is_emergency:
+        await emergency_svc.check_backdate(db, leave_in.start_date)
     leave_type, days = await _validate_leave_request(db, current_user.id, leave_in)
+    proof_due = await _proof_due(db, leave_in, leave_type, days)
 
     # 4. Create Leave Request
     db_obj = LeaveRequest(
@@ -516,8 +522,10 @@ async def apply_leave_on_behalf(
     if not target:
         raise HTTPException(status_code=404, detail="Target employee not found")
 
-    proof_due = await _emergency_proof_due(db, leave_in)
+    if leave_in.is_emergency:
+        await emergency_svc.check_backdate(db, leave_in.start_date)
     leave_type, days = await _validate_leave_request(db, leave_in.employee_id, leave_in)
+    proof_due = await _proof_due(db, leave_in, leave_type, days)
 
     base_fields = leave_in.model_dump(exclude={"employee_id", "auto_approve"})
     db_obj = LeaveRequest(
@@ -543,17 +551,8 @@ async def apply_leave_on_behalf(
     if leave_in.auto_approve:
         db_obj.status = LeaveStatus.APPROVED
         if not leave_type.unpaid_allowed:
-            ledger = (await db.execute(select(LeaveBalanceLedger).where(and_(
-                LeaveBalanceLedger.user_id == leave_in.employee_id,
-                LeaveBalanceLedger.leave_type_id == leave_in.leave_type_id,
-            )))).scalar_one_or_none()
-            if ledger:
-                ledger.used += days
-            else:
-                db.add(LeaveBalanceLedger(
-                    user_id=leave_in.employee_id, leave_type_id=leave_in.leave_type_id,
-                    balance=0.0, used=days,
-                ))
+            await _bump_ledger(db, leave_in.employee_id,
+                               leave_in.leave_type_id, used=days)
         db.add(AuditLog(
             user_id=current_user.id, action="LEAVE_AUTO_APPROVE_ON_BEHALF",
             resource_type="leave_request", resource_id=str(db_obj.id),
@@ -595,6 +594,10 @@ async def apply_leave_on_behalf(
     )).scalar_one()
 
 
+# Stored attachment names are uuid4().hex + extension (see upload_leave_attachment).
+_STORED_NAME_RE = re.compile(r"^[0-9a-f]{32}\.(pdf|jpe?g|png|webp|heic)$")
+
+
 class LeaveProofIn(BaseModel):
     attachment_url: str
 
@@ -627,9 +630,14 @@ async def submit_leave_proof(
     if leave.converted_to_lop_at is not None:
         raise HTTPException(status_code=400, detail="Leave was already converted to loss of pay")
     name = body.attachment_url
-    if ("/" in name or "\\" in name or name.startswith(".")
+    if (not _STORED_NAME_RE.match(name)
             or not (_leave_attachments_dir() / name).is_file()):
         raise HTTPException(status_code=400, detail="Upload the file via /leave/attachments first")
+    reused = (await db.execute(select(LeaveRequest.id).where(
+        LeaveRequest.attachment_url == name,
+        LeaveRequest.id != leave.id).limit(1))).first()
+    if reused:
+        raise HTTPException(status_code=400, detail="This file is already attached to another leave")
     leave.attachment_url = name
     leave.proof_submitted_at = datetime.now(timezone.utc)
     db.add(AuditLog(

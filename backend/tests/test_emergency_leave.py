@@ -18,6 +18,7 @@ from app.models.audit import AuditLog
 from app.models.coverage_gap import CoverageGap
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
+from app.models.payroll import PayrollRun, PayrollRunStatus
 from app.models.leave import (
     LeaveBalanceLedger, LeaveRequest, LeaveStatus, LeaveType,
 )
@@ -101,8 +102,11 @@ async def world():
             paid = LeaveType(name=f"ELP{sfx}", unpaid_allowed=False)
             cert = LeaveType(name=f"ELC{sfx}", unpaid_allowed=False,
                              requires_medical_cert_after=1)
-            unpaid = LeaveType(name=f"ELU{sfx}", unpaid_allowed=True)
-            db.add_all([tpl, paid, cert, unpaid])
+            cert3 = LeaveType(name=f"ELD{sfx}", unpaid_allowed=False,
+                              requires_medical_cert_after=3)
+            unpaid = LeaveType(name=f"ELU{sfx}", unpaid_allowed=True,
+                               requires_medical_cert_after=1)
+            db.add_all([tpl, paid, cert, cert3, unpaid])
             await db.flush()
             for u in (emp, other):
                 db.add(Employee(
@@ -110,7 +114,7 @@ async def world():
                     department=dept, designation="T",
                     date_of_joining=date(2020, 1, 1),
                     status=EmployeeStatus.ACTIVE))
-            for lt in (paid, cert):
+            for lt in (paid, cert, cert3):
                 for u in (emp, other):
                     db.add(LeaveBalanceLedger(
                         user_id=u.id, leave_type_id=lt.id, balance=10.0, used=0.0))
@@ -119,7 +123,7 @@ async def world():
             await db.commit()
             ids = dict(mgr=mgr.id, hr=hr.id, head=head.id, emp=emp.id,
                        other=other.id, tpl=tpl.id, paid=paid.id,
-                       cert=cert.id, unpaid=unpaid.id)
+                       cert=cert.id, cert3=cert3.id, unpaid=unpaid.id)
         yield {"ids": ids, "sfx": sfx, "files": files,
                "email": lambda t: f"el_{t}_{sfx}@t.com"}
     finally:
@@ -241,7 +245,7 @@ async def _leave(lid):
                 populate_existing=True))).scalar_one()
 
 
-async def _used(w, uid=None, lt="paid"):
+async def _used(w, uid=None, lt="cert"):
     async with SessionLocal() as db:
         return (await db.execute(select(LeaveBalanceLedger.used).where(
             LeaveBalanceLedger.user_id == (uid or w["ids"]["emp"]),
@@ -313,38 +317,71 @@ async def test_backdate_window(client, world):
     assert r.status_code == 400
 
 
-async def test_proof_deferral(client, world):
+async def test_no_cert_type_needs_no_proof_and_never_converts(client, world):
     w = world
     await _rules(backdate_days=3, proof_days=3)
-    # cert-required type: ordinary leave needs the file now; emergency defers
-    r = await _apply(client, w, start=dn(0), end=dn(1),
-                     leave_type_id=w["ids"]["cert"])
+    r = await _apply(client, w, start=dn(-1))           # paid type, no cert rule
     assert r.status_code == 200, r.text
-    assert r.json()["proof_due_date"] == dn(1 + 3).isoformat()
-    # attachment supplied at apply -> no proof pending
+    assert r.json()["proof_due_date"] is None
+    lid = r.json()["id"]
+    await _approve_db(lid, days_used=1.0)
+    out = await _run_job(w, datetime.now(timezone.utc) + timedelta(days=60))
+    assert out["converted"] == 0
+    assert (await _leave(lid)).converted_to_lop_at is None
+    assert await _used(w, lt="paid") == 1.0
+
+
+async def test_cert_threshold_decides_due_date(client, world):
+    w = world
+    await _rules(backdate_days=3, proof_days=3)
+    short = await _apply(client, w, start=dn(0), end=dn(1),   # 2 days < 3
+                         leave_type_id=w["ids"]["cert3"])
+    assert short.status_code == 200, short.text
+    assert short.json()["proof_due_date"] is None
+    full = await _apply(client, w, who="other", start=dn(0), end=dn(2),
+                        leave_type_id=w["ids"]["cert3"])   # 3 days >= 3
+    assert full.status_code == 200, full.text
+    assert full.json()["proof_due_date"] == dn(2 + 3).isoformat()
+    # certificate attached at apply: nothing pending
     f = Path(settings.LEAVE_ATTACHMENTS_DIR) / f"{uuid.uuid4().hex}.pdf"
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_bytes(b"%PDF-1.4")
     w["files"].append(f.name)
-    r2 = await _apply(client, w, who="other", start=dn(0),
-                      attachment_url=f.name)
-    assert r2.status_code == 200
-    lv = await _leave(r2.json()["id"])
+    h = await _login(client, w, "emp")
+    ok = await client.post(f"{API}/leave/apply", headers=h, json=_body(
+        w, dn(10), end=None, leave_type_id=w["ids"]["cert"],
+        attachment_url=f.name, is_emergency=True))
+    assert ok.status_code == 200, ok.text
+    lv = await _leave(ok.json()["id"])
     assert lv.proof_due_date is None and lv.proof_submitted_at is not None
 
 
-async def test_rule_zero_means_no_proof_required(client, world):
+async def test_proof_days_zero_requires_upfront_cert(client, world):
     w = world
     await _rules(backdate_days=3, proof_days=0)
     r = await _apply(client, w, start=dn(0), leave_type_id=w["ids"]["cert"])
-    assert r.status_code == 200, r.text
-    assert r.json()["proof_due_date"] is None
-    async with SessionLocal() as db:
-        out = await el.proof_check_job(
-            db, now=datetime.now(timezone.utc) + timedelta(days=30),
-            user_ids=[w["ids"]["emp"]])
-    assert out == {"skipped": "disabled"}
-    assert (await _leave(r.json()["id"])).converted_to_lop_at is None
+    assert r.status_code == 400 and "medical certificate" in r.text
+    # no cert rule -> still fine
+    ok = await _apply(client, w, start=dn(0))
+    assert ok.status_code == 200 and ok.json()["proof_due_date"] is None
+    # on-behalf behaves the same
+    h = await _login(client, w, "hr")
+    bad = await client.post(f"{API}/leave/apply-on-behalf", headers=h, json={
+        **_body(w, dn(0), leave_type_id=w["ids"]["cert"]),
+        "employee_id": w["ids"]["other"]})
+    assert bad.status_code == 400
+
+
+async def test_job_converts_already_due_even_if_rule_later_zero(client, world):
+    w = world
+    await _rules(backdate_days=3, proof_days=3)
+    lid = await _emergency(client, w)
+    await _approve_db(lid, days_used=1.0)
+    lv = await _leave(lid)
+    await _rules(proof_days=0)
+    out = await _run_job(w, _after_due(lv))
+    assert out["converted"] == 1
+    assert await _used(w) == 0.0
 
 
 async def test_rule_validation(client, world):
@@ -430,10 +467,11 @@ async def test_on_behalf_emergency_opens_gaps(client, world):
     await _roster(w, dn(0))
     h = await _login(client, w, "hr")
     r = await client.post(f"{API}/leave/apply-on-behalf", headers=h, json={
-        **_body(w, dn(0)), "employee_id": w["ids"]["emp"],
-        "auto_approve": True})
+        **_body(w, dn(0), leave_type_id=w["ids"]["cert"]),
+        "employee_id": w["ids"]["emp"], "auto_approve": True})
     assert r.status_code == 200, r.text
     assert r.json()["proof_due_date"] == dn(3).isoformat()
+    assert await _used(w) == 1.0          # atomic debit on auto-approve
     assert len(await _gaps(w)) == 1
     bad = await client.post(f"{API}/leave/apply-on-behalf", headers=h, json={
         **_body(w, dn(-9)), "employee_id": w["ids"]["emp"]})
@@ -489,6 +527,7 @@ async def test_proof_upload_permissions(client, world):
 # ------------------------------- the job -------------------------------
 
 async def _emergency(client, w, who="emp", start=None, **kw):
+    kw.setdefault("leave_type_id", w["ids"]["cert"])
     r = await _apply(client, w, who=who, start=start or dn(-2), **kw)
     assert r.status_code == 200, r.text
     return r.json()["id"]
@@ -599,3 +638,81 @@ async def test_reminder_day_before_due_once(client, world):
             Notification.user_id == w["ids"]["emp"],
             Notification.event_type == "leave_proof_reminder"))).scalars().all())
     assert len(n) == 1
+
+
+async def test_conversion_warns_hr_when_payroll_processed(client, world):
+    w = world
+    await _rules(backdate_days=3, proof_days=3)
+    lid = await _emergency(client, w)
+    await _approve_db(lid, days_used=1.0)
+    lv = await _leave(lid)
+    async with SessionLocal() as db:
+        run = PayrollRun(month=lv.start_date.month, year=lv.start_date.year,
+                         status=PayrollRunStatus.FINALIZED,
+                         run_type="off_cycle", scope_user_ids=[])
+        db.add(run)
+        await db.commit()
+        run_id = run.id
+    try:
+        assert (await _run_job(w, _after_due(lv)))["converted"] == 1
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(PayrollRun).where(PayrollRun.id == run_id))
+            await db.commit()
+    async with SessionLocal() as db:
+        hr_n = (await db.execute(select(Notification).where(
+            Notification.user_id == w["ids"]["hr"],
+            Notification.resource_id == str(lid),
+            Notification.event_type == "leave_converted_lop"))).scalars().one()
+        emp_n = (await db.execute(select(Notification).where(
+            Notification.user_id == w["ids"]["emp"],
+            Notification.resource_id == str(lid),
+            Notification.event_type == "leave_converted_lop"))).scalars().one()
+    month = f"{lv.start_date.year}-{lv.start_date.month:02d}"
+    assert (f"Payroll for {month} already processed — LOP needs manual "
+            f"adjustment") in hr_n.message
+    assert "already processed" not in emp_n.message
+
+
+async def test_job_isolates_failing_leave(client, world, monkeypatch):
+    w = world
+    await _rules(backdate_days=3, proof_days=3)
+    bad = await _emergency(client, w)
+    good = await _emergency(client, w, who="other")
+    await _approve_db(bad, days_used=1.0)
+    await _approve_db(good, days_used=1.0)
+    lv = await _leave(bad)
+    real = el.convert_leave_to_lop
+
+    async def flaky(db, leave_id, now):
+        if leave_id == bad:
+            raise RuntimeError("boom")
+        return await real(db, leave_id, now)
+    monkeypatch.setattr(el, "convert_leave_to_lop", flaky)
+    async with SessionLocal() as db:
+        out = await el.proof_check_job(
+            db, now=_after_due(lv),
+            user_ids=[w["ids"]["emp"], w["ids"]["other"]])
+    assert (out["converted"], out["failed"]) == (1, 1)
+    assert (await _leave(bad)).converted_to_lop_at is None
+    assert (await _leave(good)).converted_to_lop_at is not None
+
+
+async def test_proof_file_validation_and_reuse(client, world):
+    w = world
+    await _rules(backdate_days=3, proof_days=3)
+    a = await _emergency(client, w)
+    b = await _emergency(client, w, who="other")
+    ho = await _login(client, w, "emp")
+    hother = await _login(client, w, "other")
+    for bad in ("../x.pdf", "abc.pdf", f"{'a' * 32}.exe", "A" * 32 + ".pdf"):
+        r = await client.post(f"{API}/leave/{a}/proof", headers=ho,
+                              json={"attachment_url": bad})
+        assert r.status_code == 400, bad
+    name = await _upload(client, w, ho)
+    ok = await client.post(f"{API}/leave/{a}/proof", headers=ho,
+                           json={"attachment_url": name})
+    assert ok.status_code == 200, ok.text
+    reuse = await client.post(f"{API}/leave/{b}/proof", headers=hother,
+                              json={"attachment_url": name})
+    assert reuse.status_code == 400 and "already attached" in reuse.text

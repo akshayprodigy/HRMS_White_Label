@@ -53,7 +53,7 @@ const SCHEDULE_FIELDS: { key: string; label: string; hint: string; max: number }
 
 const LEAVE_FIELDS: { key: string; label: string; hint: string; max: number }[] = [
   { key: 'leave.emergency_backdate_days', label: 'Emergency Leave Back-date (days)', hint: 'Emergency leave may start this many days in the past (range 0–31)', max: 31 },
-  { key: 'leave.emergency_proof_days', label: 'Emergency Proof Deadline (days)', hint: 'Days after the leave ends to submit proof, else it becomes LOP. 0 = no proof required (range 0–60)', max: 60 },
+  { key: 'leave.emergency_proof_days', label: 'Emergency Proof Deadline (days)', hint: 'Days after leave end to submit a required medical certificate, else it becomes LOP. 0 = attach it upfront (range 0–60)', max: 60 },
 ];
 
 const inputCls =
@@ -294,8 +294,8 @@ export const TimeRulesTab: React.FC = () => {
             <Clock3 size={15} className="text-blue-600" /> Emergency leave
           </h3>
           <p className="text-[10px] font-bold text-slate-500 mt-1">
-            Same-day / back-dated leave with proof submitted afterwards.
-            Overdue proof converts the leave to loss of pay. Whole numbers.
+            Same-day / back-dated leave. A medical certificate the leave type
+            requires can be submitted afterwards; overdue, it converts the leave to loss of pay. Whole numbers.
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

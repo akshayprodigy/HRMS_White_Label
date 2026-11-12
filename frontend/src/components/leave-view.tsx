@@ -84,7 +84,7 @@ export const LeaveView = () => {
     return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
   })();
   const medicalCertThreshold: number | null = selectedLeaveType?.requires_medical_cert_after ?? null;
-  const showAttachmentField = medicalCertThreshold != null || isEmergency;
+  const showAttachmentField = medicalCertThreshold != null;
   // Emergency leave defers the certificate: it can be uploaded later (proof due date).
   const attachmentRequired = !isEmergency && medicalCertThreshold != null && computedDays >= medicalCertThreshold;
 
@@ -732,8 +732,9 @@ export const LeaveView = () => {
               {isEmergency && (
                 <p className="text-[11px] font-bold text-slate-500">
                   Emergency leave can start today or in the recent past. Your scheduler is alerted to arrange cover.
-                  Proof (e.g. medical certificate) can be uploaded later from Leave History, by the due date shown
-                  after you submit; otherwise the leave converts to loss of pay.
+                  Proof is only needed when this leave type and duration require a medical certificate; you can then
+                  upload it later from Leave History by the due date shown after you submit, otherwise the leave
+                  converts to loss of pay.
                 </p>
               )}
             </div>

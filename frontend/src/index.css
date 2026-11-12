@@ -4755,4 +4755,6 @@ html {
   .accent-rose-600 { accent-color: #e11d48; }
   .bg-slate-800 { background-color: var(--color-slate-800, oklch(.279 .041 260.031)); }
   .hover\:text-indigo-800:hover { color: var(--color-indigo-800, oklch(.398 .195 277.366)); }
+  .border-rose-100 { border-color: var(--color-rose-100, oklch(.941 .03 12.58)); }
+  .bg-rose-50\/50 { background-color: color-mix(in oklab, var(--color-rose-50, oklch(.969 .015 12.422)) 50%, transparent); }
 }

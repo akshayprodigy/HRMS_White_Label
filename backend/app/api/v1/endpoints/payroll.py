@@ -3,14 +3,13 @@ from datetime import datetime, date, timezone
 from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from sqlalchemy import select, and_, or_, func, delete
+from sqlalchemy import select, and_, func, delete
 from app.api import deps
 from app.models.payroll import (
     PayrollRun, PayrollLine, Payslip, PayrollRunStatus, SalaryDisbursement
 )
 from app.models.user import User
 from app.models.employee import Employee
-from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
 from app.models.attendance import Attendance
 from app.models.salary_advance import (
     SalaryAdvance, AdvanceRecovery, AdvanceStatus
@@ -21,7 +20,6 @@ from app.services import salary_structure as salary_structure_service
 from app.services import late_mark as late_mark_service
 from app.services.absence_lop import (
     absence_days_for_period, absence_lop_applies, leave_lop_days, default_offs_from_rules,
-    unpaid_leave_lop_days,
 )
 from app.services.time_rules import get_time_rules
 from app.services.payroll_engine import (

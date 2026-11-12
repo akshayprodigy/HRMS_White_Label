@@ -4,8 +4,9 @@ Same-day / back-dated leave with deferred proof. Callers hold the request
 transaction; helpers flush but never commit (except the daily job, which
 commits per leave).
 
-* `emergency_terms` validates the back-date window and computes the proof
-  due date (end_date + `leave.emergency_proof_days`).
+* `check_backdate` validates the back-date window; `proof_due_date` defers a
+  REQUIRED medical certificate to end_date + `leave.emergency_proof_days`
+  (other emergency leaves need no proof).
 * `open_gaps_for_leave` turns the employee's PUBLISHED working roster cells
   in [max(start, today), end] into coverage gaps and sends ONE alert to the
   schedulers; `dismiss_gaps_for_leave` withdraws them when the leave is
@@ -43,13 +44,10 @@ def _today() -> date:
     return datetime.now(timezone.utc).date()
 
 
-async def emergency_terms(
-    db, *, start_date: date, end_date: date, has_attachment: bool,
-    today: Optional[date] = None,
-) -> Optional[date]:
-    """Validate an emergency request and return its `proof_due_date`
-    (None when proof is not required or is attached already). 400 when
-    start_date is older than `leave.emergency_backdate_days`."""
+async def check_backdate(
+    db, start_date: date, today: Optional[date] = None,
+) -> None:
+    """400 when start_date is older than `leave.emergency_backdate_days`."""
     today = today or _today()
     rules = await get_emergency_leave_rules(db)
     oldest = today - timedelta(days=rules["backdate_days"])
@@ -58,9 +56,32 @@ async def emergency_terms(
             status_code=400,
             detail=(f"Emergency leave can be back-dated at most "
                     f"{rules['backdate_days']} day(s) (earliest {oldest})"))
-    if rules["proof_days"] <= 0 or has_attachment:
+
+
+def cert_required(leave_type, days: float) -> bool:
+    """Whether the type's `requires_medical_cert_after` rule applies."""
+    thr = getattr(leave_type, "requires_medical_cert_after", None)
+    return bool(thr and days >= thr)
+
+
+async def proof_due_date(
+    db, *, leave_type, days: float, end_date: date, has_attachment: bool,
+) -> Optional[date]:
+    """Proof is needed ONLY when the leave type's medical-certificate rule
+    would have required an attachment (and none was sent). Emergency leave
+    defers it to end_date + `leave.emergency_proof_days`; with 0 days there
+    is no grace, so the attachment is required upfront (400). Anything else
+    needs no proof (None)."""
+    if has_attachment or not cert_required(leave_type, days):
         return None
-    return end_date + timedelta(days=rules["proof_days"])
+    proof_days = (await get_emergency_leave_rules(db))["proof_days"]
+    if proof_days <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{leave_type.name} requires a medical certificate for "
+                    f"{leave_type.requires_medical_cert_after}+ consecutive "
+                    f"days"))
+    return end_date + timedelta(days=proof_days)
 
 
 # ------------------------------ coverage gaps ------------------------------
@@ -124,7 +145,8 @@ async def dismiss_gaps_for_leave(
     note: str = "Leave rejected/cancelled",
 ) -> int:
     """Dismiss still-OPEN emergency_leave gaps tied to `leave` (cancelling a
-    linked open shift). Returns the number dismissed. Does not commit."""
+    linked open shift). Gaps already FILLED stay filled (the replacement
+    keeps the shift). Returns the number dismissed. Does not commit."""
     from app.services import open_shifts as os_svc
 
     gaps = (await db.execute(select(CoverageGap).where(
@@ -200,6 +222,21 @@ async def _send_reminders(db, today: date, user_ids) -> int:
     return sent
 
 
+async def _processed_payroll_months(db, lv: LeaveRequest) -> List[str]:
+    """'YYYY-MM' of payroll runs covering the leave's months that are past
+    DRAFT (their LOP will not be recomputed)."""
+    from app.models.payroll import PayrollRun, PayrollRunStatus
+
+    months, d = set(), lv.start_date.replace(day=1)
+    while d <= lv.end_date:
+        months.add((d.year, d.month))
+        d = (d + timedelta(days=32)).replace(day=1)
+    runs = (await db.execute(select(PayrollRun).where(
+        PayrollRun.status != PayrollRunStatus.DRAFT))).scalars().all()
+    return sorted(f"{r.year}-{r.month:02d}" for r in runs
+                  if (r.year, r.month) in months)
+
+
 async def convert_leave_to_lop(db, leave_id: int, now: datetime) -> bool:
     """Convert one overdue emergency leave to LOP. Locks the leave row and
     re-checks, so concurrent runs convert (and refund) exactly once. Paid
@@ -226,6 +263,10 @@ async def convert_leave_to_lop(db, leave_id: int, now: datetime) -> bool:
            f"not submitted by {lv.proof_due_date}; the leave is now loss "
            f"of pay.")
     title = "Emergency leave converted to LOP"
+    processed = await _processed_payroll_months(db, lv)
+    if processed:
+        logger.warning("emergency leave %s converted to LOP after payroll "
+                       "was processed for %s", lv.id, ", ".join(processed))
     await _safe_notify(
         db, user_id=lv.employee_id, event_type="leave_converted_lop",
         title=title, message=msg, resource_type=RTYPE,
@@ -236,6 +277,8 @@ async def convert_leave_to_lop(db, leave_id: int, now: datetime) -> bool:
             continue
         hmsg = (f"{who}'s emergency leave {lv.start_date} to {lv.end_date} "
                 f"was converted to LOP (no proof by {lv.proof_due_date}).")
+        for m in processed:
+            hmsg += f" Payroll for {m} already processed — LOP needs manual adjustment."
         await _safe_notify(
             db, user_id=uid, event_type="leave_converted_lop",
             title=f"{who}: leave converted to LOP", message=hmsg,
@@ -250,13 +293,13 @@ async def proof_check_job(
     user_ids: Optional[Iterable[int]] = None,
 ) -> dict:
     """Daily: remind (1 day before due) and convert overdue emergency leaves.
-    `leave.emergency_proof_days` = 0 disables the job. Idempotent."""
+    The stored `proof_due_date` is authoritative (later rule changes do not
+    affect existing leaves). Idempotent; one failing leave never blocks the
+    rest."""
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     today = now.date()
-    if (await get_emergency_leave_rules(db))["proof_days"] <= 0:
-        return {"skipped": "disabled"}
     uids = list(user_ids) if user_ids is not None else None
     reminded = await _send_reminders(db, today, uids)
     await db.commit()
@@ -269,9 +312,15 @@ async def proof_check_job(
     if uids is not None:
         q = q.where(LeaveRequest.employee_id.in_(uids))
     ids = list((await db.execute(q.order_by(LeaveRequest.id))).scalars().all())
-    converted = 0
+    converted = failed = 0
     for lid in ids:
-        if await convert_leave_to_lop(db, lid, now):
-            converted += 1
-        await db.commit()
-    return {"reminded": reminded, "converted": converted}
+        try:
+            if await convert_leave_to_lop(db, lid, now):
+                converted += 1
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            failed += 1
+            logger.error("emergency leave %s LOP conversion failed", lid,
+                         exc_info=True)
+    return {"reminded": reminded, "converted": converted, "failed": failed}
