@@ -436,10 +436,46 @@ async def test_missing_leave_row_does_not_approve_item(client, world):
         it = await db.get(ApprovalItem, item)
         it.resource_id = "99999999"
         await db.commit()
-    h = await _login(client, world, "mgr")
-    r = await client.post(_a(item, "leave"), headers=h,
-                          json={"status": "approved"})
-    assert r.status_code in (404, 409, 500), r.text
+    try:
+        h = await _login(client, world, "mgr")
+        r = await client.post(_a(item, "leave"), headers=h,
+                              json={"status": "approved"})
+        assert r.status_code in (404, 409, 500), r.text
+        async with SessionLocal() as db:
+            assert (await db.get(ApprovalItem, item)).status == ApprovalStatus.PENDING
+        assert await _used(world) == 0.0
+    finally:  # restore the link so the fixture teardown can find + delete it
+        async with SessionLocal() as db:
+            it = await db.get(ApprovalItem, item)
+            it.resource_id = str(lid)
+            await db.commit()
+
+
+async def test_changes_requested_on_leave_and_comp_off_is_400(client, world):
+    ids = world["ids"]
+    lid, item = await _mk_leave(world, day=25, days=1)
     async with SessionLocal() as db:
-        assert (await db.get(ApprovalItem, item)).status == ApprovalStatus.PENDING
-    assert await _used(world) == 0.0
+        acc = CompOffAccrual(user_id=ids["emp"], holiday_date=date(2031, 1, 27),
+                             worked_minutes=480, days_credited=1.0,
+                             status="pending")
+        db.add(acc)
+        await db.flush()
+        co_item = ApprovalItem(resource_type="comp_off_accrual",
+                               resource_id=str(acc.id),
+                               status=ApprovalStatus.PENDING,
+                               current_step_number=1, requested_by_id=ids["emp"])
+        db.add(co_item)
+        await db.flush()
+        db.add(ApprovalStep(approval_item_id=co_item.id, step_number=1,
+                            approver_id=ids["mgr"],
+                            status=ApprovalStatus.PENDING))
+        await db.commit()
+        co_id = co_item.id
+    h = await _login(client, world, "mgr")
+    for it in (item, co_id):
+        r = await client.post(_a(it, "generic"), headers=h,
+                              json={"status": "changes_requested"})
+        assert r.status_code == 400, r.text
+        async with SessionLocal() as db:
+            assert (await db.get(ApprovalItem, it)).status == ApprovalStatus.PENDING
+    assert await _status(lid) == LeaveStatus.SUBMITTED

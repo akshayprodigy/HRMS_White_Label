@@ -727,3 +727,15 @@ async def test_assign_warns_when_replacement_over_ot_cap(client, world):
             await db.execute(delete(OvertimeRule).where(
                 OvertimeRule.name == f"GOT{w['sfx']}"))
             await db.commit()
+
+
+async def test_create_gap_unknown_or_non_employee_absent_user(client, world):
+    w, ids = world, world["ids"]
+    base = {"work_date": D.isoformat(), "shift_template_id": ids["t1"],
+            "source": "sick_call"}
+    ha = await _h(client, w, "admin")
+    r = await client.post(API, headers=ha, json={**base, "absent_user_id": 999999999})
+    assert r.status_code == 404, r.text
+    # an existing user with no active employee record
+    r = await client.post(API, headers=ha, json={**base, "absent_user_id": ids["admin"]})
+    assert r.status_code == 400, r.text

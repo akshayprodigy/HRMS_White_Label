@@ -18,7 +18,7 @@ from app.api.v1.endpoints.roster_common import (
     commit_or_409, guard_conflicts, lock_row, lock_user_rows, names,
 )
 from app.models.coverage_gap import CoverageGap, GapSource, GapStatus
-from app.models.employee import Employee
+from app.models.employee import Employee, EmployeeStatus
 from app.models.open_shift import OpenShift, OpenShiftStatus
 from app.models.roster import RosterEntry, RosterStatus
 from app.models.shift import ShiftTemplate
@@ -215,6 +215,13 @@ async def create_gap(
             status_code=400, detail="Unknown or inactive shift template")
     admin = roster_svc.is_roster_admin(current_user)
     if body.absent_user_id:
+        if await db.get(User, body.absent_user_id) is None:
+            raise HTTPException(status_code=404, detail="Absent employee not found")
+        if (await db.execute(select(Employee.id).where(
+                Employee.user_id == body.absent_user_id,
+                Employee.status == EmployeeStatus.ACTIVE).limit(1))).first() is None:
+            raise HTTPException(
+                status_code=400, detail="Absent user is not an active employee")
         if not await roster_svc.can_manage_employee(
                 db, current_user, body.absent_user_id):
             raise HTTPException(

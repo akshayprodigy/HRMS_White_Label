@@ -510,6 +510,14 @@ async def action_approval(
     if not item:
         raise HTTPException(status_code=404, detail="Approval item not found")
 
+    # Leave / comp-off requests have no "changes requested" state.
+    if (item.resource_type in DECISION_RESOURCES
+            and action.status == ApprovalStatus.CHANGES_REQUESTED):
+        raise HTTPException(
+            status_code=400,
+            detail="Changes cannot be requested on leave or comp-off requests; "
+                   "approve or reject instead")
+
     # W3: separation of duties — cannot approve your own request.
     if action.status == ApprovalStatus.APPROVED:
         requester_id = await resolve_approval_owner_id(db, item)
