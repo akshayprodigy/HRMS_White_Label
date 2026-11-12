@@ -2,7 +2,7 @@
 from datetime import date as pydate
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 
 class RosterCell(BaseModel):
@@ -113,6 +113,7 @@ class RosterEntryRead(BaseModel):
     shift_template_name: Optional[str] = None
     shift_start: Optional[str] = None
     shift_end: Optional[str] = None
+    notice: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -159,7 +160,7 @@ class RosterChangeRequestRead(BaseModel):
 class RotationPatternBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=255)
-    cycle: List[Optional[int]] = Field(..., min_length=1, max_length=56)
+    cycle: List[Optional[StrictInt]] = Field(..., min_length=1, max_length=56)
 
 
 class RotationPatternCreate(RotationPatternBase):
@@ -169,7 +170,7 @@ class RotationPatternCreate(RotationPatternBase):
 class RotationPatternUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=255)
-    cycle: Optional[List[Optional[int]]] = Field(
+    cycle: Optional[List[Optional[StrictInt]]] = Field(
         default=None, min_length=1, max_length=56
     )
     is_active: Optional[bool] = None
@@ -190,7 +191,7 @@ class RotationApplyRequest(BaseModel):
     end: pydate
     anchor: pydate
     offsets: Optional[Dict[int, int]] = None  # user id -> offset
-    default_offset: int = 0
+    default_offset: int = Field(default=0, ge=-1000, le=1000)
     overwrite: bool = True
     status: str = "draft"
 
@@ -199,6 +200,13 @@ class RotationApplyRequest(BaseModel):
     def _status(cls, v: str) -> str:
         if v not in ("draft", "published"):
             raise ValueError("status must be 'draft' or 'published'")
+        return v
+
+    @field_validator("offsets")
+    @classmethod
+    def _offsets(cls, v):
+        if v and any(abs(o) > 1000 for o in v.values()):
+            raise ValueError("offsets must be within -1000..1000")
         return v
 
     @model_validator(mode="after")

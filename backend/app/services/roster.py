@@ -281,15 +281,24 @@ async def upsert_entry(
     department: Optional[str],
     overwrite: bool,
     protect_published: bool = False,
+    existing_map: Optional[Dict[Tuple[int, pydate], RosterEntry]] = None,
 ) -> Tuple[RosterEntry, str]:
     """Create or update the single roster cell for (employee, date). Returns
-    (entry, 'created'|'updated'|'skipped')."""
-    existing = (await db.execute(
-        select(RosterEntry).where(
-            RosterEntry.employee_id == employee_id,
-            RosterEntry.work_date == work_date,
-        )
-    )).scalars().first()
+    (entry, 'created'|'updated'|'skipped'). A week-off cell never carries a
+    shift template. When `existing_map` is given it is used instead of a
+    per-cell SELECT (and newly created entries are added to it)."""
+    if is_week_off:
+        shift_template_id = None
+    key = (employee_id, work_date)
+    if existing_map is not None:
+        existing = existing_map.get(key)
+    else:
+        existing = (await db.execute(
+            select(RosterEntry).where(
+                RosterEntry.employee_id == employee_id,
+                RosterEntry.work_date == work_date,
+            )
+        )).scalars().first()
     if existing is not None:
         if not overwrite:
             return existing, "skipped"
@@ -313,7 +322,27 @@ async def upsert_entry(
         assigned_by_id=actor_id,
     )
     db.add(entry)
+    if existing_map is not None:
+        existing_map[key] = entry
     return entry, "created"
+
+
+async def prefetch_entries(
+    db: AsyncSession, user_ids, start: pydate, end: pydate, chunk: int = 500
+) -> Dict[Tuple[int, pydate], RosterEntry]:
+    out: Dict[Tuple[int, pydate], RosterEntry] = {}
+    ids = sorted(set(user_ids))
+    for i in range(0, len(ids), chunk):
+        rows = (await db.execute(
+            select(RosterEntry).where(
+                RosterEntry.employee_id.in_(ids[i:i + chunk]),
+                RosterEntry.work_date >= start,
+                RosterEntry.work_date <= end,
+            )
+        )).scalars().all()
+        for r in rows:
+            out[(r.employee_id, r.work_date)] = r
+    return out
 
 
 def _hhmm(t) -> Optional[str]:

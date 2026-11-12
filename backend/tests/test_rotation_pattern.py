@@ -338,3 +338,124 @@ async def test_bulk_overwrite_protects_published(client, world):
         "pattern": {str((D + timedelta(days=5)).weekday()): t2}})
     assert len(r.json()["errors"]) == 1
     assert (await _cells(e1))[-1][3] == "draft"
+
+
+# ----------------------------- review fixes -----------------------------
+
+async def test_apply_select_count_bounded(client, world):
+    from sqlalchemy import event
+    pid, ha = await _mkpat(client, world, cycle=[world["ids"]["t1"], None])
+    stmts = []
+
+    def _count(conn, cursor, statement, *a):
+        if statement.lstrip().upper().startswith("SELECT"):
+            stmts.append(statement)
+
+    sync_engine = SessionLocal.kw["bind"].sync_engine
+    event.listen(sync_engine, "before_cursor_execute", _count)
+    try:
+        r = await client.post(
+            f"{ROSTER}/rotations/{pid}/apply", headers=ha,
+            json=_apply_body(world, ["e1", "e2", "e3"],
+                             end=(D + timedelta(days=13)).isoformat()))
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _count)
+    assert r.status_code == 200 and r.json()["created"] == 42
+    assert len(stmts) < 25, len(stmts)  # 42 cells; not per-cell
+
+
+async def test_validation_fixes(client, world):
+    ha = await _login(client, world["admin_email"])
+    e1, t1, t3 = world["ids"]["e1"], world["ids"]["t1"], world["ids"]["t3"]
+    r = await client.post(f"{ROSTER}/entries", headers=ha, json={
+        "employee_id": e1, "work_date": D.isoformat(), "shift_template_id": t1})
+    eid = r.json()["id"]
+    assert (await client.patch(f"{ROSTER}/entries/{eid}", headers=ha,
+                               json={"shift_template_id": 99999999})
+            ).status_code == 422
+    assert (await client.patch(f"{ROSTER}/entries/{eid}", headers=ha,
+                               json={"shift_template_id": t3})
+            ).status_code == 422
+    assert (await client.patch(f"{ROSTER}/entries/{eid}", headers=ha,
+                               json={"is_week_off": None})).status_code == 422
+    assert (await client.post(f"{ROSTER}/entries", headers=ha, json={
+        "employee_id": e1, "work_date": D.isoformat(),
+        "shift_template_id": 99999999})).status_code == 422
+    assert (await client.post(f"{ROSTER}/bulk", headers=ha, json={
+        "employee_ids": [e1], "start": D.isoformat(), "end": D.isoformat(),
+        "pattern": {"0": 99999999}})).status_code == 422
+    # week-off clears the template
+    r = await client.patch(f"{ROSTER}/entries/{eid}", headers=ha,
+                           json={"is_week_off": True})
+    assert r.status_code == 200 and r.json()["shift_template_id"] is None
+    # bool in cycle rejected
+    r = await client.post(f"{ROSTER}/rotations", headers=ha, json={
+        "name": f"b{world['sfx']}", "cycle": [True, None]})
+    assert r.status_code == 422
+    # inactive template at apply time
+    pid, _ = await _mkpat(client, world, name="stale")
+    async with SessionLocal() as db:
+        t = await db.get(ShiftTemplate, t1)
+        t.is_active = False
+        await db.commit()
+    try:
+        r = await client.post(f"{ROSTER}/rotations/{pid}/apply", headers=ha,
+                              json=_apply_body(world, ["e1"]))
+        assert r.status_code == 422 and str(t1) in r.text
+    finally:
+        async with SessionLocal() as db:
+            t = await db.get(ShiftTemplate, t1)
+            t.is_active = True
+            await db.commit()
+
+
+async def test_inactive_name_message_and_no_scope_apply(client, world):
+    pid, ha = await _mkpat(client, world, name="dup")
+    await client.delete(f"{ROSTER}/rotations/{pid}", headers=ha)
+    r = await client.post(f"{ROSTER}/rotations", headers=ha, json={
+        "name": f"dup{world['sfx']}", "cycle": [None]})
+    assert r.status_code == 409 and "inactive" in r.json()["detail"]
+    pid2, _ = await _mkpat(client, world, name="live")
+    hd = await _login(client, world["email"])
+    r = await client.post(f"{ROSTER}/rotations/{pid2}/apply", headers=hd,
+                          json=_apply_body(world, ["e1"]))
+    assert r.status_code == 403
+
+
+async def test_downgrade_notice_and_message_only_when_written(client, world):
+    hd = await _login(client, world["email"])
+    ha = await _login(client, world["admin_email"])
+    e1, t1 = world["ids"]["e1"], world["ids"]["t1"]
+    await _grant(world, can_publish=False)
+    r = await client.post(f"{ROSTER}/entries", headers=hd, json={
+        "employee_id": e1, "work_date": D.isoformat(), "shift_template_id": t1})
+    assert r.json()["notice"] == "Saved as draft: publishing requires HR approval"
+    # all cells skipped (live) => no downgrade message
+    await client.post(f"{ROSTER}/entries", headers=ha, json={
+        "employee_id": e1, "work_date": (D + timedelta(days=9)).isoformat(),
+        "shift_template_id": t1})
+    r = await client.post(f"{ROSTER}/bulk", headers=hd, json={
+        "employee_ids": [e1], "start": (D + timedelta(days=9)).isoformat(),
+        "end": (D + timedelta(days=9)).isoformat(),
+        "pattern": {str((D + timedelta(days=9)).weekday()): t1}})
+    assert r.json()["skipped"] == 1 and r.json()["errors"] == []
+
+
+async def test_commit_or_409_helper():
+    from fastapi import HTTPException
+    from sqlalchemy.exc import IntegrityError
+    from app.api.v1.endpoints.roster import _commit_or_409
+
+    class FakeDB:
+        rolled = False
+
+        async def commit(self):
+            raise IntegrityError("x", {}, Exception("dup"))
+
+        async def rollback(self):
+            self.rolled = True
+
+    db = FakeDB()
+    with pytest.raises(HTTPException) as ei:
+        await _commit_or_409(db)
+    assert ei.value.status_code == 409 and db.rolled
