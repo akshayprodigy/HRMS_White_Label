@@ -32,6 +32,7 @@ import { LettersHR } from './components/letters-hr';
 import { LetterTemplatesHR } from './components/letter-templates';
 import { CelebrationsReport } from './components/celebrations-report';
 import { RosterPlanner } from './components/roster-planner';
+import { LiveBoard } from './components/live-board';
 import { ExecutiveReports } from './components/executive-reports';
 import { AdminView } from './components/admin-view';
 import { OrgChartView } from './components/org-chart-view';
@@ -424,6 +425,8 @@ const App = () => {
         return <ShiftsWorkspace role={userRole} />;
       case 'roster-planner':
         return <RosterPlanner />;
+      case 'live-board':
+        return <LiveBoard />;
       case 'geo-workspace':
         return <GeoWorkspace role={userRole} />;
       case 'overtime-admin':
@@ -581,6 +584,7 @@ const App = () => {
       'attendance-hr': 'Attendance Control',
       'shifts-workspace': 'Shift Management',
       'roster-planner': 'Roster Planner',
+      'live-board': 'Live Board',
       'geo-workspace': 'Geo Attendance',
       'overtime-admin': 'Overtime Administration',
       'revisions-workspace': 'Salary Revisions',

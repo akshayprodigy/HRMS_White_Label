@@ -716,3 +716,22 @@ register_job(JobSpec(
     default_cadence_cron="0 4 * * *",     # daily 04:00 UTC
     fn=_job_birthday_anniversary_reminders,
 ))
+
+
+async def _job_roster_no_show_alerts(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.live_ops import no_show_job
+    return await no_show_job(session)
+
+
+register_job(JobSpec(
+    name="roster_no_show_alerts",
+    display_name="Roster no-show alerts",
+    description=(
+        "Every 5 minutes: flag employees with a working shift who have not "
+        "punched in within `schedule.no_show_minutes` of shift start, and "
+        "alert them, their manager and schedule delegates (once per "
+        "employee per work date). 0 minutes disables."
+    ),
+    default_cadence_cron="*/5 * * * *",
+    fn=_job_roster_no_show_alerts,
+))

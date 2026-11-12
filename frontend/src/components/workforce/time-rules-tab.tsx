@@ -48,6 +48,7 @@ const SCHEDULE_FIELDS: { key: string; label: string; hint: string; max: number }
   { key: 'schedule.max_consecutive_days', label: 'Max Consecutive Days', hint: 'Longest run of working days. 0 = off (range 0–31)', max: 31 },
   { key: 'schedule.max_consecutive_nights', label: 'Max Consecutive Nights', hint: 'Longest run of night shifts. 0 = off (range 0–31)', max: 31 },
   { key: 'schedule.max_weekly_hours', label: 'Max Weekly Hours', hint: 'Scheduled hours per week. 0 = off (range 0–168)', max: 168 },
+  { key: 'schedule.no_show_minutes', label: 'No-show After (minutes)', hint: 'Minutes after shift start with no punch-in before a no-show alert. 0 = off (range 0–240)', max: 240 },
 ];
 
 const inputCls =

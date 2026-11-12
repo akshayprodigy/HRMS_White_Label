@@ -57,6 +57,11 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
     "schedule.max_weekly_hours": (
         "48", "Maximum scheduled hours per Mon-Sun week (0 = off)"
     ),
+    "schedule.no_show_minutes": (
+        "30",
+        "Minutes after shift start with no punch-in before an employee is "
+        "flagged a no-show and alerts are sent (0 = off)",
+    ),
 }
 
 # key -> inclusive upper bound
@@ -65,6 +70,7 @@ SCHEDULE_INT_CAPS: Dict[str, int] = {
     "schedule.max_consecutive_days": 31,
     "schedule.max_consecutive_nights": 31,
     "schedule.max_weekly_hours": 168,
+    "schedule.no_show_minutes": 240,
 }
 SCHEDULE_INT_KEYS = tuple(SCHEDULE_INT_CAPS)
 

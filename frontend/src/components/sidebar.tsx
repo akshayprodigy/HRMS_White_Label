@@ -253,6 +253,13 @@ const menuItems: MenuItem[] = [
     group: "Time & Attendance",
   },
   {
+    id: "live-board",
+    label: "Live Board",
+    icon: Activity,
+    roles: ["hr", "pm", "dept head", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
     id: "geo-workspace",
     label: "Geo Attendance",
     icon: MapPin,
