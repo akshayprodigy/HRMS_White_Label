@@ -18,7 +18,8 @@ import {
 } from './ui/dialog';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { ScheduleDelegations, scopeLabel, errMsg } from './schedule-delegations';
+import { ScheduleDelegations } from './schedule-delegations';
+import { scopeLabel, errMsg } from './schedule-delegations-utils';
 
 interface ShiftTemplateLite {
   id: number;
@@ -85,6 +86,8 @@ export const RosterPlanner = () => {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [view, setView] = useState<'planner' | 'delegations'>('planner');
+  // null until the first response; latched so a later failed fetch doesn't unmount Delegations.
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [myGrants, setMyGrants] = useState<any[]>([]);
   const [savingCell, setSavingCell] = useState<string | null>(null);
 
@@ -116,22 +119,25 @@ export const RosterPlanner = () => {
         ENDPOINTS.ROSTER.PLAN + '?' + params.toString()
       );
       setGrid(res.data);
+      setIsAdmin((prev) => prev === true ? true : !!res.data.is_admin);
     } catch (err: any) {
       const msg = errMsg(err, 'Failed to load roster');
       toast.error(msg);
       setLoadError(msg);
       setGrid(null);
+      setIsAdmin((prev) => (prev === null ? false : prev));
     } finally {
       setLoading(false);
     }
   }, [range, department]);
 
   useEffect(() => {
+    if (isAdmin !== false) return; // admins don't need the banner
     client
       .get(ENDPOINTS.ROSTER.DELEGATIONS_MY)
       .then((r) => setMyGrants(r.data || []))
       .catch(() => setMyGrants([]));
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     fetchGrid();
@@ -231,12 +237,13 @@ export const RosterPlanner = () => {
         </div>
       </div>
 
-      {grid?.is_admin && (
-        <div className="flex rounded-lg border border-gray-200 overflow-hidden w-fit">
+      {isAdmin && (
+        <div role="group" aria-label="Roster view" className="flex rounded-lg border border-gray-200 overflow-hidden w-fit">
           {(['planner', 'delegations'] as const).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
+              aria-pressed={view === v}
               className={cn(
                 'px-3 py-1.5 text-sm font-medium',
                 view === v
@@ -250,11 +257,11 @@ export const RosterPlanner = () => {
         </div>
       )}
 
-      {grid?.is_admin && view === 'delegations' ? (
+      {isAdmin && view === 'delegations' ? (
         <ScheduleDelegations />
       ) : (
       <>
-      {!grid?.is_admin && myGrants.length > 0 && (
+      {isAdmin === false && myGrants.length > 0 && (
         <div className="flex items-start gap-2 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-800">
           <Info className="w-4 h-4 mt-0.5 shrink-0" />
           <div>
