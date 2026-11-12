@@ -18,6 +18,7 @@ import {
 } from './ui/dialog';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
+import { ScheduleDelegations, scopeLabel, errMsg } from './schedule-delegations';
 
 interface ShiftTemplateLite {
   id: number;
@@ -82,6 +83,9 @@ export const RosterPlanner = () => {
   const [department, setDepartment] = useState('');
   const [grid, setGrid] = useState<RosterGrid | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [view, setView] = useState<'planner' | 'delegations'>('planner');
+  const [myGrants, setMyGrants] = useState<any[]>([]);
   const [savingCell, setSavingCell] = useState<string | null>(null);
 
   // Pattern dialog
@@ -103,6 +107,7 @@ export const RosterPlanner = () => {
 
   const fetchGrid = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const { start, end } = range();
       const params = new URLSearchParams({ start, end });
@@ -112,15 +117,21 @@ export const RosterPlanner = () => {
       );
       setGrid(res.data);
     } catch (err: any) {
-      const detail = err?.response?.data?.detail;
-      toast.error(
-        typeof detail === 'string' ? detail : 'Failed to load roster'
-      );
+      const msg = errMsg(err, 'Failed to load roster');
+      toast.error(msg);
+      setLoadError(msg);
       setGrid(null);
     } finally {
       setLoading(false);
     }
   }, [range, department]);
+
+  useEffect(() => {
+    client
+      .get(ENDPOINTS.ROSTER.DELEGATIONS_MY)
+      .then((r) => setMyGrants(r.data || []))
+      .catch(() => setMyGrants([]));
+  }, []);
 
   useEffect(() => {
     fetchGrid();
@@ -219,6 +230,46 @@ export const RosterPlanner = () => {
           </p>
         </div>
       </div>
+
+      {grid?.is_admin && (
+        <div className="flex rounded-lg border border-gray-200 overflow-hidden w-fit">
+          {(['planner', 'delegations'] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={cn(
+                'px-3 py-1.5 text-sm font-medium',
+                view === v
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              )}
+            >
+              {v === 'planner' ? 'Planner' : 'Delegations'}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {grid?.is_admin && view === 'delegations' ? (
+        <ScheduleDelegations />
+      ) : (
+      <>
+      {!grid?.is_admin && myGrants.length > 0 && (
+        <div className="flex items-start gap-2 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-800">
+          <Info className="w-4 h-4 mt-0.5 shrink-0" />
+          <div>
+            You can schedule: {myGrants.map((g) => scopeLabel(g)).join('; ')}
+            {myGrants.some((g) => !g.can_publish) &&
+              ' — publishing requires HR approval'}
+          </div>
+        </div>
+      )}
+
+      {loadError && !grid && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
 
       {/* Precedence note */}
       <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800">
@@ -475,6 +526,8 @@ export const RosterPlanner = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </>
+      )}
     </div>
   );
 };
