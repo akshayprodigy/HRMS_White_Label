@@ -445,7 +445,7 @@ async def test_downgrade_notice_and_message_only_when_written(client, world):
 async def test_commit_or_409_helper():
     from fastapi import HTTPException
     from sqlalchemy.exc import IntegrityError
-    from app.api.v1.endpoints.roster import _commit_or_409
+    from app.api.v1.endpoints.roster_common import commit_or_409 as _commit_or_409
 
     class FakeDB:
         rolled = False

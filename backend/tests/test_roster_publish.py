@@ -1,5 +1,6 @@
 """Publish lifecycle + change history tests (Roadmap v2 Phase 1A, Task 5).
 DB-backed; everything created is removed in fixture teardown."""
+import asyncio
 import uuid
 from datetime import date, time, timedelta, datetime, timezone
 
@@ -257,10 +258,10 @@ async def test_publish_flips_only_permitted(client, world):
     assert r.json()["published"] == 0
     r = await client.post(f"{ROSTER}/publish", headers=ha, json={
         "start": dd(5), "end": dd(0)})
-    assert r.status_code == 422
+    assert r.status_code == 400
     r = await client.post(f"{ROSTER}/publish", headers=ha, json={
         "start": dd(0), "end": dd(80)})
-    assert r.status_code == 422
+    assert r.status_code == 400
 
 
 async def test_publish_request_flow(client, world):
@@ -353,13 +354,14 @@ async def test_copy_week(client, world):
     assert r.status_code == 422
     r = await client.post(f"{ROSTER}/copy", headers=ha, json={
         **body, "source_end": dd(40), "target_start": dd(60)})
-    assert r.status_code == 422
+    assert r.status_code == 400
 
 
 async def test_history_scoping_and_my(client, world):
     ha = await _login(client, world["admin_email"])
     hd = await _login(client, world["email"])
     he = await _login(client, world["e1_email"])
+    ho = await _login(client, world["other_email"])
     await _grant(world, can_publish=True)
     e1, e3, t2 = world["ids"]["e1"], world["ids"]["e3"], world["ids"]["t2"]
     pub = await _put(client, ha, world, "e1", 0)
@@ -367,20 +369,102 @@ async def test_history_scoping_and_my(client, world):
     r = await client.patch(f"{ROSTER}/entries/{pub['id']}", headers=hd,
                            json={"shift_template_id": t2, "reason": "swap"})
     assert r.status_code == 200, r.text
-    params = {"employee_id": e1, "start": dd(-1), "end": dd(3)}
-    r = await client.get(f"{ROSTER}/history", headers=hd, params=params)
+    # default window = last 30 days of CHANGES (work date is in 2030)
+    r = await client.get(f"{ROSTER}/history", headers=hd,
+                         params={"employee_id": e1})
     assert r.status_code == 200 and len(r.json()) == 1
     row = r.json()[0]
     assert row["employee_name"] == "PB e1" and row["changed_by_name"] == "PB deleg"
     assert row["old_shift_name"].startswith("PBT1") and row["new_shift_name"].startswith("PBT2")
+    # work-date filters narrow
+    r = await client.get(f"{ROSTER}/history", headers=hd, params={
+        "employee_id": e1, "work_start": dd(1), "work_end": dd(3)})
+    assert r.json() == []
+    r = await client.get(f"{ROSTER}/history", headers=hd, params={
+        "employee_id": e1, "work_start": dd(0), "work_end": dd(0)})
+    assert len(r.json()) == 1
+    # change-time window that excludes now
+    old = (TODAY - timedelta(days=10)).isoformat()
+    r = await client.get(f"{ROSTER}/history", headers=hd, params={
+        "employee_id": e1, "start": old, "end": old})
+    assert r.json() == []
     assert (await client.get(f"{ROSTER}/history", headers=hd,
-                             params={**params, "employee_id": e3})).status_code == 403
+                             params={"employee_id": e3})).status_code == 403
     assert (await client.get(f"{ROSTER}/history", headers=hd, params={
-        "employee_id": e1, "start": dd(-100), "end": dd(0)})).status_code == 422
-    r = await client.get(f"{ROSTER}/my/history", headers=he,
-                         params={"start": dd(-1), "end": dd(3)})
+        "employee_id": e1,
+        "start": (TODAY - timedelta(days=100)).isoformat()})).status_code == 400
+    # non-admin without any scope and no employee_id -> 403
+    assert (await client.get(f"{ROSTER}/history", headers=ho)).status_code == 403
+    r = await client.get(f"{ROSTER}/my/history", headers=he)
     assert r.status_code == 200 and [x["id"] for x in r.json()] == [row["id"]]
     # drafts stay hidden from /my
     r = await client.get(f"{ROSTER}/my", headers=he,
                          params={"start": dd(0), "end": dd(3)})
     assert [x["work_date"] for x in r.json()] == [dd(0)]
+
+
+async def test_reason_only_when_history_written(client, world):
+    ha = await _login(client, world["admin_email"])
+    e1 = world["ids"]["e1"]
+    pub = await _put(client, ha, world, "e1", 0)
+    # note-only patch and idempotent re-save succeed without a reason
+    r = await client.patch(f"{ROSTER}/entries/{pub['id']}", headers=ha,
+                           json={"note": "n"})
+    assert r.status_code == 200, r.text
+    await _put(client, ha, world, "e1", 0)  # identical re-save
+    assert await _hist(e1) == []
+    # whitespace-only reason is rejected when a change would be recorded
+    r = await client.patch(f"{ROSTER}/entries/{pub['id']}", headers=ha,
+                           json={"is_week_off": True, "reason": "     "})
+    assert r.status_code == 422 and "at least 3" in r.text
+    r = await client.delete(f"{ROSTER}/entries/{pub['id']}", headers=ha,
+                            params={"reason": "   "})
+    assert r.status_code == 422
+
+
+async def test_publish_idempotent_and_concurrent(client, world):
+    ha = await _login(client, world["admin_email"])
+    e1, e2 = world["ids"]["e1"], world["ids"]["e2"]
+    for e in ("e1", "e2"):
+        for n in (0, 1, 2):
+            await _put(client, ha, world, e, n, status="draft")
+    body = {"start": dd(0), "end": dd(6), "employee_ids": [e1, e2]}
+    r1, r2 = await asyncio.gather(
+        client.post(f"{ROSTER}/publish", headers=ha, json=body),
+        client.post(f"{ROSTER}/publish", headers=ha, json=body),
+    )
+    # the loser either sees nothing left (0) or gets a 409 retry signal
+    codes = sorted([r1.status_code, r2.status_code])
+    assert codes[0] == 200 and codes[1] in (200, 409), (r1.text, r2.text)
+    done = [r.json()["published"] for r in (r1, r2) if r.status_code == 200]
+    assert sorted(done) in ([6], [0, 6])
+    r3 = await client.post(f"{ROSTER}/publish", headers=ha, json=body)
+    assert r3.json()["published"] == 0
+    for uid in (e1, e2):
+        assert len([h for h in await _hist(uid) if h.action == "publish"]) == 3
+        assert len(await _notes(uid)) == 1
+
+
+async def test_decide_noop_message(client, world):
+    ha = await _login(client, world["admin_email"])
+    hd = await _login(client, world["email"])
+    await _grant(world, can_publish=False)
+    await _put(client, ha, world, "e1", 0, status="draft")
+    body = {"start": dd(0), "end": dd(6)}
+    pr = (await client.post(f"{ROSTER}/publish-requests", headers=hd,
+                            json=body)).json()
+    await client.post(f"{ROSTER}/publish", headers=ha, json=body)
+    r = await client.post(f"{ROSTER}/publish-requests/{pr['id']}/decide",
+                          headers=ha, json={"approve": True})
+    assert r.status_code == 200
+    assert r.json()["publish_result"]["published"] == 0
+    assert "already published" in r.json()["message"]
+
+
+def test_format_dates_many_runs():
+    from app.services.roster import format_dates
+    ds = [D + timedelta(days=i) for i in (0, 1, 2, 4, 5, 7, 9, 10, 11, 13, 15, 17, 19)]
+    out = format_dates(ds)
+    assert out.endswith("+3 more")
+    assert f"{dd(0)} to {dd(2)}" in out and f"{dd(4)} to {dd(5)}" in out
+    assert format_dates([D]) == dd(0)

@@ -32,6 +32,7 @@ def upgrade():
     op.create_index("ix_roster_entry_history_id", "roster_entry_history", ["id"])
     op.create_index("ix_roster_entry_history_employee_id", "roster_entry_history", ["employee_id"])
     op.create_index("ix_roster_entry_history_work_date", "roster_entry_history", ["work_date"])
+    op.create_index("ix_roster_entry_history_changed_at", "roster_entry_history", ["changed_at"])
 
     op.create_table(
         "roster_publish_request",

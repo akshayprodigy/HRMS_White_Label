@@ -322,6 +322,7 @@ class PublishRequestRead(BaseModel):
     created_at: datetime
     draft_count: Optional[int] = None
     publish_result: Optional[RosterPublishResult] = None
+    message: Optional[str] = None
 
 
 class RosterCopyRequest(BaseModel):

@@ -11,16 +11,15 @@ from datetime import date as pydate, datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import and_, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
-from app.models.employee import Employee, EmployeeStatus
+from app.models.employee import Employee
+from app.models.leave import LeaveRequest, LeaveStatus
 from app.models.roster import (
     RosterEntry, RosterChangeRequest, RosterStatus, RosterChangeStatus,
-    RosterEntryHistory, RosterPublishRequest,
 )
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import User
@@ -28,171 +27,14 @@ from app.schemas.roster import (
     RosterGridResponse, RosterBulkRequest, RosterBulkResult,
     RosterEntryInput, RosterEntryRead, RosterEntryUpdate,
     RosterChangeRequestCreate, RosterChangeRequestRead, RosterChangeDecision,
-    RotationPatternCreate, RotationPatternUpdate, RotationPatternRead,
-    RotationApplyRequest,
-    RosterInsightsResponse, ViolationRead, CoverageCellRead,
-    CoverageRequirementCreate, CoverageRequirementUpdate,
-    CoverageRequirementRead,
-    RosterPublishBody, RosterPublishResult, PublishRequestCreate,
-    PublishRequestDecision, PublishRequestRead, RosterCopyRequest,
-    RosterHistoryRead,
 )
-from app.models.user import Role, Permission
-from app.models.rotation_pattern import RotationPattern
-from app.models.coverage_requirement import CoverageRequirement
-from app.services import schedule_rules
-from app.services.time_rules import get_schedule_rules
 from app.services import roster as roster_svc
+from app.api.v1.endpoints.roster_common import (
+    entry_read, require_manage, commit_or_409,
+    validate_templates, write_cells, NO_PUBLISH_MSG, REASON_MSG, DRAFT_NOTICE,
+)
 
 router = APIRouter()
-
-
-# ----------------------------- helpers -----------------------------
-
-async def _entry_read(db, entry: RosterEntry) -> RosterEntryRead:
-    tpl = (
-        await db.get(ShiftTemplate, entry.shift_template_id)
-        if entry.shift_template_id else None
-    )
-    u = await db.get(User, entry.employee_id)
-    return RosterEntryRead(
-        id=entry.id,
-        employee_id=entry.employee_id,
-        work_date=entry.work_date,
-        shift_template_id=entry.shift_template_id,
-        is_week_off=entry.is_week_off,
-        status=entry.status,
-        note=entry.note,
-        assigned_by_id=entry.assigned_by_id,
-        employee_name=u.full_name if u else None,
-        shift_template_name=tpl.name if tpl else None,
-        shift_start=tpl.start_time.strftime("%H:%M") if tpl else None,
-        shift_end=tpl.end_time.strftime("%H:%M") if tpl else None,
-    )
-
-
-async def _require_manage(db, user: User, employee_user_id: int) -> None:
-    if not await roster_svc.can_manage_employee(db, user, employee_user_id):
-        raise HTTPException(
-            status_code=403,
-            detail="This employee is outside your roster scope.",
-        )
-
-
-NO_PUBLISH_MSG = "Publishing requires HR approval for this employee"
-REASON_MSG = "reason required to change a published schedule"
-DRAFT_NOTICE = "Saved as draft: publishing requires HR approval"
-
-
-async def _commit_or_409(
-    db, msg: str = "Roster changed concurrently; retry"
-) -> None:
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail=msg)
-
-
-async def _validate_templates(db, ids) -> None:
-    ids = {i for i in ids if i is not None}
-    if not ids:
-        return
-    ok = set((await db.execute(
-        select(ShiftTemplate.id).where(
-            ShiftTemplate.id.in_(ids), ShiftTemplate.is_active.is_(True)
-        )
-    )).scalars().all())
-    bad = sorted(ids - ok)
-    if bad:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown or inactive shift template id(s): {bad}",
-        )
-
-
-async def _write_cells(
-    db, user: User, allowed: set, cells, status: str, overwrite: bool,
-    result: RosterBulkResult, protect_all_published: bool = False,
-    reason: str = "bulk re-plan",
-) -> None:
-    """Write (uid, date, tpl, week_off) cells for `allowed` employees.
-    Publish rights are resolved ONCE; non-publishers' cells are saved as
-    draft (one message per employee) and never overwrite a live cell.
-    Edits to PUBLISHED cells are recorded in history and each affected
-    employee is notified once."""
-    pub = await roster_svc.publishable_subset(db, user, allowed)
-    dept_by_uid = {
-        e.user_id: e.department
-        for e in (await db.execute(
-            select(Employee).where(Employee.user_id.in_(allowed))
-        )).scalars().all()
-    }
-    downgraded: set = set()
-    cells = list(cells)
-    existing_map = (
-        await roster_svc.prefetch_entries(
-            db, allowed, min(c[1] for c in cells), max(c[1] for c in cells)
-        ) if cells else {}
-    )
-    changed: dict = {}
-    for (uid, wd, tpl_id, week_off) in cells:
-        prior = existing_map.get((uid, wd))
-        prior_snap = (
-            (prior.shift_template_id, prior.is_week_off, prior.status)
-            if prior is not None else None
-        )
-        eff = status
-        can_pub = uid in pub
-        if status == RosterStatus.PUBLISHED and not can_pub:
-            eff = RosterStatus.DRAFT
-        with db.no_autoflush:
-            _e, outcome = await roster_svc.upsert_entry(
-                db,
-                employee_id=uid, work_date=wd, shift_template_id=tpl_id,
-                is_week_off=week_off, status=eff, actor_id=user.id,
-                department=dept_by_uid.get(uid), overwrite=overwrite,
-                protect_published=(not can_pub) or protect_all_published,
-                existing_map=existing_map,
-            )
-        if (
-            outcome == "updated" and prior_snap is not None
-            and prior_snap[2] == RosterStatus.PUBLISHED
-        ):
-            new_tpl = None if week_off else tpl_id
-            if (
-                (prior_snap[0], prior_snap[1]) != (new_tpl, week_off)
-                or eff != RosterStatus.PUBLISHED
-            ):
-                roster_svc.record_change(
-                    db, _e, employee_id=uid, work_date=wd,
-                    old_tpl=prior_snap[0], old_off=prior_snap[1],
-                    new_tpl=new_tpl, new_off=week_off, action="update",
-                    reason=reason, actor_id=user.id,
-                )
-                changed.setdefault(uid, set()).add(wd)
-        if outcome != "skipped" and eff == RosterStatus.DRAFT and (
-            status == RosterStatus.PUBLISHED and not can_pub
-        ):
-            downgraded.add(uid)
-        if outcome == "created":
-            result.created += 1
-        elif outcome == "updated":
-            result.updated += 1
-        else:
-            result.skipped += 1
-    await roster_svc.notify_schedule_changed(db, changed)
-    if downgraded:
-        names = {
-            u.id: u.full_name for u in (await db.execute(
-                select(User).where(User.id.in_(downgraded))
-            )).scalars().all()
-        }
-        for uid in sorted(downgraded):
-            result.errors.append(
-                f"Saved as draft for {names.get(uid) or uid}: "
-                "publishing requires HR approval"
-            )
 
 
 # ----------------------------- planner -----------------------------
@@ -217,100 +59,6 @@ async def get_plan(
     return await roster_svc.build_grid(db, current_user, start, end, department)
 
 
-@router.get("/insights", response_model=RosterInsightsResponse)
-async def get_insights(
-    db: deps.DBDep,
-    start: pydate = Query(...),
-    end: pydate = Query(...),
-    department: Optional[str] = None,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    """Work-rule violations (scoped/filtered employees only) + coverage
-    (counts ALL active employees matching each requirement; headcounts
-    only, no names). DRAFT and PUBLISHED entries both count."""
-    if start > end:
-        raise HTTPException(status_code=400, detail="start must be <= end")
-    if (end - start).days > 62:
-        raise HTTPException(status_code=400, detail="range too large (max 62 days)")
-    admin = roster_svc.is_roster_admin(current_user)
-    scoped = await roster_svc.scoped_employees(db, current_user)
-    if not admin and not scoped:
-        raise HTTPException(status_code=403, detail="You have no roster scope.")
-    viol_emps = [e for e in scoped if not department or e.department == department]
-    reqs = roster_svc.visible_requirements(
-        list((await db.execute(select(CoverageRequirement).where(
-            CoverageRequirement.is_active.is_(True)))).scalars().all()),
-        admin=admin, scoped_departments={e.department for e in scoped},
-        department=department,
-    )
-
-    # Everyone counted toward coverage, independent of the viewer's scope.
-    meta = {e.user_id: (e.department, e.location) for e in scoped}
-    if reqs:
-        conds = [
-            and_(
-                *([Employee.department == r.department] if r.department else []),
-                *([Employee.location == r.location] if r.location else []),
-            ) for r in reqs
-        ]
-        q = select(Employee.user_id, Employee.department, Employee.location)\
-            .where(Employee.status == EmployeeStatus.ACTIVE)
-        if not any(r.department is None and r.location is None for r in reqs):
-            q = q.where(or_(*conds))
-        for r in (await db.execute(q)).all():
-            meta[r.user_id] = (r.department, r.location)
-
-    rules = await get_schedule_rules(db)
-    lookback = max(7, rules["max_consecutive_days"] + 1,
-                   rules["max_consecutive_nights"] + 1)
-    w_start = start - timedelta(days=lookback)
-    w_end = end + timedelta(days=(6 - end.weekday()) + 1)  # Sunday of end's week, +1d for rest
-
-    templates = {t.id: t for t in (await db.execute(
-        select(ShiftTemplate))).scalars().all()}
-    entries, asgs = await roster_svc.load_planner_cells(
-        db, meta.keys(), w_start, w_end)
-    cells, d = [], w_start
-    all_days = []
-    while d <= w_end:
-        all_days.append(d)
-        d += timedelta(days=1)
-    for uid in meta:
-        for d in all_days:
-            tid = roster_svc.resolve_working_template(
-                entries.get((uid, d)), asgs.get(uid), templates, d)
-            if tid is not None:
-                cells.append((uid, d, tid))
-    spans = schedule_rules.build_spans(cells, templates)
-
-    viol_ids = {e.user_id for e in viol_emps}
-    name_by_uid = {e.user_id: (e.user.full_name if e.user else None)
-                   for e in viol_emps}
-    v_spans = [s for s in spans if s.user_id in viol_ids]
-    leave = await roster_svc.approved_leave_days(db, viol_ids, w_start, w_end)
-    viols = schedule_rules.check_rules(v_spans, rules, window_start=start)
-    viols += schedule_rules.check_leave_conflicts(v_spans, leave)
-    viols = sorted((v for v in viols if start <= v.work_date <= end),
-                   key=lambda v: (v.work_date, v.user_id, v.rule))
-
-    dates = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-    cov = schedule_rules.compute_coverage(
-        [s for s in spans if start <= s.work_date <= end], reqs, meta, dates)
-    return RosterInsightsResponse(
-        violations=[ViolationRead(
-            user_id=v.user_id, employee_name=name_by_uid.get(v.user_id),
-            work_date=v.work_date, rule=v.rule, message=v.message,
-        ) for v in viols],
-        coverage=[CoverageCellRead(
-            date=c.date, shift_template_id=c.shift_template_id,
-            shift_name=(templates[c.shift_template_id].name
-                        if c.shift_template_id in templates else None),
-            department=c.department, location=c.location,
-            required_min=c.required_min, required_max=c.required_max,
-            scheduled=c.scheduled, status=c.status,
-        ) for c in cov],
-    )
-
 
 @router.post("/bulk", response_model=RosterBulkResult)
 async def bulk_plan(
@@ -324,7 +72,7 @@ async def bulk_plan(
     range for a scoped team. Out-of-scope employees are reported, never
     written."""
     result = RosterBulkResult()
-    await _validate_templates(
+    await validate_templates(
         db,
         [e.shift_template_id for e in (body.entries or [])]
         + list((body.pattern or {}).values()),
@@ -360,11 +108,11 @@ async def bulk_plan(
             (uid, wd, tpl_id, week_off)
             for uid in sorted(allowed) for (wd, tpl_id, week_off) in pc
         ]
-    await _write_cells(
+    await write_cells(
         db, current_user, allowed, cells, body.status, body.overwrite, result
     )
 
-    await _commit_or_409(db)
+    await commit_or_409(db)
     await log_audit(
         db, current_user.id, "roster.bulk_publish",
         "roster_entry", None,
@@ -390,8 +138,8 @@ async def upsert_single_entry(
     body: RosterEntryInput,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    await _require_manage(db, current_user, body.employee_id)
-    await _validate_templates(db, [body.shift_template_id])
+    await require_manage(db, current_user, body.employee_id)
+    await validate_templates(db, [body.shift_template_id])
     emp = (await db.execute(
         select(Employee).where(Employee.user_id == body.employee_id)
     )).scalars().first()
@@ -413,10 +161,15 @@ async def upsert_single_entry(
         if prior is not None else None
     )
     reason = roster_svc.clean_reason(body.reason)
-    if (
+    live_change = (
         can_pub and prior_snap is not None
-        and prior_snap[2] == RosterStatus.PUBLISHED and reason is None
-    ):
+        and prior_snap[2] == RosterStatus.PUBLISHED
+        and roster_svc.edit_changes_live(
+            prior_snap[0], prior_snap[1], body.shift_template_id,
+            body.is_week_off, eff_status == RosterStatus.PUBLISHED,
+        )
+    )
+    if live_change and reason is None:
         raise HTTPException(status_code=422, detail=REASON_MSG)
     entry, outcome = await roster_svc.upsert_entry(
         db,
@@ -432,23 +185,19 @@ async def upsert_single_entry(
     )
     if outcome == "skipped":
         raise HTTPException(status_code=403, detail=NO_PUBLISH_MSG)
-    if prior_snap is not None and prior_snap[2] == RosterStatus.PUBLISHED:
+    if live_change:
         new_tpl = None if body.is_week_off else body.shift_template_id
-        if (
-            (prior_snap[0], prior_snap[1]) != (new_tpl, body.is_week_off)
-            or eff_status != RosterStatus.PUBLISHED
-        ):
-            roster_svc.record_change(
-                db, entry, employee_id=body.employee_id,
-                work_date=body.work_date,
-                old_tpl=prior_snap[0], old_off=prior_snap[1],
-                new_tpl=new_tpl, new_off=body.is_week_off, action="update",
-                reason=reason, actor_id=current_user.id,
-            )
-            await roster_svc.notify_schedule_changed(
-                db, {body.employee_id: {body.work_date}}
-            )
-    await _commit_or_409(db)
+        roster_svc.record_change(
+            db, entry, employee_id=body.employee_id,
+            work_date=body.work_date,
+            old_tpl=prior_snap[0], old_off=prior_snap[1],
+            new_tpl=new_tpl, new_off=body.is_week_off, action="update",
+            reason=reason, actor_id=current_user.id,
+        )
+        await roster_svc.notify_schedule_changed(
+            db, {body.employee_id: {body.work_date}}
+        )
+    await commit_or_409(db)
     await db.refresh(entry)
     await log_audit(
         db, current_user.id, "roster.entry.upsert",
@@ -456,7 +205,7 @@ async def upsert_single_entry(
         {"outcome": outcome, "work_date": body.work_date.isoformat()},
         request,
     )
-    read = await _entry_read(db, entry)
+    read = await entry_read(db, entry)
     if body.status == RosterStatus.PUBLISHED and eff_status != body.status:
         read.notice = DRAFT_NOTICE
     return read
@@ -474,14 +223,14 @@ async def update_entry(
     entry = await db.get(RosterEntry, entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Roster entry not found")
-    await _require_manage(db, current_user, entry.employee_id)
+    await require_manage(db, current_user, entry.employee_id)
     changes = body.model_dump(exclude_unset=True)
     reason = changes.pop("reason", None)
     for k in ("is_week_off", "status"):
         if k in changes and changes[k] is None:
             raise HTTPException(status_code=422, detail=f"{k} cannot be null")
     if "shift_template_id" in changes:
-        await _validate_templates(db, [changes["shift_template_id"]])
+        await validate_templates(db, [changes["shift_template_id"]])
     if "status" in changes and changes["status"] not in (
         RosterStatus.DRAFT, RosterStatus.PUBLISHED
     ):
@@ -504,18 +253,21 @@ async def update_entry(
         changes["is_week_off"] = False
     was_published = entry.status == RosterStatus.PUBLISHED
     reason = roster_svc.clean_reason(reason)
-    if was_published and reason is None:
-        raise HTTPException(status_code=422, detail=REASON_MSG)
     old_tpl, old_off = entry.shift_template_id, entry.is_week_off
+    live_change = was_published and roster_svc.edit_changes_live(
+        old_tpl, old_off,
+        changes.get("shift_template_id", old_tpl),
+        changes.get("is_week_off", old_off),
+        changes.get("status", entry.status) == RosterStatus.PUBLISHED,
+    )
+    if live_change and reason is None:
+        raise HTTPException(status_code=422, detail=REASON_MSG)
     for k, v in changes.items():
         setattr(entry, k, v)
     if entry.is_week_off:
         entry.shift_template_id = None
     entry.assigned_by_id = current_user.id
-    if was_published and (
-        (old_tpl, old_off) != (entry.shift_template_id, entry.is_week_off)
-        or entry.status != RosterStatus.PUBLISHED
-    ):
+    if live_change:
         roster_svc.record_change(
             db, entry, employee_id=entry.employee_id,
             work_date=entry.work_date, old_tpl=old_tpl, old_off=old_off,
@@ -525,14 +277,14 @@ async def update_entry(
         await roster_svc.notify_schedule_changed(
             db, {entry.employee_id: {entry.work_date}}
         )
-    await _commit_or_409(db)
+    await commit_or_409(db)
     await db.refresh(entry)
     await log_audit(
         db, current_user.id, "roster.entry.update",
         "roster_entry", str(entry.id),
         {"changed": list(changes.keys())}, request,
     )
-    return await _entry_read(db, entry)
+    return await entry_read(db, entry)
 
 
 @router.delete("/entries/{entry_id}")
@@ -547,7 +299,7 @@ async def delete_entry(
     entry = await db.get(RosterEntry, entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Roster entry not found")
-    await _require_manage(db, current_user, entry.employee_id)
+    await require_manage(db, current_user, entry.employee_id)
     if entry.status == RosterStatus.PUBLISHED:
         if not await roster_svc.can_publish_for(
             db, current_user, entry.employee_id
@@ -575,331 +327,6 @@ async def delete_entry(
     return {"status": "deleted", "id": entry_id}
 
 
-# ----------------------------- rotation patterns -----------------------------
-
-async def _validate_cycle(db, cycle) -> None:
-    await _validate_templates(db, cycle)
-
-
-def _require_admin(user: User) -> None:
-    if not roster_svc.is_roster_admin(user):
-        raise HTTPException(status_code=403, detail="HR/admin access required.")
-
-
-async def _check_name(db, name: str, exclude_id: Optional[int] = None) -> None:
-    q = select(RotationPattern).where(RotationPattern.name == name)
-    if exclude_id is not None:
-        q = q.where(RotationPattern.id != exclude_id)
-    other = (await db.execute(q)).scalars().first()
-    if other is not None:
-        msg = "Pattern name already exists"
-        if not other.is_active:
-            msg += " (inactive) \u2014 reactivate it instead"
-        raise HTTPException(status_code=409, detail=msg)
-
-
-@router.get("/rotations", response_model=List[RotationPatternRead])
-async def list_rotations(
-    db: deps.DBDep,
-    include_inactive: bool = Query(False),
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    admin = roster_svc.is_roster_admin(current_user)
-    if not admin and not await roster_svc.scoped_employees(db, current_user):
-        raise HTTPException(status_code=403, detail="You have no roster scope.")
-    q = select(RotationPattern).order_by(RotationPattern.name)
-    if not (admin and include_inactive):
-        q = q.where(RotationPattern.is_active.is_(True))
-    return list((await db.execute(q)).scalars().all())
-
-
-@router.post("/rotations", response_model=RotationPatternRead)
-async def create_rotation(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    body: RotationPatternCreate,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _require_admin(current_user)
-    await _validate_cycle(db, body.cycle)
-    await _check_name(db, body.name)
-    p = RotationPattern(
-        name=body.name, description=body.description,
-        cycle=list(body.cycle), created_by_id=current_user.id,
-    )
-    db.add(p)
-    await _commit_or_409(db, "Rotation name already exists")
-    await db.refresh(p)
-    await log_audit(
-        db, current_user.id, "roster.rotation.create",
-        "rotation_pattern", str(p.id), {"name": p.name}, request,
-    )
-    return p
-
-
-@router.patch("/rotations/{rotation_id}", response_model=RotationPatternRead)
-async def update_rotation(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    rotation_id: int,
-    body: RotationPatternUpdate,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _require_admin(current_user)
-    p = await db.get(RotationPattern, rotation_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Rotation pattern not found")
-    changes = body.model_dump(exclude_unset=True)
-    if changes.get("name") is None:
-        changes.pop("name", None)
-    if changes.get("cycle") is None:
-        changes.pop("cycle", None)
-    if changes.get("is_active") is None:
-        changes.pop("is_active", None)
-    if "cycle" in changes:
-        await _validate_cycle(db, changes["cycle"])
-    if "name" in changes:
-        await _check_name(db, changes["name"], p.id)
-    if changes.get("is_active") is True and "cycle" not in changes:
-        await _validate_cycle(db, p.cycle)
-    for k, v in changes.items():
-        setattr(p, k, v)
-    await _commit_or_409(db, "Rotation name already exists")
-    await db.refresh(p)
-    await log_audit(
-        db, current_user.id, "roster.rotation.update",
-        "rotation_pattern", str(p.id), {"changed": list(changes.keys())}, request,
-    )
-    return p
-
-
-@router.delete("/rotations/{rotation_id}")
-async def delete_rotation(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    rotation_id: int,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _require_admin(current_user)
-    p = await db.get(RotationPattern, rotation_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Rotation pattern not found")
-    p.is_active = False
-    await db.commit()
-    await log_audit(
-        db, current_user.id, "roster.rotation.delete",
-        "rotation_pattern", str(p.id), {}, request,
-    )
-    return {"status": "deactivated", "id": rotation_id}
-
-
-# ------------------------ coverage requirements ------------------------
-
-async def _check_duplicate_requirement(
-    db, *, department, location, shift_template_id, weekday,
-    exclude_id: Optional[int] = None,
-) -> None:
-    def eq(col, v):
-        return col.is_(None) if v is None else col == v
-    q = select(CoverageRequirement.id).where(
-        CoverageRequirement.is_active.is_(True),
-        CoverageRequirement.shift_template_id == shift_template_id,
-        eq(CoverageRequirement.department, department),
-        eq(CoverageRequirement.location, location),
-        eq(CoverageRequirement.weekday, weekday),
-    )
-    if exclude_id is not None:
-        q = q.where(CoverageRequirement.id != exclude_id)
-    if (await db.execute(q)).first() is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="An active requirement already exists for this "
-                   "department/location/shift/weekday",
-        )
-
-
-def _check_max_min(mn: int, mx: Optional[int]) -> None:
-    # Create is also validated by the schema; PATCH can only be checked here
-    # because it needs the stored values merged with the partial update.
-    if mx is not None and mx < mn:
-        raise HTTPException(
-            status_code=422, detail="max_headcount must be >= min_headcount"
-        )
-
-
-@router.get(
-    "/coverage-requirements", response_model=List[CoverageRequirementRead]
-)
-async def list_coverage_requirements(
-    db: deps.DBDep,
-    include_inactive: bool = Query(False),
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    admin = roster_svc.is_roster_admin(current_user)
-    if not admin and not await roster_svc.scoped_employees(db, current_user):
-        raise HTTPException(status_code=403, detail="You have no roster scope.")
-    q = select(CoverageRequirement).order_by(CoverageRequirement.id)
-    if not (admin and include_inactive):
-        q = q.where(CoverageRequirement.is_active.is_(True))
-    rows = list((await db.execute(q)).scalars().all())
-    if admin:
-        return rows
-    depts = {e.department for e in await roster_svc.scoped_employees(
-        db, current_user)}
-    return roster_svc.visible_requirements(
-        rows, admin=False, scoped_departments=depts, department=None)
-
-
-@router.post(
-    "/coverage-requirements", response_model=CoverageRequirementRead
-)
-async def create_coverage_requirement(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    body: CoverageRequirementCreate,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _require_admin(current_user)
-    await _validate_templates(db, [body.shift_template_id])
-    await _check_duplicate_requirement(db, **body.model_dump(
-        include={"department", "location", "shift_template_id", "weekday"}))
-    r = CoverageRequirement(**body.model_dump())
-    db.add(r)
-    await _commit_or_409(db)
-    await db.refresh(r)
-    await log_audit(
-        db, current_user.id, "roster.coverage.create",
-        "coverage_requirement", str(r.id), body.model_dump(), request,
-    )
-    return r
-
-
-@router.patch(
-    "/coverage-requirements/{req_id}", response_model=CoverageRequirementRead
-)
-async def update_coverage_requirement(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    req_id: int,
-    body: CoverageRequirementUpdate,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _require_admin(current_user)
-    r = await db.get(CoverageRequirement, req_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Requirement not found")
-    changes = body.model_dump(exclude_unset=True)
-    for k in ("shift_template_id", "min_headcount", "is_active"):
-        if k in changes and changes[k] is None:
-            changes.pop(k)
-    if "shift_template_id" in changes:
-        await _validate_templates(db, [changes["shift_template_id"]])
-    _check_max_min(
-        changes.get("min_headcount", r.min_headcount),
-        changes["max_headcount"] if "max_headcount" in changes
-        else r.max_headcount,
-    )
-    final = {k: changes.get(k, getattr(r, k)) for k in (
-        "department", "location", "shift_template_id", "weekday", "is_active")}
-    if final.pop("is_active"):
-        await _check_duplicate_requirement(db, exclude_id=r.id, **final)
-    for k, v in changes.items():
-        setattr(r, k, v)
-    await _commit_or_409(db)
-    await db.refresh(r)
-    await log_audit(
-        db, current_user.id, "roster.coverage.update",
-        "coverage_requirement", str(r.id),
-        {"changed": list(changes.keys())}, request,
-    )
-    return r
-
-
-@router.delete("/coverage-requirements/{req_id}")
-async def delete_coverage_requirement(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    req_id: int,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _require_admin(current_user)
-    r = await db.get(CoverageRequirement, req_id)
-    if not r:
-        raise HTTPException(status_code=404, detail="Requirement not found")
-    r.is_active = False
-    await _commit_or_409(db)
-    await log_audit(
-        db, current_user.id, "roster.coverage.delete",
-        "coverage_requirement", str(r.id), {}, request,
-    )
-    return {"status": "deactivated", "id": req_id}
-
-
-@router.post("/rotations/{rotation_id}/apply", response_model=RosterBulkResult)
-async def apply_rotation(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    rotation_id: int,
-    body: RotationApplyRequest,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    p = await db.get(RotationPattern, rotation_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Rotation pattern not found")
-    if not p.is_active:
-        raise HTTPException(status_code=409, detail="Rotation pattern is inactive")
-    if not roster_svc.is_roster_admin(current_user) and not (
-        await roster_svc.scoped_employees(db, current_user)
-    ):
-        raise HTTPException(status_code=403, detail="You have no roster scope.")
-    await _validate_cycle(db, p.cycle)
-    result = RosterBulkResult()
-    if body.employee_ids is not None:
-        target_ids = set(body.employee_ids)
-    else:
-        emps = await roster_svc.scoped_employees(
-            db, current_user, body.department
-        )
-        target_ids = {e.user_id for e in emps}
-    allowed = await roster_svc.manageable_subset(db, current_user, target_ids)
-    result.out_of_scope.extend(sorted(target_ids - allowed))
-    if allowed:
-        offsets = body.offsets or {}
-        cells = []
-        for uid in sorted(allowed):
-            for (wd, tpl_id, wo) in roster_svc.expand_rotation(
-                p.cycle, body.anchor, body.start, body.end,
-                offsets.get(uid, body.default_offset),
-            ):
-                cells.append((uid, wd, tpl_id, wo))
-        await _write_cells(
-            db, current_user, allowed, cells, body.status, body.overwrite,
-            result,
-        )
-        await _commit_or_409(db)
-    if not (result.created or result.updated):
-        return result
-    await log_audit(
-        db, current_user.id, "roster.rotation.apply",
-        "rotation_pattern", str(p.id),
-        {
-            "created": result.created, "updated": result.updated,
-            "skipped": result.skipped,
-            "out_of_scope": len(result.out_of_scope),
-            "start": body.start.isoformat(), "end": body.end.isoformat(),
-            "status": body.status,
-        },
-        request,
-    )
-    return result
-
 
 # ----------------------------- employee self-service -----------------------------
 
@@ -921,7 +348,7 @@ async def my_roster(
             RosterEntry.status == RosterStatus.PUBLISHED,
         ).order_by(RosterEntry.work_date)
     )).scalars().all()
-    return [await _entry_read(db, r) for r in rows]
+    return [await entry_read(db, r) for r in rows]
 
 
 @router.get("/my/week")
@@ -1183,7 +610,7 @@ async def decide_change_request(
     if not cr:
         raise HTTPException(status_code=404, detail="Request not found")
     if cr.status != RosterChangeStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Request already decided")
+        raise HTTPException(status_code=409, detail="Request already decided")
     if (
         cr.employee_id == current_user.id
         and not roster_svc.is_roster_admin(current_user)
@@ -1238,7 +665,10 @@ async def decide_change_request(
                 db, _e, employee_id=cr.employee_id, work_date=cr.work_date,
                 old_tpl=prior_snap[0], old_off=prior_snap[1],
                 new_tpl=new_tpl, new_off=cr.requested_week_off,
-                action="update", reason=cr.reason, actor_id=current_user.id,
+                action="update",
+                reason=(roster_svc.clean_reason(cr.reason)
+                        or f"approved change request #{cr.id}"),
+                actor_id=current_user.id,
             )
             await roster_svc.notify_schedule_changed(
                 db, {cr.employee_id: {cr.work_date}}
@@ -1249,7 +679,7 @@ async def decide_change_request(
     cr.decided_by_id = current_user.id
     cr.decided_at = datetime.now(timezone.utc)
     cr.decision_note = body.decision_note
-    await _commit_or_409(db)
+    await commit_or_409(db)
     await db.refresh(cr)
     await log_audit(
         db, current_user.id, "roster.change.decide",
@@ -1276,7 +706,7 @@ async def cancel_change_request(
     if cr.employee_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not your request")
     if cr.status != RosterChangeStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Only pending requests can be cancelled")
+        raise HTTPException(status_code=409, detail="Only pending requests can be cancelled")
     cr.status = RosterChangeStatus.CANCELLED
     await db.commit()
     await db.refresh(cr)
@@ -1287,422 +717,3 @@ async def cancel_change_request(
     return await _cr_read(db, cr)
 
 
-# ------------------- publish lifecycle, copy and history -------------------
-
-def _check_window(start: pydate, end: pydate, max_days: int = 62) -> None:
-    if start > end:
-        raise HTTPException(status_code=422, detail="start must be <= end")
-    if (end - start).days > max_days:
-        raise HTTPException(
-            status_code=422, detail=f"range too large (max {max_days} days)"
-        )
-
-
-async def _resolve_targets(
-    db, user: User, employee_ids, department
-) -> tuple:
-    """(requested ids, in-scope ids)."""
-    if employee_ids is not None:
-        target = set(employee_ids)
-    else:
-        target = {
-            e.user_id
-            for e in await roster_svc.scoped_employees(db, user, department)
-        }
-    return target, await roster_svc.manageable_subset(db, user, target)
-
-
-@router.post("/publish", response_model=RosterPublishResult)
-async def publish_roster(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    body: RosterPublishBody,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _check_window(body.start, body.end)
-    _target, allowed = await _resolve_targets(
-        db, current_user, body.employee_ids, body.department
-    )
-    if not allowed:
-        return RosterPublishResult()
-    res = await roster_svc.publish_drafts(
-        db, current_user, allowed, body.start, body.end
-    )
-    await _commit_or_409(db)
-    if res["published"]:
-        await log_audit(
-            db, current_user.id, "roster.publish", "roster_entry", None,
-            {**res, "start": body.start.isoformat(),
-             "end": body.end.isoformat()},
-            request,
-        )
-    return RosterPublishResult(**res)
-
-
-async def _names(db, ids) -> dict:
-    ids = {i for i in ids if i is not None}
-    if not ids:
-        return {}
-    return {
-        u.id: (u.full_name or u.email) for u in (await db.execute(
-            select(User).where(User.id.in_(ids))
-        )).scalars().all()
-    }
-
-
-async def _draft_counts(db, reqs) -> dict:
-    """req.id -> number of DRAFT entries for its ids in its window. One
-    query for the whole list; counted in memory."""
-    if not reqs:
-        return {}
-    all_ids = sorted({i for r in reqs for i in (r.employee_ids or [])})
-    out = {r.id: 0 for r in reqs}
-    if not all_ids:
-        return out
-    rows = (await db.execute(
-        select(RosterEntry.employee_id, RosterEntry.work_date).where(
-            RosterEntry.employee_id.in_(all_ids),
-            RosterEntry.status == RosterStatus.DRAFT,
-            RosterEntry.work_date >= min(r.start for r in reqs),
-            RosterEntry.work_date <= max(r.end for r in reqs),
-        )
-    )).all()
-    for r in reqs:
-        ids = set(r.employee_ids or [])
-        out[r.id] = sum(
-            1 for (uid, wd) in rows if uid in ids and r.start <= wd <= r.end
-        )
-    return out
-
-
-def _pr_read(r: RosterPublishRequest, names: dict, counts: dict) -> PublishRequestRead:
-    out = PublishRequestRead.model_validate(r, from_attributes=True)
-    out.requester_name = names.get(r.requested_by_id)
-    out.draft_count = counts.get(r.id)
-    return out
-
-
-async def _roster_admin_ids(db, exclude: int, cap: int = 20) -> List[int]:
-    rows = (await db.execute(
-        select(User.id).where(
-            User.is_active.is_(True),
-            User.id != exclude,
-            or_(
-                User.is_superuser.is_(True),
-                User.roles.any(Role.permissions.any(
-                    Permission.name == roster_svc.PERM_ROSTER)),
-            ),
-        ).order_by(User.id).limit(cap)
-    )).scalars().all()
-    return list(rows)
-
-
-@router.post("/publish-requests", response_model=PublishRequestRead)
-async def create_publish_request(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    body: PublishRequestCreate,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _check_window(body.start, body.end)
-    _target, allowed = await _resolve_targets(
-        db, current_user, body.employee_ids, body.department
-    )
-    if not allowed:
-        raise HTTPException(
-            status_code=422, detail="No employees in your roster scope."
-        )
-    dept_cond = (
-        RosterPublishRequest.department.is_(None) if body.department is None
-        else RosterPublishRequest.department == body.department
-    )
-    dup = (await db.execute(
-        select(RosterPublishRequest.id).where(
-            RosterPublishRequest.requested_by_id == current_user.id,
-            RosterPublishRequest.status == "pending",
-            RosterPublishRequest.start == body.start,
-            RosterPublishRequest.end == body.end,
-            dept_cond,
-        )
-    )).first()
-    if dup is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="An identical publish request is already pending",
-        )
-    pr = RosterPublishRequest(
-        requested_by_id=current_user.id, start=body.start, end=body.end,
-        department=body.department, employee_ids=sorted(allowed),
-        note=body.note, status="pending",
-    )
-    db.add(pr)
-    await db.flush()
-    who = current_user.full_name or current_user.email
-    for aid in await _roster_admin_ids(db, current_user.id):
-        await roster_svc.notify(
-            db, aid, "Roster publish request",
-            f"{who} asked to publish the schedule for "
-            f"{body.start.isoformat()}–{body.end.isoformat()}.",
-            "roster_publish_request", str(pr.id),
-        )
-    await _commit_or_409(db)
-    return _pr_read(
-        pr, {current_user.id: current_user.full_name or current_user.email},
-        await _draft_counts(db, [pr]),
-    )
-
-
-@router.get("/publish-requests", response_model=List[PublishRequestRead])
-async def list_publish_requests(
-    db: deps.DBDep,
-    status: str = Query("pending", pattern="^(pending|approved|rejected|cancelled|all)$"),
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    q = select(RosterPublishRequest).order_by(
-        RosterPublishRequest.created_at.desc(), RosterPublishRequest.id.desc()
-    )
-    if not roster_svc.is_roster_admin(current_user):
-        q = q.where(RosterPublishRequest.requested_by_id == current_user.id)
-    if status != "all":
-        q = q.where(RosterPublishRequest.status == status)
-    rows = list((await db.execute(q.limit(500))).scalars().all())
-    names = await _names(db, {r.requested_by_id for r in rows})
-    counts = await _draft_counts(db, rows)
-    return [_pr_read(r, names, counts) for r in rows]
-
-
-@router.post(
-    "/publish-requests/{req_id}/decide", response_model=PublishRequestRead
-)
-async def decide_publish_request(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    req_id: int,
-    body: PublishRequestDecision,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    _require_admin(current_user)
-    pr = (await db.execute(
-        select(RosterPublishRequest)
-        .where(RosterPublishRequest.id == req_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().first()
-    if not pr:
-        raise HTTPException(status_code=404, detail="Request not found")
-    if pr.status != "pending":
-        raise HTTPException(status_code=409, detail="Request already decided")
-    note = (body.note or "").strip() or None
-    if not body.approve and note is None:
-        raise HTTPException(
-            status_code=422, detail="A note is required to reject"
-        )
-    span = f"{pr.start.isoformat()}–{pr.end.isoformat()}"
-    res = None
-    if body.approve:
-        res = await roster_svc.publish_drafts(
-            db, current_user, pr.employee_ids or [], pr.start, pr.end
-        )
-        pr.status = "approved"
-        await roster_svc.notify(
-            db, pr.requested_by_id, "Publish request approved",
-            f"Your request to publish {span} was approved "
-            f"({res['published']} shift(s) published).",
-            "roster_publish_request", str(pr.id),
-        )
-    else:
-        pr.status = "rejected"
-        await roster_svc.notify(
-            db, pr.requested_by_id, "Publish request rejected",
-            f"Your request to publish {span} was rejected: {note}",
-            "roster_publish_request", str(pr.id),
-        )
-    pr.decided_by_id = current_user.id
-    pr.decided_at = datetime.now(timezone.utc)
-    pr.decision_note = note
-    await _commit_or_409(db)
-    await log_audit(
-        db, current_user.id, "roster.publish_request.decide",
-        "roster_publish_request", str(pr.id),
-        {"approve": body.approve, **(res or {})}, request,
-    )
-    names = await _names(db, {pr.requested_by_id})
-    out = _pr_read(pr, names, {})
-    if res is not None:
-        out.publish_result = RosterPublishResult(**res)
-    return out
-
-
-@router.post(
-    "/publish-requests/{req_id}/cancel", response_model=PublishRequestRead
-)
-async def cancel_publish_request(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    req_id: int,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    pr = (await db.execute(
-        select(RosterPublishRequest)
-        .where(RosterPublishRequest.id == req_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().first()
-    if not pr:
-        raise HTTPException(status_code=404, detail="Request not found")
-    if pr.requested_by_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not your request")
-    if pr.status != "pending":
-        raise HTTPException(
-            status_code=409, detail="Only pending requests can be cancelled"
-        )
-    pr.status = "cancelled"
-    await db.commit()
-    await log_audit(
-        db, current_user.id, "roster.publish_request.cancel",
-        "roster_publish_request", str(pr.id), {}, request,
-    )
-    return _pr_read(pr, await _names(db, {pr.requested_by_id}), {})
-
-
-@router.post("/copy", response_model=RosterBulkResult)
-async def copy_roster(
-    *,
-    db: deps.DBDep,
-    request: Request,
-    body: RosterCopyRequest,
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    """Copy cells from the source window into the target window as DRAFT.
-    Existing PUBLISHED target cells are never touched."""
-    _check_window(body.source_start, body.source_end, 30)
-    span = (body.source_end - body.source_start).days
-    target_end = body.target_start + timedelta(days=span)
-    if body.target_start <= body.source_end and target_end >= body.source_start:
-        raise HTTPException(
-            status_code=422,
-            detail="Target window must not overlap the source window",
-        )
-    result = RosterBulkResult()
-    target, allowed = await _resolve_targets(
-        db, current_user, body.employee_ids, body.department
-    )
-    result.out_of_scope.extend(sorted(target - allowed))
-    if not allowed:
-        return result
-    delta = body.target_start - body.source_start
-    src = await roster_svc.prefetch_entries(
-        db, allowed, body.source_start, body.source_end
-    )
-    cells = [
-        (uid, wd + delta, e.shift_template_id, e.is_week_off)
-        for (uid, wd), e in sorted(src.items())
-        if e.shift_template_id is not None or e.is_week_off
-    ]
-    await _write_cells(
-        db, current_user, allowed, cells, RosterStatus.DRAFT,
-        body.overwrite, result, protect_all_published=True,
-    )
-    await _commit_or_409(db)
-    if result.created or result.updated:
-        await log_audit(
-            db, current_user.id, "roster.copy", "roster_entry", None,
-            {
-                "created": result.created, "updated": result.updated,
-                "skipped": result.skipped,
-                "source_start": body.source_start.isoformat(),
-                "source_end": body.source_end.isoformat(),
-                "target_start": body.target_start.isoformat(),
-            },
-            request,
-        )
-    return result
-
-
-async def _history_rows(db, q) -> List[RosterHistoryRead]:
-    rows = list((await db.execute(
-        q.order_by(
-            RosterEntryHistory.changed_at.desc(), RosterEntryHistory.id.desc()
-        ).limit(500)
-    )).scalars().all())
-    names = await _names(
-        db, {r.employee_id for r in rows} | {r.changed_by_id for r in rows}
-    )
-    tids = {
-        t for r in rows
-        for t in (r.old_shift_template_id, r.new_shift_template_id)
-        if t is not None
-    }
-    tpl = {}
-    if tids:
-        tpl = {
-            t.id: t.name for t in (await db.execute(
-                select(ShiftTemplate).where(ShiftTemplate.id.in_(tids))
-            )).scalars().all()
-        }
-    return [
-        RosterHistoryRead(
-            id=r.id, employee_id=r.employee_id,
-            employee_name=names.get(r.employee_id), work_date=r.work_date,
-            old_shift_template_id=r.old_shift_template_id,
-            old_shift_name=tpl.get(r.old_shift_template_id),
-            old_is_week_off=r.old_is_week_off,
-            new_shift_template_id=r.new_shift_template_id,
-            new_shift_name=tpl.get(r.new_shift_template_id),
-            new_is_week_off=r.new_is_week_off, action=r.action,
-            reason=r.reason, changed_by_id=r.changed_by_id,
-            changed_by_name=names.get(r.changed_by_id),
-            changed_at=r.changed_at,
-        ) for r in rows
-    ]
-
-
-def _history_window(start, end):
-    end = end or datetime.now(timezone.utc).date()
-    start = start or (end - timedelta(days=30))
-    _check_window(start, end, 92)
-    return start, end
-
-
-@router.get("/history", response_model=List[RosterHistoryRead])
-async def roster_history(
-    db: deps.DBDep,
-    employee_id: Optional[int] = Query(None),
-    start: Optional[pydate] = Query(None),
-    end: Optional[pydate] = Query(None),
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    start, end = _history_window(start, end)
-    q = select(RosterEntryHistory).where(
-        RosterEntryHistory.work_date >= start,
-        RosterEntryHistory.work_date <= end,
-    )
-    if employee_id is not None:
-        await _require_manage(db, current_user, employee_id)
-        q = q.where(RosterEntryHistory.employee_id == employee_id)
-    elif not roster_svc.is_roster_admin(current_user):
-        ids = [e.user_id for e in await roster_svc.scoped_employees(
-            db, current_user)]
-        if not ids:
-            raise HTTPException(status_code=403, detail="You have no roster scope.")
-        q = q.where(RosterEntryHistory.employee_id.in_(ids))
-    return await _history_rows(db, q)
-
-
-@router.get("/my/history", response_model=List[RosterHistoryRead])
-async def my_roster_history(
-    db: deps.DBDep,
-    start: Optional[pydate] = Query(None),
-    end: Optional[pydate] = Query(None),
-    current_user: User = Depends(deps.get_current_user),
-) -> Any:
-    start, end = _history_window(start, end)
-    return await _history_rows(db, select(RosterEntryHistory).where(
-        RosterEntryHistory.employee_id == current_user.id,
-        RosterEntryHistory.work_date >= start,
-        RosterEntryHistory.work_date <= end,
-    ))

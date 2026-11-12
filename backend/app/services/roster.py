@@ -8,25 +8,24 @@ EmployeeShiftAssignment.
 """
 from __future__ import annotations
 
-from datetime import date as pydate, datetime, timedelta, timezone
 import logging
+from datetime import date as pydate, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, or_, select
+from fastapi import HTTPException
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.leave import LeaveRequest, LeaveStatus
-from sqlalchemy import update
-
 from app.models.notification import Notification
 from app.models.roster import RosterEntry, RosterEntryHistory, RosterStatus
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import User
-from app.services import functional_head as fh
 
 PERM_ROSTER = "roster manage"
 logger = logging.getLogger(__name__)
@@ -579,11 +578,23 @@ def record_change(
         roster_entry_id=entry.id if entry is not None else None,
         old_shift_template_id=old_tpl, old_is_week_off=bool(old_off),
         new_shift_template_id=new_tpl, new_is_week_off=bool(new_off),
-        action=action, reason=(reason or None) and reason[:500],
+        action=action, reason=reason[:500] if reason else None,
         changed_by_id=actor_id,
     )
     db.add(row)
     return row
+
+
+def edit_changes_live(
+    old_tpl: Optional[int], old_off: bool,
+    new_tpl: Optional[int], new_off: bool, still_published: bool,
+) -> bool:
+    """True when an edit to a PUBLISHED cell alters what the employee sees
+    (shift/week-off differs, or the cell leaves the live schedule)."""
+    if new_off:
+        new_tpl = None
+    return (old_tpl, bool(old_off)) != (new_tpl, bool(new_off)) \
+        or not still_published
 
 
 def clean_reason(reason: Optional[str]) -> Optional[str]:
@@ -636,43 +647,92 @@ async def notify(
         logger.warning("roster notification failed", exc_info=True)
 
 
+async def notify_many(db: AsyncSession, rows) -> None:
+    """Best-effort batch of in-app notifications. `rows` are
+    (user_id, title, message, resource_type, resource_id) tuples. One
+    savepoint for the whole batch; if it fails, fall back to per-row so one
+    bad row cannot drop the rest."""
+    rows = [r for r in rows if r[0]]
+    if not rows:
+        return
+    objs = [
+        Notification(
+            user_id=uid, title=title[:200], message=msg[:1000], type="info",
+            resource_type=rtype, resource_id=rid,
+        ) for (uid, title, msg, rtype, rid) in rows
+    ]
+    try:
+        async with db.begin_nested():
+            db.add_all(objs)
+        return
+    except Exception:  # pragma: no cover
+        logger.warning("roster batch notification failed", exc_info=True)
+    for (uid, title, msg, rtype, rid) in rows:
+        await notify(db, uid, title, msg, rtype, rid)
+
+
 async def notify_schedule_changed(
     db: AsyncSession, changed: Dict[int, set]
 ) -> None:
     """One notification per affected employee."""
-    for uid in sorted(changed):
-        await notify(
-            db, uid, "Schedule changed",
-            f"Your schedule changed for {format_dates(changed[uid])}",
-        )
+    await notify_many(db, [
+        (uid, "Schedule changed",
+         f"Your schedule changed for {format_dates(changed[uid])}",
+         "roster", None)
+        for uid in sorted(changed)
+    ])
 
 
 async def publish_drafts(
     db: AsyncSession, actor: User, user_ids, start: pydate, end: pydate,
 ) -> dict:
     """Flip DRAFT -> PUBLISHED in [start, end] for the employees in
-    `user_ids` that `actor` may publish for. Writes history rows and one
-    notification per employee. Caller commits."""
-    ids = set(user_ids)
-    drafts: List[RosterEntry] = []
-    sorted_ids = sorted(ids)
-    for i in range(0, len(sorted_ids), 500):
-        drafts.extend((await db.execute(
-            select(RosterEntry).where(
-                RosterEntry.employee_id.in_(sorted_ids[i:i + 500]),
+    `user_ids` that `actor` may publish for. Drafts are row-locked (ordered
+    by id) and only rows actually locked as DRAFT get a history row, so a
+    concurrent publish of the same window is a no-op for the loser. Writes
+    one notification per employee. Caller commits."""
+    ids = sorted(set(user_ids))
+    pub = await publishable_subset(db, actor, ids)
+    pub_ids = sorted(pub)
+    todo: List[RosterEntry] = []
+    try:
+        for i in range(0, len(pub_ids), 500):
+            todo.extend((await db.execute(
+                select(RosterEntry).where(
+                    RosterEntry.employee_id.in_(pub_ids[i:i + 500]),
+                    RosterEntry.work_date >= start,
+                    RosterEntry.work_date <= end,
+                    RosterEntry.status == RosterStatus.DRAFT,
+                ).order_by(RosterEntry.id).with_for_update()
+                .execution_options(populate_existing=True)
+            )).scalars().all())
+    except OperationalError as exc:
+        # 1020 (snapshot isolation: row changed since our snapshot) / 1213
+        # (deadlock): a concurrent publish won; the caller can retry.
+        if exc.orig is not None and exc.orig.args and exc.orig.args[0] in (1020, 1213):
+            raise HTTPException(
+                status_code=409, detail="Roster changed concurrently; retry"
+            )
+        raise
+    others = [i for i in ids if i not in pub]
+    not_permitted: set = set()
+    for i in range(0, len(others), 500):
+        not_permitted |= set((await db.execute(
+            select(RosterEntry.employee_id).where(
+                RosterEntry.employee_id.in_(others[i:i + 500]),
                 RosterEntry.work_date >= start,
                 RosterEntry.work_date <= end,
                 RosterEntry.status == RosterStatus.DRAFT,
-            )
+            ).distinct()
         )).scalars().all())
-    with_drafts = {d.employee_id for d in drafts}
-    pub = await publishable_subset(db, actor, with_drafts)
-    todo = [d for d in drafts if d.employee_id in pub]
     now = datetime.now(timezone.utc)
     for i in range(0, len(todo), 500):
         await db.execute(
             update(RosterEntry)
-            .where(RosterEntry.id.in_([d.id for d in todo[i:i + 500]]))
+            .where(
+                RosterEntry.id.in_([d.id for d in todo[i:i + 500]]),
+                RosterEntry.status == RosterStatus.DRAFT,
+            )
             .values(status=RosterStatus.PUBLISHED, updated_at=now)
             .execution_options(synchronize_session=False)
         )
@@ -686,15 +746,15 @@ async def publish_drafts(
             action="publish", reason=None, changed_by_id=actor.id,
         ) for d in todo
     ])
-    employees = {d.employee_id for d in todo}
-    for uid in sorted(employees):
-        await notify(
-            db, uid, "Schedule published",
-            f"Your schedule for {start.isoformat()}\u2013{end.isoformat()} "
-            "is published",
-        )
+    employees = sorted({d.employee_id for d in todo})
+    await notify_many(db, [
+        (uid, "Schedule published",
+         f"Your schedule for {start.isoformat()}\u2013{end.isoformat()} "
+         "is published", "roster", None)
+        for uid in employees
+    ])
     return {
         "published": len(todo),
         "employees": len(employees),
-        "not_permitted": sorted(with_drafts - pub),
+        "not_permitted": sorted(not_permitted),
     }

@@ -180,7 +180,7 @@ class RosterEntryHistory(Base):
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )
     changed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        DateTime(timezone=True), index=True,
         default=lambda: datetime.now(timezone.utc), nullable=False,
     )
 
