@@ -5,6 +5,7 @@ from datetime import date, time
 import pytest
 from sqlalchemy import delete
 
+from _cleanup import purge_shift_templates
 from app.db.session import SessionLocal, engine
 from app.models.roster import RosterEntry, RosterStatus
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
@@ -56,7 +57,7 @@ async def env():
                 await db.execute(delete(EmployeeShiftAssignment).where(
                     EmployeeShiftAssignment.employee_id.in_(uids)))
             if tpl_ids:
-                await db.execute(delete(ShiftTemplate).where(ShiftTemplate.id.in_(tpl_ids)))
+                await purge_shift_templates(db, tpl_ids)
             if uids:
                 await db.execute(delete(User).where(User.id.in_(uids)))
             await db.commit()

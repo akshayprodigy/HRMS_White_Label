@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from _cleanup import purge_shift_templates
 from app.api import deps
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -283,7 +284,7 @@ async def world():
             await db.execute(delete(Employee).where(Employee.user_id.in_(uids)))
             await db.execute(delete(Department).where(
                 Department.name.in_([dept, dept2])))
-            await db.execute(delete(ShiftTemplate).where(ShiftTemplate.id.in_(tids)))
+            await purge_shift_templates(db, tids)
             await db.execute(delete(User).where(User.id.in_(uids)))
             await db.commit()
 
