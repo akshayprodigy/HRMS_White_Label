@@ -13,6 +13,8 @@ import {
   History,
   PhoneCall,
   Lock,
+  Contact,
+  Moon,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
@@ -40,6 +42,8 @@ import { CoverageRequirementsDialog } from './roster/coverage-requirements-dialo
 import { CoverageRows } from './roster/coverage-strip';
 import { ViolationsPanel, violationKey } from './roster/violations-panel';
 import { useInsights } from './roster/use-insights';
+import { TransportToggle } from './roster/transport-toggle';
+import { TeamContactsPanel } from './roster/team-contacts-panel';
 import { ViewToggle, type RosterView } from './roster/view-toggle';
 import { useRequests } from './roster/use-requests';
 import { RequestsView } from './roster/requests-view';
@@ -110,6 +114,7 @@ export const RosterPlanner = () => {
   // Pattern dialog
   const [patternOpen, setPatternOpen] = useState(false);
   const [covOpen, setCovOpen] = useState(false);
+  const [contactsOpen, setContactsOpen] = useState(false);
   const [onCallOpen, setOnCallOpen] = useState(false);
   const [osPrefill, setOsPrefill] = useState<OpenShiftPrefill | null>(null);
   const [osOpen, setOsOpen] = useState(false);
@@ -307,6 +312,23 @@ export const RosterPlanner = () => {
     });
     return m;
   }, [ins]);
+  const consentMissing = useMemo(() => {
+    const s = new Set<string>();
+    (ins?.data.violations || []).forEach((v) => {
+      if (v.rule === 'night_consent_missing') s.add(violationKey(v.user_id, v.work_date));
+    });
+    return s;
+  }, [ins]);
+  const setTransport = (entryId: number | null, v: boolean) =>
+    setGrid((g) =>
+      g && {
+        ...g,
+        rows: g.rows.map((r) => ({
+          ...r,
+          cells: r.cells.map((c) => (c.entry_id === entryId ? { ...c, transport_required: v } : c)),
+        })),
+      }
+    );
   const availMarks = useMemo(
     () =>
       availLoaded &&
@@ -503,6 +525,10 @@ export const RosterPlanner = () => {
             <PhoneCall className="w-4 h-4" />
             On-call
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setContactsOpen((o) => !o)} aria-pressed={contactsOpen} disabled={!grid} className="gap-1.5">
+            <Contact className="w-4 h-4" />
+            Team contacts
+          </Button>
           {isAdmin && (
             <Button variant="outline" size="sm" onClick={() => setCovOpen(true)} disabled={loading} className="gap-1.5">
               <Users className="w-4 h-4" />
@@ -529,6 +555,7 @@ export const RosterPlanner = () => {
         onChanged={refresh}
       />
 
+      {grid && contactsOpen && <TeamContactsPanel department={appliedDept} />}
       {grid && onCallOpen && (
         <OnCallPanel
           start={grid.start}
@@ -710,6 +737,25 @@ export const RosterPlanner = () => {
                             >
                               <AlertTriangle className="w-3 h-3" />
                             </div>
+                          )}
+                          {consentMissing.has(violationKey(row.employee_id, c.work_date)) && (
+                            <div
+                              className="absolute text-indigo-600 leading-none"
+                              style={{ top: 4, left: '50%', transform: 'translateX(-50%)' }}
+                              title="Night shift without recorded consent"
+                              role="img"
+                              aria-label="Night-shift consent missing"
+                            >
+                              <Moon className="w-3 h-3" />
+                            </div>
+                          )}
+                          {c.entry_id != null && c.source === 'roster' && !c.is_week_off && c.shift_template_id != null && (
+                            <TransportToggle
+                              entryId={c.entry_id}
+                              value={!!c.transport_required}
+                              who={`${row.full_name || 'employee'} on ${c.work_date}`}
+                              onChanged={(v) => setTransport(c.entry_id, v)}
+                            />
                           )}
                           {avail && (
                             <div

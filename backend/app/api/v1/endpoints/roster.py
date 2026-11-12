@@ -518,6 +518,7 @@ async def my_roster_week(
                 "is_overnight": tpl.is_overnight if tpl else False,
                 "source": "roster",
                 "shift_template_id": entry.shift_template_id,
+                "transport_required": bool(entry.transport_required),
             }
         else:
             asg = next(

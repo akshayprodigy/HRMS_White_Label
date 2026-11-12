@@ -50,6 +50,8 @@ import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { AssignShiftDialog } from './assign-shift-dialog';
+import { EmergencyInfoCard } from './safety/emergency-info-card';
+import { NightConsentPanel } from './safety/night-consent-panel';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import type { UserRole } from '../types/erp';
 
@@ -1546,6 +1548,7 @@ const EmployeeDetails = ({
               <TabsTrigger value="compensation" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">2. Compensation</TabsTrigger>
               <TabsTrigger value="documents" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">3. Documents</TabsTrigger>
               <TabsTrigger value="assets" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">4. Assets</TabsTrigger>
+              <TabsTrigger value="safety" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">6. Safety</TabsTrigger>
               <TabsTrigger value="exit" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">5. Exit Management</TabsTrigger>
             </>
           )}
@@ -1656,6 +1659,13 @@ const EmployeeDetails = ({
         <TabsContent value="assets">
            <AssetsTab emp={emp} />
         </TabsContent>
+        <TabsContent value="safety">
+          <div className="space-y-8">
+            <EmergencyInfoCard userId={emp.user_id ?? emp.user?.id} />
+            <NightConsentPanel userId={emp.user_id ?? emp.user?.id} canWrite={true} />
+          </div>
+        </TabsContent>
+
         <TabsContent value="exit">
            <ExitManagementTab emp={emp} />
         </TabsContent>

@@ -189,3 +189,41 @@ def compute_coverage(
                 r.min_headcount, r.max_headcount, n, st,
             ))
     return out
+
+
+# ---- night-shift consent (Phase 2 Task 8) ----
+
+NIGHT_START_H = 22
+NIGHT_END_H = 6
+
+
+def is_night_template(t) -> bool:
+    """Overnight template, or one overlapping 22:00-06:00 wall-clock."""
+    if bool(t.is_overnight) or t.end_time <= t.start_time:
+        return True
+    s = t.start_time.hour * 60 + t.start_time.minute
+    e = t.end_time.hour * 60 + t.end_time.minute
+    return e > NIGHT_START_H * 60 or s < NIGHT_END_H * 60
+
+
+def consent_active(consents, d: date) -> bool:
+    """`consents`: iterable of (consent_given, valid_from, valid_to)."""
+    return any(g and vf <= d and (vt is None or vt >= d) for g, vf, vt in consents)
+
+
+def check_night_consent(
+    spans, templates, female_ids: Set[int],
+    consents: Dict[int, list],
+) -> List[Violation]:
+    out: List[Violation] = []
+    for s in spans:
+        if s.user_id not in female_ids:
+            continue
+        t = templates.get(s.template_id)
+        if t is None or not is_night_template(t):
+            continue
+        if not consent_active(consents.get(s.user_id, ()), s.work_date):
+            out.append(Violation(
+                s.user_id, s.work_date, "night_consent_missing",
+                "Night shift without recorded consent"))
+    return out

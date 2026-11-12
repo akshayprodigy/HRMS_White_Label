@@ -32,6 +32,7 @@ interface LiveRow {
   half_day_leave: boolean;
   late_notice_eta: string | null;
   late_notice_reason: string | null;
+  transport_required?: boolean;
   gap_id: number | null;
   gap_status: 'open' | 'filled' | 'dismissed' | null;
 };
@@ -346,6 +347,9 @@ export const LiveBoard: React.FC = () => {
                           Running late · ETA {hhmm(r.late_notice_eta)} UTC
                           {r.late_notice_reason ? ` · ${r.late_notice_reason}` : ''}
                         </span>
+                      )}
+                      {r.transport_required && (
+                        <span className="text-xs text-indigo-700">Cab/transport arranged</span>
                       )}
                       {r.half_day_leave && (
                         <span className="text-xs text-gray-500">Half-day leave</span>

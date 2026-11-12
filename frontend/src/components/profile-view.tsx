@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { EmergencyInfoCard } from './safety/emergency-info-card';
 import {
   User,
   Mail,
@@ -56,7 +57,7 @@ interface ProfileProps {
 }
 
 export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = "employee", onAvatarUpdated }: ProfileProps) => {
-  const [activeSection, setActiveSection] = useState<'info' | 'security' | 'preferences' | 'kra' | 'documents' | 'assets' | 'resignation'>('info');
+  const [activeSection, setActiveSection] = useState<'info' | 'security' | 'preferences' | 'kra' | 'documents' | 'assets' | 'resignation' | 'safety'>('info');
   const [isSaving, setIsSaving] = useState(false);
   const [isPwModalOpen, setIsPwModalOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -295,6 +296,7 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
           {[
             { id: 'info', label: 'Identity Information', icon: <User size={18} /> },
             { id: 'kra', label: 'Key Result Areas', icon: <Target size={18} /> },
+            { id: 'safety', label: 'Emergency Info', icon: <Shield size={18} /> },
             { id: 'documents', label: 'My Documents', icon: <FileText size={18} /> },
             { id: 'assets', label: 'My Assets', icon: <Briefcase size={18} /> },
             { id: 'security', label: 'Security & Access', icon: <Shield size={18} /> },
@@ -477,6 +479,7 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
              </div>
            )}
 
+           {activeSection === 'safety' && <EmergencyInfoCard />}
            {activeSection === 'documents' && <MyDocumentsSection />}
 
            {activeSection === 'assets' && <MyAssetsSection />}

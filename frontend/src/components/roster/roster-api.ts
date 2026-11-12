@@ -19,6 +19,7 @@ export interface RosterCell {
   shift_name: string | null;
   live_shift_template_id?: number | null;
   live_is_week_off?: boolean;
+  transport_required?: boolean;
 }
 export interface RosterGridRow {
   employee_id: number;

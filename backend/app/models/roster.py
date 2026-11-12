@@ -64,6 +64,9 @@ class RosterEntry(Base):
     # NOT trust for authorization; re-scope on read via live Department heads).
     department: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     note: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Cab/transport arranged for this shift (not a schedule change).
+    transport_required: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False)
     assigned_by_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )

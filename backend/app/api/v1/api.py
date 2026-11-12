@@ -13,7 +13,7 @@ from app.api.v1.endpoints import (
     roster_publish, roster_rules, roster_rotations, roster_availability,
     roster_swaps, roster_autofill, roster_gaps,
     roster_open_shifts, calendar_feed, roster_live, roster_late,
-    roster_on_call, roster_acks,
+    roster_on_call, roster_acks, safety_profile,
     attendance_regularization, schedule_delegations, broadcasts,
 )
 
@@ -180,6 +180,7 @@ for _r in (
     roster_rotations.router, roster_swaps.router, roster_open_shifts.router,
     calendar_feed.router, roster_autofill.router, roster_live.router,
     roster_gaps.router, roster_on_call.router, roster_acks.router,
+    safety_profile.roster_router,
     roster.router,
 ):
     api_router.include_router(
@@ -287,6 +288,8 @@ api_router.include_router(
     tags=["geofence"],
 )
 
+api_router.include_router(safety_profile.me_router, prefix="", tags=["safety-profile"])
+api_router.include_router(safety_profile.hr_router, prefix="/hr", tags=["safety-profile"])
 api_router.include_router(
     approver_delegations.router,
     prefix="",

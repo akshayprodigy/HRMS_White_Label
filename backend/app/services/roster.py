@@ -647,7 +647,7 @@ async def load_planner_cells(
             select(
                 RosterEntry.id, RosterEntry.employee_id, RosterEntry.work_date,
                 RosterEntry.shift_template_id, RosterEntry.is_week_off,
-                RosterEntry.status,
+                RosterEntry.status, RosterEntry.transport_required,
             ).where(
                 RosterEntry.employee_id.in_(part),
                 RosterEntry.work_date >= start,
@@ -812,6 +812,8 @@ async def build_grid(
                     entry_id=entry.id,
                     source="roster",
                     shift_name=tpl.name if tpl else None,
+                    transport_required=bool(
+                        entry.transport_required and entry.shift_template_id),
                 ))
                 continue
             # Fallback: effective assignment for the date (display only).

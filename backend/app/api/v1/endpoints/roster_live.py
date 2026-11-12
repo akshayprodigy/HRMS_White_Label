@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.api import deps
 from app.models.coverage_gap import CoverageGap, GapSource
+from app.models.roster import RosterEntry, RosterStatus
 from app.models.user import User
 from app.services import live_ops
 from app.services import roster as roster_svc
@@ -49,6 +50,15 @@ async def live_board(
                 CoverageGap.work_date.in_({r.work_date for r in noshow})))
                 ).scalars().all():
             gaps[(g.absent_user_id, g.work_date)] = g
+    transport: set = set()
+    if rows:
+        transport = {(u, d) for u, d in (await db.execute(
+            select(RosterEntry.employee_id, RosterEntry.work_date).where(
+                RosterEntry.employee_id.in_({r.user_id for r in rows}),
+                RosterEntry.work_date.in_({r.work_date for r in rows}),
+                RosterEntry.status == RosterStatus.PUBLISHED,
+                RosterEntry.transport_required.is_(True),
+                RosterEntry.shift_template_id.is_not(None)))).all()}
     counts = {s.value: 0 for s in live_ops.LiveStatus}
     for r in rows:
         counts[r.status.value] += 1
@@ -70,6 +80,7 @@ async def live_board(
             "late_notice_eta": r.late_notice_eta.isoformat()
             if r.late_notice_eta else None,
             "late_notice_reason": r.late_notice_reason,
+            "transport_required": (r.user_id, r.work_date) in transport,
             "alerted": r.alerted, "half_day_leave": r.half_day_leave,
             "gap_id": gaps[(r.user_id, r.work_date)].id
             if (r.user_id, r.work_date) in gaps else None,

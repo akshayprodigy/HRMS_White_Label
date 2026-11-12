@@ -269,6 +269,11 @@ export const MyShiftView: React.FC = () => {
                 {shift.is_overnight ? ' · overnight' : ''}
                 {` · grace in ${shift.grace_in_minutes}m / out ${shift.grace_out_minutes}m`}
               </p>
+              {rosterWeek?.days?.some((x: any) => x.is_today && x.shift?.transport_required) && (
+                <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mt-1">
+                  Cab/transport arranged
+                </p>
+              )}
             </div>
           </div>
         ) : (
@@ -354,6 +359,11 @@ export const MyShiftView: React.FC = () => {
                 {d.shift?.start_time && !d.on_leave && !weekOff && (
                   <p className="text-[9px] font-bold text-slate-500 tabular-nums">
                     {d.shift.start_time}–{d.shift.end_time}
+                  </p>
+                )}
+                {d.shift?.transport_required && !d.on_leave && !weekOff && (
+                  <p className="text-[8px] font-bold text-indigo-600 uppercase tracking-widest mt-0.5">
+                    Cab/transport arranged
                   </p>
                 )}
                 {d.holiday_name && (

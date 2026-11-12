@@ -29,6 +29,11 @@ class Employee(Base):
         String(20), unique=True, index=True, nullable=False
     )
     
+    # Sensitive personal data (Phase 2 Task 8). Never added to general
+    # employee schemas; served only by the safety-profile endpoints.
+    gender: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    blood_group: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+
     department: Mapped[str] = mapped_column(String(100), index=True)
     # Legacy free-text columns. Kept during the designation/grade master
     # transition so existing payslips, letters and reports keep working

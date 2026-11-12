@@ -23,6 +23,7 @@ class RosterCell(BaseModel):
     # assignment: (template, week_off); blank = (None, False)).
     live_shift_template_id: Optional[int] = None
     live_is_week_off: bool = False
+    transport_required: bool = False
 
 
 class RosterGridRow(BaseModel):

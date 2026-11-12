@@ -17,6 +17,7 @@ from app.schemas.roster import (
 )
 from app.models.coverage_requirement import CoverageRequirement
 from app.services import schedule_rules
+from app.services import safety_profile as safety_svc
 from app.services.time_rules import get_schedule_rules
 from app.services import roster as roster_svc
 from app.services.availability import availability_by_day
@@ -83,6 +84,14 @@ async def get_insights(
             viols.append(schedule_rules.Violation(
                 s_.user_id, s_.work_date, "unavailable",
                 "Scheduled on a day marked unavailable"))
+    female = set((await db.execute(
+        select(Employee.user_id).where(
+            Employee.user_id.in_(viol_ids), Employee.gender == "female")
+    )).scalars().all()) if viol_ids else set()
+    if female:
+        viols += schedule_rules.check_night_consent(
+            v_spans, templates, female,
+            await safety_svc.consents_for_users(db, female))
     viols = sorted((v for v in viols if start <= v.work_date <= end),
                    key=lambda v: (v.work_date, v.user_id, v.rule))
 
