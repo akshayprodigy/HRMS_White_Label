@@ -175,6 +175,45 @@ async def release_open_shift(db, shift: OpenShift) -> None:
         g.open_shift_id = None
 
 
+async def dismiss_noshow_gap_if_present(
+    db, user_id: int, work_date: date, actor_id: int,
+    note: str = "Marked present by supervisor",
+) -> int:
+    """The absentee was marked present: dismiss their OPEN no-show gap for
+    that date (cancelling a linked open shift). Lock order: open shift, then
+    gap. Returns the number of gaps dismissed. Flushes, never commits."""
+    from app.api.v1.endpoints.roster_common import lock_row
+    from app.services import open_shifts as os_svc
+    peek = (await db.execute(select(CoverageGap).where(
+        CoverageGap.absent_user_id == user_id,
+        CoverageGap.work_date == work_date,
+        CoverageGap.source == GapSource.NO_SHOW,
+        CoverageGap.status == GapStatus.OPEN))).scalars().first()
+    if peek is None:
+        return 0
+    shift = None
+    if peek.open_shift_id:
+        shift = await lock_row(
+            db, select(OpenShift).where(OpenShift.id == peek.open_shift_id),
+            "Coverage gap changed concurrently; retry")
+    gap = await lock_row(
+        db, select(CoverageGap).where(
+            CoverageGap.id == peek.id, CoverageGap.status == GapStatus.OPEN),
+        "Coverage gap changed concurrently; retry")
+    if gap is None:
+        return 0
+    if shift is not None and shift.status == OpenShiftStatus.OPEN:
+        shift.status = OpenShiftStatus.CANCELLED
+        await os_svc.reject_pending(
+            db, shift, actor_id, note, title="Open shift cancelled")
+    gap.status = GapStatus.DISMISSED
+    gap.note = note[:255]
+    gap.resolved_by_id = actor_id
+    gap.resolved_at = datetime.now(timezone.utc)
+    await db.flush()
+    return 1
+
+
 # ------------------------------- ranking -------------------------------
 
 @dataclass(frozen=True)

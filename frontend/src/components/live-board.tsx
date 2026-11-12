@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
+import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { errMsg, parseServerDate } from './schedule-delegations-utils';
@@ -70,6 +71,24 @@ const STATUS_META: Record<
 
 const REFRESH_MS = 60_000;
 
+/** Rows a supervisor can mark present when the punch system is down. */
+const MARKABLE: Status[] = ['not_arrived', 'no_show', 'running_late'];
+
+interface BulkResult {
+  user_id: number;
+  status: 'created' | 'skipped_existing' | 'out_of_scope' | 'locked' | 'error';
+  attendance_id?: number | null;
+  message?: string | null;
+}
+
+const RESULT_LABEL: Record<BulkResult['status'], string> = {
+  created: 'Marked present',
+  skipped_existing: 'Already has attendance',
+  out_of_scope: 'Outside your scope',
+  locked: 'Locked by payroll',
+  error: 'Failed',
+};
+
 const hhmm = (iso: string | null) =>
   iso
     ? parseServerDate(iso).toLocaleTimeString([], {
@@ -116,6 +135,14 @@ export const LiveBoard: React.FC = () => {
   const [deptOpts, setDeptOpts] = useState<string[]>([]);
   const [locOpts, setLocOpts] = useState<string[]>([]);
   const reqRef = useRef(0);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [markOpen, setMarkOpen] = useState(false);
+  const [punchIn, setPunchIn] = useState('');
+  const [punchOut, setPunchOut] = useState('');
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [markError, setMarkError] = useState<string | null>(null);
+  const [markResults, setMarkResults] = useState<BulkResult[] | null>(null);
 
   const load = useCallback(
     async (background: boolean) => {
@@ -180,6 +207,66 @@ export const LiveBoard: React.FC = () => {
       (a, b) => rank(a.status) - rank(b.status) || a.name.localeCompare(b.name)
     );
   }, [data, statusFilter]);
+
+  const markable = useMemo(() => rows.filter((r) => MARKABLE.includes(r.status)), [rows]);
+  const selectedRows = useMemo(
+    () => (data?.rows ?? []).filter((r) => selected.has(r.user_id) && MARKABLE.includes(r.status)),
+    [data, selected]
+  );
+  const allMarked = markable.length > 0 && markable.every((r) => selected.has(r.user_id));
+  const nameOf = (id: number) => data?.rows.find((r) => r.user_id === id)?.name ?? `User ${id}`;
+
+  const toggle = (id: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const openMark = () => {
+    setPunchIn(selectedRows.find((r) => r.start_hhmm)?.start_hhmm ?? '09:00');
+    setPunchOut('');
+    setReason('');
+    setMarkError(null);
+    setMarkResults(null);
+    setMarkOpen(true);
+  };
+
+  const submitMark = async () => {
+    if (reason.trim().length < 5) {
+      setMarkError('Enter a reason of at least 5 characters.');
+      return;
+    }
+    if (!punchIn) {
+      setMarkError('Enter the punch-in time.');
+      return;
+    }
+    setSubmitting(true);
+    setMarkError(null);
+    try {
+      const byDate = new Map<string, number[]>();
+      selectedRows.forEach((r) => byDate.set(r.work_date, [...(byDate.get(r.work_date) ?? []), r.user_id]));
+      const all: BulkResult[] = [];
+      for (const [work_date, user_ids] of byDate) {
+        const res = await client.post<{ results: BulkResult[] }>(ENDPOINTS.ATTENDANCE.BULK_MARK, {
+          work_date,
+          user_ids,
+          punch_in_time: punchIn,
+          punch_out_time: punchOut || null,
+          reason: reason.trim(),
+        });
+        all.push(...res.data.results);
+      }
+      setMarkResults(all);
+      setSelected(new Set());
+      load(true);
+    } catch (err: any) {
+      setMarkError(errMsg(err, 'Could not mark attendance'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const selectCls =
     'h-9 px-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500';
@@ -291,10 +378,37 @@ export const LiveBoard: React.FC = () => {
         </div>
       )}
 
+      {selectedRows.length > 0 && (
+        <div className="flex items-center gap-3 px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-sm">
+          <span className="text-indigo-700">{selectedRows.length} selected</span>
+          <Button size="sm" onClick={openMark}>
+            Mark present (system outage)
+          </Button>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set())}
+            className="text-xs text-gray-600 hover:underline"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       <Card className="overflow-x-auto p-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 text-left text-gray-600">
+              <th className="px-4 py-2 w-8">
+                <input
+                  type="checkbox"
+                  aria-label="Select all not-arrived employees"
+                  checked={allMarked}
+                  disabled={markable.length === 0}
+                  onChange={() =>
+                    setSelected(allMarked ? new Set() : new Set(markable.map((r) => r.user_id)))
+                  }
+                />
+              </th>
               <th className="px-4 py-2 font-medium">Employee</th>
               <th className="px-4 py-2 font-medium">Shift</th>
               <th className="px-4 py-2 font-medium">Start – End</th>
@@ -307,13 +421,13 @@ export const LiveBoard: React.FC = () => {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={8} className="px-4 py-12 text-center text-gray-400">
                   Loading live board…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={8} className="px-4 py-12 text-center text-gray-400">
                   {error
                     ? 'Could not load the board.'
                     : statusFilter
@@ -324,6 +438,16 @@ export const LiveBoard: React.FC = () => {
             ) : (
               rows.map((r) => (
                 <tr key={r.user_id} className="border-t border-gray-200">
+                  <td className="px-4 py-2">
+                    {MARKABLE.includes(r.status) && (
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${r.name}`}
+                        checked={selected.has(r.user_id)}
+                        onChange={() => toggle(r.user_id)}
+                      />
+                    )}
+                  </td>
                   <td className="px-4 py-2">
                     <div className="font-medium text-gray-900">{r.name}</div>
                     <div className="text-xs text-gray-500">
@@ -390,6 +514,86 @@ export const LiveBoard: React.FC = () => {
           </tbody>
         </table>
       </Card>
+      <Dialog open={markOpen} onOpenChange={(o: boolean) => !o && !submitting && setMarkOpen(false)}>
+        <DialogContent className="max-w-md">
+          <DialogTitle className="text-base font-semibold text-gray-900">
+            Mark present (system outage)
+          </DialogTitle>
+          {markResults ? (
+            <div className="space-y-3" role="status">
+              <p className="text-sm text-gray-700">
+                {markResults.filter((x) => x.status === 'created').length} of {markResults.length} marked present.
+              </p>
+              <ul className="text-sm space-y-1 max-h-60 overflow-y-auto">
+                {markResults.map((x) => (
+                  <li key={x.user_id} className="flex items-start justify-between gap-3">
+                    <span className="text-gray-900">{nameOf(x.user_id)}</span>
+                    <span
+                      className={x.status === 'created' ? 'text-emerald-700' : 'text-amber-700'}
+                      title={x.message ?? undefined}
+                    >
+                      {RESULT_LABEL[x.status]}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <DialogFooter>
+                <Button onClick={() => setMarkOpen(false)}>Close</Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">
+                Records {selectedRows.length} employee{selectedRows.length === 1 ? '' : 's'} as present. Times are UTC,
+                same as the board. This is audited.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-sm text-gray-700 space-y-1 block">
+                  Punch in
+                  <input
+                    type="time"
+                    value={punchIn}
+                    onChange={(e) => setPunchIn(e.target.value)}
+                    className={cn(selectCls, 'w-full')}
+                  />
+                </label>
+                <label className="text-sm text-gray-700 space-y-1 block">
+                  Punch out (optional)
+                  <input
+                    type="time"
+                    value={punchOut}
+                    onChange={(e) => setPunchOut(e.target.value)}
+                    className={cn(selectCls, 'w-full')}
+                  />
+                </label>
+              </div>
+              <label className="text-sm text-gray-700 space-y-1 block">
+                Reason
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Biometric system down 08:00-10:30"
+                  className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </label>
+              {markError && (
+                <div role="alert" className="text-sm text-red-700">
+                  {markError}
+                </div>
+              )}
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setMarkOpen(false)} disabled={submitting}>
+                  Cancel
+                </Button>
+                <Button onClick={submitMark} disabled={submitting}>
+                  {submitting ? 'Marking…' : 'Mark present'}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

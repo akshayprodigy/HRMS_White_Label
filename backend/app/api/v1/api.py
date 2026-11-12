@@ -14,7 +14,7 @@ from app.api.v1.endpoints import (
     roster_swaps, roster_autofill, roster_gaps,
     roster_open_shifts, calendar_feed, roster_live, roster_late,
     roster_on_call, roster_acks, safety_profile,
-    attendance_regularization, schedule_delegations, broadcasts,
+    attendance_regularization, schedule_delegations, broadcasts, attendance_bulk,
 )
 
 api_router = APIRouter()
@@ -29,6 +29,11 @@ api_router.include_router(
 # to a safety check before punching in).
 api_router.include_router(
     broadcasts.router, prefix="/broadcasts", tags=["broadcasts"])
+# Supervisor bulk-mark (system-outage fallback): NOT attendance-gated — a
+# supervisor must be able to mark staff present when the punch system is
+# down, even if the supervisor has not punched in themselves.
+api_router.include_router(
+    attendance_bulk.router, prefix="/attendance", tags=["attendance"])
 api_router.include_router(
     attendance.router, prefix="/attendance", tags=["attendance"]
 )

@@ -1,6 +1,6 @@
 from datetime import datetime, date
-from typing import Optional
-from pydantic import BaseModel, ConfigDict
+from typing import List, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AttendanceBase(BaseModel):
@@ -81,6 +81,32 @@ class AttendanceManualCreate(BaseModel):
     reason: str
 
     model_config = ConfigDict(str_strip_whitespace=True)
+
+
+class AttendanceBulkMark(BaseModel):
+    """Supervisor/HR fallback when the punch system is down. Times are UTC
+    wall-clock: 'HH:MM' (on work_date) or an ISO datetime."""
+    work_date: date
+    user_ids: List[int] = Field(min_length=1, max_length=200)
+    punch_in_time: str
+    punch_out_time: Optional[str] = None
+    reason: str
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
+class AttendanceBulkResult(BaseModel):
+    user_id: int
+    status: str  # created|skipped_existing|out_of_scope|locked|error
+    attendance_id: Optional[int] = None
+    message: Optional[str] = None
+
+
+class AttendanceBulkResponse(BaseModel):
+    batch_id: str
+    work_date: date
+    results: List[AttendanceBulkResult]
+    counts: dict[str, int]
 
 
 class TimeRulesRead(BaseModel):

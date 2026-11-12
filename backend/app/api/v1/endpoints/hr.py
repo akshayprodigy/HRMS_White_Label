@@ -2334,48 +2334,12 @@ async def create_manual_attendance(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await assert_attendance_editable(db, obj_in.work_date)
-
+    from app.services.manual_attendance import create_manual_attendance_row
     punch_in = as_utc(obj_in.punch_in_time)
     punch_out = as_utc(obj_in.punch_out_time)
-    if punch_out is not None and punch_out <= punch_in:
-        raise HTTPException(
-            status_code=422,
-            detail="Punch-out must be after punch-in.",
-        )
-
-    existing = (await db.execute(
-        select(Attendance).where(
-            Attendance.user_id == obj_in.user_id,
-            Attendance.work_date == obj_in.work_date,
-        )
-    )).scalars().first()
-    if existing:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "An attendance record already exists for "
-                f"{obj_in.work_date.isoformat()} — edit it instead."
-            ),
-        )
-
-    # Snapshot the employee's shift for correct late/early evaluation.
-    from app.api.v1.endpoints.attendance import _effective_shift_on
-    shift = await _effective_shift_on(db, obj_in.user_id, obj_in.work_date)
-
-    att = Attendance(
-        user_id=obj_in.user_id,
-        mode="manual",
-        captured_at=punch_in,
-        punch_out_time=punch_out,
-        work_date=obj_in.work_date,
-        shift_template_id=shift.id if shift else None,
-        attribution_flag=None if shift else "no_shift",
-        edited_by_id=current_user.id,
-        edited_at=datetime.now(timezone.utc),
-    )
-    db.add(att)
-    await db.flush()
+    att = await create_manual_attendance_row(
+        db, current_user, obj_in.user_id, obj_in.work_date,
+        punch_in, punch_out, reason, mode="manual")
 
     await log_audit(
         db, current_user.id, "CREATE_MANUAL_ATTENDANCE",
