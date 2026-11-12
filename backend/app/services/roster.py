@@ -547,6 +547,9 @@ async def build_grid(
             cells=cells,
         ))
 
+    pub = await publishable_subset(db, user, set(user_ids))
+    can_pub = admin or (bool(user_ids) and set(user_ids) <= pub)
+
     return RosterGridResponse(
         start=start,
         end=end,
@@ -560,6 +563,7 @@ async def build_grid(
         ],
         rows=grid_rows,
         is_admin=admin,
+        can_publish=can_pub,
     )
 
 

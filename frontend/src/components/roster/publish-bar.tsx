@@ -1,0 +1,115 @@
+import React, { useState } from 'react';
+import { Send, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
+import { Button } from '../ui-elements';
+import { client } from '../../api/client';
+import { ENDPOINTS } from '../../api/endpoints';
+import { errMsg } from '../schedule-delegations-utils';
+import { ReasonDialog } from './reason-dialog';
+import type { PublishResult } from './roster-api';
+
+interface Props {
+  draftCount: number;
+  canPublish: boolean;
+  start: string;
+  end: string;
+  department: string;
+  onDone: () => void;
+}
+
+export const PublishBar = ({
+  draftCount,
+  canPublish,
+  start,
+  end,
+  department,
+  onDone,
+}: Props) => {
+  const [busy, setBusy] = useState(false);
+  const [reqOpen, setReqOpen] = useState(false);
+  const body = { start, end, department: department || null };
+
+  const publish = async () => {
+    setBusy(true);
+    try {
+      const { data } = await client.post<PublishResult>(
+        ENDPOINTS.ROSTER.PUBLISH,
+        body
+      );
+      const np = data.not_permitted.length;
+      toast.success(
+        `Published ${data.published} cell${data.published === 1 ? '' : 's'} for ${data.employees} employee${data.employees === 1 ? '' : 's'}` +
+          (np ? `; ${np} not permitted` : '')
+      );
+      onDone();
+    } catch (err: any) {
+      toast.error(errMsg(err, 'Failed to publish'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const request = async (note: string) => {
+    setBusy(true);
+    try {
+      await client.post(ENDPOINTS.ROSTER.PUBLISH_REQUESTS, {
+        ...body,
+        note: note || null,
+      });
+      toast.success('Publish request sent for approval');
+      setReqOpen(false);
+      onDone();
+    } catch (err: any) {
+      toast.error(errMsg(err, 'Failed to request publish'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 p-3 rounded-lg border border-dashed border-amber-300 bg-amber-50">
+      <span className="text-sm text-amber-800 font-medium">
+        {draftCount} draft cell{draftCount === 1 ? '' : 's'} in this view
+      </span>
+      <span className="text-xs text-amber-700 flex-1">
+        Drafts are hidden from employees until published.
+      </span>
+      {canPublish ? (
+        <Button
+          size="sm"
+          onClick={publish}
+          disabled={busy || draftCount === 0}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5"
+        >
+          {busy ? (
+            <RefreshCw className="w-4 h-4 animate-spin" />
+          ) : (
+            <Send className="w-4 h-4" />
+          )}
+          Publish
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          onClick={() => setReqOpen(true)}
+          disabled={busy || draftCount === 0}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5"
+        >
+          <Send className="w-4 h-4" />
+          Request publish
+        </Button>
+      )}
+      <ReasonDialog
+        open={reqOpen}
+        title="Request publish"
+        description={`Ask HR to publish drafts for ${start} → ${end}.`}
+        label="Note for approver"
+        confirmLabel="Send request"
+        minLength={0}
+        busy={busy}
+        onConfirm={request}
+        onClose={() => setReqOpen(false)}
+      />
+    </div>
+  );
+};

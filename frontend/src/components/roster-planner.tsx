@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   CalendarDays,
   ChevronLeft,
@@ -6,6 +6,9 @@ import {
   Wand2,
   RefreshCw,
   Info,
+  Repeat,
+  Copy,
+  History,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
@@ -20,41 +23,21 @@ import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { ScheduleDelegations } from './schedule-delegations';
 import { scopeLabel, errMsg } from './schedule-delegations-utils';
+import {
+  RosterCell,
+  RosterGrid,
+  RosterGridRow,
+  WEEKOFF,
+  addDays,
+  daysBetween,
+} from './roster/roster-api';
+import { ReasonDialog } from './roster/reason-dialog';
+import { PublishBar } from './roster/publish-bar';
+import { PublishRequestsPanel } from './roster/publish-requests-panel';
+import { RotationDialog } from './roster/rotation-dialog';
+import { CopyDialog } from './roster/copy-dialog';
+import { HistoryDialog } from './roster/history-dialog';
 
-interface ShiftTemplateLite {
-  id: number;
-  name: string;
-  start_time: string;
-  end_time: string;
-  is_overnight: boolean;
-}
-interface RosterCell {
-  work_date: string;
-  shift_template_id: number | null;
-  is_week_off: boolean;
-  status: string | null;
-  entry_id: number | null;
-  source: string;
-  shift_name: string | null;
-}
-interface RosterGridRow {
-  employee_id: number;
-  full_name: string | null;
-  department: string | null;
-  designation: string | null;
-  in_scope: boolean;
-  cells: RosterCell[];
-}
-interface RosterGrid {
-  start: string;
-  end: string;
-  dates: string[];
-  shift_templates: ShiftTemplateLite[];
-  rows: RosterGridRow[];
-  is_admin: boolean;
-}
-
-const WEEKOFF = '__weekoff__';
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const iso = (d: Date) =>
@@ -90,6 +73,17 @@ export const RosterPlanner = () => {
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [myGrants, setMyGrants] = useState<any[]>([]);
   const [savingCell, setSavingCell] = useState<string | null>(null);
+  const [saveAs, setSaveAs] = useState<'draft' | 'published'>('draft');
+  const [pendingEdit, setPendingEdit] = useState<{
+    row: RosterGridRow;
+    c: RosterCell;
+    value: string;
+  } | null>(null);
+  const [rotOpen, setRotOpen] = useState(false);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [historyEmp, setHistoryEmp] = useState<{ id: number; name: string } | null>(null);
+  const [prKey, setPrKey] = useState(0);
+  const gridReq = useRef(0);
 
   // Pattern dialog
   const [patternOpen, setPatternOpen] = useState(false);
@@ -109,6 +103,7 @@ export const RosterPlanner = () => {
   }, [mode, anchor]);
 
   const fetchGrid = useCallback(async () => {
+    const reqId = ++gridReq.current;
     setLoading(true);
     setLoadError(null);
     try {
@@ -118,16 +113,18 @@ export const RosterPlanner = () => {
       const res = await client.get<RosterGrid>(
         ENDPOINTS.ROSTER.PLAN + '?' + params.toString()
       );
+      if (reqId !== gridReq.current) return;
       setGrid(res.data);
       setIsAdmin((prev) => prev === true ? true : !!res.data.is_admin);
     } catch (err: any) {
+      if (reqId !== gridReq.current) return;
       const msg = errMsg(err, 'Failed to load roster');
       toast.error(msg);
       setLoadError(msg);
       setGrid(null);
       setIsAdmin((prev) => (prev === null ? false : prev));
     } finally {
-      setLoading(false);
+      if (reqId === gridReq.current) setLoading(false);
     }
   }, [range, department]);
 
@@ -157,30 +154,69 @@ export const RosterPlanner = () => {
     return c.shift_template_id ? String(c.shift_template_id) : '';
   };
 
+  const canPublish = !!grid?.can_publish;
+  const effStatus = canPublish ? saveAs : 'draft';
+
+  const requestEdit = (row: RosterGridRow, c: RosterCell, value: string) => {
+    const isPublished = c.source === 'roster' && c.status === 'published';
+    if (isPublished && value !== cellValue(c)) {
+      setPendingEdit({ row, c, value });
+      return;
+    }
+    editCell(row, c, value);
+  };
+
   const editCell = async (
     row: RosterGridRow,
     c: RosterCell,
-    value: string
+    value: string,
+    reason?: string
   ) => {
     const key = `${row.employee_id}-${c.work_date}`;
     setSavingCell(key);
     try {
-      const body: any = {
-        employee_id: row.employee_id,
-        work_date: c.work_date,
-        shift_template_id: null,
-        is_week_off: false,
-      };
-      if (value === WEEKOFF) body.is_week_off = true;
-      else if (value) body.shift_template_id = Number(value);
-      await client.post(ENDPOINTS.ROSTER.ENTRIES, body);
+      if (value === '' && c.entry_id) {
+        // Clearing a planned cell removes the entry (reverts to baseline).
+        await client.delete(ENDPOINTS.ROSTER.ENTRY_DETAIL(c.entry_id), {
+          params: reason ? { reason } : undefined,
+        });
+      } else if (value !== '') {
+        const body: any = {
+          employee_id: row.employee_id,
+          work_date: c.work_date,
+          shift_template_id: null,
+          is_week_off: false,
+          status: effStatus,
+        };
+        if (reason) body.reason = reason;
+        if (value === WEEKOFF) body.is_week_off = true;
+        else body.shift_template_id = Number(value);
+        const res = await client.post(ENDPOINTS.ROSTER.ENTRIES, body);
+        if (res.data?.notice) toast.info(res.data.notice);
+      }
+      setPendingEdit(null);
       await fetchGrid();
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Failed to save cell');
+      toast.error(errMsg(err, 'Failed to save cell'));
     } finally {
       setSavingCell(null);
     }
   };
+
+  const previousWindow = () => {
+    const { start, end } = range();
+    if (mode === 'week') return { start: addDays(start, -7), end: addDays(end, -7) };
+    const d = new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1);
+    const ps = iso(d);
+    const pe = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+    const cap = addDays(ps, 30);
+    return { start: ps, end: daysBetween(pe, cap) < 0 ? cap : pe };
+  };
+
+  const draftCount = (grid?.rows || []).reduce(
+    (n, r) => n + r.cells.filter((c) => c.status === 'draft').length,
+    0
+  );
 
   const applyPattern = async () => {
     const { start, end } = range();
@@ -199,7 +235,7 @@ export const RosterPlanner = () => {
         start,
         end,
         department: department || null,
-        status: 'published',
+        status: effStatus,
         overwrite: true,
         pattern: pat,
       });
@@ -210,10 +246,11 @@ export const RosterPlanner = () => {
             ? `, ${r.out_of_scope.length} out of scope`
             : '')
       );
+      if (r.errors?.length) toast.error(r.errors.slice(0, 3).join('; '));
       setPatternOpen(false);
       fetchGrid();
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Failed to apply pattern');
+      toast.error(errMsg(err, 'Failed to apply pattern'));
     } finally {
       setApplying(false);
     }
@@ -341,6 +378,34 @@ export const RosterPlanner = () => {
             <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
             Refresh
           </Button>
+          <div className="flex items-center gap-1.5 text-sm text-gray-600">
+            Save edits as:
+            <div role="group" aria-label="Save edits as" className="flex rounded-lg border border-gray-200 overflow-hidden">
+              {(['draft', 'published'] as const).map((st) => (
+                <button
+                  key={st}
+                  disabled={st === 'published' && !canPublish}
+                  title={st === 'published' && !canPublish ? 'Publishing requires HR approval' : undefined}
+                  onClick={() => setSaveAs(st)}
+                  aria-pressed={effStatus === st}
+                  className={cn(
+                    'px-2.5 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed',
+                    effStatus === st ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                  )}
+                >
+                  {st === 'draft' ? 'Draft' : 'Published'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setCopyOpen(true)} disabled={!grid} className="gap-1.5">
+            <Copy className="w-4 h-4" />
+            Copy previous
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setRotOpen(true)} disabled={!grid} className="gap-1.5">
+            <Repeat className="w-4 h-4" />
+            Rotations
+          </Button>
           <Button
             size="sm"
             onClick={() => {
@@ -354,6 +419,26 @@ export const RosterPlanner = () => {
           </Button>
         </div>
       </Card>
+
+      <PublishRequestsPanel
+        isAdmin={!!grid?.is_admin}
+        refreshKey={prKey}
+        onChanged={fetchGrid}
+      />
+
+      {grid && (
+        <PublishBar
+          draftCount={draftCount}
+          canPublish={canPublish}
+          start={grid.start}
+          end={grid.end}
+          department={department}
+          onDone={() => {
+            fetchGrid();
+            setPrKey((k) => k + 1);
+          }}
+        />
+      )}
 
       {/* Grid */}
       <Card className="overflow-hidden">
@@ -405,17 +490,37 @@ export const RosterPlanner = () => {
                 grid.rows.map((row) => (
                   <tr key={row.employee_id} className="border-b hover:bg-gray-50">
                     <td className="sticky left-0 z-10 bg-white px-3 py-2 border-r">
-                      <div className="font-medium text-gray-900">
-                        {row.full_name || `User #${row.employee_id}`}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {row.department} &middot; {row.designation}
+                      <div className="flex items-start gap-1.5">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-gray-900">
+                            {row.full_name || `User #${row.employee_id}`}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {row.department} &middot; {row.designation}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() =>
+                            setHistoryEmp({
+                              id: row.employee_id,
+                              name: row.full_name || `User #${row.employee_id}`,
+                            })
+                          }
+                          aria-label="View change history"
+                          title="Change history"
+                          className="text-gray-400 hover:text-indigo-600 p-0.5"
+                        >
+                          <History className="w-4 h-4" />
+                        </button>
                       </div>
                     </td>
                     {row.cells.map((c) => {
                       const key = `${row.employee_id}-${c.work_date}`;
                       const val = cellValue(c);
                       const isFallback = c.source !== 'roster';
+                      const isDraft = c.status === 'draft';
+                      const lockedPublished =
+                        !canPublish && c.source === 'roster' && c.status === 'published';
                       return (
                         <td
                           key={c.work_date}
@@ -424,13 +529,21 @@ export const RosterPlanner = () => {
                             c.is_week_off && 'bg-amber-50'
                           )}
                         >
+                          {isDraft && (
+                            <div className="text-[9px] uppercase tracking-wide text-amber-600 leading-none mb-0.5">
+                              Draft
+                            </div>
+                          )}
                           <select
                             value={val}
-                            disabled={savingCell === key}
-                            onChange={(e) => editCell(row, c, e.target.value)}
+                            disabled={savingCell === key || lockedPublished}
+                            title={lockedPublished ? 'Published — publishing requires HR approval' : undefined}
+                            onChange={(e) => requestEdit(row, c, e.target.value)}
                             className={cn(
                               'w-full text-xs px-1.5 py-1 border rounded focus:ring-1 focus:ring-indigo-500',
-                              isFallback
+                              isDraft
+                                ? 'border-dashed border-amber-400 text-gray-800'
+                                : isFallback
                                 ? 'text-gray-400 border-dashed'
                                 : c.is_week_off
                                 ? 'text-amber-700 border-amber-300'
@@ -474,8 +587,52 @@ export const RosterPlanner = () => {
             </Badge>
             = week off
           </span>
+          <span className="flex items-center gap-1">
+            <Badge className="bg-white border-dashed border-amber-400 text-amber-600">
+              Draft
+            </Badge>
+            = unpublished (hidden from employees)
+          </span>
         </div>
       )}
+
+      <ReasonDialog
+        open={!!pendingEdit}
+        title="Change a published schedule"
+        description={
+          pendingEdit
+            ? `${pendingEdit.row.full_name || 'Employee'} on ${pendingEdit.c.work_date} is already published. Employees will be notified.`
+            : undefined
+        }
+        label="Reason for change"
+        confirmLabel="Save change"
+        busy={!!savingCell}
+        onConfirm={(reason) =>
+          pendingEdit &&
+          editCell(pendingEdit.row, pendingEdit.c, pendingEdit.value, reason)
+        }
+        onClose={() => setPendingEdit(null)}
+      />
+      <RotationDialog
+        open={rotOpen}
+        onClose={() => setRotOpen(false)}
+        isAdmin={!!grid?.is_admin}
+        canPublish={canPublish}
+        templates={templates}
+        rows={grid?.rows || []}
+        start={grid?.start || ''}
+        end={grid?.end || ''}
+        onApplied={fetchGrid}
+      />
+      <CopyDialog
+        open={copyOpen}
+        source={grid ? previousWindow() : null}
+        target={{ start: grid?.start || '', end: grid?.end || '' }}
+        department={department}
+        onClose={() => setCopyOpen(false)}
+        onDone={fetchGrid}
+      />
+      <HistoryDialog employee={historyEmp} onClose={() => setHistoryEmp(null)} />
 
       {/* Pattern dialog */}
       <Dialog open={patternOpen} onOpenChange={setPatternOpen}>

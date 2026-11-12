@@ -43,6 +43,7 @@ class RosterGridResponse(BaseModel):
     shift_templates: List[ShiftTemplateLite]
     rows: List[RosterGridRow]
     is_admin: bool = False
+    can_publish: bool = False
 
 
 class RosterEntryInput(BaseModel):

@@ -468,3 +468,14 @@ def test_format_dates_many_runs():
     assert out.endswith("+3 more")
     assert f"{dd(0)} to {dd(2)}" in out and f"{dd(4)} to {dd(5)}" in out
     assert format_dates([D]) == dd(0)
+
+
+async def test_grid_can_publish_flag(client, world):
+    ha = await _login(client, world["admin_email"])
+    hd = await _login(client, world["email"])
+    await _grant(world, can_publish=False)
+    q = {"start": dd(0), "end": dd(6)}
+    r = await client.get(f"{ROSTER}/plan", headers=ha, params=q)
+    assert r.status_code == 200 and r.json()["can_publish"] is True
+    r = await client.get(f"{ROSTER}/plan", headers=hd, params=q)
+    assert r.status_code == 200 and r.json()["can_publish"] is False
