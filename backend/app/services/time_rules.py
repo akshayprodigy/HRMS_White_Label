@@ -6,6 +6,7 @@ with NO shift fall back to the org defaults below via a virtual
 "default shift" object that satisfies the shift_resolver's ShiftLike
 protocol.
 """
+import logging
 from dataclasses import dataclass
 from datetime import time
 from typing import Dict
@@ -14,6 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.system import SystemSetting
+
+logger = logging.getLogger(__name__)
 
 # key -> (default value, description)
 TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
@@ -56,10 +59,14 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
     ),
 }
 
-SCHEDULE_INT_KEYS = (
-    "schedule.min_rest_hours", "schedule.max_consecutive_days",
-    "schedule.max_consecutive_nights", "schedule.max_weekly_hours",
-)
+# key -> inclusive upper bound
+SCHEDULE_INT_CAPS: Dict[str, int] = {
+    "schedule.min_rest_hours": 24,
+    "schedule.max_consecutive_days": 31,
+    "schedule.max_consecutive_nights": 31,
+    "schedule.max_weekly_hours": 168,
+}
+SCHEDULE_INT_KEYS = tuple(SCHEDULE_INT_CAPS)
 
 
 async def get_time_rules(db: AsyncSession) -> Dict[str, str]:
@@ -89,14 +96,16 @@ async def set_time_rules(
                 "attendance.default_weekly_offs must be comma-separated "
                 "weekday numbers 0-6 (Mon=0..Sun=6), e.g. '6' or '5,6'"
             )
-    for key in SCHEDULE_INT_KEYS:
+    updates = dict(updates)
+    for key, cap in SCHEDULE_INT_CAPS.items():
         v = updates.get(key)
         if v is not None:
             sv = str(v).strip()
-            if not (sv.isascii() and sv.isdigit()):
+            if not (sv.isascii() and sv.isdigit()) or int(sv) > cap:
                 raise ValueError(
-                    f"{key} must be a non-negative whole number"
+                    f"{key} must be a whole number between 0 and {cap}"
                 )
+            updates[key] = sv  # store the stripped value
     for key, value in updates.items():
         if key not in TIME_RULE_DEFAULTS:
             continue
@@ -111,6 +120,27 @@ async def set_time_rules(
             ))
     await db.commit()
     return await get_time_rules(db)
+
+
+async def get_schedule_rules(db: AsyncSession) -> Dict[str, int]:
+    """Work rules as ints keyed without the 'schedule.' prefix. A corrupt
+    stored value falls back to its default (logged)."""
+    raw = await get_time_rules(db)
+    out: Dict[str, int] = {}
+    for key in SCHEDULE_INT_KEYS:
+        short = key.split(".", 1)[1]
+        try:
+            val = int(str(raw[key]).strip())
+            if val < 0:
+                raise ValueError("negative")
+            out[short] = val
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid stored value %r for %s; using default",
+                raw.get(key), key,
+            )
+            out[short] = int(TIME_RULE_DEFAULTS[key][0])
+    return out
 
 
 @dataclass(frozen=True)

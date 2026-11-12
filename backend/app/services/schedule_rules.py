@@ -69,21 +69,36 @@ def _fmt(x: float) -> str:
     return f"{x:.1f}"
 
 
-def _run_breaches(spans: List[ShiftSpan], limit: int) -> List[date]:
-    """First date exceeding `limit` for each run of calendar-consecutive
-    working dates."""
+def _run_breaches(
+    spans: List[ShiftSpan], limit: int, window_start: Optional[date] = None
+) -> List[date]:
+    """One date per run of calendar-consecutive working dates longer than
+    `limit`: the first breaching day (the limit+1-th) or, when
+    `window_start` is given and the run began earlier, the first breaching
+    day on/after window_start (so a run continuing into the window is
+    reported inside it)."""
+    dates = sorted({s.work_date for s in spans})
+    runs: List[List[date]] = []
+    for d in dates:
+        if runs and d == runs[-1][-1] + timedelta(days=1):
+            runs[-1].append(d)
+        else:
+            runs.append([d])
     out: List[date] = []
-    run = 0
-    prev: Optional[date] = None
-    for d in sorted({s.work_date for s in spans}):
-        run = run + 1 if prev is not None and d == prev + timedelta(days=1) else 1
-        if run == limit + 1:
-            out.append(d)
-        prev = d
+    for run in runs:
+        breach = run[limit:]
+        if not breach:
+            continue
+        pick = breach[0]
+        if window_start is not None:
+            pick = next((d for d in breach if d >= window_start), breach[0])
+        out.append(pick)
     return out
 
 
-def check_rules(spans, rules: Dict[str, int]) -> List[Violation]:
+def check_rules(
+    spans, rules: Dict[str, int], window_start: Optional[date] = None
+) -> List[Violation]:
     min_rest = rules.get("min_rest_hours", 0) or 0
     max_days = rules.get("max_consecutive_days", 0) or 0
     max_nights = rules.get("max_consecutive_nights", 0) or 0
@@ -91,8 +106,10 @@ def check_rules(spans, rules: Dict[str, int]) -> List[Violation]:
     out: List[Violation] = []
     for uid, lst in _by_user(spans).items():
         if min_rest > 0:
-            for prev, nxt in zip(lst, lst[1:]):
-                rest = (nxt.start - prev.end).total_seconds() / 3600.0
+            max_end = lst[0].end
+            for nxt in lst[1:]:
+                rest = (nxt.start - max_end).total_seconds() / 3600.0
+                max_end = max(max_end, nxt.end)
                 if rest < min_rest:
                     out.append(Violation(
                         uid, nxt.work_date, "min_rest",
@@ -100,14 +117,14 @@ def check_rules(spans, rules: Dict[str, int]) -> List[Violation]:
                         f"(min {min_rest}h)",
                     ))
         if max_days > 0:
-            for d in _run_breaches(lst, max_days):
+            for d in _run_breaches(lst, max_days, window_start):
                 out.append(Violation(
                     uid, d, "max_consecutive_days",
                     f"More than {max_days} consecutive working days",
                 ))
         if max_nights > 0:
             nights = [s for s in lst if s.is_overnight]
-            for d in _run_breaches(nights, max_nights):
+            for d in _run_breaches(nights, max_nights, window_start):
                 out.append(Violation(
                     uid, d, "max_consecutive_nights",
                     f"More than {max_nights} consecutive night shifts",

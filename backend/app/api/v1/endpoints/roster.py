@@ -11,13 +11,13 @@ from datetime import date as pydate, datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
-from app.models.employee import Employee
+from app.models.employee import Employee, EmployeeStatus
 from app.models.roster import (
     RosterEntry, RosterChangeRequest, RosterStatus, RosterChangeStatus,
 )
@@ -29,17 +29,14 @@ from app.schemas.roster import (
     RosterChangeRequestCreate, RosterChangeRequestRead, RosterChangeDecision,
     RotationPatternCreate, RotationPatternUpdate, RotationPatternRead,
     RotationApplyRequest,
-)
-from app.models.rotation_pattern import RotationPattern
-from app.models.coverage_requirement import CoverageRequirement
-from app.models.leave import LeaveRequest, LeaveStatus
-from app.schemas.roster import (
     RosterInsightsResponse, ViolationRead, CoverageCellRead,
     CoverageRequirementCreate, CoverageRequirementUpdate,
     CoverageRequirementRead,
 )
+from app.models.rotation_pattern import RotationPattern
+from app.models.coverage_requirement import CoverageRequirement
 from app.services import schedule_rules
-from app.services.time_rules import get_time_rules
+from app.services.time_rules import get_schedule_rules
 from app.services import roster as roster_svc
 
 router = APIRouter()
@@ -195,140 +192,90 @@ async def get_insights(
     department: Optional[str] = None,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    """Work-rule violations + coverage for the planner view: DRAFT and
-    PUBLISHED entries both count; empty cells fall back to assignments."""
+    """Work-rule violations (scoped/filtered employees only) + coverage
+    (counts ALL active employees matching each requirement; headcounts
+    only, no names). DRAFT and PUBLISHED entries both count."""
     if start > end:
         raise HTTPException(status_code=400, detail="start must be <= end")
     if (end - start).days > 62:
         raise HTTPException(status_code=400, detail="range too large (max 62 days)")
-    if not roster_svc.is_roster_admin(current_user):
-        if not await roster_svc.scoped_employees(db, current_user):
-            raise HTTPException(
-                status_code=403, detail="You have no roster scope.",
-            )
-    employees = await roster_svc.scoped_employees(db, current_user, department)
-    uids = [e.user_id for e in employees]
-    name_by_uid = {
-        e.user_id: (e.user.full_name if e.user else None) for e in employees
-    }
-    emp_meta = {e.user_id: (e.department, e.location) for e in employees}
-    w_start, w_end = start - timedelta(days=7), end + timedelta(days=1)
+    admin = roster_svc.is_roster_admin(current_user)
+    scoped = await roster_svc.scoped_employees(db, current_user)
+    if not admin and not scoped:
+        raise HTTPException(status_code=403, detail="You have no roster scope.")
+    viol_emps = [e for e in scoped if not department or e.department == department]
+    reqs = roster_svc.visible_requirements(
+        list((await db.execute(select(CoverageRequirement).where(
+            CoverageRequirement.is_active.is_(True)))).scalars().all()),
+        admin=admin, scoped_departments={e.department for e in scoped},
+        department=department,
+    )
+
+    # Everyone counted toward coverage, independent of the viewer's scope.
+    meta = {e.user_id: (e.department, e.location) for e in scoped}
+    if reqs:
+        conds = [
+            and_(
+                *([Employee.department == r.department] if r.department else []),
+                *([Employee.location == r.location] if r.location else []),
+            ) for r in reqs
+        ]
+        q = select(Employee.user_id, Employee.department, Employee.location)\
+            .where(Employee.status == EmployeeStatus.ACTIVE)
+        if not any(r.department is None and r.location is None for r in reqs):
+            q = q.where(or_(*conds))
+        for r in (await db.execute(q)).all():
+            meta[r.user_id] = (r.department, r.location)
+
+    rules = await get_schedule_rules(db)
+    lookback = max(7, rules["max_consecutive_days"] + 1,
+                   rules["max_consecutive_nights"] + 1)
+    w_start = start - timedelta(days=lookback)
+    w_end = end + timedelta(days=(6 - end.weekday()) + 1)  # Sunday of end's week, +1d for rest
 
     templates = {t.id: t for t in (await db.execute(
-        select(ShiftTemplate)
-    )).scalars().all()}
-
-    entries: dict = {}
-    asg_by_user: dict = {}
-    leave_days: set = set()
-    if uids:
-        for r in (await db.execute(
-            select(RosterEntry).where(
-                RosterEntry.employee_id.in_(uids),
-                RosterEntry.work_date >= w_start,
-                RosterEntry.work_date <= w_end,
-            )
-        )).scalars().all():
-            entries[(r.employee_id, r.work_date)] = r
-        for a in (await db.execute(
-            select(EmployeeShiftAssignment).where(
-                EmployeeShiftAssignment.employee_id.in_(uids),
-                EmployeeShiftAssignment.effective_from <= w_end,
-                or_(
-                    EmployeeShiftAssignment.effective_to.is_(None),
-                    EmployeeShiftAssignment.effective_to >= w_start,
-                ),
-            ).order_by(EmployeeShiftAssignment.effective_from.desc())
-        )).scalars().all():
-            asg_by_user.setdefault(a.employee_id, []).append(a)
-        for lv in (await db.execute(
-            select(LeaveRequest).where(
-                LeaveRequest.employee_id.in_(uids),
-                LeaveRequest.status == LeaveStatus.APPROVED,
-                LeaveRequest.is_half_day.is_(False),
-                LeaveRequest.start_date <= w_end,
-                LeaveRequest.end_date >= w_start,
-            )
-        )).scalars().all():
-            d = max(lv.start_date, w_start)
-            last = min(lv.end_date, w_end)
-            while d <= last:
-                leave_days.add((lv.employee_id, d))
-                d += timedelta(days=1)
-
-    cells = []
-    for uid in uids:
-        d = w_start
-        while d <= w_end:
-            entry = entries.get((uid, d))
-            tid = None
-            if entry is not None and (entry.shift_template_id or entry.is_week_off):
-                tid = entry.shift_template_id  # week-off => None => not working
-            else:
-                asg = next(
-                    (a for a in asg_by_user.get(uid, [])
-                     if a.effective_from <= d
-                     and (a.effective_to is None or a.effective_to >= d)),
-                    None,
-                )
-                if asg is not None:
-                    t = templates.get(asg.shift_template_id)
-                    if t is not None and d.weekday() not in (t.weekly_offs or []):
-                        tid = asg.shift_template_id
+        select(ShiftTemplate))).scalars().all()}
+    entries, asgs = await roster_svc.load_planner_cells(
+        db, meta.keys(), w_start, w_end)
+    cells, d = [], w_start
+    all_days = []
+    while d <= w_end:
+        all_days.append(d)
+        d += timedelta(days=1)
+    for uid in meta:
+        for d in all_days:
+            tid = roster_svc.resolve_working_template(
+                entries.get((uid, d)), asgs.get(uid), templates, d)
             if tid is not None:
                 cells.append((uid, d, tid))
-            d += timedelta(days=1)
-
     spans = schedule_rules.build_spans(cells, templates)
-    raw = await get_time_rules(db)
 
-    def _rule(key: str) -> int:
-        try:
-            return max(0, int(raw.get(f"schedule.{key}", "0")))
-        except (TypeError, ValueError):
-            return 0
+    viol_ids = {e.user_id for e in viol_emps}
+    name_by_uid = {e.user_id: (e.user.full_name if e.user else None)
+                   for e in viol_emps}
+    v_spans = [s for s in spans if s.user_id in viol_ids]
+    leave = await roster_svc.approved_leave_days(db, viol_ids, w_start, w_end)
+    viols = schedule_rules.check_rules(v_spans, rules, window_start=start)
+    viols += schedule_rules.check_leave_conflicts(v_spans, leave)
+    viols = sorted((v for v in viols if start <= v.work_date <= end),
+                   key=lambda v: (v.work_date, v.user_id, v.rule))
 
-    rules = {k: _rule(k) for k in (
-        "min_rest_hours", "max_consecutive_days",
-        "max_consecutive_nights", "max_weekly_hours",
-    )}
-    viols = schedule_rules.check_rules(spans, rules)
-    viols += schedule_rules.check_leave_conflicts(spans, leave_days)
-    viols = [v for v in viols if start <= v.work_date <= end]
-    viols.sort(key=lambda v: (v.work_date, v.user_id, v.rule))
-
-    reqs = list((await db.execute(
-        select(CoverageRequirement).where(
-            CoverageRequirement.is_active.is_(True)
-        )
-    )).scalars().all())
-    if department:
-        reqs = [r for r in reqs if r.department in (None, department)]
-    dates = []
-    d = start
-    while d <= end:
-        dates.append(d)
-        d += timedelta(days=1)
-    in_range = [s for s in spans if start <= s.work_date <= end]
-    cov = schedule_rules.compute_coverage(in_range, reqs, emp_meta, dates)
-
+    dates = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    cov = schedule_rules.compute_coverage(
+        [s for s in spans if start <= s.work_date <= end], reqs, meta, dates)
     return RosterInsightsResponse(
-        violations=[
-            ViolationRead(
-                user_id=v.user_id, employee_name=name_by_uid.get(v.user_id),
-                work_date=v.work_date, rule=v.rule, message=v.message,
-            ) for v in viols
-        ],
-        coverage=[
-            CoverageCellRead(
-                date=c.date, shift_template_id=c.shift_template_id,
-                shift_name=(templates[c.shift_template_id].name
-                            if c.shift_template_id in templates else None),
-                department=c.department, location=c.location,
-                required_min=c.required_min, required_max=c.required_max,
-                scheduled=c.scheduled, status=c.status,
-            ) for c in cov
-        ],
+        violations=[ViolationRead(
+            user_id=v.user_id, employee_name=name_by_uid.get(v.user_id),
+            work_date=v.work_date, rule=v.rule, message=v.message,
+        ) for v in viols],
+        coverage=[CoverageCellRead(
+            date=c.date, shift_template_id=c.shift_template_id,
+            shift_name=(templates[c.shift_template_id].name
+                        if c.shift_template_id in templates else None),
+            department=c.department, location=c.location,
+            required_min=c.required_min, required_max=c.required_max,
+            scheduled=c.scheduled, status=c.status,
+        ) for c in cov],
     )
 
 
@@ -652,7 +599,32 @@ async def delete_rotation(
 
 # ------------------------ coverage requirements ------------------------
 
+async def _check_duplicate_requirement(
+    db, *, department, location, shift_template_id, weekday,
+    exclude_id: Optional[int] = None,
+) -> None:
+    def eq(col, v):
+        return col.is_(None) if v is None else col == v
+    q = select(CoverageRequirement.id).where(
+        CoverageRequirement.is_active.is_(True),
+        CoverageRequirement.shift_template_id == shift_template_id,
+        eq(CoverageRequirement.department, department),
+        eq(CoverageRequirement.location, location),
+        eq(CoverageRequirement.weekday, weekday),
+    )
+    if exclude_id is not None:
+        q = q.where(CoverageRequirement.id != exclude_id)
+    if (await db.execute(q)).first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An active requirement already exists for this "
+                   "department/location/shift/weekday",
+        )
+
+
 def _check_max_min(mn: int, mx: Optional[int]) -> None:
+    # Create is also validated by the schema; PATCH can only be checked here
+    # because it needs the stored values merged with the partial update.
     if mx is not None and mx < mn:
         raise HTTPException(
             status_code=422, detail="max_headcount must be >= min_headcount"
@@ -673,7 +645,13 @@ async def list_coverage_requirements(
     q = select(CoverageRequirement).order_by(CoverageRequirement.id)
     if not (admin and include_inactive):
         q = q.where(CoverageRequirement.is_active.is_(True))
-    return list((await db.execute(q)).scalars().all())
+    rows = list((await db.execute(q)).scalars().all())
+    if admin:
+        return rows
+    depts = {e.department for e in await roster_svc.scoped_employees(
+        db, current_user)}
+    return roster_svc.visible_requirements(
+        rows, admin=False, scoped_departments=depts, department=None)
 
 
 @router.post(
@@ -688,6 +666,8 @@ async def create_coverage_requirement(
 ) -> Any:
     _require_admin(current_user)
     await _validate_templates(db, [body.shift_template_id])
+    await _check_duplicate_requirement(db, **body.model_dump(
+        include={"department", "location", "shift_template_id", "weekday"}))
     r = CoverageRequirement(**body.model_dump())
     db.add(r)
     await _commit_or_409(db)
@@ -725,6 +705,10 @@ async def update_coverage_requirement(
         changes["max_headcount"] if "max_headcount" in changes
         else r.max_headcount,
     )
+    final = {k: changes.get(k, getattr(r, k)) for k in (
+        "department", "location", "shift_template_id", "weekday", "is_active")}
+    if final.pop("is_active"):
+        await _check_duplicate_requirement(db, exclude_id=r.id, **final)
     for k, v in changes.items():
         setattr(r, k, v)
     await _commit_or_409(db)
@@ -851,7 +835,6 @@ async def my_roster_week(
     effective assignment, then the org default. Mirrors shifts.get_my_week
     with holiday/leave enrichment."""
     from app.models.hr import HolidayCalendar
-    from app.models.leave import LeaveRequest, LeaveStatus
     from app.services.time_rules import build_default_shift, get_time_rules
 
     today = pydate.today()

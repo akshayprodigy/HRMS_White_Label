@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
+from app.models.leave import LeaveRequest, LeaveStatus
 from app.models.roster import RosterEntry, RosterStatus
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
@@ -345,6 +346,123 @@ async def prefetch_entries(
     return out
 
 
+async def load_planner_cells(
+    db: AsyncSession, user_ids, start: pydate, end: pydate, chunk: int = 500
+):
+    """Batched, column-only load of everything needed to resolve planner
+    cells. Returns (entries_by_(uid, date), assignments_by_uid); entries
+    carry id/employee_id/work_date/shift_template_id/is_week_off/status and
+    assignments are ordered newest effective_from first."""
+    entries: Dict[Tuple[int, pydate], object] = {}
+    asgs: Dict[int, list] = {}
+    ids = sorted(set(user_ids))
+    for i in range(0, len(ids), chunk):
+        part = ids[i:i + chunk]
+        for r in (await db.execute(
+            select(
+                RosterEntry.id, RosterEntry.employee_id, RosterEntry.work_date,
+                RosterEntry.shift_template_id, RosterEntry.is_week_off,
+                RosterEntry.status,
+            ).where(
+                RosterEntry.employee_id.in_(part),
+                RosterEntry.work_date >= start,
+                RosterEntry.work_date <= end,
+            )
+        )).all():
+            entries[(r.employee_id, r.work_date)] = r
+        for a in (await db.execute(
+            select(
+                EmployeeShiftAssignment.employee_id,
+                EmployeeShiftAssignment.shift_template_id,
+                EmployeeShiftAssignment.effective_from,
+                EmployeeShiftAssignment.effective_to,
+            ).where(
+                EmployeeShiftAssignment.employee_id.in_(part),
+                EmployeeShiftAssignment.effective_from <= end,
+                or_(
+                    EmployeeShiftAssignment.effective_to.is_(None),
+                    EmployeeShiftAssignment.effective_to >= start,
+                ),
+            ).order_by(EmployeeShiftAssignment.effective_from.desc())
+        )).all():
+            asgs.setdefault(a.employee_id, []).append(a)
+    return entries, asgs
+
+
+def active_assignment(asgs, d: pydate):
+    return next(
+        (a for a in asgs
+         if a.effective_from <= d
+         and (a.effective_to is None or a.effective_to >= d)),
+        None,
+    )
+
+
+def resolve_working_template(
+    entry, asgs, templates, d: pydate
+) -> Optional[int]:
+    """Template id the employee actually works on `d`, else None.
+    Planner semantics (drafts count): a week-off entry is never working; an
+    entry with a template wins; a blank entry or no entry falls back to the
+    assignment (not working on the template's weekly off)."""
+    if entry is not None:
+        if entry.is_week_off:
+            return None
+        if entry.shift_template_id is not None:
+            return entry.shift_template_id
+    asg = active_assignment(asgs or (), d)
+    if asg is None:
+        return None
+    t = templates.get(asg.shift_template_id)
+    if t is None or d.weekday() in (t.weekly_offs or []):
+        return None
+    return asg.shift_template_id
+
+
+async def approved_leave_days(
+    db: AsyncSession, user_ids, start: pydate, end: pydate, chunk: int = 500
+) -> set:
+    """(user_id, date) pairs covered by APPROVED full-day leave."""
+    out: set = set()
+    ids = sorted(set(user_ids))
+    for i in range(0, len(ids), chunk):
+        for lv in (await db.execute(
+            select(
+                LeaveRequest.employee_id, LeaveRequest.start_date,
+                LeaveRequest.end_date,
+            ).where(
+                LeaveRequest.employee_id.in_(ids[i:i + chunk]),
+                LeaveRequest.status == LeaveStatus.APPROVED,
+                LeaveRequest.is_half_day.is_(False),
+                LeaveRequest.start_date <= end,
+                LeaveRequest.end_date >= start,
+            )
+        )).all():
+            d = max(lv.start_date, start)
+            last = min(lv.end_date, end)
+            while d <= last:
+                out.add((lv.employee_id, d))
+                d += timedelta(days=1)
+    return out
+
+
+def visible_requirements(
+    reqs, *, admin: bool, scoped_departments, department: Optional[str]
+):
+    """Coverage requirements a viewer may see: admin => all (optionally
+    narrowed to `department` or all-department ones); others => those whose
+    department is NULL or one of their scoped departments."""
+    out = []
+    for r in reqs:
+        if department and r.department not in (None, department):
+            continue
+        if not admin and r.department is not None \
+                and r.department not in scoped_departments:
+            continue
+        out.append(r)
+    return out
+
+
 def _hhmm(t) -> Optional[str]:
     return t.strftime("%H:%M") if t is not None else None
 
@@ -379,36 +497,9 @@ async def build_grid(
     )).scalars().all())
     tpl_by_id = {t.id: t for t in templates}
 
-    # One query for all roster entries in the window.
-    entries_by_key: Dict[Tuple[int, pydate], RosterEntry] = {}
-    if user_ids:
-        rows = (await db.execute(
-            select(RosterEntry).where(
-                RosterEntry.employee_id.in_(user_ids),
-                RosterEntry.work_date >= start,
-                RosterEntry.work_date <= end,
-            )
-        )).scalars().all()
-        for r in rows:
-            entries_by_key[(r.employee_id, r.work_date)] = r
-
-    # One query for all assignments overlapping the window (fallback).
-    asg_by_user: Dict[int, list] = {}
-    if user_ids:
-        arows = (await db.execute(
-            select(EmployeeShiftAssignment)
-            .where(
-                EmployeeShiftAssignment.employee_id.in_(user_ids),
-                EmployeeShiftAssignment.effective_from <= end,
-                or_(
-                    EmployeeShiftAssignment.effective_to.is_(None),
-                    EmployeeShiftAssignment.effective_to >= start,
-                ),
-            )
-            .order_by(EmployeeShiftAssignment.effective_from.desc())
-        )).scalars().all()
-        for a in arows:
-            asg_by_user.setdefault(a.employee_id, []).append(a)
+    entries_by_key, asg_by_user = await load_planner_cells(
+        db, user_ids, start, end
+    )
 
     grid_rows: List[RosterGridRow] = []
     for emp in employees:
@@ -429,12 +520,7 @@ async def build_grid(
                 ))
                 continue
             # Fallback: effective assignment for the date (display only).
-            asg = next(
-                (a for a in asg_by_user.get(uid, [])
-                 if a.effective_from <= dt
-                 and (a.effective_to is None or a.effective_to >= dt)),
-                None,
-            )
+            asg = active_assignment(asg_by_user.get(uid, []), dt)
             if asg is not None:
                 tpl = tpl_by_id.get(asg.shift_template_id)
                 cells.append(RosterCell(
