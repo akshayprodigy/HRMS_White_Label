@@ -32,6 +32,16 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
     "attendance.early_exit_grace_minutes": (
         "10", "Grace minutes before end after which a punch-out is early"
     ),
+    "attendance.absence_lop_enabled": (
+        "0",
+        "Count unexplained absences on scheduled working days as LOP in "
+        "payroll (1/0)",
+    ),
+    "attendance.default_weekly_offs": (
+        "6",
+        "Comma-separated weekdays off for employees with no shift "
+        "(Mon=0..Sun=6)",
+    ),
 }
 
 

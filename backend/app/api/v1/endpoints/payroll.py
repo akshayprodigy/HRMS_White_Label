@@ -19,6 +19,10 @@ from app.services.salary_calculator import calculate_salary, calculate_salary_co
 from app.services import employment_type as employment_type_service
 from app.services import salary_structure as salary_structure_service
 from app.services import late_mark as late_mark_service
+from app.services.absence_lop import (
+    absence_days_for_period, unpaid_leave_lop_days,
+)
+from app.services.time_rules import get_time_rules
 from app.services.payroll_engine import (
     compute_statutory, load_statutory_context,
 )
@@ -429,6 +433,19 @@ async def generate_draft(
     # processed late marks — so a no-op for existing data.
     late_lop_map = await late_mark_service.lop_days_for_run(db, run.year, run.month)
 
+    # Unexplained-absence LOP (opt-in via time rule; never for off-cycle).
+    time_rules = await get_time_rules(db)
+    absence_map: dict[int, float] = {}
+    if (
+        str(time_rules.get("attendance.absence_lop_enabled", "0")).strip().lower()
+        in ("1", "true", "yes", "on")
+        and run.run_type != "off_cycle"
+    ):
+        absence_map = await absence_days_for_period(
+            db, employees, start_of_month, end_of_month,
+            datetime.now(timezone.utc).date(),
+        )
+
     for emp in employees:
         # Calculate LOP days from unpaid leaves
         # Find approved leave requests in this month
@@ -448,16 +465,16 @@ async def generate_draft(
         
         lop_days = 0.0
         for lv in unpaid_leaves:
-            # Simple overlap calculation
-            overlap_start = max(lv.start_date, start_of_month)
-            overlap_end = min(lv.end_date, end_of_month)
-            days = float((overlap_end - overlap_start).days + 1)
-            if lv.is_half_day:
-                days = 0.5
-            lop_days += days
+            lop_days += unpaid_leave_lop_days(
+                lv.start_date, lv.end_date, bool(lv.is_half_day),
+                start_of_month, end_of_month,
+            )
 
         # W9: late-mark cascade residual LOP for this employee/month.
         lop_days += float(late_lop_map.get(emp.user_id, 0.0))
+
+        # Unexplained absences (empty map when the toggle is off).
+        lop_days += float(absence_map.get(emp.user_id, 0.0))
 
         payable_days = max(0.0, float(num_days) - lop_days)
 

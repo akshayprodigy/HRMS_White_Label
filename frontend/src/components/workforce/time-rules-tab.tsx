@@ -66,6 +66,7 @@ export const TimeRulesTab: React.FC = () => {
   }, []);
 
   const enabled = rules['attendance.enable_late_flags'] === '1';
+  const absenceLop = rules['attendance.absence_lop_enabled'] === '1';
 
   const save = async () => {
     setBusy(true);
@@ -139,6 +140,61 @@ export const TimeRulesTab: React.FC = () => {
               <p className="text-[9px] font-bold text-slate-400">{f.hint}</p>
             </div>
           ))}
+        </div>
+
+        <div className="flex justify-end pt-1">
+          <Button onClick={save} isLoading={busy}>
+            <Save size={13} className="mr-2" /> Save Rules
+          </Button>
+        </div>
+      </Card>
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+              <Clock3 size={15} className="text-blue-600" /> Absence LOP
+            </h3>
+            <p className="text-[10px] font-bold text-slate-500 mt-1">
+              Count unexplained absences on scheduled working days as LOP in
+              payroll. Holidays, week-offs and approved leave are excused.
+            </p>
+          </div>
+          <label className="inline-flex items-center gap-2 cursor-pointer select-none shrink-0">
+            <input
+              type="checkbox"
+              checked={absenceLop}
+              onChange={(e) =>
+                setRules({
+                  ...rules,
+                  'attendance.absence_lop_enabled': e.target.checked ? '1' : '0',
+                })
+              }
+              className="w-4 h-4 accent-blue-600"
+            />
+            <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
+              {absenceLop ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+              Default Weekly Offs
+            </label>
+            <input
+              type="text"
+              className={inputCls}
+              placeholder="6"
+              value={rules['attendance.default_weekly_offs'] ?? ''}
+              onChange={(e) =>
+                setRules({ ...rules, 'attendance.default_weekly_offs': e.target.value })
+              }
+            />
+            <p className="text-[9px] font-bold text-slate-400">
+              Comma-separated weekdays off for employees with no shift (Mon=0 … Sun=6)
+            </p>
+          </div>
         </div>
 
         <div className="flex justify-end pt-1">
