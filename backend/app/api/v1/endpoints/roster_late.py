@@ -10,10 +10,11 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
 
 from app.api import deps
-from app.api.v1.endpoints.roster_common import guard_conflicts, lock_user_rows
+from app.api.v1.endpoints.roster_common import (
+    guard_conflicts, lock_user_rows, retry_on_lock,
+)
 from app.models.attendance import Attendance
 from app.models.late_notice import LateNotice
 from app.models.user import User
@@ -118,29 +119,14 @@ async def _lock_state(db, uid, now):
     return notices, punched
 
 
-async def _retrying(db, fn, *args):
-    """Run fn(db, *args); on a MariaDB 1020 / lock conflict (our REPEATABLE
-    READ snapshot predates a concurrent writer that held the user lock) roll
-    back and retry on a fresh snapshot. Args must be plain values (a rollback
-    expires ORM objects)."""
-    for attempt in range(3):
-        try:
-            return await fn(db, *args)
-        except OperationalError as exc:
-            if attempt == 2 or not roster_svc.is_lock_conflict(exc):
-                raise
-            await db.rollback()
-
-
 @router.post("/my/running-late")
 @guard_conflicts
 async def post_running_late(
     *, db: deps.DBDep, body: RunningLate,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    return await _retrying(
-        db, _post, current_user.id,
-        current_user.full_name or current_user.email, body)
+    uid, who = current_user.id, current_user.full_name or current_user.email
+    return await retry_on_lock(db, lambda: _post(db, uid, who, body))
 
 
 async def _post(db, uid: int, who: str, body: RunningLate) -> Any:
@@ -196,9 +182,8 @@ async def _post(db, uid: int, who: str, body: RunningLate) -> Any:
 async def clear_running_late(
     *, db: deps.DBDep, current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    return await _retrying(
-        db, _clear, current_user.id,
-        current_user.full_name or current_user.email)
+    uid, who = current_user.id, current_user.full_name or current_user.email
+    return await retry_on_lock(db, lambda: _clear(db, uid, who))
 
 
 async def _clear(db, uid: int, who: str) -> Any:

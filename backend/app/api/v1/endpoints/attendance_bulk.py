@@ -1,16 +1,23 @@
 """Supervisor bulk mark-present (Roadmap v2 Phase 2, Task 9): fallback when
 the punch system is down. Mounted WITHOUT verify_attendance (see api.py)."""
+import json
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.api import deps
-from app.api.v1.endpoints.hr import ATTENDANCE_EDIT, _require_reason, log_audit
-from app.api.v1.endpoints.roster_common import lock_user_rows
+from app.api.v1.endpoints.hr import (
+    ATTENDANCE_EDIT, _require_reason, json_serial,
+)
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, guard_conflicts, lock_user_rows,
+)
 from app.core.datetime_utils import as_utc
+from app.models.audit import AuditLog
 from app.models.employee import Employee, EmployeeStatus
 from app.models.user import User
 from app.schemas.attendance import AttendanceBulkMark, AttendanceBulkResponse
@@ -43,7 +50,15 @@ def parse_time_input(raw: str, work_date: date) -> datetime:
             detail=f"Invalid time {raw!r}: use HH:MM or an ISO datetime.")
 
 
+class _BatchConflict(Exception):
+    """A lock conflict rolled back the whole transaction: abort the batch."""
+
+    def __init__(self, exc: HTTPException):
+        self.exc = exc
+
+
 @router.post("/bulk-mark", response_model=AttendanceBulkResponse)
+@guard_conflicts
 async def bulk_mark_present(
     *,
     db: deps.DBDep,
@@ -121,7 +136,10 @@ async def bulk_mark_present(
             # the audit row rolls back with the savepoint on failure and is
             # committed with the batch by the single commit below.
             async with db.begin_nested():
-                await lock_user_rows(db, [uid])
+                try:
+                    await lock_user_rows(db, [uid])
+                except HTTPException as exc:  # 1020/1213: txn already rolled back
+                    raise _BatchConflict(exc) from exc
                 try:
                     await assert_attendance_editable(
                         db, body.work_date, fresh=True)
@@ -134,16 +152,26 @@ async def bulk_mark_present(
                     punch_out, reason, mode=MODE)
                 dismissed = await gap_svc.dismiss_noshow_gap_if_present(
                     db, uid, body.work_date, current_user.id)
-                await log_audit(
-                    db, current_user.id, "BULK_MARK_ATTENDANCE",
-                    "attendance", str(att.id),
-                    {"user_id": uid, "work_date": body.work_date,
-                     "punch_in_time": punch_in, "punch_out_time": punch_out,
-                     "reason": reason, "batch_id": batch_id,
-                     "gaps_dismissed": dismissed},
-                    request)
+                # NOT hr.log_audit: it commits, which would break the batch's
+                # single-transaction atomicity (and the savepoint rollback).
+                db.add(AuditLog(
+                    user_id=current_user.id, action="BULK_MARK_ATTENDANCE",
+                    resource_type="attendance", resource_id=str(att.id),
+                    details=json.loads(json.dumps({
+                        "user_id": uid, "work_date": body.work_date,
+                        "punch_in_time": punch_in, "punch_out_time": punch_out,
+                        "reason": reason, "batch_id": batch_id,
+                        "gaps_dismissed": dismissed}, default=json_serial)),
+                    ip_address=request.client.host if request.client else None))
             results.append({"user_id": uid, "status": "created",
                             "attendance_id": att.id})
+        except _BatchConflict as bc:
+            raise bc.exc
+        except OperationalError:
+            # lock conflict / deadlock: MariaDB rolled the whole transaction
+            # back, so earlier 'created' results would be lies. Abort (409 via
+            # guard_conflicts) and let the caller retry the batch.
+            raise
         except ManualAttendanceExists as exc:
             results.append({"user_id": uid, "status": "skipped_existing",
                             "message": exc.detail})
@@ -153,7 +181,7 @@ async def bulk_mark_present(
         except Exception:  # one failure must not abort the batch
             results.append({"user_id": uid, "status": "error",
                             "message": "Unexpected error; not marked."})
-    await db.commit()
+    await commit_or_409(db)
     counts = {k: 0 for k in (
         "created", "skipped_existing", "out_of_scope", "locked", "error")}
     for r in results:

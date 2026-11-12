@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
+import { useVisiblePoll } from '../hooks/use-visible-poll';
 import { useReturnFocus } from './my-schedule/use-restore-focus';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
@@ -217,25 +218,15 @@ export const LiveBoard: React.FC = () => {
     [department, location]
   );
 
-  useEffect(() => {
-    load(false);
+  // First fetch for a given filter set shows the loader; later ticks (every
+  // 60 s while the tab is visible) refresh in the background.
+  const loadedFor = useRef<typeof load | null>(null);
+  const poll = useCallback(() => {
+    const background = loadedFor.current === load;
+    loadedFor.current = load;
+    return load(background);
   }, [load]);
-
-  // Auto-refresh every 60 s, only while the tab is visible.
-  useEffect(() => {
-    const tick = () => {
-      if (document.visibilityState === 'visible') load(true);
-    };
-    const id = window.setInterval(tick, REFRESH_MS);
-    const onVis = () => {
-      if (document.visibilityState === 'visible') load(true);
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      window.clearInterval(id);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, [load]);
+  useVisiblePoll(poll, REFRESH_MS);
 
   const rows = useMemo(() => {
     const all = data?.rows ?? [];

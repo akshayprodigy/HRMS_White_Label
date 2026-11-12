@@ -316,6 +316,7 @@ const App = () => {
     setAccessToken(null);
     setHasMarkedAttendance(false);
     setHasPunchedOut(false);
+    setGateBypass(false);
     toast.info("You have been logged out.");
   };
 

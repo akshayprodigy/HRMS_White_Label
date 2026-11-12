@@ -4,7 +4,7 @@ import { AlertOctagon, AlertTriangle, Info } from 'lucide-react';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
-import { useVisiblePoll } from './use-visible-poll';
+import { useVisiblePoll } from '../../hooks/use-visible-poll';
 
 export interface MyBroadcast {
   id: number;

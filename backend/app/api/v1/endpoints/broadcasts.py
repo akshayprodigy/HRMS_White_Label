@@ -5,18 +5,15 @@ Sender endpoints need 'broadcast send'. /broadcasts/my, /read, /ack and
 deliberately NOT attendance-gated: people must be able to respond before they
 punch in.
 """
-import asyncio
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import case, func, select
-from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api import deps
-from app.api.v1.endpoints.roster_common import commit_or_409
-from app.services import roster as roster_svc
+from app.api.v1.endpoints.roster_common import commit_or_409, retry_on_lock
 from app.models.broadcast import (
     Broadcast, BroadcastAudience, BroadcastRecipient, BroadcastSeverity,
     SafetyStatus,
@@ -216,28 +213,11 @@ async def _own(db, broadcast_id: int, me_id: int):
     return b, r
 
 
-async def _respond(db, fn, tries: int = 8):
-    """Run a recipient write transactionally. MariaDB's snapshot isolation makes
-    the locking read fail (1020/1213) when a concurrent responder committed
-    after our snapshot: roll back and retry on a fresh snapshot, so concurrent
-    duplicates serialise and all return the idempotent result. `fn` must
-    return a plain dict and must not commit."""
-    for attempt in range(tries):
-        try:
-            out = await fn()
-            await roster_svc.flush_emergency(db)
-            await db.commit()
-            return out
-        except (OperationalError, IntegrityError) as exc:
-            await db.rollback()
-            lock = (isinstance(exc, OperationalError)
-                    and roster_svc.is_lock_conflict(exc))
-            if lock and attempt < tries - 1:
-                await asyncio.sleep(0.05 * (attempt + 1))
-                continue
-            if lock or isinstance(exc, IntegrityError):
-                raise HTTPException(409, "Concurrent update; retry") from exc
-            raise
+async def _respond(db, fn):
+    """Recipient write via retry_on_lock: concurrent duplicates serialise on
+    the recipient row and all return the idempotent result. `fn` must return
+    a plain dict and must not commit."""
+    return await retry_on_lock(db, fn, commit=True)
 
 
 @router.post("/{broadcast_id}/read")

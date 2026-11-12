@@ -9,6 +9,7 @@ leave inbox) while the delegation is live. Delegations are direct only
 (A->B, B->C does not let C act for A). Separation of duties still applies to
 the delegate (cannot approve their own request).
 """
+import logging
 from datetime import date
 from typing import Any, List, Optional
 
@@ -18,6 +19,9 @@ from sqlalchemy import or_, select
 
 from app.api import deps
 from app.api.v1.endpoints.approval_chains import _is_hr_or_admin
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, guard_conflicts, lock_row, lock_rows, lock_user_rows,
+)
 from app.models.approver_delegation import ApproverDelegation
 from app.models.user import User
 from app.services.approver_delegation import (
@@ -25,6 +29,7 @@ from app.services.approver_delegation import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class DelegationIn(BaseModel):
@@ -101,6 +106,7 @@ async def delegate_candidates(
 
 
 @router.post("/me/approval-delegations", status_code=201)
+@guard_conflicts
 async def create_delegation(
     payload: DelegationIn, db: deps.DBDep,
     current_user: User = Depends(deps.get_current_user),
@@ -114,10 +120,13 @@ async def create_delegation(
     if payload.ends_on and payload.ends_on < starts:
         raise HTTPException(400, "End date is before the start date")
     far = date.max
-    for ex in (await db.execute(select(ApproverDelegation).where(
+    # Serialise this user's creates: lock their user row, then read the
+    # existing delegations with locking, fresh reads (not the snapshot).
+    await lock_user_rows(db, [current_user.id])
+    for ex in await lock_rows(db, select(ApproverDelegation).where(
             ApproverDelegation.user_id == current_user.id,
             ApproverDelegation.delegate_id == delegate.id,
-            ApproverDelegation.revoked_at.is_(None)))).scalars().all():
+            ApproverDelegation.revoked_at.is_(None))):
         if ex.starts_on <= (payload.ends_on or far) and \
                 starts <= (ex.ends_on or far):
             raise HTTPException(
@@ -143,24 +152,26 @@ async def create_delegation(
                          + ". Their pending approvals will appear in your "
                            "inbox marked 'acting for'."),
                 resource_type="approver_delegation", resource_id=str(d.id))
-    except Exception:  # pragma: no cover
-        pass
-    await db.commit()
+    except Exception:  # best-effort notification, but never silent
+        logger.exception("approval delegation notify failed (delegation %s)", d.id)
+    await commit_or_409(db)
     return (await _render(db, [d]))[0]
 
 
 @router.delete("/me/approval-delegations/{delegation_id}")
+@guard_conflicts
 async def revoke_delegation(
     delegation_id: int, db: deps.DBDep,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     from datetime import datetime, timezone
-    d = await db.get(ApproverDelegation, delegation_id)
+    d = await lock_row(db, select(ApproverDelegation).where(
+        ApproverDelegation.id == delegation_id))
     if d is None or d.user_id != current_user.id:
         raise HTTPException(404, "Delegation not found")
     if d.revoked_at is None:
         d.revoked_at = datetime.now(timezone.utc)
-        await db.commit()
+        await commit_or_409(db)
     return (await _render(db, [d]))[0]
 
 

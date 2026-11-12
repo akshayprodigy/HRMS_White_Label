@@ -252,3 +252,15 @@ async def test_overlapping_delegation_409_and_view_scope(client, world):
                              headers=hd)).status_code == 200
     assert (await client.get(f"{API}/approvals/{later}",
                              headers=hd)).status_code == 403
+
+
+async def test_concurrent_overlapping_creates_one_wins(client, world):
+    import asyncio
+    ids = world["ids"]
+    ha = await login(client, world, "apr")
+    url = f"{API}/me/approval-delegations"
+    res = await asyncio.gather(*[
+        client.post(url, headers=ha, json={"delegate_id": ids["dlg"]})
+        for _ in range(4)])
+    codes = sorted(r.status_code for r in res)
+    assert codes == [201, 409, 409, 409], [r.text for r in res]

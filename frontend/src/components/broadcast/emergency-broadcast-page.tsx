@@ -5,7 +5,7 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg, parseServerDate } from '../schedule-delegations-utils';
 import { InlineConfirm } from '../my-schedule/inline-confirm';
-import { useVisiblePoll } from './use-visible-poll';
+import { useVisiblePoll } from '../../hooks/use-visible-poll';
 
 type Severity = 'info' | 'warning' | 'critical';
 type Audience = 'all' | 'location' | 'department' | 'on_shift';

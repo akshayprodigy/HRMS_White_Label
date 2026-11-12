@@ -427,3 +427,28 @@ async def test_dismiss_cancels_linked_open_shift(client, world):
         await db.execute(delete(CoverageGap).where(CoverageGap.id == gid))
         await db.execute(delete(OpenShift).where(OpenShift.id == sid))
         await db.commit()
+
+
+async def test_lock_conflict_aborts_batch_with_409_no_false_results(client, world, monkeypatch):
+    """A MariaDB 1213/1020 rolls back the whole txn: the batch must fail with
+    409 (nothing persisted) instead of reporting later users as created."""
+    from sqlalchemy.exc import OperationalError
+    from app.api.v1.endpoints import attendance_bulk as ab
+    w = world
+    real = ab.create_manual_attendance_row
+    calls = {"n": 0}
+
+    async def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OperationalError("stmt", {}, Exception(1213, "Deadlock found"))
+        return await real(*a, **k)
+    monkeypatch.setattr(ab, "create_manual_attendance_row", flaky)
+    hr = await _login(client, w["email"]("hr"))
+    r = await client.post(API, json=body(w, ["e1", "e2", "e3"], OLD_A), headers=hr)
+    assert r.status_code == 409, r.text
+    async with SessionLocal() as db:
+        n = (await db.execute(select(Attendance).where(
+            Attendance.user_id.in_([w["ids"][t] for t in ("e1", "e2", "e3")])
+        ))).scalars().all()
+        assert n == [], [(a.user_id, a.mode, str(a.work_date)) for a in n]

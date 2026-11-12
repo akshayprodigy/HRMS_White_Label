@@ -1,4 +1,5 @@
 """Shared helpers for the roster routers."""
+import asyncio
 import functools
 import logging
 from datetime import date as pydate
@@ -122,6 +123,35 @@ def guard_conflicts(fn):
                 raise
             raise mapped from exc
     return wrapper
+
+
+async def retry_on_lock(db, fn, *, tries: int = 8, commit: bool = False):
+    """Run `await fn()` (no args; returns plain values, nothing lazy after a
+    rollback) as one transaction. MariaDB's REPEATABLE READ makes a locking
+    read fail (1020/1213) when a concurrent writer committed after our
+    snapshot: roll back, back off and retry on a fresh snapshot, which
+    serialises writers on the same row. With commit=True the transaction is
+    committed after fn. Exhausted retries and integrity errors become 409
+    (the session is rolled back); other errors propagate."""
+    for attempt in range(tries):
+        try:
+            out = await fn()
+            if commit:
+                await roster_svc.flush_emergency(db)
+                await db.commit()
+            return out
+        except (OperationalError, IntegrityError) as exc:
+            retry = (isinstance(exc, OperationalError)
+                     and roster_svc.is_lock_conflict(exc)
+                     and attempt < tries - 1)
+            if retry:
+                await db.rollback()
+                await asyncio.sleep(0.05 * (attempt + 1))
+                continue
+            mapped = await _map_db_error(db, exc, "Concurrent update; retry")
+            if mapped is None:
+                raise
+            raise mapped from exc
 
 
 async def lock_row(db, stmt, msg: str = "Request already decided"):

@@ -6,19 +6,17 @@ data. They are served ONLY by the routes below: to the employee themself
 to schedulers/managers for their scope (`/roster/team-contacts`, which omits
 gender). They are intentionally absent from every general employee schema.
 """
-import asyncio
 from datetime import date
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api import deps
 from app.api.v1.endpoints.hr import HR_READ, HR_WRITE, log_audit
 from app.api.v1.endpoints.roster_common import (
-    commit_or_409, guard_conflicts, require_manage,
+    commit_or_409, guard_conflicts, require_manage, retry_on_lock,
 )
 from app.models.roster import RosterEntry
 from app.models.safety import NightShiftConsent
@@ -50,25 +48,10 @@ class ContactPatch(BaseModel):
     is_primary: Optional[bool] = None
 
 
-async def _write(db, fn, tries: int = 8):
-    """Run a contact write transactionally. MariaDB's snapshot isolation makes
-    a locking read fail (1020/1213) when a concurrent writer committed after
-    our snapshot; roll back and retry on a fresh snapshot, which serialises
-    writers per employee. `fn` returns a plain dict (nothing lazy after commit)."""
-    for attempt in range(tries):
-        try:
-            out = await fn()
-            await db.commit()
-            return out
-        except (OperationalError, IntegrityError) as exc:
-            await db.rollback()
-            retry = (isinstance(exc, OperationalError)
-                     and roster_svc.is_lock_conflict(exc)) and attempt < tries - 1
-            if not retry:
-                if isinstance(exc, OperationalError) and roster_svc.is_lock_conflict(exc):
-                    raise HTTPException(409, "Concurrent update; retry") from exc
-                raise
-            await asyncio.sleep(0.05 * (attempt + 1))
+async def _write(db, fn):
+    """Run a contact write transactionally (retry on lock conflicts, see
+    retry_on_lock). `fn` returns a plain dict (nothing lazy after commit)."""
+    return await retry_on_lock(db, fn, commit=True)
 
 
 async def _profile(db, user_id: int) -> dict:
