@@ -7,6 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from app.api import deps
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal
@@ -15,6 +16,7 @@ from app.models.audit import AuditLog
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.notification import Notification
+from app.models.roster import RosterChangeRequest, RosterEntry
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.user import User
 from app.services import roster as svc
@@ -26,51 +28,73 @@ TODAY = datetime.now(timezone.utc).date()
 
 @pytest.fixture
 async def client():
-    transport = ASGITransport(app=create_app())
+    app = create_app()
+    # Attendance gating is orthogonal to scope logic under test.
+    app.dependency_overrides[deps.verify_attendance] = lambda: None
+    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
 
 @pytest.fixture
 async def world():
+    """deleg (no scope), e1 (dept X, location), e2 (dept Y), rep (reports to
+    deleg, dept Y), stranger, and a superuser. Cleanup is keyed on the unique
+    suffix so a partial setup is still removed."""
     sfx = uuid.uuid4().hex[:8]
     dept_x, dept_y, loc = f"DX{sfx}", f"DY{sfx}", f"LOC{sfx}"
-    async with SessionLocal() as db:
-        def mk(tag, **kw):
-            return User(email=f"sd_{tag}_{sfx}@t.com", full_name=f"SD {tag}",
-                        hashed_password=get_password_hash(PW),
-                        is_active=True, **kw)
-        deleg, e1, e2, stranger = mk("deleg"), mk("e1"), mk("e2"), mk("str")
-        db.add_all([deleg, e1, e2, stranger])
-        await db.flush()
-        rep = mk("rep", manager_id=deleg.id)
-        db.add(rep)
-        db.add_all([Department(name=dept_x), Department(name=dept_y)])
-        await db.flush()
-        for tag, u, d, lc in (("1", e1, dept_x, loc), ("2", e2, dept_y, None),
-                              ("r", rep, dept_y, None)):
-            db.add(Employee(
-                user_id=u.id, employee_id=f"SD{sfx}{tag}", department=d,
-                designation="Tester", date_of_joining=date(2020, 1, 1),
-                status=EmployeeStatus.ACTIVE, location=lc,
-            ))
-        await db.commit()
-        ids = {"deleg": deleg.id, "e1": e1.id, "e2": e2.id,
-               "str": stranger.id, "rep": rep.id}
-    w = {"ids": ids, "dx": dept_x, "dy": dept_y, "loc": loc,
-         "email": f"sd_deleg_{sfx}@t.com"}
+    ids: dict = {}
     try:
-        yield w
+        async with SessionLocal() as db:
+            def mk(tag, **kw):
+                return User(email=f"sd_{tag}_{sfx}@t.com", full_name=f"SD {tag}",
+                            hashed_password=get_password_hash(PW),
+                            is_active=True, **kw)
+            deleg, e1, e2, stranger = mk("deleg"), mk("e1"), mk("e2"), mk("str")
+            admin = mk("admin", is_superuser=True)
+            db.add_all([deleg, e1, e2, stranger, admin])
+            await db.commit()
+            rep = mk("rep", manager_id=deleg.id)
+            db.add(rep)
+            db.add_all([Department(name=dept_x), Department(name=dept_y)])
+            await db.commit()
+            for tag, u, d, lc in (("1", e1, dept_x, loc), ("2", e2, dept_y, None),
+                                  ("r", rep, dept_y, None)):
+                db.add(Employee(
+                    user_id=u.id, employee_id=f"SD{sfx}{tag}", department=d,
+                    designation="Tester", date_of_joining=date(2020, 1, 1),
+                    status=EmployeeStatus.ACTIVE, location=lc,
+                ))
+            await db.commit()
+            ids = {"deleg": deleg.id, "e1": e1.id, "e2": e2.id,
+                   "str": stranger.id, "rep": rep.id, "admin": admin.id}
+        yield {"ids": ids, "dx": dept_x, "dy": dept_y, "loc": loc,
+               "email": f"sd_deleg_{sfx}@t.com",
+               "admin_email": f"sd_admin_{sfx}@t.com",
+               "str_email": f"sd_str_{sfx}@t.com"}
     finally:
         async with SessionLocal() as db:
-            uids = list(ids.values())
+            uids = list((await db.execute(select(User.id).where(
+                User.email.like(f"sd\\_%\\_{sfx}@t.com")))).scalars().all())
             dids = (await db.execute(select(ScheduleDelegation.id).where(
                 ScheduleDelegation.grantee_id.in_(uids)))).scalars().all()
+            crids = (await db.execute(select(RosterChangeRequest.id).where(
+                RosterChangeRequest.employee_id.in_(uids)))).scalars().all()
             await db.execute(delete(AuditLog).where(
                 AuditLog.resource_type == "schedule_delegation",
                 AuditLog.resource_id.in_([str(i) for i in dids])))
+            await db.execute(delete(AuditLog).where(
+                AuditLog.resource_type == "roster_change_request",
+                AuditLog.resource_id.in_([str(i) for i in crids])))
+            await db.execute(delete(AuditLog).where(
+                AuditLog.action == "roster.bulk_publish",
+                AuditLog.user_id.in_(uids)))
             await db.execute(delete(Notification).where(
                 Notification.user_id.in_(uids)))
+            await db.execute(delete(RosterChangeRequest).where(
+                RosterChangeRequest.employee_id.in_(uids)))
+            await db.execute(delete(RosterEntry).where(
+                RosterEntry.employee_id.in_(uids)))
             await db.execute(delete(ScheduleDelegation).where(
                 ScheduleDelegation.grantee_id.in_(uids)))
             await db.execute(delete(Employee).where(Employee.user_id.in_(uids)))
@@ -161,7 +185,7 @@ async def test_can_publish_for_flag_and_admin(world):
         assert await svc.can_approve_changes_for(db, u, e1) is True
         assert await svc.can_publish_for(db, u, world["ids"]["e2"]) is False
         admin = (await db.execute(select(User).where(
-            User.email == "admin@gmail.com"))).scalars().one()
+            User.email == world["admin_email"]))).scalars().one()
         assert await svc.can_publish_for(db, admin, e1) is True
 
 
@@ -202,7 +226,7 @@ async def test_non_admin_forbidden(client, world):
 
 
 async def test_create_revoke_flow(client, world):
-    admin = await _login(client, "admin@gmail.com")
+    admin = await _login(client, world["admin_email"])
     h = await _login(client, world["email"])
     r = await client.post(f"{BASE}/", json=_body(world), headers=admin)
     assert r.status_code == 200, r.text
@@ -228,7 +252,7 @@ async def test_create_revoke_flow(client, world):
 
 
 async def test_validation(client, world):
-    admin = await _login(client, "admin@gmail.com")
+    admin = await _login(client, world["admin_email"])
     for bad in (
         {"scope_type": "department", "scope_value": "NoSuchDept"},
         {"scope_type": "location", "scope_value": "NoSuchLoc"},
@@ -237,9 +261,119 @@ async def test_validation(client, world):
         {"scope_type": "team", "scope_value": "x"},
         {"valid_to": (TODAY - timedelta(days=5)).isoformat()},
         {"grantee_id": 99999999},
+        {"scope_type": "employees", "scope_value": "x",
+         "employee_ids": [1]},
+        {"scope_type": "team", "scope_value": None, "employee_ids": [1]},
     ):
         r = await client.post(f"{BASE}/", json=_body(world, **bad), headers=admin)
         assert r.status_code == 422, (bad, r.text)
     ok = await client.post(f"{BASE}/", json=_body(
         world, scope_type="team", scope_value=None), headers=admin)
     assert ok.status_code == 200 and ok.json()["covered_count"] == 1
+
+
+# --------------- roster endpoints honour delegations ---------------
+
+ROSTER = f"{settings.API_V1_STR}/roster"
+
+
+async def _revoke(deleg_id):
+    async with SessionLocal() as db:
+        d = await db.get(ScheduleDelegation, deleg_id)
+        d.revoked_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def _cr(uid):
+    async with SessionLocal() as db:
+        cr = RosterChangeRequest(
+            employee_id=uid, work_date=TODAY + timedelta(days=2),
+            requested_week_off=True, reason="Need the day off",
+            status="pending")
+        db.add(cr)
+        await db.commit()
+        return cr.id
+
+
+def _plan(h, client):
+    return client.get(f"{ROSTER}/plan", params={
+        "start": TODAY.isoformat(), "end": TODAY.isoformat()}, headers=h)
+
+
+async def test_plan_scope(client, world):
+    hs = await _login(client, world["str_email"])
+    assert (await _plan(hs, client)).status_code == 403
+    hd = await _login(client, world["email"])
+    assert (await _plan(hd, client)).status_code == 403
+    await _grant(world, scope_type=DelegationScope.DEPARTMENT, scope_value=world["dx"])
+    r = await _plan(hd, client)
+    assert r.status_code == 200, r.text
+
+
+async def test_bulk_reports_out_of_scope(client, world):
+    await _grant(world, scope_type=DelegationScope.DEPARTMENT, scope_value=world["dx"])
+    hd = await _login(client, world["email"])
+    r = await client.post(f"{ROSTER}/bulk", json={
+        "employee_ids": [world["ids"]["e1"], world["ids"]["e2"]],
+        "start": TODAY.isoformat(),
+        "end": (TODAY + timedelta(days=6)).isoformat(),
+        "pattern": {"6": None},
+    }, headers=hd)
+    assert r.status_code == 200, r.text
+    assert r.json()["out_of_scope"] == [world["ids"]["e2"]]
+    assert r.json()["created"] >= 1
+
+
+async def _decide(client, world, cr_id, h):
+    return await client.post(f"{ROSTER}/change-requests/{cr_id}/decide",
+                             json={"action": "reject"}, headers=h)
+
+
+async def test_decide_requires_approve_flag(client, world):
+    e1 = world["ids"]["e1"]
+    hd = await _login(client, world["email"])
+    gid = await _grant(world, scope_type=DelegationScope.EMPLOYEES,
+                       employee_ids=[e1])  # manage only
+    cr = await _cr(e1)
+    assert (await _decide(client, world, cr, hd)).status_code == 403
+    await _revoke(gid)
+    await _grant(world, scope_type=DelegationScope.EMPLOYEES,
+                 employee_ids=[e1], can_approve_changes=True)
+    listed = await client.get(f"{ROSTER}/change-requests", headers=hd)
+    assert cr in [x["id"] for x in listed.json()]
+    assert (await _decide(client, world, cr, hd)).status_code == 200
+
+
+async def test_decide_own_request_forbidden(client, world):
+    me = world["ids"]["deleg"]
+    await _grant(world, scope_type=DelegationScope.EMPLOYEES,
+                 employee_ids=[me], can_approve_changes=True)
+    cr = await _cr(me)
+    hd = await _login(client, world["email"])
+    assert (await _decide(client, world, cr, hd)).status_code == 403
+    ha = await _login(client, world["admin_email"])
+    assert (await _decide(client, world, cr, ha)).status_code == 200
+
+
+async def test_revoked_grant_cannot_decide(client, world):
+    e1 = world["ids"]["e1"]
+    gid = await _grant(world, scope_type=DelegationScope.EMPLOYEES,
+                       employee_ids=[e1], can_approve_changes=True)
+    cr = await _cr(e1)
+    await _revoke(gid)
+    hd = await _login(client, world["email"])
+    assert (await _decide(client, world, cr, hd)).status_code == 403
+
+
+async def test_subsets_and_self_exclusion(world):
+    me, e1, e2 = world["ids"]["deleg"], world["ids"]["e1"], world["ids"]["e2"]
+    await _grant(world, scope_type=DelegationScope.EMPLOYEES,
+                 employee_ids=[me, e1], can_publish=True)
+    await _grant(world, scope_type=DelegationScope.DEPARTMENT,
+                 scope_value=world["dy"])
+    async with SessionLocal() as db:
+        u = await db.get(User, me)
+        assert await svc.delegated_user_ids(db, u) == {
+            e1, e2, world["ids"]["rep"]}
+        assert await svc.manageable_subset(db, u, {me, e1, e2, 0}) == {e1, e2}
+        assert await svc.publishable_subset(db, u, {me, e1, e2}) == {e1}

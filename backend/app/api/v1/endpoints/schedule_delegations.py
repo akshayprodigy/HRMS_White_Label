@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
@@ -77,7 +77,17 @@ async def _validate_scope(
 ) -> None:
     if scope_type not in DelegationScope.ALL:
         raise HTTPException(status_code=422, detail="Invalid scope_type.")
+    if scope_type != DelegationScope.EMPLOYEES and employee_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="employee_ids is only allowed for employees scope.",
+        )
     if scope_type == DelegationScope.EMPLOYEES:
+        if scope_value is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="scope_value must be empty for employees scope.",
+            )
         ids = set(employee_ids or [])
         if not ids:
             raise HTTPException(status_code=422, detail="employee_ids is required.")
@@ -116,13 +126,14 @@ async def list_delegations(
 ) -> Any:
     _require_admin(current_user)
     q = select(ScheduleDelegation).order_by(ScheduleDelegation.id.desc())
-    rows = list((await db.execute(q)).scalars().all())
     if not include_inactive:
         today = datetime.now(timezone.utc).date()
-        rows = [
-            d for d in rows
-            if d.revoked_at is None and (d.valid_to is None or d.valid_to >= today)
-        ]
+        q = q.where(
+            ScheduleDelegation.revoked_at.is_(None),
+            or_(ScheduleDelegation.valid_to.is_(None),
+                ScheduleDelegation.valid_to >= today),
+        )
+    rows = list((await db.execute(q)).scalars().all())
     return await _to_reads(db, rows)
 
 

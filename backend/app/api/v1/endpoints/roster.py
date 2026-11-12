@@ -111,12 +111,8 @@ async def bulk_plan(
         target_ids = {e.user_id for e in emps}
 
     # Scope-filter
-    allowed: set = set()
-    for uid in target_ids:
-        if await roster_svc.can_manage_employee(db, current_user, uid):
-            allowed.add(uid)
-        else:
-            result.out_of_scope.append(uid)
+    allowed = await roster_svc.manageable_subset(db, current_user, target_ids)
+    result.out_of_scope.extend(sorted(target_ids - allowed))
 
     if not allowed:
         return result
@@ -546,6 +542,14 @@ async def decide_change_request(
         raise HTTPException(status_code=404, detail="Request not found")
     if cr.status != RosterChangeStatus.PENDING:
         raise HTTPException(status_code=400, detail="Request already decided")
+    if (
+        cr.employee_id == current_user.id
+        and not roster_svc.is_roster_admin(current_user)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot decide your own request (separation of duties).",
+        )
     if not await roster_svc.can_approve_changes_for(
         db, current_user, cr.employee_id
     ):
