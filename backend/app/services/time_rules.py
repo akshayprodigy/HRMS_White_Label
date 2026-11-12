@@ -42,7 +42,24 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Comma-separated weekdays off for employees with no shift "
         "(Mon=0..Sun=6)",
     ),
+    "schedule.min_rest_hours": (
+        "11", "Minimum rest between consecutive shifts in hours (0 = off)"
+    ),
+    "schedule.max_consecutive_days": (
+        "6", "Maximum consecutive working days (0 = off)"
+    ),
+    "schedule.max_consecutive_nights": (
+        "4", "Maximum consecutive overnight shifts (0 = off)"
+    ),
+    "schedule.max_weekly_hours": (
+        "48", "Maximum scheduled hours per Mon-Sun week (0 = off)"
+    ),
 }
+
+SCHEDULE_INT_KEYS = (
+    "schedule.min_rest_hours", "schedule.max_consecutive_days",
+    "schedule.max_consecutive_nights", "schedule.max_weekly_hours",
+)
 
 
 async def get_time_rules(db: AsyncSession) -> Dict[str, str]:
@@ -72,6 +89,14 @@ async def set_time_rules(
                 "attendance.default_weekly_offs must be comma-separated "
                 "weekday numbers 0-6 (Mon=0..Sun=6), e.g. '6' or '5,6'"
             )
+    for key in SCHEDULE_INT_KEYS:
+        v = updates.get(key)
+        if v is not None:
+            sv = str(v).strip()
+            if not (sv.isascii() and sv.isdigit()):
+                raise ValueError(
+                    f"{key} must be a non-negative whole number"
+                )
     for key, value in updates.items():
         if key not in TIME_RULE_DEFAULTS:
             continue

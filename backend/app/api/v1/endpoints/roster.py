@@ -31,6 +31,15 @@ from app.schemas.roster import (
     RotationApplyRequest,
 )
 from app.models.rotation_pattern import RotationPattern
+from app.models.coverage_requirement import CoverageRequirement
+from app.models.leave import LeaveRequest, LeaveStatus
+from app.schemas.roster import (
+    RosterInsightsResponse, ViolationRead, CoverageCellRead,
+    CoverageRequirementCreate, CoverageRequirementUpdate,
+    CoverageRequirementRead,
+)
+from app.services import schedule_rules
+from app.services.time_rules import get_time_rules
 from app.services import roster as roster_svc
 
 router = APIRouter()
@@ -176,6 +185,151 @@ async def get_plan(
                 status_code=403, detail="You have no roster scope.",
             )
     return await roster_svc.build_grid(db, current_user, start, end, department)
+
+
+@router.get("/insights", response_model=RosterInsightsResponse)
+async def get_insights(
+    db: deps.DBDep,
+    start: pydate = Query(...),
+    end: pydate = Query(...),
+    department: Optional[str] = None,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Work-rule violations + coverage for the planner view: DRAFT and
+    PUBLISHED entries both count; empty cells fall back to assignments."""
+    if start > end:
+        raise HTTPException(status_code=400, detail="start must be <= end")
+    if (end - start).days > 62:
+        raise HTTPException(status_code=400, detail="range too large (max 62 days)")
+    if not roster_svc.is_roster_admin(current_user):
+        if not await roster_svc.scoped_employees(db, current_user):
+            raise HTTPException(
+                status_code=403, detail="You have no roster scope.",
+            )
+    employees = await roster_svc.scoped_employees(db, current_user, department)
+    uids = [e.user_id for e in employees]
+    name_by_uid = {
+        e.user_id: (e.user.full_name if e.user else None) for e in employees
+    }
+    emp_meta = {e.user_id: (e.department, e.location) for e in employees}
+    w_start, w_end = start - timedelta(days=7), end + timedelta(days=1)
+
+    templates = {t.id: t for t in (await db.execute(
+        select(ShiftTemplate)
+    )).scalars().all()}
+
+    entries: dict = {}
+    asg_by_user: dict = {}
+    leave_days: set = set()
+    if uids:
+        for r in (await db.execute(
+            select(RosterEntry).where(
+                RosterEntry.employee_id.in_(uids),
+                RosterEntry.work_date >= w_start,
+                RosterEntry.work_date <= w_end,
+            )
+        )).scalars().all():
+            entries[(r.employee_id, r.work_date)] = r
+        for a in (await db.execute(
+            select(EmployeeShiftAssignment).where(
+                EmployeeShiftAssignment.employee_id.in_(uids),
+                EmployeeShiftAssignment.effective_from <= w_end,
+                or_(
+                    EmployeeShiftAssignment.effective_to.is_(None),
+                    EmployeeShiftAssignment.effective_to >= w_start,
+                ),
+            ).order_by(EmployeeShiftAssignment.effective_from.desc())
+        )).scalars().all():
+            asg_by_user.setdefault(a.employee_id, []).append(a)
+        for lv in (await db.execute(
+            select(LeaveRequest).where(
+                LeaveRequest.employee_id.in_(uids),
+                LeaveRequest.status == LeaveStatus.APPROVED,
+                LeaveRequest.is_half_day.is_(False),
+                LeaveRequest.start_date <= w_end,
+                LeaveRequest.end_date >= w_start,
+            )
+        )).scalars().all():
+            d = max(lv.start_date, w_start)
+            last = min(lv.end_date, w_end)
+            while d <= last:
+                leave_days.add((lv.employee_id, d))
+                d += timedelta(days=1)
+
+    cells = []
+    for uid in uids:
+        d = w_start
+        while d <= w_end:
+            entry = entries.get((uid, d))
+            tid = None
+            if entry is not None and (entry.shift_template_id or entry.is_week_off):
+                tid = entry.shift_template_id  # week-off => None => not working
+            else:
+                asg = next(
+                    (a for a in asg_by_user.get(uid, [])
+                     if a.effective_from <= d
+                     and (a.effective_to is None or a.effective_to >= d)),
+                    None,
+                )
+                if asg is not None:
+                    t = templates.get(asg.shift_template_id)
+                    if t is not None and d.weekday() not in (t.weekly_offs or []):
+                        tid = asg.shift_template_id
+            if tid is not None:
+                cells.append((uid, d, tid))
+            d += timedelta(days=1)
+
+    spans = schedule_rules.build_spans(cells, templates)
+    raw = await get_time_rules(db)
+
+    def _rule(key: str) -> int:
+        try:
+            return max(0, int(raw.get(f"schedule.{key}", "0")))
+        except (TypeError, ValueError):
+            return 0
+
+    rules = {k: _rule(k) for k in (
+        "min_rest_hours", "max_consecutive_days",
+        "max_consecutive_nights", "max_weekly_hours",
+    )}
+    viols = schedule_rules.check_rules(spans, rules)
+    viols += schedule_rules.check_leave_conflicts(spans, leave_days)
+    viols = [v for v in viols if start <= v.work_date <= end]
+    viols.sort(key=lambda v: (v.work_date, v.user_id, v.rule))
+
+    reqs = list((await db.execute(
+        select(CoverageRequirement).where(
+            CoverageRequirement.is_active.is_(True)
+        )
+    )).scalars().all())
+    if department:
+        reqs = [r for r in reqs if r.department in (None, department)]
+    dates = []
+    d = start
+    while d <= end:
+        dates.append(d)
+        d += timedelta(days=1)
+    in_range = [s for s in spans if start <= s.work_date <= end]
+    cov = schedule_rules.compute_coverage(in_range, reqs, emp_meta, dates)
+
+    return RosterInsightsResponse(
+        violations=[
+            ViolationRead(
+                user_id=v.user_id, employee_name=name_by_uid.get(v.user_id),
+                work_date=v.work_date, rule=v.rule, message=v.message,
+            ) for v in viols
+        ],
+        coverage=[
+            CoverageCellRead(
+                date=c.date, shift_template_id=c.shift_template_id,
+                shift_name=(templates[c.shift_template_id].name
+                            if c.shift_template_id in templates else None),
+                department=c.department, location=c.location,
+                required_min=c.required_min, required_max=c.required_max,
+                scheduled=c.scheduled, status=c.status,
+            ) for c in cov
+        ],
+    )
 
 
 @router.post("/bulk", response_model=RosterBulkResult)
@@ -494,6 +648,114 @@ async def delete_rotation(
         "rotation_pattern", str(p.id), {}, request,
     )
     return {"status": "deactivated", "id": rotation_id}
+
+
+# ------------------------ coverage requirements ------------------------
+
+def _check_max_min(mn: int, mx: Optional[int]) -> None:
+    if mx is not None and mx < mn:
+        raise HTTPException(
+            status_code=422, detail="max_headcount must be >= min_headcount"
+        )
+
+
+@router.get(
+    "/coverage-requirements", response_model=List[CoverageRequirementRead]
+)
+async def list_coverage_requirements(
+    db: deps.DBDep,
+    include_inactive: bool = Query(False),
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    admin = roster_svc.is_roster_admin(current_user)
+    if not admin and not await roster_svc.scoped_employees(db, current_user):
+        raise HTTPException(status_code=403, detail="You have no roster scope.")
+    q = select(CoverageRequirement).order_by(CoverageRequirement.id)
+    if not (admin and include_inactive):
+        q = q.where(CoverageRequirement.is_active.is_(True))
+    return list((await db.execute(q)).scalars().all())
+
+
+@router.post(
+    "/coverage-requirements", response_model=CoverageRequirementRead
+)
+async def create_coverage_requirement(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: CoverageRequirementCreate,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    _require_admin(current_user)
+    await _validate_templates(db, [body.shift_template_id])
+    r = CoverageRequirement(**body.model_dump())
+    db.add(r)
+    await _commit_or_409(db)
+    await db.refresh(r)
+    await log_audit(
+        db, current_user.id, "roster.coverage.create",
+        "coverage_requirement", str(r.id), body.model_dump(), request,
+    )
+    return r
+
+
+@router.patch(
+    "/coverage-requirements/{req_id}", response_model=CoverageRequirementRead
+)
+async def update_coverage_requirement(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    req_id: int,
+    body: CoverageRequirementUpdate,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    _require_admin(current_user)
+    r = await db.get(CoverageRequirement, req_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    changes = body.model_dump(exclude_unset=True)
+    for k in ("shift_template_id", "min_headcount", "is_active"):
+        if k in changes and changes[k] is None:
+            changes.pop(k)
+    if "shift_template_id" in changes:
+        await _validate_templates(db, [changes["shift_template_id"]])
+    _check_max_min(
+        changes.get("min_headcount", r.min_headcount),
+        changes["max_headcount"] if "max_headcount" in changes
+        else r.max_headcount,
+    )
+    for k, v in changes.items():
+        setattr(r, k, v)
+    await _commit_or_409(db)
+    await db.refresh(r)
+    await log_audit(
+        db, current_user.id, "roster.coverage.update",
+        "coverage_requirement", str(r.id),
+        {"changed": list(changes.keys())}, request,
+    )
+    return r
+
+
+@router.delete("/coverage-requirements/{req_id}")
+async def delete_coverage_requirement(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    req_id: int,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    _require_admin(current_user)
+    r = await db.get(CoverageRequirement, req_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    r.is_active = False
+    await _commit_or_409(db)
+    await log_audit(
+        db, current_user.id, "roster.coverage.delete",
+        "coverage_requirement", str(r.id), {}, request,
+    )
+    return {"status": "deactivated", "id": req_id}
 
 
 @router.post("/rotations/{rotation_id}/apply", response_model=RosterBulkResult)

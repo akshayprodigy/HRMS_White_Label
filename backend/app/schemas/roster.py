@@ -216,3 +216,65 @@ class RotationApplyRequest(BaseModel):
         if (self.end - self.start).days > 62:
             raise ValueError("range too large (max 62 days)")
         return self
+
+
+# ---- work-rule insights + coverage requirements (Phase 1A) ----
+
+class ViolationRead(BaseModel):
+    user_id: int
+    employee_name: Optional[str] = None
+    work_date: pydate
+    rule: str
+    message: str
+
+
+class CoverageCellRead(BaseModel):
+    date: pydate
+    shift_template_id: int
+    shift_name: Optional[str] = None
+    department: Optional[str] = None
+    location: Optional[str] = None
+    required_min: int
+    required_max: Optional[int] = None
+    scheduled: int
+    status: str
+
+
+class RosterInsightsResponse(BaseModel):
+    violations: List[ViolationRead] = Field(default_factory=list)
+    coverage: List[CoverageCellRead] = Field(default_factory=list)
+
+
+class CoverageRequirementBase(BaseModel):
+    department: Optional[str] = Field(default=None, max_length=100)
+    location: Optional[str] = Field(default=None, max_length=100)
+    shift_template_id: StrictInt
+    weekday: Optional[StrictInt] = Field(default=None, ge=0, le=6)
+    min_headcount: StrictInt = Field(..., ge=0)
+    max_headcount: Optional[StrictInt] = Field(default=None, ge=0)
+
+
+class CoverageRequirementCreate(CoverageRequirementBase):
+    @model_validator(mode="after")
+    def _max_ge_min(self):
+        if (self.max_headcount is not None
+                and self.max_headcount < self.min_headcount):
+            raise ValueError("max_headcount must be >= min_headcount")
+        return self
+
+
+class CoverageRequirementUpdate(BaseModel):
+    department: Optional[str] = Field(default=None, max_length=100)
+    location: Optional[str] = Field(default=None, max_length=100)
+    shift_template_id: Optional[StrictInt] = None
+    weekday: Optional[StrictInt] = Field(default=None, ge=0, le=6)
+    min_headcount: Optional[StrictInt] = Field(default=None, ge=0)
+    max_headcount: Optional[StrictInt] = Field(default=None, ge=0)
+    is_active: Optional[bool] = None
+
+
+class CoverageRequirementRead(CoverageRequirementBase):
+    id: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)

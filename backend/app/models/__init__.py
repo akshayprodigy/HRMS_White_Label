@@ -52,6 +52,7 @@ from .roster import (
 )
 from .schedule_delegation import ScheduleDelegation, DelegationScope
 from .rotation_pattern import RotationPattern
+from .coverage_requirement import CoverageRequirement
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
 )
