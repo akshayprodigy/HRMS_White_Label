@@ -409,7 +409,7 @@ export const RotationDialog = ({
               </tbody>
             </table>
           </div>
-          {lockDays > 0 && canPublish && status === 'published' && (
+          {lockDays > 0 && (
             <div className="space-y-1">
               <label htmlFor="rot-reason" className="text-sm font-medium text-gray-700">
                 Reason (required if it changes published shifts in the next {lockDays} days)

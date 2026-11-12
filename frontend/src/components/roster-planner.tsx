@@ -551,7 +551,13 @@ export const RosterPlanner = () => {
           lockedDraftCount={(grid?.rows || []).reduce(
             (n, r) =>
               n +
-              r.cells.filter((c) => c.status === 'draft' && inLockWindow(c.work_date)).length,
+              r.cells.filter(
+                (c) =>
+                  c.status === 'draft' &&
+                  inLockWindow(c.work_date) &&
+                  ((c.shift_template_id ?? null) !== (c.live_shift_template_id ?? null) ||
+                    c.is_week_off !== !!c.live_is_week_off)
+              ).length,
             0
           )}
           onDone={() => {
@@ -670,8 +676,12 @@ export const RosterPlanner = () => {
                       const lockedPublished =
                         !canPublish && c.source === 'roster' && c.status === 'published';
                       const inLock = inLockWindow(c.work_date);
+                      // Inside the window a non-override scheduler cannot change a
+                      // published cell, nor write a LIVE cell (blank/fallback too);
+                      // saving as draft stays possible.
                       const lockedWindow =
-                        inLock && !canOverrideLock && c.source === 'roster' && c.status === 'published';
+                        inLock && !canOverrideLock &&
+                        (c.status === 'published' || effStatus === 'published');
                       return (
                         <td
                           key={c.work_date}

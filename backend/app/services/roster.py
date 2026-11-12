@@ -321,6 +321,9 @@ def norm_cell(tpl: Optional[int], off: bool) -> Cell:
 
 
 def utc_today() -> pydate:
+    # The lock window is anchored to the UTC calendar day, matching the
+    # project-wide UTC wall-clock convention for roster dates. Org-timezone
+    # anchoring is a tracked follow-up.
     return datetime.now(timezone.utc).date()
 
 
@@ -793,7 +796,15 @@ async def build_grid(
             entry = entries_by_key.get((uid, dt))
             if entry is not None:
                 tpl = tpl_by_id.get(entry.shift_template_id)
+                live = (None, False)
+                if entry.status == RosterStatus.DRAFT:
+                    a0 = active_assignment(asg_by_user.get(uid, []), dt)
+                    t0 = tpl_by_id.get(a0.shift_template_id) if a0 else None
+                    if t0 is not None:
+                        live = ((None, True) if dt.weekday() in (t0.weekly_offs or [])
+                                else (t0.id, False))
                 cells.append(RosterCell(
+                    live_shift_template_id=live[0], live_is_week_off=live[1],
                     work_date=dt,
                     shift_template_id=entry.shift_template_id,
                     is_week_off=entry.is_week_off,

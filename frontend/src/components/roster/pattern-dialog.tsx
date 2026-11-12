@@ -136,7 +136,7 @@ export const PatternDialog = ({
             </div>
           ))}
         </div>
-        {lockDays > 0 && status === 'published' && (
+        {lockDays > 0 && (
           <div className="space-y-1">
             <label htmlFor="pattern-reason" className="text-sm font-medium text-gray-700">
               Reason (required if it changes published shifts in the next {lockDays} days)
