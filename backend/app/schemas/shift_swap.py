@@ -32,6 +32,13 @@ class SwapCellRead(BaseModel):
     is_week_off: bool = False
 
 
+class SwapExchangedCell(BaseModel):
+    user_id: int
+    work_date: pydate
+    before: SwapCellRead
+    after: SwapCellRead
+
+
 class SwapViolationRead(BaseModel):
     user_id: int
     employee_name: Optional[str] = None
@@ -59,6 +66,7 @@ class SwapRead(BaseModel):
     decided_at: Optional[datetime] = None
     decision_note: Optional[str] = None
     created_at: Optional[datetime] = None
+    cells: List[SwapExchangedCell] = []
     warnings: List[SwapViolationRead] = []
 
     @field_validator("peer_responded_at", "decided_at", "created_at")

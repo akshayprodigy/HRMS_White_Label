@@ -8,7 +8,7 @@ exchanged as PUBLISHED roster entries. Status machine:
        |  \\--decline--> declined             \\-decide(reject)--> rejected
        \\--cancel (requester)--> cancelled <--cancel-- pending_approval
 """
-from datetime import date as pydate, datetime, timezone
+from datetime import date as pydate, datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -25,7 +25,7 @@ from app.models.shift import ShiftTemplate
 from app.models.shift_swap import ShiftSwapRequest, SwapStatus
 from app.models.user import User
 from app.schemas.shift_swap import (
-    SwapCandidate, SwapCellRead, SwapCreate, SwapDecision, SwapRead,
+    SwapCandidate, SwapCellRead, SwapExchangedCell, SwapCreate, SwapDecision, SwapRead,
     SwapViolationRead,
 )
 from app.services import roster as roster_svc
@@ -49,11 +49,10 @@ async def _read_many(
     nm = await names(db, uids)
     tpl_ids = set()
     for r in rows:
-        snap = r.snapshot or {}
-        for side, d in (("a", r.requester_date), ("b", r.counterparty_date)):
-            c = (snap.get(side) or {}).get(d.isoformat())
-            if c and c[0]:
-                tpl_ids.add(c[0])
+        for side in ("a", "b"):
+            for c in ((r.snapshot or {}).get(side) or {}).values():
+                if c and c[0]:
+                    tpl_ids.add(c[0])
     tpls = {}
     if tpl_ids:
         tpls = {t.id: t.name for t in (await db.execute(
@@ -67,6 +66,26 @@ async def _read_many(
         return SwapCellRead(
             shift_template_id=c[0], shift_name=tpls.get(c[0]),
             is_week_off=bool(c[1]))
+
+    def read_cell(c):
+        return SwapCellRead(
+            shift_template_id=c[0], shift_name=tpls.get(c[0]),
+            is_week_off=bool(c[1]))
+
+    def exchanged(r):
+        snap = r.snapshot or {}
+        a, b = snap.get("a") or {}, snap.get("b") or {}
+        res = []
+        for iso in sorted(set(a) & set(b)):
+            for uid, mine, theirs in (
+                (r.requester_id, a[iso], b[iso]),
+                (r.counterparty_id, b[iso], a[iso]),
+            ):
+                res.append(SwapExchangedCell(
+                    user_id=uid, work_date=pydate.fromisoformat(iso),
+                    before=read_cell(mine),
+                    after=read_cell(swap_svc.written_cell(tuple(theirs)))))
+        return res
 
     out = []
     for r in rows:
@@ -84,7 +103,7 @@ async def _read_many(
             decided_by_id=r.decided_by_id,
             decided_by_name=nm.get(r.decided_by_id),
             decided_at=r.decided_at, decision_note=r.decision_note,
-            created_at=r.created_at,
+            created_at=r.created_at, cells=exchanged(r),
             warnings=_viol_read((warnings or {}).get(r.id, []), nm),
         ))
     return out
@@ -98,6 +117,23 @@ def _viol_read(viols, nm) -> List[SwapViolationRead]:
 
 async def _read_one(db, r, warnings=None) -> SwapRead:
     return (await _read_many(db, [r], {r.id: warnings or []}))[0]
+
+
+async def lock_row_ids(db, ids) -> None:
+    from app.models.user import User as _U
+    await lock_row_many(db, select(_U.id).where(_U.id.in_(ids)).order_by(_U.id))
+
+
+async def lock_row_many(db, stmt) -> None:
+    from sqlalchemy.exc import OperationalError
+    from app.api.v1.endpoints.roster_common import _map_db_error
+    try:
+        await db.execute(stmt.with_for_update())
+    except OperationalError as exc:
+        mapped = await _map_db_error(db, exc, "Roster changed concurrently; retry")
+        if mapped is None:
+            raise
+        raise mapped from exc
 
 
 async def _lock_swap(db, swap_id: int) -> ShiftSwapRequest:
@@ -117,6 +153,17 @@ async def _cells(db, swap):
             swap_svc.cells_for(eff, swap.counterparty_id, dates), eff)
 
 
+async def _ensure_parties_active(db, swap) -> None:
+    n = len((await db.execute(
+        select(Employee.user_id).join(User, User.id == Employee.user_id).where(
+            Employee.user_id.in_([swap.requester_id, swap.counterparty_id]),
+            Employee.status == EmployeeStatus.ACTIVE,
+            User.is_active.is_(True)))).all())
+    if n != 2:
+        raise HTTPException(
+            status_code=400, detail="Both employees must be active")
+
+
 async def _fire(db, uids, title, message, swap_id):
     await roster_svc.notify_many(db, [
         (u, title, message, RTYPE, str(swap_id)) for u in uids if u])
@@ -130,6 +177,11 @@ async def swap_candidates(
     date: pydate = Query(...),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
+    today = _today()
+    if date < today or date > today + timedelta(days=swap_svc.MAX_AHEAD_DAYS):
+        raise HTTPException(
+            status_code=400,
+            detail=f"date must be within the next {swap_svc.MAX_AHEAD_DAYS} days")
     me = (await db.execute(select(Employee).where(
         Employee.user_id == current_user.id))).scalars().first()
     if me is None or not me.department:
@@ -173,13 +225,20 @@ async def create_swap(
     if a == b:
         raise HTTPException(
             status_code=400, detail="You cannot swap a shift with yourself")
+    # Serialize concurrent creates for the same people: lock both user rows
+    # (id order) before the duplicate check.
+    await lock_row_ids(db, [a, b])
+    me = (await db.execute(select(Employee.department).where(
+        Employee.user_id == a))).first()
     cp = (await db.execute(
-        select(Employee.id).join(User, User.id == Employee.user_id).where(
+        select(Employee.department).join(User, User.id == Employee.user_id)
+        .where(
             Employee.user_id == b, Employee.status == EmployeeStatus.ACTIVE,
             User.is_active.is_(True)))).first()
-    if cp is None:
+    if cp is None or me is None or not me[0] or cp[0] != me[0]:
         raise HTTPException(
-            status_code=400, detail="Counterparty is not an active employee")
+            status_code=400,
+            detail="Counterparty must be an active employee in your department")
     rd = body.requester_date
     cd = body.counterparty_date or rd
     swap_svc.validate_dates_open(rd, cd, _today())
@@ -202,7 +261,8 @@ async def create_swap(
             ShiftSwapRequest.status.in_(SwapStatus.OPEN),
             or_(ShiftSwapRequest.requester_id.in_([a, b]),
                 ShiftSwapRequest.counterparty_id.in_([a, b])),
-        ))).scalars().all()
+        ).with_for_update().execution_options(populate_existing=True)
+    )).scalars().all()
     for o in open_rows:
         if {o.requester_date, o.counterparty_date} & set(dates):
             raise HTTPException(
@@ -315,6 +375,7 @@ async def accept_swap(
     if swap.status != SwapStatus.PENDING_PEER:
         raise HTTPException(status_code=409, detail="Swap is no longer awaiting your reply")
     d1, d2 = swap.requester_date, swap.counterparty_date
+    await _ensure_parties_active(db, swap)
     if min(d1, d2) < _today():
         raise HTTPException(status_code=400, detail="A swap date is in the past")
     dates, a_cells, b_cells, _eff = await _cells(db, swap)
@@ -434,6 +495,7 @@ async def decide_swap(
     dates = swap_svc.swap_dates(swap.requester_date, swap.counterparty_date)
     nm = await names(db, parties)
     if body.action == "approve":
+        await _ensure_parties_active(db, swap)
         if dates[0] < _today():
             raise HTTPException(
                 status_code=400, detail="A swap date is in the past")
@@ -446,6 +508,9 @@ async def decide_swap(
         await swap_svc.check_leave_free(
             db, swap.requester_id, swap.counterparty_id, dates, new_a, new_b)
         warnings = await swap_svc.swap_warnings(db, swap)
+        await swap_svc.supersede_change_requests(
+            db, swap, current_user.id,
+            swap_svc.written_keys(swap, a_cells, b_cells))
         changed = await swap_svc.apply_swap(
             db, swap, current_user.id, a_cells, b_cells)
         await roster_svc.notify_schedule_changed(db, changed)

@@ -18,7 +18,12 @@ from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
 from app.models.notification import Notification
-from app.models.roster import RosterEntry, RosterEntryHistory, RosterStatus
+from app.models.roster import (
+    RosterChangeRequest, RosterEntry, RosterEntryHistory, RosterStatus,
+)
+from app.models.department import Department as _Dept  # noqa
+from app.models.shift import EmployeeShiftAssignment
+from app.services.effective_shift import effective_shift_on
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.shift_swap import ShiftSwapRequest
 from app.models.system import SystemSetting
@@ -147,6 +152,13 @@ async def world():
                 LeaveRequest.employee_id.in_(uids)))
             await db.execute(delete(LeaveType).where(
                 LeaveType.name == f"SWLV{sfx}"))
+            await db.execute(delete(RosterChangeRequest).where(
+                RosterChangeRequest.employee_id.in_(uids)))
+            await db.execute(delete(EmployeeShiftAssignment).where(
+                EmployeeShiftAssignment.employee_id.in_(uids)))
+            await db.execute(_Dept.__table__.update().where(
+                _Dept.name.in_([dept_x, dept_y])).values(
+                head_user_id=None, deputy_head_user_id=None))
             await db.execute(delete(RosterEntryHistory).where(
                 RosterEntryHistory.employee_id.in_(uids)))
             await db.execute(delete(RosterEntry).where(
@@ -414,8 +426,8 @@ async def test_duplicate_pending_409(client, world):
     r = await _create(client, w)
     assert r.status_code == 409
     # the counterparty's side conflicts too (e2 requesting something on D)
-    await _pub(ids["e3"], dn(0), ids["t1"])
-    r = await _create(client, w, requester="e3", cp="e2")
+    await _pub(ids["e4"], dn(0), ids["t1"])
+    r = await _create(client, w, requester="e4", cp="e2")
     assert r.status_code == 409
     # different date is fine
     await _pub(ids["e1"], dn(1), ids["t1"])
@@ -571,3 +583,175 @@ async def test_check_no_violation_when_swap_harmless(client, world, rules_cfg):
     h1 = await _login(client, w["email"]("e1"))
     r = await client.get(f"{SW}/{sid}/check", headers=h1)
     assert r.status_code == 200 and r.json() == []
+
+
+async def _approve_flow(client, w):
+    sid = await _to_approval(client, w)
+    hd = await _login(client, w["email"]("deleg"))
+    r = await client.post(f"{SW}/{sid}/decide", headers=hd, json={"action": "approve"})
+    assert r.status_code == 200, r.text
+    return sid, r
+
+
+async def test_blank_cell_written_as_week_off(client, world):
+    w, ids = world, world["ids"]
+    # e1: roster t1 over an assignment t2; e2: nothing at all ("none").
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    async with SessionLocal() as db:
+        db.add(EmployeeShiftAssignment(
+            employee_id=ids["e1"], shift_template_id=ids["t2"],
+            effective_from=TODAY - timedelta(days=30)))
+        await db.commit()
+    await _approve_flow(client, w)
+    assert await _cell(ids["e1"], dn(0)) == (None, True)
+    assert await _cell(ids["e2"], dn(0)) == (ids["t1"], False)
+    async with SessionLocal() as db:
+        es = await effective_shift_on(db, ids["e1"], dn(0))
+        assert es.is_week_off and es.shift is None
+        h = (await db.execute(select(RosterEntryHistory).where(
+            RosterEntryHistory.employee_id == ids["e1"]))).scalars().one()
+        assert h.new_is_week_off is True and h.new_shift_template_id is None
+        assert h.old_shift_template_id == ids["t1"]
+
+
+async def test_assignment_cells_exchanged(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    async with SessionLocal() as db:
+        db.add(EmployeeShiftAssignment(
+            employee_id=ids["e2"], shift_template_id=ids["t2"],
+            effective_from=TODAY - timedelta(days=30)))
+        await db.commit()
+    await _approve_flow(client, w)
+    assert await _cell(ids["e1"], dn(0)) == (ids["t2"], False)
+    assert await _cell(ids["e2"], dn(0)) == (ids["t1"], False)
+
+
+async def test_assignment_week_off_cell_exchanged(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    async with SessionLocal() as db:
+        t2 = await db.get(ShiftTemplate, ids["t2"])
+        t2.weekly_offs = [dn(0).weekday()]
+        db.add(EmployeeShiftAssignment(
+            employee_id=ids["e2"], shift_template_id=ids["t2"],
+            effective_from=TODAY - timedelta(days=30)))
+        await db.commit()
+    await _approve_flow(client, w)
+    assert await _cell(ids["e1"], dn(0)) == (None, True)
+    assert await _cell(ids["e2"], dn(0)) == (ids["t1"], False)
+    async with SessionLocal() as db:
+        assert (await effective_shift_on(db, ids["e1"], dn(0))).is_week_off
+        assert (await effective_shift_on(db, ids["e2"], dn(0))).shift.id == ids["t1"]
+
+
+async def test_draft_and_pending_cr_warned_and_superseded(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    # e2 works t2 via assignment, with an unpublished draft on top
+    await _pub(ids["e2"], dn(0), ids["tn"], status=RosterStatus.DRAFT)
+    async with SessionLocal() as db:
+        db.add(EmployeeShiftAssignment(
+            employee_id=ids["e2"], shift_template_id=ids["t2"],
+            effective_from=TODAY - timedelta(days=30)))
+        db.add(RosterChangeRequest(
+            employee_id=ids["e1"], work_date=dn(0), requested_week_off=True,
+            reason="need off", status="pending"))
+        await db.commit()
+    sid = (await _create(client, w)).json()["id"]
+    h1 = await _login(client, w["email"]("e1"))
+    r = await client.get(f"{SW}/{sid}/check", headers=h1)
+    rules = sorted((x["rule"], x["user_id"]) for x in r.json())
+    assert rules == [("draft_replaced", ids["e2"]),
+                     ("pending_change_request", ids["e1"])], r.text
+    assert "SW e2" in [x for x in r.json() if x["rule"] == "draft_replaced"][0]["message"]
+    h2 = await _login(client, w["email"]("e2"))
+    await client.post(f"{SW}/{sid}/accept", headers=h2)
+    hd = await _login(client, w["email"]("deleg"))
+    r = await client.post(f"{SW}/{sid}/decide", headers=hd, json={"action": "approve"})
+    assert r.status_code == 200, r.text
+    assert sorted(x["rule"] for x in r.json()["warnings"]) == [
+        "draft_replaced", "pending_change_request"]
+    async with SessionLocal() as db:
+        cr = (await db.execute(select(RosterChangeRequest).where(
+            RosterChangeRequest.employee_id == ids["e1"]))).scalars().one()
+        assert cr.status == "cancelled"
+        assert cr.decision_note == f"Superseded by shift swap #{sid}"
+        n = (await db.execute(select(Notification).where(
+            Notification.user_id == ids["e1"],
+            Notification.title == "Change request superseded"))).scalars().all()
+        assert len(n) == 1
+    assert await _cell(ids["e2"], dn(0)) == (ids["t1"], False)
+
+
+async def test_approver_notification_equals_deciders(client, world):
+    w, ids = world, world["ids"]
+    await _setup_same_day(w)
+    async with SessionLocal() as db:  # e4 heads the department
+        await db.execute(_Dept.__table__.update().where(
+            _Dept.name == w["dept"]).values(head_user_id=ids["e4"]))
+        await db.commit()
+    sid = await _to_approval(client, w)
+    async with SessionLocal() as db:
+        n = (await db.execute(select(Notification).where(
+            Notification.title == "Shift swap awaiting approval",
+            Notification.resource_id == str(sid)))).scalars().all()
+        assert {x.user_id for x in n} == {ids["deleg"], ids["e4"]}
+    h1 = await _login(client, w["email"]("deleg1"))
+    r = await client.post(f"{SW}/{sid}/decide", headers=h1, json={"action": "approve"})
+    assert r.status_code == 403
+    h4 = await _login(client, w["email"]("e4"))
+    r = await client.post(f"{SW}/{sid}/decide", headers=h4, json={"action": "approve"})
+    assert r.status_code == 200, r.text
+
+
+async def test_concurrent_create_one_wins(client, world):
+    w = world
+    await _setup_same_day(w)
+    for _ in range(2):
+        r1, r2 = await asyncio.gather(_create(client, w), _create(client, w))
+        codes = sorted([r1.status_code, r2.status_code])
+        assert codes == [200, 409], (r1.text, r2.text)
+        ok = r1 if r1.status_code == 200 else r2
+        h = await _login(client, w["email"]("e1"))
+        await client.post(f"{SW}/{ok.json()['id']}/cancel", headers=h)
+
+
+async def test_counterparty_must_be_same_department(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    await _pub(ids["e3"], dn(0), ids["t2"])
+    r = await _create(client, w, cp="e3")
+    assert r.status_code == 400, r.text
+    h = await _login(client, w["email"]("e1"))
+    for off in (-1, 91):
+        r = await client.get(f"{SW}/candidates", headers=h,
+                             params={"date": (TODAY + timedelta(days=off)).isoformat()})
+        assert r.status_code == 400
+
+
+async def test_cells_exposed_and_active_recheck(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    await _pub(ids["e1"], dn(3), off=True)
+    await _pub(ids["e2"], dn(0), off=True)
+    await _pub(ids["e2"], dn(3), ids["t2"])
+    j = (await _create(client, w, counterparty_date=dd(3))).json()
+    sid = j["id"]
+    got = {(c["user_id"], c["work_date"]): c for c in j["cells"]}
+    assert len(got) == 4
+    c = got[(ids["e1"], dd(0))]
+    assert c["before"]["shift_template_id"] == ids["t1"]
+    assert c["after"]["is_week_off"] is True
+    c = got[(ids["e2"], dd(3))]
+    assert c["before"]["shift_template_id"] == ids["t2"]
+    assert c["after"]["is_week_off"] is True
+    # counterparty becomes inactive before accepting
+    async with SessionLocal() as db:
+        e = (await db.execute(select(Employee).where(
+            Employee.user_id == ids["e2"]))).scalars().one()
+        e.status = EmployeeStatus.INACTIVE
+        await db.commit()
+    h2 = await _login(client, w["email"]("e2"))
+    r = await client.post(f"{SW}/{sid}/accept", headers=h2)
+    assert r.status_code == 400

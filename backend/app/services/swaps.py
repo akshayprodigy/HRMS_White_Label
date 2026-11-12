@@ -14,7 +14,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.employee import Employee
-from app.models.roster import RosterStatus
+from app.models.roster import RosterChangeRequest, RosterEntry, RosterStatus
+from app.models.user import User
 from app.models.shift import ShiftTemplate
 from app.services import roster as roster_svc
 from app.services import schedule_rules
@@ -45,6 +46,13 @@ def cell_of(es: EffectiveShift) -> Cell:
     if es.is_week_off:
         return (None, True)
     return (es.shift.id if es.shift is not None else None, False)
+
+
+def written_cell(cell: Cell) -> Cell:
+    """What actually gets stored for a NEW cell. A PUBLISHED blank entry is
+    ignored by effective_shift (falls back to the assignment), so a person
+    who ends up with no shift is written as an explicit week-off."""
+    return (None, True) if cell == (None, False) else cell
 
 
 def is_working(cell: Cell) -> bool:
@@ -134,7 +142,7 @@ async def apply_swap(db, swap, actor_id: int, a_cells, b_cells) -> Dict[int, set
         for d in dates:
             if old[d] == new[d]:
                 continue
-            tpl, off = new[d]
+            tpl, off = written_cell(new[d])
             entry, _o = await roster_svc.upsert_entry(
                 db, employee_id=uid, work_date=d, shift_template_id=tpl,
                 is_week_off=off, status=RosterStatus.PUBLISHED,
@@ -151,9 +159,74 @@ async def apply_swap(db, swap, actor_id: int, a_cells, b_cells) -> Dict[int, set
     return changed
 
 
+async def _unpublished_conflicts(db, written) -> List[schedule_rules.Violation]:
+    """Drafts and pending change requests sitting on cells a swap will write."""
+    if not written:
+        return []
+    uids = {u for u, _ in written}
+    dts = {d for _, d in written}
+    nm = {r[0]: (r[1] or r[2]) for r in (await db.execute(
+        select(User.id, User.full_name, User.email).where(User.id.in_(uids))
+    )).all()}
+    out: List[schedule_rules.Violation] = []
+    for e in (await db.execute(select(RosterEntry).where(
+        RosterEntry.employee_id.in_(uids), RosterEntry.work_date.in_(dts),
+        RosterEntry.status == RosterStatus.DRAFT,
+    ))).scalars().all():
+        if (e.employee_id, e.work_date) in written:
+            out.append(schedule_rules.Violation(
+                e.employee_id, e.work_date, "draft_replaced",
+                f"Unpublished draft for {nm.get(e.employee_id)} on "
+                f"{e.work_date.isoformat()} will be replaced"))
+    for c in await pending_requests(db, written):
+        out.append(schedule_rules.Violation(
+            c.employee_id, c.work_date, "pending_change_request",
+            f"Pending change request by {nm.get(c.employee_id)} on "
+            f"{c.work_date.isoformat()} will be cancelled"))
+    return out
+
+
+async def pending_requests(db, written) -> List[RosterChangeRequest]:
+    if not written:
+        return []
+    rows = (await db.execute(select(RosterChangeRequest).where(
+        RosterChangeRequest.employee_id.in_({u for u, _ in written}),
+        RosterChangeRequest.work_date.in_({d for _, d in written}),
+        RosterChangeRequest.status == "pending",
+    ))).scalars().all()
+    return [c for c in rows if (c.employee_id, c.work_date) in written]
+
+
+def written_keys(swap, a_cells, b_cells) -> set:
+    dates = swap_dates(swap.requester_date, swap.counterparty_date)
+    new_a, new_b = swapped_cells(a_cells, b_cells, dates)
+    return (
+        {(swap.requester_id, d) for d in dates if a_cells[d] != new_a[d]}
+        | {(swap.counterparty_id, d) for d in dates if b_cells[d] != new_b[d]}
+    )
+
+
+async def supersede_change_requests(db, swap, actor_id: int, written) -> None:
+    """Cancel pending change requests on written cells and notify owners."""
+    from datetime import datetime, timezone
+    rows = await pending_requests(db, written)
+    for c in rows:
+        c.status = "cancelled"
+        c.decision_note = f"Superseded by shift swap #{swap.id}"
+        c.decided_by_id = actor_id
+        c.decided_at = datetime.now(timezone.utc)
+    await roster_svc.notify_many(db, [
+        (c.employee_id, "Change request superseded",
+         f"Your change request for {c.work_date.isoformat()} was cancelled "
+         f"because a shift swap changed that day", "shift_swap", str(swap.id))
+        for c in rows])
+
+
 async def swap_warnings(db, swap) -> List[schedule_rules.Violation]:
-    """Work-rule/availability violations the swap would CREATE (violations
-    already present before the swap are not reported). Never blocking."""
+    """Advisory warnings the swap would CREATE: work-rule + availability
+    violations (diffed by (user, date, rule), so a pre-existing violation is
+    not reported) plus drafts / pending change requests it will replace.
+    Never blocking."""
     a, b = swap.requester_id, swap.counterparty_id
     dates = swap_dates(swap.requester_date, swap.counterparty_date)
     start, end = dates[0] - timedelta(days=7), dates[-1] + timedelta(days=7)
@@ -189,5 +262,9 @@ async def swap_warnings(db, swap) -> List[schedule_rules.Violation]:
             if day is not None and day.blocks(after[uid][d][0]):
                 out.append(schedule_rules.Violation(
                     uid, d, "unavailable", "Scheduled on a day marked unavailable"))
+    written = {
+        (uid, d) for uid in (a, b) for d in dates
+        if after[uid][d] != cur[uid][d]}
+    out += await _unpublished_conflicts(db, written)
     out.sort(key=lambda v: (v.work_date, v.user_id, v.rule))
     return out

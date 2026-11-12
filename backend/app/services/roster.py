@@ -250,16 +250,15 @@ async def approvable_user_ids(db: AsyncSession, user: User) -> set:
 
 
 async def schedule_approver_ids(db: AsyncSession, employee_user_ids: set) -> set:
-    """Users who may approve changes for ALL given employees: active
-    delegations with can_approve_changes whose scope covers all of them, plus
-    the head/deputy of their department when they all share one. If there are
-    none, the roster admins (superusers + holders of `roster manage`). The
-    employees themselves are never returned unless they are the only
-    candidates (admin fallback)."""
+    """Users who can actually decide a swap between these employees, i.e.
+    exactly those the decide endpoint accepts. Candidates (delegates whose
+    scope touches any of them, heads/deputies of their departments) are
+    filtered to ACTIVE users with approvable_subset == all employees. If none
+    qualify, ACTIVE roster admins. The employees themselves are excluded."""
     from app.models.user import Permission, Role
 
     ids = set(employee_user_ids)
-    out: set = set()
+    cands: set = set()
     today = datetime.now(timezone.utc).date()
     for d in (await db.execute(
         select(ScheduleDelegation).where(
@@ -270,18 +269,26 @@ async def schedule_approver_ids(db: AsyncSession, employee_user_ids: set) -> set
                 ScheduleDelegation.valid_to >= today),
         )
     )).scalars().all():
-        if ids <= await delegation_user_ids(db, d):
-            out.add(d.grantee_id)
+        if ids & await delegation_user_ids(db, d):
+            cands.add(d.grantee_id)
     depts = set((await db.execute(
         select(Employee.department).where(Employee.user_id.in_(ids))
     )).scalars().all()) if ids else set()
-    if len(depts) == 1 and None not in depts:
+    depts.discard(None)
+    if depts:
         for h in (await db.execute(
             select(Department.head_user_id, Department.deputy_head_user_id)
             .where(Department.name.in_(depts))
         )).all():
-            out |= {x for x in h if x}
-    out -= ids
+            cands |= {x for x in h if x}
+    cands -= ids
+    out: set = set()
+    for uid in sorted(cands):
+        u = await db.get(User, uid)
+        if u is None or not u.is_active:
+            continue
+        if await approvable_subset(db, u, ids) == ids:
+            out.add(uid)
     if out:
         return out
     admins = set((await db.execute(
