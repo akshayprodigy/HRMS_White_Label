@@ -1,12 +1,12 @@
 """Weekly/monthly roster planner (W7).
 
-A per-employee-per-day planning layer sitting on TOP of the range-based
-EmployeeShiftAssignment. IMPORTANT precedence note: RosterEntry is a
-PLANNING view only — attendance / overtime / payroll still read
-EmployeeShiftAssignment via services/shift_resolver. A published roster
-does NOT change attendance computation unless RosterEntry is explicitly
-wired into the shift resolver in a later iteration. Keep this in mind
-before treating the roster as the source of truth for pay.
+A per-employee-per-day layer sitting on TOP of the range-based
+EmployeeShiftAssignment. Precedence for attendance shift resolution
+(services/effective_shift.py): a PUBLISHED RosterEntry overrides the
+EmployeeShiftAssignment for that day (a roster week-off yields no shift,
+so a punch that day is unscheduled). DRAFT entries are ignored entirely,
+and blank cells (no shift, not a week-off) fall back to the assignment.
+Payroll / overtime are not otherwise changed by the roster.
 
 `employee_id` here is a User id (mirrors EmployeeShiftAssignment.employee_id),
 not the Employee PK.

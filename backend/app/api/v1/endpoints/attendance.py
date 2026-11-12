@@ -16,6 +16,7 @@ from app.models.geofence import (
 from app.models.notification import Notification
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import Role, User as UserModel
+from app.services.effective_shift import effective_shift_on
 from app.services.geofence import (
     EnforcementMode,
     GeoDecision,
@@ -222,24 +223,9 @@ async def _notify_unscheduled_login(
 async def _effective_shift_on(
     db, user_id: int, on_date: date
 ) -> Optional[ShiftTemplate]:
-    """Return the active shift template for `user_id` on `on_date`,
-    or None if no assignment covers that date."""
-    stmt = (
-        select(EmployeeShiftAssignment)
-        .options(selectinload(EmployeeShiftAssignment.shift_template))
-        .where(
-            EmployeeShiftAssignment.employee_id == user_id,
-            EmployeeShiftAssignment.effective_from <= on_date,
-            or_(
-                EmployeeShiftAssignment.effective_to.is_(None),
-                EmployeeShiftAssignment.effective_to >= on_date,
-            ),
-        )
-        .order_by(EmployeeShiftAssignment.effective_from.desc())
-        .limit(1)
-    )
-    asg = (await db.execute(stmt)).scalars().first()
-    return asg.shift_template if asg else None
+    """Return the effective shift template for `user_id` on `on_date`
+    (published roster overrides assignment; roster week-off -> None)."""
+    return (await effective_shift_on(db, user_id, on_date)).shift
 
 
 async def _attribute_punch(
