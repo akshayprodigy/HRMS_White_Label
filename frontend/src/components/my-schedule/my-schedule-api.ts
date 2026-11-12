@@ -138,6 +138,10 @@ export const fmtDate = (iso: string) =>
   });
 export const fmtDateShort = (iso: string) =>
   new Date(iso + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+export const fmtDateYear = (iso: string) =>
+  new Date(iso + 'T00:00:00').toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'short', year: 'numeric',
+  });
 
 export const STATUS_TONE: Record<string, 'success' | 'error' | 'warning' | 'neutral' | 'info'> = {
   approved: 'success',

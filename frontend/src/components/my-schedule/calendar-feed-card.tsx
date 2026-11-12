@@ -108,25 +108,23 @@ export const CalendarFeedCard: React.FC = () => {
         </div>
       )}
 
-      <div className="flex items-center gap-4 flex-wrap">
-        {status?.active ? (
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-slate-500">
-              Regenerating makes existing calendar subscriptions stop updating.
-            </span>
+      {status?.active ? (
+        <div className="flex flex-col items-start gap-1.5">
+          <div className="flex items-center gap-4 flex-wrap">
             <InlineConfirm label="Regenerate link" confirmLabel="Regenerate" tone="neutral"
               ariaLabel="Regenerate calendar link" busy={busy !== null} onConfirm={rotate} />
+            <InlineConfirm label="Turn off" confirmLabel="Turn off" ariaLabel="Turn off calendar feed"
+              busy={busy !== null} onConfirm={turnOff} />
           </div>
-        ) : (
-          <Button onClick={rotate} isLoading={busy === 'rotate'} className="h-9">
-            Create link
-          </Button>
-        )}
-        {status?.active && (
-          <InlineConfirm label="Turn off" confirmLabel="Turn off" ariaLabel="Turn off calendar feed"
-            busy={busy !== null} onConfirm={turnOff} />
-        )}
-      </div>
+          <span className="text-[10px] text-slate-500">
+            Regenerating makes existing calendar subscriptions stop updating.
+          </span>
+        </div>
+      ) : (
+        <Button onClick={rotate} isLoading={busy === 'rotate'} className="h-9">
+          Create link
+        </Button>
+      )}
     </Card>
   );
 };

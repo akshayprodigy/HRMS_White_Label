@@ -5,9 +5,10 @@ import { Card, Button, Badge } from '../ui-elements';
 import {
   Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter,
 } from '../ui/dialog';
+import { useRestoreFocus } from './use-restore-focus';
 import { errMsg, todayIso } from '../schedule-delegations-utils';
 import {
-  AvailabilityRule, ShiftOption, WEEKDAYS, fmtDateShort, inputCls, labelCls, mySchedule,
+  AvailabilityRule, ShiftOption, WEEKDAYS, fmtDateShort, fmtDateYear, inputCls, labelCls, mySchedule,
 } from './my-schedule-api';
 
 export const ruleText = (r: AvailabilityRule, shifts: ShiftOption[]): string => {
@@ -16,7 +17,7 @@ export const ruleText = (r: AvailabilityRule, shifts: ShiftOption[]): string => 
     : null;
   const when = r.weekday !== null && r.weekday !== undefined
     ? `every ${WEEKDAYS[r.weekday].slice(0, 3)}`
-    : r.specific_date ? `on ${fmtDateShort(r.specific_date)}` : '';
+    : r.specific_date ? `on ${fmtDateYear(r.specific_date)}` : '';
   const bounds = [
     r.valid_from ? `from ${fmtDateShort(r.valid_from)}` : '',
     r.valid_to ? `until ${fmtDateShort(r.valid_to)}` : '',
@@ -48,6 +49,13 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
   const [confirmId, setConfirmId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const restoreFocus = (e: Event) => {
+    const el = triggerRef.current;
+    if (el && el.isConnected) { e.preventDefault(); el.focus(); }
+  };
+  const dateRangeBad = form.mode === 'weekday' && !!form.valid_from && !!form.valid_to
+    && form.valid_from > form.valid_to;
   const seq = useRef(0);
   const load = useCallback(async () => {
     const my = ++seq.current;
@@ -71,6 +79,15 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
       toast.error('Pick the date.');
       return;
     }
+    if (form.mode === 'date' && form.specific_date < todayIso()) {
+      toast.error('That date is in the past. Pick today or a later date.');
+      return;
+    }
+    if (form.mode === 'weekday' && form.valid_from && form.valid_to
+      && form.valid_from > form.valid_to) {
+      toast.error('"From" must be on or before "Until".');
+      return;
+    }
     setBusy(true);
     try {
       await mySchedule.createAvailability({
@@ -86,7 +103,12 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
       setOpen(false);
       await load();
     } catch (e: any) {
-      toast.error(errMsg(e, 'Failed to add rule'));
+      const st = e?.response?.status;
+      const detail = e?.response?.data?.detail;
+      toast.error(st === 409 ? 'You already have this rule.'
+        : st === 422 && typeof detail === 'string' && detail.includes('valid_from')
+          ? '"From" must be on or before "Until".'
+          : errMsg(e, 'Failed to add rule'));
     } finally {
       setBusy(false);
     }
@@ -118,7 +140,9 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
             Tell your scheduler when you cannot work or which shifts you prefer.
           </p>
         </div>
-        <Button onClick={() => { setForm(EMPTY); setOpen(true); }} className="h-9">
+        <Button onClick={(e: React.MouseEvent<HTMLElement>) => {
+          triggerRef.current = e.currentTarget; setForm(EMPTY); setOpen(true);
+        }} className="h-9">
           <Plus size={14} className="mr-1.5" /> Add rule
         </Button>
       </div>
@@ -143,7 +167,7 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
                 <button
                   type="button"
                   aria-label={`Delete rule: ${ruleText(r, shifts)}`}
-                  onClick={() => setConfirmId(r.id)}
+                  onClick={(e) => { triggerRef.current = e.currentTarget; setConfirmId(r.id); }}
                   className="text-rose-500 hover:text-rose-700"
                 >
                   <Trash2 size={14} />
@@ -156,7 +180,7 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
 
       {open && (
         <Dialog open onOpenChange={(o: boolean) => !o && !busy && setOpen(false)}>
-          <DialogContent className="max-w-md">
+          <DialogContent className="max-w-md" onCloseAutoFocus={restoreFocus}>
             <DialogTitle className="text-base font-black uppercase tracking-tight text-[#0F172A]">
               Add availability rule
             </DialogTitle>
@@ -220,9 +244,15 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
                   <div className="space-y-1">
                     <label htmlFor="av-to" className={labelCls}>Until (optional)</label>
                     <input id="av-to" type="date" className={inputCls} value={form.valid_to}
+                      min={form.valid_from || undefined}
                       onChange={(e) => setForm({ ...form, valid_to: e.target.value })} />
                   </div>
                 </div>
+              )}
+              {dateRangeBad && (
+                <p role="alert" className="text-[10px] font-bold text-rose-600">
+                  "From" must be on or before "Until".
+                </p>
               )}
               <div className="space-y-1">
                 <label htmlFor="av-note" className={labelCls}>Note (optional)</label>
@@ -241,7 +271,7 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
 
       {confirmId !== null && (
         <Dialog open onOpenChange={(o: boolean) => !o && !deleting && setConfirmId(null)}>
-          <DialogContent className="max-w-sm">
+          <DialogContent className="max-w-sm" onCloseAutoFocus={restoreFocus}>
             <DialogTitle className="text-base font-black uppercase tracking-tight text-[#0F172A]">
               Delete this rule?
             </DialogTitle>

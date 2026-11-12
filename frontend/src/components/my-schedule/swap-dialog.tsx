@@ -5,6 +5,7 @@ import { Button } from '../ui-elements';
 import {
   Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter,
 } from '../ui/dialog';
+import { useRestoreFocus } from './use-restore-focus';
 import { errMsg, todayIso } from '../schedule-delegations-utils';
 import {
   SwapCandidate, fmtDate, inputCls, labelCls, mySchedule,
@@ -22,11 +23,16 @@ const candShift = (c?: SwapCandidate) =>
 interface Props {
   date: string; // the day of my shift I want to hand over
   shiftName?: string;
+  shiftTemplateId?: number | null;
+  isWeekOff?: boolean;
   onClose: () => void;
   onDone: () => void;
 }
 
-export const SwapDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }) => {
+export const SwapDialog: React.FC<Props> = ({
+  date, shiftName, shiftTemplateId, isWeekOff, onClose, onDone,
+}) => {
+  const restoreFocus = useRestoreFocus();
   const [cands, setCands] = useState<SwapCandidate[]>([]);
   const [returnCands, setReturnCands] = useState<SwapCandidate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -58,10 +64,17 @@ export const SwapDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }
     return () => { live = false; };
   }, [rd]);
 
+  // A colleague whose cell equals mine that day gains nothing from a swap.
+  const sameShift = (c: SwapCandidate) =>
+    isWeekOff
+      ? c.is_week_off
+      : !c.is_week_off && (
+        (shiftTemplateId != null && c.shift_template_id === shiftTemplateId)
+        || (shiftTemplateId == null && !!shiftName && c.shift_name === shiftName));
   const chosen = cands.find((c) => c.user_id === pick);
 
   const submit = async () => {
-    if (!pick) { toast.error('Pick a colleague to swap with.'); return; }
+    if (!pick || (chosen && sameShift(chosen))) { toast.error('Pick a colleague to swap with.'); return; }
     if (otherDay && !rd) {
       toast.error(`Pick a return date between today and ${fmtDate(maxDate)} that differs from ${fmtDate(date)}, or untick the option.`);
       return;
@@ -85,7 +98,7 @@ export const SwapDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }
 
   return (
     <Dialog open onOpenChange={(o: boolean) => !o && !busy && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" onCloseAutoFocus={restoreFocus}>
         <DialogTitle className="flex items-center gap-2 text-base font-black uppercase tracking-tight text-[#0F172A]">
           <ArrowLeftRight size={15} className="text-indigo-600" /> Swap shift
         </DialogTitle>
@@ -99,8 +112,12 @@ export const SwapDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }
               onChange={(e) => setPick(e.target.value ? Number(e.target.value) : '')}>
               <option value="">{loading ? 'Loading…' : 'Select a colleague…'}</option>
               {cands.map((c) => (
-                <option key={c.user_id} value={c.user_id}>
-                  {c.name} — {candShift(c)} on {fmtDate(date)}
+                <option key={c.user_id} value={c.user_id} disabled={sameShift(c)}>
+                  {c.name} — {sameShift(c)
+                    ? `${candShift(c)} · Same shift (nothing to swap)`
+                    : !c.is_week_off && !c.shift_name
+                      ? 'Off / no shift — they take your shift'
+                      : `${candShift(c)} on ${fmtDate(date)}`}
                 </option>
               ))}
             </select>

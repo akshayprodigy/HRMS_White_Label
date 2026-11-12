@@ -5,6 +5,7 @@ import { Button } from '../ui-elements';
 import {
   Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter,
 } from '../ui/dialog';
+import { useRestoreFocus } from './use-restore-focus';
 import { errMsg } from '../schedule-delegations-utils';
 import { fmtDate, inputCls, labelCls, mySchedule } from './my-schedule-api';
 
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export const GiveawayDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }) => {
+  const restoreFocus = useRestoreFocus();
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -38,7 +40,7 @@ export const GiveawayDialog: React.FC<Props> = ({ date, shiftName, onClose, onDo
 
   return (
     <Dialog open onOpenChange={(o: boolean) => !o && !busy && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" onCloseAutoFocus={restoreFocus}>
         <DialogTitle className="flex items-center gap-2 text-base font-black uppercase tracking-tight text-[#0F172A]">
           <Hand size={15} className="text-indigo-600" /> Give away shift
         </DialogTitle>

@@ -78,12 +78,14 @@ export const SwapPanel: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) =
           {!mine && s.status === 'pending_peer' && (
             <>
               <Button size="sm" className="h-8"
+                aria-label={`Accept swap from ${other || 'colleague'}`}
                 isLoading={busy.has(`a${s.id}`)}
                 onClick={() => act(`a${s.id}`, () => mySchedule.swapAction(s.id, 'accept'),
                   'Swap accepted — sent for approval', 'Failed to accept swap')}>
                 Accept
               </Button>
               <Button size="sm" variant="outline" className="h-8"
+                aria-label={`Decline swap from ${other || 'colleague'}`}
                 isLoading={busy.has(`d${s.id}`)}
                 onClick={() => act(`d${s.id}`, () => mySchedule.swapAction(s.id, 'decline'),
                   'Swap declined', 'Failed to decline swap')}>
