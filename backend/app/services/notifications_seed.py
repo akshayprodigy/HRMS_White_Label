@@ -66,6 +66,20 @@ STARTER_TEMPLATES: List[Dict[str, Any]] = [
 
     # ---- Leave ----
     _t(
+        event_type="leave_submitted", channel=Channel.EMAIL,
+        category=EventCategory.LEAVE,
+        subject="Leave request awaiting your approval",
+        body_html=(
+            "<p>A leave request needs your action.</p>"
+            "<p>{message}</p>"
+            "<p>Open the ERP to approve or reject.</p>"
+        ),
+        body_text=(
+            "A leave request needs your action.\n{message}\n"
+            "Open the ERP to approve or reject."
+        ),
+    ),
+    _t(
         event_type="leave_approved", channel=Channel.EMAIL,
         category=EventCategory.LEAVE,
         subject="Leave approved",

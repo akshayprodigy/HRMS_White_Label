@@ -10,6 +10,7 @@ from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
+from app.services.leave_approval import apply_leave_decision, notify_new_leave
 from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
 from app.core.config import settings
 from app.models.leave import LeaveType, LeaveBalanceLedger, LeaveRequest, LeaveStatus, HalfDaySession
@@ -459,7 +460,11 @@ async def apply_leave(
         details={"days": days, "leave_type": leave_type.name}
     )
     db.add(audit)
-    
+    await db.flush()
+    await notify_new_leave(
+        db, leave=db_obj, item=approval_item,
+        requester_name=current_user.full_name or current_user.email)
+
     await db.commit()
     await db.refresh(db_obj)
     
@@ -544,6 +549,10 @@ async def apply_leave_on_behalf(
             approval_item_id=approval_item.id, step_number=step_idx,
             role_id=hr_role.id if hr_role else None, status=ApprovalStatus.PENDING,
         ))
+        await db.flush()
+        await notify_new_leave(
+            db, leave=db_obj, item=approval_item,
+            requester_name=target.full_name or target.email)
 
     await db.commit()
     await db.refresh(db_obj)
@@ -796,81 +805,16 @@ async def action_approval(
     if not can_action:
         raise HTTPException(status_code=403, detail="Not authorized to action this step")
     
-    # Update step
-    current_step.status = action.status
-    current_step.comment = action.comment
-    current_step.actioned_at = datetime.now(timezone.utc)
-    current_step.approver_id = current_user.id # Set the actual approver
-    
-    if action.status == ApprovalStatus.REJECTED:
-        approval_item.status = ApprovalStatus.REJECTED
-        # Update leave status
-        if approval_item.resource_type == "leave_request":
-            l_query = select(LeaveRequest).where(LeaveRequest.id == int(approval_item.resource_id))
-            l_result = await db.execute(l_query)
-            leave = l_result.scalar_one()
-            leave.status = LeaveStatus.REJECTED
-        elif approval_item.resource_type == "comp_off_accrual":
-            accrual = await db.get(CompOffAccrual, int(approval_item.resource_id))
-            if accrual is not None:
-                accrual.status = "rejected"
-    else:
-        # Check if more steps exist
-        next_step = next((s for s in approval_item.steps if s.step_number == approval_item.current_step_number + 1), None)
-        if next_step:
-            approval_item.current_step_number += 1
-        else:
-            approval_item.status = ApprovalStatus.APPROVED
-            # Update leave status
-            if approval_item.resource_type == "leave_request":
-                l_query = select(LeaveRequest).where(LeaveRequest.id == int(approval_item.resource_id))
-                l_result = await db.execute(l_query)
-                leave = l_result.scalar_one()
-                leave.status = LeaveStatus.APPROVED
+    if action.status not in (ApprovalStatus.APPROVED, ApprovalStatus.REJECTED):
+        raise HTTPException(status_code=400, detail="Status must be APPROVED or REJECTED")
 
-                # Update ledger
-                days = 0.5 if leave.is_half_day else (leave.end_date - leave.start_date).days + 1
-                bal_query = select(LeaveBalanceLedger).where(
-                    and_(
-                        LeaveBalanceLedger.user_id == leave.employee_id,
-                        LeaveBalanceLedger.leave_type_id == leave.leave_type_id
-                    )
-                )
-                bal_result = await db.execute(bal_query)
-                ledger = bal_result.scalar_one_or_none()
-                if ledger:
-                    ledger.used += days
-                else:
-                    # Create ledger if not exists (should have been there)
-                    db.add(LeaveBalanceLedger(
-                        user_id=leave.employee_id,
-                        leave_type_id=leave.leave_type_id,
-                        balance=0.0,
-                        used=days
-                    ))
-            elif approval_item.resource_type == "comp_off_accrual":
-                accrual = await db.get(CompOffAccrual, int(approval_item.resource_id))
-                if accrual is not None:
-                    accrual.status = "approved"
-                    co_type = (await db.execute(
-                        select(LeaveType).where(LeaveType.code == "CO").limit(1)
-                    )).scalar_one_or_none()
-                    if co_type is not None:
-                        bal = (await db.execute(
-                            select(LeaveBalanceLedger).where(and_(
-                                LeaveBalanceLedger.user_id == accrual.user_id,
-                                LeaveBalanceLedger.leave_type_id == co_type.id,
-                            ))
-                        )).scalar_one_or_none()
-                        if bal is None:
-                            db.add(LeaveBalanceLedger(
-                                user_id=accrual.user_id,
-                                leave_type_id=co_type.id,
-                                balance=accrual.days_credited,
-                                used=0.0,
-                            ))
-                        else:
-                            bal.balance += accrual.days_credited
+    # Step advance, final status, ledger debit/credit and notifications
+    # happen once, in the shared service (also used by /approvals/{id}/action).
+    await apply_leave_decision(
+        db, approval_item, current_user,
+        approve=action.status == ApprovalStatus.APPROVED,
+        comment=action.comment,
+    )
 
     db.add(AuditLog(
         user_id=current_user.id,

@@ -5,6 +5,9 @@ from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 from app.api import deps
 from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
+from app.services.leave_approval import (
+    COMP_OFF_RESOURCE, DECISION_RESOURCES, apply_leave_decision,
+)
 from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
 from app.models.user import User
 from app.models.notification import Notification
@@ -433,6 +436,33 @@ async def action_approval(
             detail="You are not authorized to approve lead estimates",
         )
         
+    # Leave / comp-off decisions go through the shared service (step advance,
+    # ledger debit/credit exactly once, notifications). Admin override keeps
+    # its semantics: an admin approval finalizes every pending step.
+    if (
+        item.resource_type in DECISION_RESOURCES
+        and action.status in (ApprovalStatus.APPROVED, ApprovalStatus.REJECTED)
+    ):
+        approve = action.status == ApprovalStatus.APPROVED
+        outcome = await apply_leave_decision(
+            db, item, current_user, approve, action.comment,
+            override_all=approve and _is_admin_approver(current_user),
+        )
+        if item.resource_type == COMP_OFF_RESOURCE and outcome != "advanced":
+            if item.requested_by_id:
+                await create_notification(
+                    db, item.requested_by_id,
+                    "Approval Request Approved" if approve
+                    else "Approval Request Rejected",
+                    f"Your {item.resource_type} request has been "
+                    f"{'approved' if approve else 'rejected'}.",
+                    "success" if approve else "error",
+                    item.resource_type, item.resource_id,
+                )
+        await db.commit()
+        await db.refresh(item)
+        return item
+
     # Apply action
     current_step.status = action.status
     current_step.comment = action.comment
@@ -472,52 +502,7 @@ async def action_approval(
                         req.status = RequisitionStatus.REJECTED
             except (ValueError, TypeError):
                 return
-        elif item.resource_type == "leave_request":
-            try:
-                leave_id = int(item.resource_id)
-                leave_req = await db.get(LeaveRequest, leave_id)
-                if leave_req:
-                    if final_status == ApprovalStatus.APPROVED:
-                        leave_req.status = LeaveStatus.APPROVED
-                    elif final_status == ApprovalStatus.REJECTED:
-                        leave_req.status = LeaveStatus.REJECTED
-            except (ValueError, TypeError):
-                return
-        elif item.resource_type == "comp_off_accrual":
-            from app.models.comp_off import CompOffAccrual
-            from app.models.leave import LeaveType, LeaveBalanceLedger
-            try:
-                accrual_id = int(item.resource_id)
-            except (ValueError, TypeError):
-                return
-            accrual = await db.get(CompOffAccrual, accrual_id)
-            if not accrual:
-                return
-            if final_status == ApprovalStatus.REJECTED:
-                accrual.status = "rejected"
-                return
-            if final_status == ApprovalStatus.APPROVED:
-                accrual.status = "approved"
-                co_type = (await db.execute(
-                    select(LeaveType).where(LeaveType.code == "CO").limit(1)
-                )).scalar_one_or_none()
-                if co_type is None:
-                    return
-                bal = (await db.execute(
-                    select(LeaveBalanceLedger).where(and_(
-                        LeaveBalanceLedger.user_id == accrual.user_id,
-                        LeaveBalanceLedger.leave_type_id == co_type.id,
-                    ))
-                )).scalar_one_or_none()
-                if bal is None:
-                    db.add(LeaveBalanceLedger(
-                        user_id=accrual.user_id,
-                        leave_type_id=co_type.id,
-                        balance=accrual.days_credited,
-                        used=0.0,
-                    ))
-                else:
-                    bal.balance += accrual.days_credited
+        # leave_request / comp_off_accrual: handled by services.leave_approval
 
     async def _notify_requester(
         title: str,
