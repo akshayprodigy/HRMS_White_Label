@@ -38,6 +38,13 @@ export const RunningLateCard: React.FC<{ inline?: boolean }> = ({ inline = false
     }
   }, []);
   useEffect(() => { load(); }, [load]);
+  // Re-check when the tab regains focus (e.g. after punching in elsewhere) so
+  // the card hides once a punch exists.
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [load]);
 
   if (!state || (!state.can_post && !state.notice)) return null;
 
@@ -74,7 +81,7 @@ export const RunningLateCard: React.FC<{ inline?: boolean }> = ({ inline = false
   const formBody = (
     <div className="space-y-3 pt-1">
               <div className="space-y-1">
-                <label htmlFor="rl-min" className={labelCls}>I will arrive in</label>
+                <label htmlFor="rl-min" className={labelCls}>I'll be late by</label>
                 <select id="rl-min" className={inputCls} value={minutes}
                   onChange={(e) => setMinutes(Number(e.target.value))}>
                   {MINUTES.map((m) => (

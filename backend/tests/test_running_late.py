@@ -1,4 +1,5 @@
 """Running-late notices (Roadmap v2 Phase 2, Task 2)."""
+import asyncio
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -22,6 +23,7 @@ from app.models.roster import RosterEntry, RosterEntryHistory, RosterStatus
 from app.models.shift import ShiftTemplate
 from app.models.system import SystemSetting
 from app.models.user import User
+from app.api.v1.endpoints import roster_late
 from app.services import live_ops
 from app.services.live_ops import LiveStatus as S, classify, no_show_job
 
@@ -70,6 +72,25 @@ def test_classify_on_leave_beats_late():
 
 
 # ---------------- DB world ----------------
+
+
+class Clock:
+    def __init__(self):
+        d = datetime.now(UTC).date()
+        self.t = datetime(d.year, d.month, d.day, 12, 0, tzinfo=UTC)
+
+    def __call__(self):
+        return self.t
+
+    def iso(self, minutes=0):
+        return (self.t + timedelta(minutes=minutes)).isoformat()
+
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch):
+    c = Clock()
+    monkeypatch.setattr(roster_late, "_now", c)
+    return c
 
 
 @pytest.fixture
@@ -174,7 +195,7 @@ async def _roster(uid, d, tpl):
 
 
 def _soon(minutes=1):
-    return (datetime.now(UTC) + timedelta(minutes=minutes)).isoformat()
+    return Clock().iso(minutes)
 
 
 async def _notices(uid):
@@ -197,13 +218,13 @@ async def test_post_no_shift_400(client, world):
     assert r.status_code == 200 and r.json()["can_post"] is False
 
 
-async def test_post_punched_400(client, world):
+async def test_post_punched_400(client, world, clock):
     i = world["ids"]
-    today = datetime.now(UTC).date()
+    today = clock().date()
     await _roster(i["punched"], today, i["t_day"])
     async with SessionLocal() as db:
         db.add(Attendance(user_id=i["punched"], mode="web", work_date=today,
-                          captured_at=datetime.now(UTC) - timedelta(minutes=1),
+                          captured_at=clock() - timedelta(minutes=1),
                           shift_template_id=i["t_day"]))
         await db.commit()
     h = await _login(client, f"rl_punched_{world['sfx']}@t.com")
@@ -212,9 +233,9 @@ async def test_post_punched_400(client, world):
     assert (await client.get(URL, headers=h)).json()["can_post"] is False
 
 
-async def test_validation_shapes(client, world):
+async def test_validation_shapes(client, world, clock):
     i = world["ids"]
-    await _roster(i["emp"], datetime.now(UTC).date(), i["t_day"])
+    await _roster(i["emp"], clock().date(), i["t_day"])
     h = await _login(client, f"rl_emp_{world['sfx']}@t.com")
     for body in ({}, {"minutes_late": 4}, {"minutes_late": 241},
                  {"minutes_late": 10, "expected_at": _soon()}):
@@ -222,61 +243,102 @@ async def test_validation_shapes(client, world):
         assert r.status_code == 422, (body, r.text)
 
 
-async def test_post_window_and_upsert_and_notify(client, world):
+async def test_post_window_and_upsert_and_notify(client, world, clock):
     i, sfx = world["ids"], world["sfx"]
-    today = datetime.now(UTC).date()
+    today = clock().date()
     await _roster(i["emp"], today, i["t_day"])
     h = await _login(client, f"rl_emp_{sfx}@t.com")
     # outside the shift window
-    for eta in (datetime.now(UTC) + timedelta(days=1),
-                datetime.now(UTC) - timedelta(days=1)):
-        r = await client.post(URL, headers=h, json={"expected_at": eta.isoformat()})
+    for eta in (clock.iso(24 * 60), clock.iso(-24 * 60)):
+        r = await client.post(URL, headers=h, json={"expected_at": eta})
         assert r.status_code == 400 and "within your shift" in r.text
-    assert await _notices(i["emp"]) == []
-    # ok
+    # inside the shift but more than 240 minutes away
+    r = await client.post(URL, headers=h, json={"expected_at": clock.iso(241)})
+    assert r.status_code == 400 and "at most 240" in r.text
+    r = await client.post(URL, headers=h, json={"expected_at": clock.iso(240)})
+    assert r.status_code == 200
+    assert await _notices(i["emp"]) != []
+    await client.delete(URL, headers=h)
+    # reset
+    async with SessionLocal() as db:
+        await db.execute(delete(LateNotice).where(LateNotice.user_id == i["emp"]))
+        await db.execute(delete(Notification).where(Notification.user_id == i["mgr"]))
+        await db.commit()
     r = await client.post(URL, headers=h, json={
-        "expected_at": _soon(2), "reason": "Traffic"})
+        "expected_at": clock.iso(2), "reason": "Traffic"})
     assert r.status_code == 200, r.text
     n = r.json()["notice"]
     assert n["reason"] == "Traffic" and n["work_date"] == today.isoformat()
     assert len(await _notes(i["mgr"])) == 1
-    # upsert
-    r = await client.post(URL, headers=h, json={"expected_at": _soon(3)})
+    # upsert with a changed ETA 1 minute later: updated, notification throttled
+    clock.t += timedelta(minutes=1)
+    r = await client.post(URL, headers=h, json={"expected_at": clock.iso(3)})
     assert r.status_code == 200
     rows = await _notices(i["emp"])
     assert len(rows) == 1 and rows[0].reason is None
-    assert len(await _notes(i["mgr"])) == 2  # one per post
+    assert len(await _notes(i["mgr"])) == 1
+    # same ETA 10 minutes later: no change -> no notification
+    clock.t += timedelta(minutes=10)
+    eta_iso = rows[0].expected_at.replace(tzinfo=UTC).isoformat()
+    assert (await client.post(URL, headers=h, json={"expected_at": eta_iso})
+            ).status_code == 200
+    assert len(await _notes(i["mgr"])) == 1
+    # changed ETA after the throttle window -> notified again
+    r = await client.post(URL, headers=h, json={"expected_at": clock.iso(30)})
+    assert r.status_code == 200 and len(await _notes(i["mgr"])) == 2
     g = (await client.get(URL, headers=h)).json()
-    assert g["notice"]["eta_hhmm"] == rows[0].expected_at.strftime("%H:%M")
-    assert g["can_post"] is True
+    assert g["notice"]["eta_hhmm"] == "12:41" and g["can_post"] is True
     # board shows it
     async with SessionLocal() as db:
         board = {r.user_id: r for r in await live_ops.live_board(
-            db, [i["emp"]], datetime.now(UTC))}
+            db, [i["emp"]], clock())}
     row = board[i["emp"]]
     assert row.status == S.RUNNING_LATE and row.late_notice_eta is not None
-    # delete clears
+    # delete: throttled (just notified) -> no extra note, row kept but cleared
     r = await client.delete(URL, headers=h)
     assert r.status_code == 200 and r.json()["notice"] is None
-    assert await _notices(i["emp"]) == []
+    rows = await _notices(i["emp"])
+    assert len(rows) == 1 and rows[0].cleared_at is not None
+    assert len(await _notes(i["mgr"])) == 2
+    assert (await client.get(URL, headers=h)).json()["notice"] is None
+    async with SessionLocal() as db:
+        board = {r.user_id: r for r in await live_ops.live_board(
+            db, [i["emp"]], clock())}
+    assert board[i["emp"]].late_notice_eta is None
+    assert board[i["emp"]].status == S.NO_SHOW  # 12:11 > 30m after 00:00
+    # re-post right after clearing is still throttled (DELETE keeps throttle)
+    r = await client.post(URL, headers=h, json={"expected_at": clock.iso(20)})
+    assert r.status_code == 200 and len(await _notes(i["mgr"])) == 2
+    # clear after the throttle window -> "no longer running late" notice
+    clock.t += timedelta(minutes=6)
+    assert (await client.delete(URL, headers=h)).status_code == 200
+    notes = await _notes(i["mgr"])
+    assert len(notes) == 3 and any("no longer running late" in x.message for x in notes)
 
 
-async def test_minutes_late_computes_eta(client, world):
+async def test_concurrent_posts_idempotent(client, world, clock):
+    i, sfx = world["ids"], world["sfx"]
+    await _roster(i["emp"], clock().date(), i["t_day"])
+    h = await _login(client, f"rl_emp_{sfx}@t.com")
+    rs = await asyncio.gather(*[
+        client.post(URL, headers=h, json={"expected_at": clock.iso(10 + k)})
+        for k in range(3)])
+    assert [r.status_code for r in rs] == [200, 200, 200], [r.text for r in rs]
+    assert len(await _notices(i["emp"])) == 1
+
+
+async def test_minutes_late_computes_eta(client, world, clock):
     i = world["ids"]
-    await _roster(i["emp"], datetime.now(UTC).date(), i["t_day"])
+    await _roster(i["emp"], clock().date(), i["t_day"])
     h = await _login(client, f"rl_emp_{world['sfx']}@t.com")
-    before = datetime.now(UTC)
     r = await client.post(URL, headers=h, json={"minutes_late": 5})
-    if before.hour == 23 and before.minute >= 50:
-        pytest.skip("too close to end of UTC day")
     assert r.status_code == 200, r.text
-    eta = datetime.fromisoformat(r.json()["notice"]["expected_at"])
-    assert timedelta(minutes=4) <= eta - before <= timedelta(minutes=6)
+    assert r.json()["notice"]["eta_hhmm"] == "12:05"
 
 
-async def test_overnight_from_yesterday(client, world):
+async def test_overnight_from_yesterday(client, world, clock):
     i = world["ids"]
-    yday = datetime.now(UTC).date() - timedelta(days=1)
+    yday = clock().date() - timedelta(days=1)
     await _roster(i["night"], yday, i["t_run"])
     h = await _login(client, f"rl_night_{world['sfx']}@t.com")
     r = await client.post(URL, headers=h, json={"expected_at": _soon(2)})
@@ -337,9 +399,17 @@ async def test_punch_after_notice_clears_late(world):
     assert r.status == S.ON_SHIFT and r.late_notice_eta is None
 
 
-async def test_live_endpoint_row_fields(client, world):
+async def test_live_endpoint_row_fields(client, world, clock, monkeypatch):
+    from app.api.v1.endpoints import roster_live
+
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock()
+
+    monkeypatch.setattr(roster_live, "datetime", FakeDT)
     i, sfx = world["ids"], world["sfx"]
-    await _roster(i["emp"], datetime.now(UTC).date(), i["t_day"])
+    await _roster(i["emp"], clock().date(), i["t_day"])
     h = await _login(client, f"rl_emp_{sfx}@t.com")
     r = await client.post(URL, headers=h, json={
         "expected_at": _soon(2), "reason": "Rain"})
@@ -357,11 +427,11 @@ async def test_live_endpoint_row_fields(client, world):
     assert body["counts"]["running_late"] >= 1
 
 
-async def test_not_blocked_by_attendance_gate(world):
+async def test_not_blocked_by_attendance_gate(world, clock):
     """The endpoint is for people who have NOT punched in, so the attendance
     gate must not apply (while other roster routes still 403)."""
     i, sfx = world["ids"], world["sfx"]
-    await _roster(i["emp"], datetime.now(UTC).date(), i["t_day"])
+    await _roster(i["emp"], clock().date(), i["t_day"])
     app = create_app()  # no verify_attendance override
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://test") as c:

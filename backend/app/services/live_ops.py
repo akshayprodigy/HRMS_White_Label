@@ -190,7 +190,8 @@ async def live_board(
         for ln in (await db.execute(
             select(LateNotice).where(
                 LateNotice.user_id.in_(ch),
-                LateNotice.work_date.in_([yday, today])))).scalars().all():
+                LateNotice.work_date.in_([yday, today]),
+                LateNotice.cleared_at.is_(None)))).scalars().all():
             notices[(ln.user_id, ln.work_date)] = ln
     leave = await roster_svc.approved_leave_days(db, ids, yday, today)
     half_leave: set = set()

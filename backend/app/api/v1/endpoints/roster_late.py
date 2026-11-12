@@ -9,10 +9,12 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import delete, select
+from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.api import deps
 from app.api.v1.endpoints.roster_common import guard_conflicts, lock_user_rows
+from app.models.attendance import Attendance
 from app.models.late_notice import LateNotice
 from app.models.user import User
 from app.services import live_ops
@@ -20,9 +22,16 @@ from app.services import roster as roster_svc
 
 router = APIRouter()
 
+MAX_LATE_MINUTES = 240
+NOTIFY_THROTTLE = timedelta(minutes=5)
+
+
+def _now() -> datetime:  # patched in tests
+    return datetime.now(timezone.utc)
+
 
 class RunningLate(BaseModel):
-    minutes_late: Optional[int] = Field(None, ge=5, le=240)
+    minutes_late: Optional[int] = Field(None, ge=5, le=MAX_LATE_MINUTES)
     expected_at: Optional[datetime] = None
     reason: Optional[str] = Field(None, max_length=255)
 
@@ -37,9 +46,9 @@ def _aware(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
-async def _relevant_row(db, user: User, now: datetime):
+async def _relevant_row(db, uid: int, now: datetime):
     """The caller's live row for the shift that is relevant now, or None."""
-    rows = await live_ops.live_board(db, [user.id], now)
+    rows = await live_ops.live_board(db, [uid], now)
     r = rows[0] if rows else None
     if r is None or r.shift_template_id is None or r.start is None:
         return None
@@ -47,7 +56,7 @@ async def _relevant_row(db, user: User, now: datetime):
 
 
 def _out(n: Optional[LateNotice], row=None) -> dict:
-    if n is None:
+    if n is None or n.cleared_at is not None:
         return {"notice": None}
     return {"notice": {
         "work_date": n.work_date.isoformat(),
@@ -63,12 +72,13 @@ async def get_running_late(
     db: deps.DBDep, current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     """Current notice for the relevant shift plus whether one can be posted."""
-    now = datetime.now(timezone.utc)
-    r = await _relevant_row(db, current_user, now)
+    uid = current_user.id
+    now = _now()
+    r = await _relevant_row(db, uid, now)
     if r is None:
         return {**_out(None), "can_post": False}
     n = (await db.execute(select(LateNotice).where(
-        LateNotice.user_id == current_user.id,
+        LateNotice.user_id == uid,
         LateNotice.work_date == r.work_date))).scalar_one_or_none()
     can = (r.punch_in is None and r.status != live_ops.LiveStatus.ON_LEAVE
            and now < r.end)
@@ -77,52 +87,105 @@ async def get_running_late(
             "shift_end": r.end.isoformat()}
 
 
+async def _notify_schedulers(db, uid, r, now, text, n) -> None:
+    recips = (await live_ops._alert_recipients(db, [r], now.date())).get(
+        uid, set())
+    await roster_svc.notify_many(db, [
+        (rid, "Running late", text, "roster", None) for rid in sorted(recips)])
+    n.last_notified_at = now
+
+
+def _throttled_ok(n: Optional[LateNotice], now: datetime) -> bool:
+    return (n is None or n.last_notified_at is None
+            or now - _aware(n.last_notified_at) >= NOTIFY_THROTTLE)
+
+
+async def _lock_state(db, uid, now):
+    """Locking (current) reads of the caller's notices and attendance for
+    yesterday/today, done BEFORE any plain read of those tables so MariaDB
+    does not raise 1020 against a stale snapshot. Returns
+    ({work_date: LateNotice}, {work_dates with a punch})."""
+    days = [now.date() - timedelta(days=1), now.date()]
+    notices = {n.work_date: n for n in (await db.execute(
+        select(LateNotice).where(LateNotice.user_id == uid,
+                                 LateNotice.work_date.in_(days))
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().all()}
+    punched = {d for (d,) in (await db.execute(
+        select(Attendance.work_date).where(
+            Attendance.user_id == uid, Attendance.work_date.in_(days))
+        .with_for_update())).all()}
+    return notices, punched
+
+
+async def _retrying(db, fn, *args):
+    """Run fn(db, *args); on a MariaDB 1020 / lock conflict (our REPEATABLE
+    READ snapshot predates a concurrent writer that held the user lock) roll
+    back and retry on a fresh snapshot. Args must be plain values (a rollback
+    expires ORM objects)."""
+    for attempt in range(3):
+        try:
+            return await fn(db, *args)
+        except OperationalError as exc:
+            if attempt == 2 or not roster_svc.is_lock_conflict(exc):
+                raise
+            await db.rollback()
+
+
 @router.post("/my/running-late")
 @guard_conflicts
 async def post_running_late(
     *, db: deps.DBDep, body: RunningLate,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    now = datetime.now(timezone.utc)
-    await lock_user_rows(db, [current_user.id])
-    r = await _relevant_row(db, current_user, now)
+    return await _retrying(
+        db, _post, current_user.id,
+        current_user.full_name or current_user.email, body)
+
+
+async def _post(db, uid: int, who: str, body: RunningLate) -> Any:
+    now = _now()
+    await lock_user_rows(db, [uid])
+    notices, punched = await _lock_state(db, uid, now)
+    r = await _relevant_row(db, uid, now)
     if r is None:
         raise HTTPException(400, "You have no shift today to be late for.")
     if r.status == live_ops.LiveStatus.ON_LEAVE:
         raise HTTPException(400, "You are on leave for this shift.")
-    if r.punch_in is not None:
+    if r.punch_in is not None or r.work_date in punched:
         raise HTTPException(400, "You have already punched in for this shift.")
     if now >= r.end:
         raise HTTPException(400, "This shift has already ended.")
+    base = max(now, r.start).replace(microsecond=0)
     if body.expected_at is not None:
         eta = _aware(body.expected_at).replace(microsecond=0)
     else:
-        eta = max(now, r.start).replace(microsecond=0) + timedelta(
-            minutes=body.minutes_late)
+        eta = base + timedelta(minutes=body.minutes_late)
     if eta < r.start or eta > r.end:
         raise HTTPException(
             400, "Expected arrival must be within your shift "
                  f"({r.start_hhmm}-{r.end_hhmm} UTC).")
+    if eta - base > timedelta(minutes=MAX_LATE_MINUTES):
+        raise HTTPException(
+            400, f"Expected arrival can be at most {MAX_LATE_MINUTES} minutes away.")
     reason = (body.reason or "").strip() or None
-    n = (await db.execute(select(LateNotice).where(
-        LateNotice.user_id == current_user.id,
-        LateNotice.work_date == r.work_date))).scalar_one_or_none()
+    n = notices.get(r.work_date)
+    changed = (n is None or n.cleared_at is not None
+               or _aware(n.expected_at) != eta)
     if n is None:
-        n = LateNotice(user_id=current_user.id, work_date=r.work_date,
-                       expected_at=eta, reason=reason)
+        n = LateNotice(user_id=uid, work_date=r.work_date,
+                       expected_at=eta, reason=reason, created_at=now)
         db.add(n)
     else:
-        n.expected_at, n.reason = eta, reason
-        n.created_at = now
+        n.expected_at, n.reason, n.cleared_at = eta, reason, None
+    n.posted_at = now
     await db.flush()
-    recips = (await live_ops._alert_recipients(db, [r], now.date())).get(
-        current_user.id, set())
-    who = current_user.full_name or current_user.email
-    msg = (f"{who} is running late for {r.shift_name or 'their shift'} "
-           f"({r.start_hhmm}); expected by {eta.strftime('%H:%M')} UTC."
-           + (f" Reason: {reason}" if reason else ""))
-    await roster_svc.notify_many(db, [
-        (rid, "Running late", msg, "roster", None) for rid in sorted(recips)])
+    if changed and _throttled_ok(n, now):
+        await _notify_schedulers(
+            db, uid, r, now,
+            f"{who} is running late for {r.shift_name or 'their shift'} "
+            f"({r.start_hhmm}); expected by {eta.strftime('%H:%M')} UTC."
+            + (f" Reason: {reason}" if reason else ""), n)
     await db.commit()
     await db.refresh(n)
     return _out(n)
@@ -133,11 +196,24 @@ async def post_running_late(
 async def clear_running_late(
     *, db: deps.DBDep, current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    now = datetime.now(timezone.utc)
-    r = await _relevant_row(db, current_user, now)
+    return await _retrying(
+        db, _clear, current_user.id,
+        current_user.full_name or current_user.email)
+
+
+async def _clear(db, uid: int, who: str) -> Any:
+    now = _now()
+    await lock_user_rows(db, [uid])
+    notices, _ = await _lock_state(db, uid, now)
+    r = await _relevant_row(db, uid, now)
     if r is not None:
-        await db.execute(delete(LateNotice).where(
-            LateNotice.user_id == current_user.id,
-            LateNotice.work_date == r.work_date))
-        await db.commit()
+        n = notices.get(r.work_date)
+        if n is not None and n.cleared_at is None:
+            n.cleared_at = now  # row kept so the notify throttle survives
+            if _throttled_ok(n, now):
+                await _notify_schedulers(
+                    db, uid, r, now,
+                    f"{who} is no longer running late for "
+                    f"{r.shift_name or 'their shift'} ({r.start_hhmm}).", n)
+            await db.commit()
     return _out(None)

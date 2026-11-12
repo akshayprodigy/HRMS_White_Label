@@ -25,3 +25,12 @@ class LateNotice(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc), nullable=False)
+    # created_at = first post; posted_at = latest post/update. last_notified_at
+    # throttles scheduler notifications; cleared_at keeps the row (and the
+    # throttle) after the employee clears the notice.
+    posted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    last_notified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    cleared_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
