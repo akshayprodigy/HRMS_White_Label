@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from fastapi.responses import FileResponse
 
+from app.core.datetime_utils import as_utc
 from app.api import deps
 from app.core.config import settings
 from app.models.department import Department
@@ -2229,16 +2230,6 @@ async def attendance_correction_action(
 ATTENDANCE_EDIT = "attendance edit"
 
 
-def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
-    """MariaDB round-trips DATETIME columns as naive; treat them as UTC.
-    Aware values are converted to UTC (e.g. 09:30+05:30 -> 04:00Z)."""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
 def _require_reason(reason: str) -> str:
     cleaned = (reason or "").strip()
     if len(cleaned) < 5:
@@ -2277,11 +2268,11 @@ async def edit_attendance_times(
 
     await assert_attendance_editable(db, att.work_date)
 
-    new_in = _as_utc(obj_in.punch_in_time) or _as_utc(att.captured_at)
+    new_in = as_utc(obj_in.punch_in_time) or as_utc(att.captured_at)
     new_out = (
-        _as_utc(obj_in.punch_out_time)
+        as_utc(obj_in.punch_out_time)
         if obj_in.punch_out_time is not None
-        else _as_utc(att.punch_out_time)
+        else as_utc(att.punch_out_time)
     )
     if new_out is not None and new_out <= new_in:
         raise HTTPException(
@@ -2290,9 +2281,9 @@ async def edit_attendance_times(
         )
 
     old = {
-        "punch_in_time": _as_utc(att.captured_at).isoformat(),
+        "punch_in_time": as_utc(att.captured_at).isoformat(),
         "punch_out_time": (
-            _as_utc(att.punch_out_time).isoformat()
+            as_utc(att.punch_out_time).isoformat()
             if att.punch_out_time else None
         ),
     }
@@ -2345,8 +2336,8 @@ async def create_manual_attendance(
 
     await assert_attendance_editable(db, obj_in.work_date)
 
-    punch_in = _as_utc(obj_in.punch_in_time)
-    punch_out = _as_utc(obj_in.punch_out_time)
+    punch_in = as_utc(obj_in.punch_in_time)
+    punch_out = as_utc(obj_in.punch_out_time)
     if punch_out is not None and punch_out <= punch_in:
         raise HTTPException(
             status_code=422,

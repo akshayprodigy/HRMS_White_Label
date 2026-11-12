@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
 from app.api import deps
+from app.core.datetime_utils import as_utc
 from app.models.attendance import Attendance
 from app.models.attendance_regularization import (
     AttendanceRegularization, RegularizationStatus,
@@ -45,15 +46,6 @@ async def _get_locked(db, reg_id: int) -> AttendanceRegularization:
     return reg
 
 
-def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
-    """Naive -> assume UTC; aware -> convert to UTC."""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
 async def _notify(
     db, user_id: Optional[int], title: str, message: str, reg_id: int,
 ) -> None:
@@ -74,7 +66,7 @@ async def _notify(
 def _row_to_read(reg, name, code) -> RegularizationRead:
     out = RegularizationRead.model_validate(reg)
     for f in ("requested_punch_in", "requested_punch_out", "decided_at", "created_at"):
-        setattr(out, f, _as_utc(getattr(out, f)))
+        setattr(out, f, as_utc(getattr(out, f)))
     out.requester_name = name
     out.requester_employee_code = code
     return out
@@ -104,8 +96,8 @@ async def create_regularization(
     now = datetime.now(timezone.utc)
     if obj_in.work_date > now.date() + timedelta(days=1):
         raise HTTPException(422, "work_date cannot be in the future.")
-    punch_in = _as_utc(obj_in.requested_punch_in)
-    punch_out = _as_utc(obj_in.requested_punch_out)
+    punch_in = as_utc(obj_in.requested_punch_in)
+    punch_out = as_utc(obj_in.requested_punch_out)
     if punch_in > now or (punch_out is not None and punch_out > now):
         raise HTTPException(422, "Punch times cannot be in the future.")
     if punch_out is not None:
@@ -240,9 +232,9 @@ async def decide_regularization(
         details = {
             "user_id": reg.user_id,
             "work_date": reg.work_date.isoformat(),
-            "requested_punch_in": _as_utc(reg.requested_punch_in).isoformat(),
+            "requested_punch_in": as_utc(reg.requested_punch_in).isoformat(),
             "requested_punch_out": (
-                _as_utc(reg.requested_punch_out).isoformat()
+                as_utc(reg.requested_punch_out).isoformat()
                 if reg.requested_punch_out else None
             ),
             "note": note,
@@ -250,8 +242,8 @@ async def decide_regularization(
         action = "REJECT_ATTENDANCE_REGULARIZATION"
     else:
         await assert_attendance_editable(db, reg.work_date)
-        new_in = _as_utc(reg.requested_punch_in)
-        new_out = _as_utc(reg.requested_punch_out)
+        new_in = as_utc(reg.requested_punch_in)
+        new_out = as_utc(reg.requested_punch_out)
         att = (await db.execute(
             select(Attendance).where(
                 Attendance.user_id == reg.user_id,
@@ -260,14 +252,14 @@ async def decide_regularization(
         )).scalars().first()
         if att:
             old = {
-                "punch_in_time": _as_utc(att.captured_at).isoformat(),
+                "punch_in_time": as_utc(att.captured_at).isoformat(),
                 "punch_out_time": (
-                    _as_utc(att.punch_out_time).isoformat()
+                    as_utc(att.punch_out_time).isoformat()
                     if att.punch_out_time else None
                 ),
             }
             if new_out is None and att.punch_out_time is not None:
-                new_out = _as_utc(att.punch_out_time)
+                new_out = as_utc(att.punch_out_time)
             if new_out is not None and new_out <= new_in:
                 raise HTTPException(
                     422, "Resulting punch-out would not be after punch-in."

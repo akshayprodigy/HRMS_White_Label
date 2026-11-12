@@ -414,8 +414,8 @@ async def test_non_utc_offset_converted(client, world):
     assert my[0]["requested_punch_in"].endswith(("+00:00", "Z"))
 
 
-def test_hr_as_utc_converts_offsets():
-    from app.api.v1.endpoints.hr import _as_utc
+def test_as_utc_converts_offsets():
+    from app.core.datetime_utils import as_utc as _as_utc
     ist = datetime.fromisoformat("2019-03-12T09:30:00+05:30")
     assert _as_utc(ist) == datetime(2019, 3, 12, 4, 0, tzinfo=timezone.utc)
     assert _as_utc(ist).utcoffset() == timedelta(0)
