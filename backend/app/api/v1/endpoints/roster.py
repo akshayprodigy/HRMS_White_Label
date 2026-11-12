@@ -26,7 +26,10 @@ from app.schemas.roster import (
     RosterGridResponse, RosterBulkRequest, RosterBulkResult,
     RosterEntryInput, RosterEntryRead, RosterEntryUpdate,
     RosterChangeRequestCreate, RosterChangeRequestRead, RosterChangeDecision,
+    RotationPatternCreate, RotationPatternUpdate, RotationPatternRead,
+    RotationApplyRequest,
 )
+from app.models.rotation_pattern import RotationPattern
 from app.services import roster as roster_svc
 
 router = APIRouter()
@@ -62,6 +65,56 @@ async def _require_manage(db, user: User, employee_user_id: int) -> None:
             status_code=403,
             detail="This employee is outside your roster scope.",
         )
+
+
+NO_PUBLISH_MSG = "Publishing requires HR approval for this employee"
+
+
+async def _write_cells(
+    db, user: User, allowed: set, cells, status: str, overwrite: bool,
+    result: RosterBulkResult,
+) -> None:
+    """Write (uid, date, tpl, week_off) cells for `allowed` employees.
+    Publish rights are resolved ONCE; non-publishers' cells are saved as
+    draft (one message per employee) and never overwrite a live cell."""
+    pub = await roster_svc.publishable_subset(db, user, allowed)
+    dept_by_uid = {
+        e.user_id: e.department
+        for e in (await db.execute(
+            select(Employee).where(Employee.user_id.in_(allowed))
+        )).scalars().all()
+    }
+    downgraded: set = set()
+    for (uid, wd, tpl_id, week_off) in cells:
+        eff = status
+        can_pub = uid in pub
+        if status == RosterStatus.PUBLISHED and not can_pub:
+            eff = RosterStatus.DRAFT
+            downgraded.add(uid)
+        _e, outcome = await roster_svc.upsert_entry(
+            db,
+            employee_id=uid, work_date=wd, shift_template_id=tpl_id,
+            is_week_off=week_off, status=eff, actor_id=user.id,
+            department=dept_by_uid.get(uid), overwrite=overwrite,
+            protect_published=not can_pub,
+        )
+        if outcome == "created":
+            result.created += 1
+        elif outcome == "updated":
+            result.updated += 1
+        else:
+            result.skipped += 1
+    if downgraded:
+        names = {
+            u.id: u.full_name for u in (await db.execute(
+                select(User).where(User.id.in_(downgraded))
+            )).scalars().all()
+        }
+        for uid in sorted(downgraded):
+            result.errors.append(
+                f"Saved as draft for {names.get(uid) or uid}: "
+                "publishing requires HR approval"
+            )
 
 
 # ----------------------------- planner -----------------------------
@@ -117,46 +170,21 @@ async def bulk_plan(
     if not allowed:
         return result
 
-    # Department snapshot per user (for scoped filtering later)
-    dept_by_uid = {}
-    emp_rows = (await db.execute(
-        select(Employee).where(Employee.user_id.in_(allowed))
-    )).scalars().all()
-    for e in emp_rows:
-        dept_by_uid[e.user_id] = e.department
-
-    async def _apply(uid, wd, tpl_id, week_off):
-        _entry, outcome = await roster_svc.upsert_entry(
-            db,
-            employee_id=uid,
-            work_date=wd,
-            shift_template_id=tpl_id,
-            is_week_off=week_off,
-            status=body.status,
-            actor_id=current_user.id,
-            department=dept_by_uid.get(uid),
-            overwrite=body.overwrite,
-        )
-        if outcome == "created":
-            result.created += 1
-        elif outcome == "updated":
-            result.updated += 1
-        else:
-            result.skipped += 1
-
     if body.entries is not None:
-        for ein in body.entries:
-            if ein.employee_id not in allowed:
-                continue
-            await _apply(
-                ein.employee_id, ein.work_date,
-                ein.shift_template_id, ein.is_week_off,
-            )
+        cells = [
+            (ein.employee_id, ein.work_date,
+             ein.shift_template_id, ein.is_week_off)
+            for ein in body.entries if ein.employee_id in allowed
+        ]
     else:
-        cells = roster_svc.expand_pattern(body.pattern, body.start, body.end)
-        for uid in allowed:
-            for (wd, tpl_id, week_off) in cells:
-                await _apply(uid, wd, tpl_id, week_off)
+        pc = roster_svc.expand_pattern(body.pattern, body.start, body.end)
+        cells = [
+            (uid, wd, tpl_id, week_off)
+            for uid in sorted(allowed) for (wd, tpl_id, week_off) in pc
+        ]
+    await _write_cells(
+        db, current_user, allowed, cells, body.status, body.overwrite, result
+    )
 
     await db.commit()
     await log_audit(
@@ -188,17 +216,27 @@ async def upsert_single_entry(
     emp = (await db.execute(
         select(Employee).where(Employee.user_id == body.employee_id)
     )).scalars().first()
+    can_pub = await roster_svc.can_publish_for(
+        db, current_user, body.employee_id
+    )
+    eff_status = (
+        body.status if body.status == RosterStatus.DRAFT or can_pub
+        else RosterStatus.DRAFT
+    )
     entry, outcome = await roster_svc.upsert_entry(
         db,
         employee_id=body.employee_id,
         work_date=body.work_date,
         shift_template_id=body.shift_template_id,
         is_week_off=body.is_week_off,
-        status=RosterStatus.PUBLISHED,
+        status=eff_status,
         actor_id=current_user.id,
         department=emp.department if emp else None,
         overwrite=True,
+        protect_published=not can_pub,
     )
+    if outcome == "skipped":
+        raise HTTPException(status_code=403, detail=NO_PUBLISH_MSG)
     await db.commit()
     await db.refresh(entry)
     await log_audit(
@@ -224,6 +262,19 @@ async def update_entry(
         raise HTTPException(status_code=404, detail="Roster entry not found")
     await _require_manage(db, current_user, entry.employee_id)
     changes = body.model_dump(exclude_unset=True)
+    if "status" in changes and changes["status"] not in (
+        RosterStatus.DRAFT, RosterStatus.PUBLISHED
+    ):
+        raise HTTPException(
+            status_code=422, detail="status must be 'draft' or 'published'"
+        )
+    if not await roster_svc.can_publish_for(
+        db, current_user, entry.employee_id
+    ) and (
+        entry.status == RosterStatus.PUBLISHED
+        or changes.get("status") == RosterStatus.PUBLISHED
+    ):
+        raise HTTPException(status_code=403, detail=NO_PUBLISH_MSG)
     for k, v in changes.items():
         setattr(entry, k, v)
     entry.assigned_by_id = current_user.id
@@ -249,6 +300,10 @@ async def delete_entry(
     if not entry:
         raise HTTPException(status_code=404, detail="Roster entry not found")
     await _require_manage(db, current_user, entry.employee_id)
+    if entry.status == RosterStatus.PUBLISHED and not (
+        await roster_svc.can_publish_for(db, current_user, entry.employee_id)
+    ):
+        raise HTTPException(status_code=403, detail=NO_PUBLISH_MSG)
     await db.delete(entry)
     await db.commit()
     await log_audit(
@@ -256,6 +311,187 @@ async def delete_entry(
         "roster_entry", str(entry_id), {}, request,
     )
     return {"status": "deleted", "id": entry_id}
+
+
+# ----------------------------- rotation patterns -----------------------------
+
+async def _validate_cycle(db, cycle) -> None:
+    ids = {c for c in cycle if c is not None}
+    if not ids:
+        return
+    ok = set((await db.execute(
+        select(ShiftTemplate.id).where(
+            ShiftTemplate.id.in_(ids), ShiftTemplate.is_active.is_(True)
+        )
+    )).scalars().all())
+    bad = sorted(ids - ok)
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown or inactive shift template id(s): {bad}",
+        )
+
+
+def _require_admin(user: User) -> None:
+    if not roster_svc.is_roster_admin(user):
+        raise HTTPException(status_code=403, detail="HR/admin access required.")
+
+
+async def _name_taken(db, name: str, exclude_id: Optional[int] = None) -> bool:
+    q = select(RotationPattern.id).where(RotationPattern.name == name)
+    if exclude_id is not None:
+        q = q.where(RotationPattern.id != exclude_id)
+    return (await db.execute(q)).first() is not None
+
+
+@router.get("/rotations", response_model=List[RotationPatternRead])
+async def list_rotations(
+    db: deps.DBDep,
+    include_inactive: bool = Query(False),
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    admin = roster_svc.is_roster_admin(current_user)
+    if not admin and not await roster_svc.scoped_employees(db, current_user):
+        raise HTTPException(status_code=403, detail="You have no roster scope.")
+    q = select(RotationPattern).order_by(RotationPattern.name)
+    if not (admin and include_inactive):
+        q = q.where(RotationPattern.is_active.is_(True))
+    return list((await db.execute(q)).scalars().all())
+
+
+@router.post("/rotations", response_model=RotationPatternRead)
+async def create_rotation(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: RotationPatternCreate,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    _require_admin(current_user)
+    await _validate_cycle(db, body.cycle)
+    if await _name_taken(db, body.name):
+        raise HTTPException(status_code=409, detail="Pattern name already exists")
+    p = RotationPattern(
+        name=body.name, description=body.description,
+        cycle=list(body.cycle), created_by_id=current_user.id,
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    await log_audit(
+        db, current_user.id, "roster.rotation.create",
+        "rotation_pattern", str(p.id), {"name": p.name}, request,
+    )
+    return p
+
+
+@router.patch("/rotations/{rotation_id}", response_model=RotationPatternRead)
+async def update_rotation(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    rotation_id: int,
+    body: RotationPatternUpdate,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    _require_admin(current_user)
+    p = await db.get(RotationPattern, rotation_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Rotation pattern not found")
+    changes = body.model_dump(exclude_unset=True)
+    if changes.get("name") is None:
+        changes.pop("name", None)
+    if changes.get("cycle") is None:
+        changes.pop("cycle", None)
+    if changes.get("is_active") is None:
+        changes.pop("is_active", None)
+    if "cycle" in changes:
+        await _validate_cycle(db, changes["cycle"])
+    if "name" in changes and await _name_taken(db, changes["name"], p.id):
+        raise HTTPException(status_code=409, detail="Pattern name already exists")
+    for k, v in changes.items():
+        setattr(p, k, v)
+    await db.commit()
+    await db.refresh(p)
+    await log_audit(
+        db, current_user.id, "roster.rotation.update",
+        "rotation_pattern", str(p.id), {"changed": list(changes.keys())}, request,
+    )
+    return p
+
+
+@router.delete("/rotations/{rotation_id}")
+async def delete_rotation(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    rotation_id: int,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    _require_admin(current_user)
+    p = await db.get(RotationPattern, rotation_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Rotation pattern not found")
+    p.is_active = False
+    await db.commit()
+    await log_audit(
+        db, current_user.id, "roster.rotation.delete",
+        "rotation_pattern", str(p.id), {}, request,
+    )
+    return {"status": "deactivated", "id": rotation_id}
+
+
+@router.post("/rotations/{rotation_id}/apply", response_model=RosterBulkResult)
+async def apply_rotation(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    rotation_id: int,
+    body: RotationApplyRequest,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    p = await db.get(RotationPattern, rotation_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Rotation pattern not found")
+    if not p.is_active:
+        raise HTTPException(status_code=409, detail="Rotation pattern is inactive")
+    result = RosterBulkResult()
+    if body.employee_ids is not None:
+        target_ids = set(body.employee_ids)
+    else:
+        emps = await roster_svc.scoped_employees(
+            db, current_user, body.department
+        )
+        target_ids = {e.user_id for e in emps}
+    allowed = await roster_svc.manageable_subset(db, current_user, target_ids)
+    result.out_of_scope.extend(sorted(target_ids - allowed))
+    if allowed:
+        offsets = body.offsets or {}
+        cells = []
+        for uid in sorted(allowed):
+            for (wd, tpl_id, wo) in roster_svc.expand_rotation(
+                p.cycle, body.anchor, body.start, body.end,
+                offsets.get(uid, body.default_offset),
+            ):
+                cells.append((uid, wd, tpl_id, wo))
+        await _write_cells(
+            db, current_user, allowed, cells, body.status, body.overwrite,
+            result,
+        )
+        await db.commit()
+    await log_audit(
+        db, current_user.id, "roster.rotation.apply",
+        "rotation_pattern", str(p.id),
+        {
+            "created": result.created, "updated": result.updated,
+            "skipped": result.skipped,
+            "out_of_scope": len(result.out_of_scope),
+            "start": body.start.isoformat(), "end": body.end.isoformat(),
+            "status": body.status,
+        },
+        request,
+    )
+    return result
 
 
 # ----------------------------- employee self-service -----------------------------

@@ -51,6 +51,7 @@ from .roster import (
     RosterEntry, RosterChangeRequest, RosterStatus, RosterChangeStatus,
 )
 from .schedule_delegation import ScheduleDelegation, DelegationScope
+from .rotation_pattern import RotationPattern
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
 )
@@ -169,6 +170,7 @@ __all__ = [
     "RosterEntry",
     "RosterChangeRequest",
     "ScheduleDelegation",
+    "RotationPattern",
     "DelegationScope",
     "GeoFenceLocation",
     "EmployeeGeoConfig",

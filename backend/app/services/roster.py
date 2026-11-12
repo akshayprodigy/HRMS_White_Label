@@ -252,6 +252,23 @@ def expand_pattern(
     return out
 
 
+def expand_rotation(
+    cycle: List[Optional[int]], anchor: pydate, start: pydate, end: pydate,
+    offset: int = 0,
+) -> List[Tuple[pydate, Optional[int], bool]]:
+    """Day d gets cycle[((d - anchor).days + offset) % len(cycle)]. Returns
+    (date, template_id, is_week_off) for every day in [start, end]; a None
+    cycle slot is a week-off."""
+    n = len(cycle)
+    out: List[Tuple[pydate, Optional[int], bool]] = []
+    d = start
+    while d <= end:
+        tpl = cycle[((d - anchor).days + offset) % n]
+        out.append((d, tpl, tpl is None))
+        d += timedelta(days=1)
+    return out
+
+
 async def upsert_entry(
     db: AsyncSession,
     *,
@@ -263,6 +280,7 @@ async def upsert_entry(
     actor_id: Optional[int],
     department: Optional[str],
     overwrite: bool,
+    protect_published: bool = False,
 ) -> Tuple[RosterEntry, str]:
     """Create or update the single roster cell for (employee, date). Returns
     (entry, 'created'|'updated'|'skipped')."""
@@ -274,6 +292,9 @@ async def upsert_entry(
     )).scalars().first()
     if existing is not None:
         if not overwrite:
+            return existing, "skipped"
+        if protect_published and existing.status == RosterStatus.PUBLISHED:
+            # A non-publisher must not alter (or downgrade) a live cell.
             return existing, "skipped"
         existing.shift_template_id = shift_template_id
         existing.is_week_off = is_week_off

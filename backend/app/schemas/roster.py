@@ -2,7 +2,7 @@
 from datetime import date as pydate
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class RosterCell(BaseModel):
@@ -50,6 +50,14 @@ class RosterEntryInput(BaseModel):
     work_date: pydate
     shift_template_id: Optional[int] = None
     is_week_off: bool = False
+    status: str = "published"  # back-compat default; may be downgraded
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v: str) -> str:
+        if v not in ("draft", "published"):
+            raise ValueError("status must be 'draft' or 'published'")
+        return v
 
 
 class RosterBulkRequest(BaseModel):
@@ -63,6 +71,13 @@ class RosterBulkRequest(BaseModel):
     # pattern: weekday int (Mon=0..Sun=6) -> template_id | None (None=week-off)
     pattern: Optional[Dict[int, Optional[int]]] = None
     entries: Optional[List[RosterEntryInput]] = None
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v: str) -> str:
+        if v not in ("draft", "published"):
+            raise ValueError("status must be 'draft' or 'published'")
+        return v
 
     @model_validator(mode="after")
     def _check(self) -> "RosterBulkRequest":
@@ -139,3 +154,57 @@ class RosterChangeRequestRead(BaseModel):
     decided_by_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RotationPatternBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=255)
+    cycle: List[Optional[int]] = Field(..., min_length=1, max_length=56)
+
+
+class RotationPatternCreate(RotationPatternBase):
+    pass
+
+
+class RotationPatternUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=255)
+    cycle: Optional[List[Optional[int]]] = Field(
+        default=None, min_length=1, max_length=56
+    )
+    is_active: Optional[bool] = None
+
+
+class RotationPatternRead(RotationPatternBase):
+    id: int
+    is_active: bool
+    created_by_id: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RotationApplyRequest(BaseModel):
+    employee_ids: Optional[List[int]] = None  # None => whole scoped team
+    department: Optional[str] = None
+    start: pydate
+    end: pydate
+    anchor: pydate
+    offsets: Optional[Dict[int, int]] = None  # user id -> offset
+    default_offset: int = 0
+    overwrite: bool = True
+    status: str = "draft"
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v: str) -> str:
+        if v not in ("draft", "published"):
+            raise ValueError("status must be 'draft' or 'published'")
+        return v
+
+    @model_validator(mode="after")
+    def _check(self) -> "RotationApplyRequest":
+        if self.start > self.end:
+            raise ValueError("start must be <= end")
+        if (self.end - self.start).days > 62:
+            raise ValueError("range too large (max 62 days)")
+        return self
