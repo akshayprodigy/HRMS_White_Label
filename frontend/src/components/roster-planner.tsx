@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   CalendarDays,
   ChevronLeft,
@@ -86,7 +86,7 @@ export const RosterPlanner = () => {
   const [historyEmp, setHistoryEmp] = useState<{ id: number; name: string } | null>(null);
   const [prKey, setPrKey] = useState(0);
   const gridReq = useRef(0);
-  const { state: insights, error: insightsErr, load: loadInsights } = useInsights();
+  const { state: insights, error: insightsErr, load: loadInsights, retry: retryInsights } = useInsights();
 
   // Pattern dialog
   const [patternOpen, setPatternOpen] = useState(false);
@@ -243,16 +243,25 @@ export const RosterPlanner = () => {
   );
 
   const templates = grid?.shift_templates || [];
-  // Only show insights that match the grid on screen.
+  // Only show insights that match the grid on screen (window + department).
   const ins =
-    insights && grid && insights.start === grid.start && insights.end === grid.end
-      ? insights.data
+    insights &&
+    grid &&
+    insights.start === grid.start &&
+    insights.end === grid.end &&
+    insights.department === appliedDept
+      ? insights
       : null;
-  const violationsByCell = new Map<string, string[]>();
-  (ins?.violations || []).forEach((v) => {
-    const k = violationKey(v.user_id, v.work_date);
-    violationsByCell.set(k, [...(violationsByCell.get(k) || []), v.message]);
-  });
+  const violationsByCell = useMemo(() => {
+    const m = new Map<string, string[]>();
+    (ins?.data.violations || []).forEach((v) => {
+      const k = violationKey(v.user_id, v.work_date);
+      const l = m.get(k);
+      if (l) l.push(v.message);
+      else m.set(k, [v.message]);
+    });
+    return m;
+  }, [ins]);
   const rangeLabel = grid ? `${grid.start} → ${grid.end}` : '';
 
   return (
@@ -411,7 +420,7 @@ export const RosterPlanner = () => {
             <Repeat className="w-4 h-4" />
             Rotations
           </Button>
-          {grid?.is_admin && (
+          {isAdmin && (
             <Button variant="outline" size="sm" onClick={() => setCovOpen(true)} disabled={loading} className="gap-1.5">
               <Users className="w-4 h-4" />
               Coverage rules
@@ -453,11 +462,14 @@ export const RosterPlanner = () => {
       )}
 
       {insightsErr && (
-        <div role="status" className="text-xs text-red-700">
+        <div role="alert" className="text-xs text-red-700 flex items-center gap-2">
           Coverage and rule warnings unavailable: {insightsErr}
+          <Button variant="outline" size="sm" onClick={retryInsights}>
+            Retry
+          </Button>
         </div>
       )}
-      {ins && <ViolationsPanel violations={ins.violations} />}
+      {ins && <ViolationsPanel violations={ins.data.violations} stale={ins.stale} />}
 
       {/* Grid */}
       <Card className="overflow-hidden">
@@ -506,14 +518,14 @@ export const RosterPlanner = () => {
                   </td>
                 </tr>
               ) : (
-                [
+                <>
                   <CoverageRows
-                    key="coverage"
                     dates={grid.dates}
                     templates={templates}
-                    coverage={ins?.coverage || []}
-                  />,
-                  ...grid.rows.map((row) => (
+                    coverage={ins?.data.coverage || []}
+                    stale={!!ins?.stale}
+                  />
+                  {grid.rows.map((row) => (
                   <tr key={row.employee_id} className="border-b hover:bg-gray-50">
                     <td className="sticky left-0 z-10 bg-white px-3 py-2 border-r">
                       <div className="flex items-start gap-1.5">
@@ -545,20 +557,20 @@ export const RosterPlanner = () => {
                       const val = cellValue(c);
                       const isFallback = c.source !== 'roster';
                       const isDraft = c.status === 'draft';
-                      const warns = violationsByCell.get(key);
+                      const warns = violationsByCell.get(violationKey(row.employee_id, c.work_date));
                       const lockedPublished =
                         !canPublish && c.source === 'roster' && c.status === 'published';
                       return (
                         <td
                           key={c.work_date}
                           className={cn(
-                            'px-1.5 py-1.5 text-center',
+                            'relative px-1.5 py-1.5 text-center',
                             c.is_week_off && 'bg-amber-50'
                           )}
                         >
                           {warns && (
                             <div
-                              className="text-amber-600 leading-none mb-0.5 flex justify-center"
+                              className="absolute top-1 right-1 text-amber-600 leading-none"
                               title={warns.join('\n')}
                               aria-label={`Rule warning: ${warns.join('; ')}`}
                               role="img"
@@ -604,8 +616,8 @@ export const RosterPlanner = () => {
                       );
                     })}
                   </tr>
-                )),
-                ]
+                ))}
+                </>
               )}
             </tbody>
           </table>

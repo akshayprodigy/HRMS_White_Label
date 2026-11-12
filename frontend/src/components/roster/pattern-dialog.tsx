@@ -41,8 +41,11 @@ export const PatternDialog = ({
   const [applying, setApplying] = useState(false);
 
   useEffect(() => {
-    if (open) setPattern({});
+    if (!open) setPattern({}); // reset on close so reopening has no stale first frame
   }, [open]);
+  const close = () => {
+    if (!applying) onClose();
+  };
 
   const applyPattern = async () => {
     const { start, end } = range();
@@ -83,7 +86,7 @@ export const PatternDialog = ({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o: boolean) => !o && onClose()}>
+    <Dialog open={open} onOpenChange={(o: boolean) => !o && close()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -125,7 +128,7 @@ export const PatternDialog = ({
           ))}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={applying} onClick={close}>
             Cancel
           </Button>
           <Button

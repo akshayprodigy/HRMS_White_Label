@@ -80,7 +80,10 @@ export const TimeRulesTab: React.FC = () => {
   const save = async () => {
     for (const f of SCHEDULE_FIELDS) {
       const raw = (rules[f.key] ?? '').toString().trim();
-      if (raw === '') continue; // unset = backend default
+      if (raw === '') {
+        toast.error(`${f.label} is required (enter 0 to turn it off)`);
+        return;
+      }
       const n = Number(raw);
       if (!/^\d+$/.test(raw) || !Number.isInteger(n) || n < 0 || n > f.max) {
         toast.error(`${f.label} must be a whole number from 0 to ${f.max}`);

@@ -1,20 +1,24 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
-import { Card } from '../ui-elements';
+import { Card, cn } from '../ui-elements';
 import type { Violation } from './roster-api';
 
 export const violationKey = (userId: number, date: string) => `${userId}-${date}`;
 
-export const ViolationsPanel = ({ violations }: { violations: Violation[] }) => {
+export const ViolationsPanel = ({ violations, stale = false }: { violations: Violation[]; stale?: boolean }) => {
   const [open, setOpen] = useState(false);
-  if (violations.length === 0) return null;
-  const sorted = [...violations].sort(
-    (a, b) =>
-      a.work_date.localeCompare(b.work_date) ||
-      (a.employee_name || '').localeCompare(b.employee_name || '')
+  const sorted = useMemo(
+    () =>
+      [...violations].sort(
+        (a, b) =>
+          a.work_date.localeCompare(b.work_date) ||
+          (a.employee_name || '').localeCompare(b.employee_name || '')
+      ),
+    [violations]
   );
+  if (violations.length === 0) return null;
   return (
-    <Card className="border-amber-200 bg-amber-50">
+    <Card className={cn('border-amber-200 bg-amber-50', stale && 'opacity-60')}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -25,7 +29,7 @@ export const ViolationsPanel = ({ violations }: { violations: Violation[] }) => 
         <AlertTriangle className="w-4 h-4" />
         {violations.length} rule warning{violations.length === 1 ? '' : 's'}
         <span className="text-xs font-normal text-amber-700">
-          (warnings never block saving)
+          {stale ? '(out of date: refresh failed)' : '(warnings never block saving)'}
         </span>
       </button>
       {open && (

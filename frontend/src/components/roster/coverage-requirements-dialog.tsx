@@ -90,8 +90,8 @@ export const CoverageRequirementsDialog = ({ open, templates, onClose, onChanged
   };
 
   const save = async () => {
-    const min = Number(form.min);
-    const max = form.max.trim() === '' ? null : Number(form.max);
+    const min = +form.min;
+    const max = form.max.trim() === '' ? null : +form.max;
     if (!form.shift) return setFormErr('Choose a shift');
     if (form.min.trim() === '' || !Number.isInteger(min) || min < 0)
       return setFormErr('Minimum must be a whole number, 0 or more');
@@ -265,6 +265,9 @@ export const CoverageRequirementsDialog = ({ open, templates, onClose, onChanged
                   <label htmlFor="cr-shift" className="text-xs text-gray-600">Shift</label>
                   <select id="cr-shift" className={fieldCls} value={form.shift} onChange={set('shift')}>
                     <option value="">Select shift…</option>
+                    {form.shift && !templates.some((t) => String(t.id) === form.shift) && (
+                      <option value={form.shift}>Shift #{form.shift} (unavailable)</option>
+                    )}
                     {templates.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.name}
