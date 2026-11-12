@@ -1,4 +1,5 @@
 """Roster rotation patterns."""
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -16,7 +17,7 @@ from app.models.rotation_pattern import RotationPattern
 from app.services import roster as roster_svc
 
 from app.api.v1.endpoints.roster_common import (
-    require_admin, commit_or_409,
+    require_admin, commit_or_409, guard_conflicts,
     validate_templates, write_cells,
 )
 
@@ -53,6 +54,7 @@ async def list_rotations(
 
 
 @router.post("/rotations", response_model=RotationPatternRead)
+@guard_conflicts
 async def create_rotation(
     *,
     db: deps.DBDep,
@@ -71,6 +73,7 @@ async def create_rotation(
         p.description = body.description
         p.cycle = list(body.cycle)
         p.is_active = True
+        p.created_at = datetime.now(timezone.utc)
         p.created_by_id = current_user.id
     else:
         await _check_name(db, body.name)
@@ -89,6 +92,7 @@ async def create_rotation(
 
 
 @router.patch("/rotations/{rotation_id}", response_model=RotationPatternRead)
+@guard_conflicts
 async def update_rotation(
     *,
     db: deps.DBDep,
@@ -126,6 +130,7 @@ async def update_rotation(
 
 
 @router.delete("/rotations/{rotation_id}")
+@guard_conflicts
 async def delete_rotation(
     *,
     db: deps.DBDep,
@@ -148,6 +153,7 @@ async def delete_rotation(
 
 
 @router.post("/rotations/{rotation_id}/apply", response_model=RosterBulkResult)
+@guard_conflicts
 async def apply_rotation(
     *,
     db: deps.DBDep,

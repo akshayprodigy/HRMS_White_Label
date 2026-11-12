@@ -32,7 +32,7 @@ from app.schemas.roster import (
 )
 from app.services import roster as roster_svc
 from app.api.v1.endpoints.roster_common import (
-    entry_read, require_manage, commit_or_409, lock_row, check_window,
+    entry_read, require_manage, commit_or_409, guard_conflicts, lock_row, check_window,
     validate_templates, write_cells, NO_PUBLISH_MSG, REASON_MSG, DRAFT_NOTICE,
 )
 
@@ -63,6 +63,7 @@ async def get_plan(
 
 
 @router.post("/bulk", response_model=RosterBulkResult)
+@guard_conflicts
 async def bulk_plan(
     *,
     db: deps.DBDep,
@@ -104,6 +105,11 @@ async def bulk_plan(
              ein.shift_template_id, ein.is_week_off)
             for ein in body.entries if ein.employee_id in allowed
         ]
+        # A blank explicit entry (no shift, not week-off) has no meaning
+        # (cells are cleared via DELETE): skip it, never create a row.
+        kept = [c for c in cells if c[2] is not None or c[3]]
+        result.skipped += len(cells) - len(kept)
+        cells = kept
     else:
         pc = roster_svc.expand_pattern(body.pattern, body.start, body.end)
         cells = [
@@ -133,6 +139,7 @@ async def bulk_plan(
 
 
 @router.post("/entries", response_model=RosterEntryRead)
+@guard_conflicts
 async def upsert_single_entry(
     *,
     db: deps.DBDep,
@@ -214,6 +221,7 @@ async def upsert_single_entry(
 
 
 @router.patch("/entries/{entry_id}", response_model=RosterEntryRead)
+@guard_conflicts
 async def update_entry(
     *,
     db: deps.DBDep,
@@ -298,6 +306,7 @@ async def update_entry(
 
 
 @router.delete("/entries/{entry_id}")
+@guard_conflicts
 async def delete_entry(
     *,
     db: deps.DBDep,
@@ -523,6 +532,7 @@ async def _lock_cr(db, cr_id: int):
 
 
 @router.post("/change-requests", response_model=RosterChangeRequestRead)
+@guard_conflicts
 async def create_change_request(
     *,
     db: deps.DBDep,
@@ -618,6 +628,7 @@ async def scoped_change_requests(
     "/change-requests/{cr_id}/decide",
     response_model=RosterChangeRequestRead,
 )
+@guard_conflicts
 async def decide_change_request(
     *,
     db: deps.DBDep,
@@ -719,6 +730,7 @@ async def decide_change_request(
     "/change-requests/{cr_id}/cancel",
     response_model=RosterChangeRequestRead,
 )
+@guard_conflicts
 async def cancel_change_request(
     *,
     db: deps.DBDep,

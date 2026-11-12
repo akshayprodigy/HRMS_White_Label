@@ -612,6 +612,8 @@ async def test_blank_cell_rejected(client, world):
         "start": dd(0), "end": dd(1), "status": "draft",
         "entries": [{"employee_id": e1, "work_date": dd(1)}]})
     assert r.status_code == 200, r.text
+    assert r.json()["created"] == 0 and r.json()["skipped"] == 1, r.text
+    assert dd(1) not in {str(d) for d in (await _statuses(e1))}
 
 
 async def test_huge_id_is_422_not_500(client, world):
@@ -652,3 +654,67 @@ async def test_commit_or_409_maps_dataerror_and_lock_errors():
     db = FakeDB(OperationalError("s", {}, Orig(2006, "gone")))
     with pytest.raises(OperationalError):
         await commit_or_409(db)
+
+
+async def test_commit_or_409_integrity_messages_and_logging(caplog):
+    import logging
+    from fastapi import HTTPException
+    from sqlalchemy.exc import IntegrityError
+    from app.api.v1.endpoints.roster_common import commit_or_409
+
+    class Orig(Exception):
+        pass
+
+    class FakeDB:
+        def __init__(self, exc):
+            self.exc, self.rolled = exc, False
+
+        async def commit(self):
+            raise self.exc
+
+        async def rollback(self):
+            self.rolled = True
+
+    caplog.set_level(logging.WARNING)
+    db = FakeDB(IntegrityError("s", {}, Orig(1062, "Duplicate entry")))
+    with pytest.raises(HTTPException) as ei:
+        await commit_or_409(db, "dup msg")
+    assert ei.value.status_code == 409 and ei.value.detail == "dup msg"
+    db = FakeDB(IntegrityError("s", {}, Orig(1452, "FK fails")))
+    with pytest.raises(HTTPException) as ei:
+        await commit_or_409(db, "dup msg")
+    assert ei.value.status_code == 409 and ei.value.detail != "dup msg"
+    assert "refresh and retry" in ei.value.detail and db.rolled
+    assert any(r.exc_info for r in caplog.records)
+
+
+async def test_conflict_guard_maps_flush_conflicts():
+    from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError
+    from app.api.v1.endpoints.roster_common import guard_conflicts
+
+    class Orig(Exception):
+        pass
+
+    class FakeDB:
+        rolled = False
+
+        async def rollback(self):
+            self.rolled = True
+
+    def make(exc):
+        @guard_conflicts
+        async def ep(*, db, x=1):
+            raise exc
+        return ep
+
+    db = FakeDB()
+    with pytest.raises(HTTPException) as ei:
+        await make(OperationalError("s", {}, Orig(1020, "changed")))(db=db)
+    assert ei.value.status_code == 409 and db.rolled
+    db = FakeDB()
+    with pytest.raises(HTTPException) as ei:
+        await make(HTTPException(status_code=403, detail="no"))(db=db)
+    assert ei.value.status_code == 403 and not db.rolled
+    with pytest.raises(OperationalError):
+        await make(OperationalError("s", {}, Orig(2006, "gone")))(db=FakeDB())

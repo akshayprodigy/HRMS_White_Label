@@ -1,4 +1,6 @@
 """Shared helpers for the roster routers."""
+import functools
+import logging
 from datetime import date as pydate
 
 from fastapi import HTTPException
@@ -16,6 +18,12 @@ from app.schemas.roster import (
     RosterEntryRead,
 )
 from app.services import roster as roster_svc
+
+logger = logging.getLogger(__name__)
+
+CONFLICT_MSG = "Roster changed concurrently; retry"
+DATA_MSG = "A value is out of range or invalid"
+REF_MSG = "Conflicting or invalid reference; refresh and retry"
 
 
 
@@ -57,26 +65,60 @@ REASON_MSG = (
 DRAFT_NOTICE = "Saved as draft: publishing requires HR approval"
 
 
-async def commit_or_409(
-    db, msg: str = "Roster changed concurrently; retry"
-) -> None:
+def _errno(exc) -> object:
+    orig = getattr(exc, "orig", None)
+    return orig.args[0] if orig is not None and orig.args else None
+
+
+async def _map_db_error(db, exc, msg: str):
+    """Log + roll back, then return the HTTPException for a DB error that
+    represents a lost race / bad data; None when it is not one of those."""
+    if isinstance(exc, IntegrityError):
+        logger.warning("roster IntegrityError", exc_info=True)
+        await db.rollback()
+        code = _errno(exc)
+        if isinstance(code, int) and code != 1062:
+            return HTTPException(status_code=409, detail=REF_MSG)
+        return HTTPException(status_code=409, detail=msg)
+    if isinstance(exc, DataError):
+        logger.warning("roster DataError", exc_info=True)
+        await db.rollback()
+        return HTTPException(status_code=422, detail=DATA_MSG)
+    if isinstance(exc, OperationalError) and roster_svc.is_lock_conflict(exc):
+        logger.warning("roster lock conflict", exc_info=True)
+        await db.rollback()
+        return HTTPException(status_code=409, detail=msg)
+    return None
+
+
+async def commit_or_409(db, msg: str = CONFLICT_MSG) -> None:
     """Commit, mapping concurrency / data errors to clean HTTP errors:
-    IntegrityError and MariaDB 1020/1213 -> 409, DataError -> 422."""
+    duplicate key and MariaDB 1020/1213 -> 409, other integrity errors ->
+    409 (neutral message), DataError -> 422."""
     try:
         await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail=msg)
-    except DataError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=422, detail="A value is out of range or invalid"
-        )
-    except OperationalError as exc:
-        if roster_svc.is_lock_conflict(exc):
-            await db.rollback()
-            raise HTTPException(status_code=409, detail=msg)
-        raise
+    except (IntegrityError, DataError, OperationalError) as exc:
+        mapped = await _map_db_error(db, exc, msg)
+        if mapped is None:
+            raise
+        raise mapped from exc
+
+
+def guard_conflicts(fn):
+    """Endpoint decorator: DB errors raised anywhere in the body (flush,
+    autoflush, commit) that mean a lost race / bad data become 409/422 with
+    a rollback. HTTPExceptions pass through untouched. The endpoint must take
+    its session as the `db` keyword argument."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except (IntegrityError, DataError, OperationalError) as exc:
+            mapped = await _map_db_error(kwargs["db"], exc, CONFLICT_MSG)
+            if mapped is None:
+                raise
+            raise mapped from exc
+    return wrapper
 
 
 async def lock_row(db, stmt, msg: str = "Request already decided"):
@@ -87,10 +129,10 @@ async def lock_row(db, stmt, msg: str = "Request already decided"):
             stmt.with_for_update().execution_options(populate_existing=True)
         )).scalars().first()
     except OperationalError as exc:
-        if roster_svc.is_lock_conflict(exc):
-            await db.rollback()
-            raise HTTPException(status_code=409, detail=msg)
-        raise
+        mapped = await _map_db_error(db, exc, msg)
+        if mapped is None:
+            raise
+        raise mapped from exc
 
 
 async def validate_templates(db, ids) -> None:

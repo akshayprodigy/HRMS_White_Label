@@ -413,11 +413,18 @@ async def test_validation_fixes(client, world):
 async def test_inactive_name_message_and_no_scope_apply(client, world):
     pid, ha = await _mkpat(client, world, name="dup")
     await client.delete(f"{ROSTER}/rotations/{pid}", headers=ha)
+    async with SessionLocal() as db:
+        row = await db.get(RotationPattern, pid)
+        row.created_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        await db.commit()
     r = await client.post(f"{ROSTER}/rotations", headers=ha, json={
         "name": f"dup{world['sfx']}", "cycle": [None]})
     assert r.status_code == 200, r.text
     assert r.json()["id"] == pid and r.json()["is_active"] is True
     assert r.json()["cycle"] == [None]
+    async with SessionLocal() as db:
+        row = await db.get(RotationPattern, pid)
+        assert row.created_at.year >= TODAY.year
     r = await client.post(f"{ROSTER}/rotations", headers=ha, json={
         "name": f"dup{world['sfx']}", "cycle": [None]})
     assert r.status_code == 409

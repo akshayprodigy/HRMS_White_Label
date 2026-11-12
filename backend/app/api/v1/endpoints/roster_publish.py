@@ -22,7 +22,7 @@ from app.models.user import Role, Permission
 from app.services import roster as roster_svc
 
 from app.api.v1.endpoints.roster_common import (
-    require_manage, require_admin, commit_or_409, lock_row,
+    require_manage, require_admin, commit_or_409, guard_conflicts, lock_row,
     write_cells, check_window, names,
 )
 
@@ -46,6 +46,7 @@ async def _resolve_targets(
 
 
 @router.post("/publish", response_model=RosterPublishResult)
+@guard_conflicts
 async def publish_roster(
     *,
     db: deps.DBDep,
@@ -121,6 +122,7 @@ async def _roster_admin_ids(db, exclude: int, cap: int = 20) -> List[int]:
 
 
 @router.post("/publish-requests", response_model=PublishRequestRead)
+@guard_conflicts
 async def create_publish_request(
     *,
     db: deps.DBDep,
@@ -198,6 +200,7 @@ async def list_publish_requests(
 @router.post(
     "/publish-requests/{req_id}/decide", response_model=PublishRequestRead
 )
+@guard_conflicts
 async def decide_publish_request(
     *,
     db: deps.DBDep,
@@ -261,6 +264,7 @@ async def decide_publish_request(
 @router.post(
     "/publish-requests/{req_id}/cancel", response_model=PublishRequestRead
 )
+@guard_conflicts
 async def cancel_publish_request(
     *,
     db: deps.DBDep,
@@ -290,6 +294,7 @@ async def cancel_publish_request(
 
 
 @router.post("/copy", response_model=RosterBulkResult)
+@guard_conflicts
 async def copy_roster(
     *,
     db: deps.DBDep,
