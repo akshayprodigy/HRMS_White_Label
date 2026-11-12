@@ -135,6 +135,19 @@ async def lock_row(db, stmt, msg: str = "Request already decided"):
         raise mapped from exc
 
 
+async def lock_rows(db, stmt, msg: str = CONFLICT_MSG) -> list:
+    """Like lock_row but returns every row (FOR UPDATE, fresh state)."""
+    try:
+        return list((await db.execute(
+            stmt.with_for_update().execution_options(populate_existing=True)
+        )).scalars().all())
+    except OperationalError as exc:
+        mapped = await _map_db_error(db, exc, msg)
+        if mapped is None:
+            raise
+        raise mapped from exc
+
+
 async def lock_user_rows(db, ids, msg: str = CONFLICT_MSG) -> None:
     """Lock the given user rows (id order) to serialize concurrent writers."""
     try:

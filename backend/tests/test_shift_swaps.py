@@ -25,6 +25,7 @@ from app.models.department import Department as _Dept  # noqa
 from app.models.shift import EmployeeShiftAssignment
 from app.services.effective_shift import effective_shift_on
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
+from app.models.open_shift import OpenShift, OpenShiftClaim, ShiftDropRequest
 from app.models.shift_swap import ShiftSwapRequest
 from app.models.system import SystemSetting
 from app.models.user import User
@@ -152,6 +153,12 @@ async def world():
                 LeaveRequest.employee_id.in_(uids)))
             await db.execute(delete(LeaveType).where(
                 LeaveType.name == f"SWLV{sfx}"))
+            await db.execute(delete(ShiftDropRequest).where(
+                ShiftDropRequest.user_id.in_(uids)))
+            await db.execute(delete(OpenShiftClaim).where(
+                OpenShiftClaim.user_id.in_(uids)))
+            await db.execute(delete(OpenShift).where(
+                OpenShift.created_by_id.in_(uids)))
             await db.execute(delete(RosterChangeRequest).where(
                 RosterChangeRequest.employee_id.in_(uids)))
             await db.execute(delete(EmployeeShiftAssignment).where(
@@ -777,3 +784,117 @@ async def test_queue_include_warnings_flag(client, world, rules_cfg):
     r = await client.get(SW, headers=hd, params={"include_warnings": 1})
     row = next(x for x in r.json() if x["id"] == sid)
     assert [x["rule"] for x in row["warnings"]] == ["min_rest"]
+
+
+OS = f"{settings.API_V1_STR}/roster/open-shifts"
+DR = f"{settings.API_V1_STR}/roster/drops"
+
+
+async def _swap_row(sid):
+    async with SessionLocal() as db:
+        return await db.get(ShiftSwapRequest, sid)
+
+
+async def _open_and_claim(client, w, who="e2", day=0):
+    ha = await _login(client, w["email"]("admin"))
+    r = await client.post(OS, headers=ha, json={
+        "work_date": dd(day), "shift_template_id": w["ids"]["t2"],
+        "department": w["dept"], "slots": 1})
+    assert r.status_code == 200, r.text
+    osid = r.json()["id"]
+    r = await client.post(f"{OS}/{osid}/claim",
+                          headers=await _login(client, w["email"](who)))
+    assert r.status_code == 200, r.text
+    return osid, r.json()["my_claim_id"], ha
+
+
+@pytest.mark.parametrize("i", range(3))
+async def test_swap_vs_claim_race_is_consistent(client, world, i):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    await _pub(ids["e2"], dn(0), off=True)
+    sid = await _to_approval(client, w)
+    osid, cid, ha = await _open_and_claim(client, w)
+    hd = await _login(client, w["email"]("deleg"))
+    r_swap, r_claim = await asyncio.gather(
+        client.post(f"{SW}/{sid}/decide", headers=hd, json={"action": "approve"}),
+        client.post(f"{OS}/claims/{cid}/decide", headers=ha,
+                    json={"action": "approve"}))
+    codes = sorted([r_swap.status_code, r_claim.status_code])
+    assert codes[0] == 200 and codes[1] in (400, 409), (r_swap.text, r_claim.text)
+    e1c, e2c = await _cell(ids["e1"], dn(0)), await _cell(ids["e2"], dn(0))
+    sw = await _swap_row(sid)
+    async with SessionLocal() as db:
+        hist = (await db.execute(select(RosterEntryHistory).where(
+            RosterEntryHistory.employee_id == ids["e2"]))).scalars().all()
+        cl = await db.get(OpenShiftClaim, cid)
+    if r_swap.status_code == 200:
+        assert sw.status == "approved"
+        assert (e1c, e2c) == ((None, True), (ids["t1"], False))
+        assert [h.reason for h in hist] == [f"Shift swap #{sid}"]
+        assert cl.status != "approved"
+    else:
+        assert sw.status == "cancelled"
+        assert sw.decision_note == f"Superseded by open shift #{osid}"
+        assert (e1c, e2c) == ((ids["t1"], False), (ids["t2"], False))
+        assert [h.reason for h in hist] == [f"Open shift #{osid}"]
+        assert cl.status == "approved"
+
+
+async def test_claim_supersedes_pending_swap(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(0), ids["t1"])
+    await _pub(ids["e2"], dn(0), off=True)
+    sid = (await _create(client, w)).json()["id"]  # still pending_peer
+    osid, cid, ha = await _open_and_claim(client, w)
+    r = await client.post(f"{OS}/claims/{cid}/decide", headers=ha,
+                          json={"action": "approve"})
+    assert r.status_code == 200, r.text
+    sw = await _swap_row(sid)
+    assert sw.status == "cancelled"
+    assert sw.decision_note == f"Superseded by open shift #{osid}"
+    async with SessionLocal() as db:
+        n = (await db.execute(select(Notification).where(
+            Notification.title == "Shift swap superseded",
+            Notification.resource_id == str(sid)))).scalars().all()
+        assert {x.user_id for x in n} == {ids["e1"], ids["e2"]}
+    h2 = await _login(client, w["email"]("e2"))
+    assert (await client.post(f"{SW}/{sid}/accept", headers=h2)).status_code == 409
+
+
+async def test_drop_approval_supersedes_pending_swap(client, world):
+    w, ids = world, world["ids"]
+    await _setup_same_day(w)
+    sid = await _to_approval(client, w)
+    h1 = await _login(client, w["email"]("e1"))
+    r = await client.post(DR, headers=h1, json={
+        "work_date": dd(0), "reason": "cannot make it"})
+    assert r.status_code == 200, r.text
+    drid = r.json()["id"]
+    ha = await _login(client, w["email"]("admin"))
+    r = await client.post(f"{DR}/{drid}/decide", headers=ha, json={
+        "action": "approve", "post_open_shift": False})
+    assert r.status_code == 200, r.text
+    sw = await _swap_row(sid)
+    assert sw.status == "cancelled"
+    assert sw.decision_note == f"Superseded by shift give-away #{drid}"
+    assert await _cell(ids["e1"], dn(0)) == (None, True)
+    assert await _cell(ids["e2"], dn(0)) == (ids["t2"], False)
+
+
+async def test_swap_approval_supersedes_pending_drop(client, world):
+    w, ids = world, world["ids"]
+    await _setup_same_day(w)
+    h1 = await _login(client, w["email"]("e1"))
+    r = await client.post(DR, headers=h1, json={
+        "work_date": dd(0), "reason": "cannot make it"})
+    drid = r.json()["id"]
+    await _approve_flow(client, w)
+    async with SessionLocal() as db:
+        d = await db.get(ShiftDropRequest, drid)
+        assert d.status == "cancelled"
+        assert d.decision_note.startswith("Superseded by shift swap #")
+        n = (await db.execute(select(Notification).where(
+            Notification.user_id == ids["e1"],
+            Notification.title == "Give-away superseded"))).scalars().all()
+        assert len(n) == 1

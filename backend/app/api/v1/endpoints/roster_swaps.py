@@ -30,6 +30,7 @@ from app.schemas.shift_swap import (
 )
 from app.services import roster as roster_svc
 from app.services import swaps as swap_svc
+from app.services.supersede import supersede_pending
 from app.services.effective_shift import effective_shifts_for_range
 
 router = APIRouter()
@@ -129,11 +130,8 @@ async def _lock_swap(db, swap_id: int) -> ShiftSwapRequest:
 
 
 async def _cells(db, swap):
-    dates = swap_svc.swap_dates(swap.requester_date, swap.counterparty_date)
-    eff = await swap_svc.load_effective(
-        db, swap.requester_id, swap.counterparty_id, dates[0], dates[-1])
-    return (dates, swap_svc.cells_for(eff, swap.requester_id, dates),
-            swap_svc.cells_for(eff, swap.counterparty_id, dates), eff)
+    dates, a_cells, b_cells = await swap_svc.load_locked_cells(db, swap)
+    return dates, a_cells, b_cells, None
 
 
 async def _ensure_parties_active(db, swap) -> None:
@@ -372,6 +370,7 @@ async def accept_swap(
             status_code=403, detail="Only the counterparty can accept")
     if swap.status != SwapStatus.PENDING_PEER:
         raise HTTPException(status_code=409, detail="Swap is no longer awaiting your reply")
+    await lock_user_rows(db, [swap.requester_id, swap.counterparty_id])
     d1, d2 = swap.requester_date, swap.counterparty_date
     await _ensure_parties_active(db, swap)
     if min(d1, d2) < _today():
@@ -493,6 +492,7 @@ async def decide_swap(
     dates = swap_svc.swap_dates(swap.requester_date, swap.counterparty_date)
     nm = await names(db, parties)
     if body.action == "approve":
+        await lock_user_rows(db, [swap.requester_id, swap.counterparty_id])
         await _ensure_parties_active(db, swap)
         if dates[0] < _today():
             raise HTTPException(
@@ -506,9 +506,9 @@ async def decide_swap(
         await swap_svc.check_leave_free(
             db, swap.requester_id, swap.counterparty_id, dates, new_a, new_b)
         warnings = await swap_svc.swap_warnings(db, swap)
-        await swap_svc.supersede_change_requests(
-            db, swap, current_user.id,
-            swap_svc.written_keys(swap, a_cells, b_cells))
+        await supersede_pending(
+            db, swap_svc.written_keys(swap, a_cells, b_cells), "shift swap",
+            swap.id, current_user.id, RTYPE, skip_swap_id=swap.id)
         changed = await swap_svc.apply_swap(
             db, swap, current_user.id, a_cells, b_cells)
         await roster_svc.notify_schedule_changed(db, changed)

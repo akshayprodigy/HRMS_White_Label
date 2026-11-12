@@ -19,6 +19,7 @@ from app.models.user import User
 from app.models.shift import ShiftTemplate
 from app.services import roster as roster_svc
 from app.services import schedule_rules
+from app.api.v1.endpoints.roster_common import lock_rows, lock_user_rows
 from app.services.availability import availability_by_day
 from app.services.effective_shift import EffectiveShift, effective_shifts_for_range
 from app.services.time_rules import get_schedule_rules
@@ -211,22 +212,6 @@ def written_keys(swap, a_cells, b_cells) -> set:
     )
 
 
-async def supersede_change_requests(db, swap, actor_id: int, written) -> None:
-    """Cancel pending change requests on written cells and notify owners."""
-    from datetime import datetime, timezone
-    rows = await pending_requests(db, written, lock=True)
-    for c in rows:
-        c.status = "cancelled"
-        c.decision_note = f"Superseded by shift swap #{swap.id}"
-        c.decided_by_id = actor_id
-        c.decided_at = datetime.now(timezone.utc)
-    await roster_svc.notify_many(db, [
-        (c.employee_id, "Change request superseded",
-         f"Your change request for {c.work_date.isoformat()} was cancelled "
-         f"because a shift swap changed that day", "shift_swap", str(swap.id))
-        for c in rows])
-
-
 async def swap_warnings(db, swap) -> List[schedule_rules.Violation]:
     """Advisory warnings the swap would CREATE: work-rule + availability
     violations (diffed by (user, date, rule), so a pre-existing violation is
@@ -273,3 +258,39 @@ async def swap_warnings(db, swap) -> List[schedule_rules.Violation]:
     out += await _unpublished_conflicts(db, written)
     out.sort(key=lambda v: (v.work_date, v.user_id, v.rule))
     return out
+
+
+async def load_locked_cells(db, swap):
+    """(dates, a_cells, b_cells) read under locks: user rows, then the roster
+    entries on the swap dates (FOR UPDATE, fresh), so a concurrent claim /
+    give-away / swap that already committed is visible (the request's
+    REPEATABLE READ snapshot predates the lock). Raises 409 when a published
+    cell vanished since the snapshot."""
+    a, b = swap.requester_id, swap.counterparty_id
+    dates = swap_dates(swap.requester_date, swap.counterparty_date)
+    await lock_user_rows(db, [a, b])
+    entries = {
+        (e.employee_id, e.work_date): e for e in await lock_rows(
+            db, select(RosterEntry).where(
+                RosterEntry.employee_id.in_([a, b]),
+                RosterEntry.work_date.in_(dates),
+            ).order_by(RosterEntry.id))
+    }
+    eff = await load_effective(db, a, b, dates[0], dates[-1])
+    out = {}
+    for uid in (a, b):
+        cells: Dict[date, Cell] = {}
+        for d in dates:
+            e = entries.get((uid, d))
+            if (e is not None and e.status == RosterStatus.PUBLISHED
+                    and (e.is_week_off or e.shift_template_id is not None)):
+                cells[d] = (None, True) if e.is_week_off else (
+                    e.shift_template_id, False)
+            elif eff[(uid, d)].source == "roster":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Schedule changed since the request was made")
+            else:
+                cells[d] = cell_of(eff[(uid, d)])
+        out[uid] = cells
+    return dates, out[a], out[b]

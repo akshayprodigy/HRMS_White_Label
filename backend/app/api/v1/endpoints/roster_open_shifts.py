@@ -34,7 +34,7 @@ from app.schemas.open_shift import (
 )
 from app.services import open_shifts as os_svc
 from app.services import roster as roster_svc
-from app.services import swaps as swap_svc
+from app.services.supersede import supersede_pending
 
 router = APIRouter()
 
@@ -625,18 +625,9 @@ async def decide_drop(
             raise HTTPException(
                 status_code=409,
                 detail="Schedule changed since the request was made")
-        # Pending change requests on this cell are superseded (as for swaps).
-        crs = await swap_svc.pending_requests(db, {(uid, d)}, lock=True)
-        for c in crs:
-            c.status = "cancelled"
-            c.decision_note = f"Superseded by shift give-away #{drop.id}"
-            c.decided_by_id = current_user.id
-            c.decided_at = now
-        await roster_svc.notify_many(db, [
-            (c.employee_id, "Change request superseded",
-             f"Your change request for {c.work_date.isoformat()} was cancelled "
-             f"because your give-away was approved", DROP_RTYPE, str(drop.id))
-            for c in crs])
+        await supersede_pending(
+            db, {(uid, d)}, "shift give-away", drop.id, current_user.id,
+            DROP_RTYPE, skip_drop_id=drop.id)
         old = (entry.shift_template_id, bool(entry.is_week_off))
         dept = (await db.execute(
             select(Employee.department).where(Employee.user_id == uid))).scalar()

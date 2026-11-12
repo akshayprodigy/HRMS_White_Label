@@ -23,6 +23,7 @@ import { SwapDialog } from './my-schedule/swap-dialog';
 import { GiveawayDialog } from './my-schedule/giveaway-dialog';
 import { OpenShiftsPanel } from './my-schedule/open-shifts-panel';
 import { CalendarFeedCard } from './my-schedule/calendar-feed-card';
+import { STATUS_TONE, inputCls } from './my-schedule/my-schedule-api';
 
 type MyTab = 'week' | 'availability' | 'swaps' | 'open' | 'calendar';
 const TABS: { id: MyTab; label: string }[] = [
@@ -47,17 +48,6 @@ const errMsg = (e: any, fallback: string) =>
   e?.response?.data?.detail ||
   e?.response?.data?.error?.message ||
   fallback;
-
-const inputCls =
-  'w-full h-10 px-3 rounded-lg border border-slate-200 text-sm text-[#0F172A] ' +
-  'focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-500 bg-white';
-
-const STATUS_TONE: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = {
-  approved: 'success',
-  rejected: 'error',
-  pending: 'warning',
-  cancelled: 'neutral',
-};
 
 const fmtShiftWindow = (s: any) =>
   s ? `${(s.start_time || '').slice(0, 5)} – ${(s.end_time || '').slice(0, 5)}` : '';

@@ -23,6 +23,7 @@ from app.models.user import User
 from app.services import roster as roster_svc
 from app.services import schedule_rules
 from app.services import swaps as swap_svc
+from app.services.supersede import supersede_pending
 from app.services.time_rules import get_schedule_rules
 from app.services.availability import availability_by_day
 from app.services.effective_shift import effective_shifts_for_range
@@ -315,19 +316,9 @@ async def confirm_claim(
     else:  # no live roster cell: the live state is the assignment fallback
         eff = (await effective_shifts_for_range(db, [uid], d, d))[(uid, d)]
         old = swap_svc.cell_of(eff)
-    # Pending change requests on this cell are superseded.
     now = datetime.now(timezone.utc)
-    crs = await swap_svc.pending_requests(db, {(uid, d)}, lock=True)
-    for c in crs:
-        c.status = "cancelled"
-        c.decision_note = f"Superseded by open shift #{shift.id}"
-        c.decided_by_id = actor_id
-        c.decided_at = now
-    await roster_svc.notify_many(db, [
-        (c.employee_id, "Change request superseded",
-         f"Your change request for {c.work_date.isoformat()} was cancelled "
-         f"because you were confirmed for an open shift that day",
-         RTYPE, str(shift.id)) for c in crs])
+    await supersede_pending(
+        db, {(uid, d)}, "open shift", shift.id, actor_id, RTYPE)
     dept = (await db.execute(
         select(Employee.department).where(Employee.user_id == uid))).scalar()
     entry, _o = await roster_svc.upsert_entry(
