@@ -86,7 +86,8 @@ async def test_privacy_hr_and_general_lists(client, world):
     assert (await client.get(f"{API}/hr/employees/999999999/safety-profile",
                              headers=hw)).status_code == 404
     # general employee payloads never carry the sensitive fields
-    blob = (await client.get(f"{API}/hr/employees", headers=hr)).text
+    blob = (await client.get(f"{API}/hr/employees", headers=hr,
+                                 params={"size": 100})).text
     assert '"gender"' not in blob and '"blood_group"' not in blob
     assert world["sfx"] in blob                      # sanity: list returned our users
     for u in (f"{API}/hr/employees/me", f"{API}/auth/me"):
