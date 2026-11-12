@@ -93,7 +93,9 @@ async def _read_many(
             shift_end=t.end_time.strftime("%H:%M") if t else None,
             department=s.department, location=s.location, slots=s.slots,
             filled=s.filled, note=s.note, status=s.status,
-            auto_confirm=s.auto_confirm, created_by_id=s.created_by_id,
+            auto_confirm=s.auto_confirm,
+            can_cancel=_can_manage_shift(viewer, s),
+            created_by_id=s.created_by_id,
             created_by_name=nm.get(s.created_by_id),
             source_drop_id=s.source_drop_id, created_at=s.created_at,
             my_claim_id=mine.id if mine else None,
@@ -188,7 +190,20 @@ async def list_open_shifts(
     if status:
         q = q.where(OpenShift.status == status)
     if not roster_svc.is_roster_admin(current_user):
-        q = q.where(OpenShift.created_by_id == current_user.id)
+        # Own shifts, plus shifts claimed by someone the caller can publish
+        # for (so a delegate can decide those claims).
+        claimed = (await db.execute(
+            select(OpenShiftClaim.open_shift_id, OpenShiftClaim.user_id)
+            .join(OpenShift, OpenShift.id == OpenShiftClaim.open_shift_id)
+            .where(OpenShift.work_date >= start, OpenShift.work_date <= end)
+        )).all()
+        ok = await roster_svc.publishable_subset(
+            db, current_user, {uid for _sid, uid in claimed})
+        sids = {sid for sid, uid in claimed if uid in ok}
+        cond = OpenShift.created_by_id == current_user.id
+        if sids:
+            cond = or_(cond, OpenShift.id.in_(sids))
+        q = q.where(cond)
     rows = (await db.execute(q.limit(500))).scalars().all()
     return await _read_many(db, rows, current_user, True)
 

@@ -6,6 +6,8 @@ import {
   Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter,
 } from '../ui/dialog';
 import { errMsg, todayIso } from '../schedule-delegations-utils';
+import { addDays } from './roster-api';
+import { OPEN_SHIFT_HORIZON_DAYS } from './use-requests';
 import { inputCls, labelCls } from '../my-schedule/my-schedule-api';
 import { schedulerApi, type ShiftTemplateLite } from './roster-api';
 
@@ -40,8 +42,10 @@ export const OpenShiftDialog: React.FC<Props> = ({
   useEffect(() => {
     if (!open) return;
     setDate(prefill?.date || todayIso());
-    setTpl(prefill?.templateId ? String(prefill.templateId) : templates[0] ? String(templates[0].id) : '');
-    setDept(prefill?.department ?? defaultDepartment);
+    const pid = prefill?.templateId;
+    setTpl(pid && templates.some((t) => t.id === pid) ? String(pid) : '');
+    // a prefill carries its own scope verbatim (null = all departments)
+    setDept(prefill ? prefill.department ?? '' : defaultDepartment);
     setLoc(prefill?.location ?? '');
     setSlots('1');
     setNote('');
@@ -50,7 +54,8 @@ export const OpenShiftDialog: React.FC<Props> = ({
   }, [open, prefill]);
 
   const n = Number(slots);
-  const valid = !!date && !!tpl && Number.isInteger(n) && n >= 1 && n <= 50;
+  const maxDate = addDays(todayIso(), OPEN_SHIFT_HORIZON_DAYS);
+  const valid = !!date && date >= todayIso() && date <= maxDate && !!tpl && Number.isInteger(n) && n >= 1 && n <= 50;
 
   const submit = async () => {
     if (!valid) return;
@@ -88,12 +93,13 @@ export const OpenShiftDialog: React.FC<Props> = ({
         <div className="grid grid-cols-2 gap-3 pt-1">
           <div className="space-y-1">
             <label htmlFor="os-date" className={labelCls}>Date</label>
-            <input id="os-date" type="date" className={inputCls} min={todayIso()} value={date}
+            <input id="os-date" type="date" className={inputCls} min={todayIso()} max={maxDate} value={date}
               onChange={(e) => setDate(e.target.value)} />
           </div>
           <div className="space-y-1">
             <label htmlFor="os-shift" className={labelCls}>Shift</label>
             <select id="os-shift" className={inputCls} value={tpl} onChange={(e) => setTpl(e.target.value)}>
+              <option value="" disabled>Select a shift…</option>
               {templates.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}

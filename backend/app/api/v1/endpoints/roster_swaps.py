@@ -299,9 +299,13 @@ async def my_swaps(
     return out
 
 
+APPROVER_WARNING_LIMIT = 50
+
+
 @router.get("/swaps", response_model=List[SwapRead])
 async def approver_queue(
     db: deps.DBDep,
+    include_warnings: bool = Query(False),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     """Swaps awaiting approval that the caller may decide (approve rights over
@@ -320,7 +324,12 @@ async def approver_queue(
         ok = await roster_svc.approvable_subset(db, current_user, uids)
         rows = [r for r in rows
                 if r.requester_id in ok and r.counterparty_id in ok]
-    return await _read_many(db, rows)
+    warns = None
+    if include_warnings:
+        # Advisory rule checks; capped so a long queue stays cheap.
+        warns = {r.id: await swap_svc.swap_warnings(db, r)
+                 for r in rows[:APPROVER_WARNING_LIMIT]}
+    return await _read_many(db, rows, warns)
 
 
 @router.get("/swaps/{swap_id}/check", response_model=List[SwapViolationRead])

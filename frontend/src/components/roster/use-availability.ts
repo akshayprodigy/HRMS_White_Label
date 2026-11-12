@@ -10,8 +10,12 @@ import {
 } from './roster-api';
 
 export interface AvailabilityMark {
-  /** true when unavailable for the whole day */
+  /** unavailable for the whole day */
   blocked: boolean;
+  /** unavailable only for specific shifts (names) */
+  shiftBlocked: string[];
+  /** preferred shifts (names) */
+  prefers: string[];
   /** human lines for tooltip / screen readers */
   lines: string[];
 }
@@ -58,17 +62,19 @@ export const expandMarks = (
     }
     for (const d of days) {
       const k = availabilityKey(r.user_id, d);
-      const m = out.get(k) || { blocked: false, lines: [] };
+      const m = out.get(k) || { blocked: false, shiftBlocked: [], prefers: [], lines: [] };
       if (r.kind === 'unavailable') {
         if (r.shift_template_id == null) {
           m.blocked = true;
           m.lines.push('Unavailable' + (r.note ? ` (${r.note})` : ''));
         } else {
+          m.shiftBlocked.push(tname(r.shift_template_id));
           m.lines.push(
             `Unavailable for ${tname(r.shift_template_id)}` + (r.note ? ` (${r.note})` : '')
           );
         }
       } else if (r.kind === 'preferred' && r.shift_template_id != null) {
+        m.prefers.push(tname(r.shift_template_id));
         m.lines.push(`Prefers ${tname(r.shift_template_id)}` + (r.note ? ` (${r.note})` : ''));
       } else continue;
       out.set(k, m);
@@ -88,13 +94,19 @@ export const useAvailability = () => {
     },
     []
   );
-  const load = useCallback(async (start: string, end: string, department: string) => {
+  const lastKey = useRef('');
+  /** `background` refreshes are skipped when window + department are unchanged. */
+  const load = useCallback(async (start: string, end: string, department: string, background = false) => {
+    const key = `${start}|${end}|${department}`;
+    if (background && key === lastKey.current) return;
+    lastKey.current = key;
     const id = ++req.current;
     try {
       const rules = await schedulerApi.availability(start, end, department);
       if (id === req.current) setLoaded({ start, end, department, rules });
     } catch (e: any) {
       if (id === req.current) {
+        lastKey.current = ''; // allow a retry on the next refresh
         toast.error(errMsg(e, 'Failed to load availability'), { id: 'roster-availability-error' });
       }
     }

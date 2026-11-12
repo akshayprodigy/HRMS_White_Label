@@ -769,3 +769,27 @@ async def test_decide_response_scopes_claims(client, world):
     assert {c["user_id"] for c in r.json()["claims"]} == {ids["e1"]}
     r = await _decide(client, w, c1, who="admin")  # already decided; still 409
     assert r.status_code == 409
+
+
+async def test_list_includes_claimed_shifts_for_delegate_and_can_cancel(client, world):
+    w, ids = world, world["ids"]
+    adm = await _h(client, w, "admin")
+    mk = lambda day: client.post(API, headers=adm, json={
+        "work_date": day, "shift_template_id": ids["t1"], "slots": 2})
+    claimed = (await mk(dd())).json()
+    unclaimed = (await mk(dd(1))).json()
+    assert claimed["can_cancel"] is True
+    assert (await _claim(client, w, claimed["id"], "e1")).status_code == 200
+    q = {"start": dd(-1), "end": dd(3)}
+    rows = {x["id"]: x for x in (await client.get(
+        API, headers=await _h(client, w, "sx"), params=q)).json()}
+    assert claimed["id"] in rows and unclaimed["id"] not in rows
+    assert rows[claimed["id"]]["can_cancel"] is False
+    assert [c["user_id"] for c in rows[claimed["id"]]["claims"]] == [ids["e1"]]
+    # head of the other department has no claimant in scope
+    other = {x["id"] for x in (await client.get(
+        API, headers=await _h(client, w, "sy"), params=q)).json()}
+    assert claimed["id"] not in other
+    # creator keeps own shift and can cancel it
+    mine = await _mk(client, w, work_date=dd(2))
+    assert mine["can_cancel"] is True

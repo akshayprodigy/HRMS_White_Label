@@ -37,6 +37,7 @@ import { CoverageRequirementsDialog } from './roster/coverage-requirements-dialo
 import { CoverageRows } from './roster/coverage-strip';
 import { ViolationsPanel, violationKey } from './roster/violations-panel';
 import { useInsights } from './roster/use-insights';
+import { ViewToggle, type RosterView } from './roster/view-toggle';
 import { useRequests } from './roster/use-requests';
 import { RequestsView } from './roster/requests-view';
 import { OpenShiftDialog, type OpenShiftPrefill } from './roster/open-shift-dialog';
@@ -74,7 +75,7 @@ export const RosterPlanner = () => {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [view, setView] = useState<'planner' | 'requests' | 'delegations'>('planner');
+  const [view, setView] = useState<RosterView>('planner');
   // null until the first response; latched so a later failed fetch doesn't unmount Delegations.
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [myGrants, setMyGrants] = useState<any[]>([]);
@@ -101,7 +102,7 @@ export const RosterPlanner = () => {
   // The grid only loads for people with a roster scope, so a loaded grid
   // (latched) means they can manage and may see Requests.
   const [canManage, setCanManage] = useState(false);
-  const reqs = useRequests(canManage);
+  const reqs = useRequests(canManage, view === 'requests');
   const openShiftDialog = (p: OpenShiftPrefill | null) => {
     setOsPrefill(p);
     setOsOpen(true);
@@ -130,7 +131,7 @@ export const RosterPlanner = () => {
       const params = new URLSearchParams({ start, end });
       if (appliedDept) params.set('department', appliedDept);
       loadInsights(start, end, appliedDept, background); // independent; never breaks the grid
-      loadAvailability(start, end, appliedDept); // advisory overlay; independent too
+      loadAvailability(start, end, appliedDept, background); // advisory overlay; independent too
       const res = await client.get<RosterGrid>(
         ENDPOINTS.ROSTER.PLAN + '?' + params.toString()
       );
@@ -308,31 +309,12 @@ export const RosterPlanner = () => {
       </div>
 
       {(isAdmin || canManage) && (
-        <div role="group" aria-label="Roster view" className="flex rounded-lg border border-gray-200 overflow-hidden w-fit">
-          {(['planner', 'requests', ...(isAdmin ? ['delegations'] : [])] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v as typeof view)}
-              aria-pressed={view === v}
-              className={cn(
-                'px-3 py-1.5 text-sm font-medium inline-flex items-center gap-1.5',
-                view === v
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-white text-gray-600 hover:bg-gray-50'
-              )}
-            >
-              {v === 'planner' ? 'Planner' : v === 'requests' ? 'Requests' : 'Delegations'}
-              {v === 'requests' && reqs.count > 0 && (
-                <span
-                  aria-label={`${reqs.count} pending`}
-                  className="w-5 h-5 rounded-full bg-red-600 text-white text-[10px] inline-flex items-center justify-center"
-                >
-                  {reqs.count}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        <ViewToggle
+          view={view}
+          onChange={setView}
+          showDelegations={!!isAdmin}
+          pending={reqs.count}
+        />
       )}
 
       {view === 'requests' && canManage && (
@@ -341,6 +323,7 @@ export const RosterPlanner = () => {
           drops={reqs.drops}
           shifts={reqs.shifts}
           loading={reqs.loading}
+          errors={reqs.errors}
           reload={reqs.reload}
           onRosterChanged={refresh}
           onNewOpenShift={() => openShiftDialog(null)}
@@ -648,14 +631,14 @@ export const RosterPlanner = () => {
                           )}
                           {avail && (
                             <div
-                              className={cn(
-                                'absolute top-1 left-1 w-2.5 h-2.5 rounded-full',
-                                avail.blocked ? 'bg-red-500' : 'bg-blue-500'
-                              )}
+                              className="absolute top-1 left-1 flex gap-0.5"
                               title={avail.lines.join('\n')}
-                              aria-label={`Availability: ${avail.lines.join('; ')}`}
-                              role="img"
-                            />
+                            >
+                              {avail.blocked && <span aria-hidden="true" className="w-2.5 h-2.5 rounded-full bg-red-500" />}
+                              {avail.shiftBlocked.length > 0 && <span aria-hidden="true" className="w-2.5 h-2.5 rounded-full bg-amber-500" />}
+                              {avail.prefers.length > 0 && <span aria-hidden="true" className="w-2.5 h-2.5 rounded-full bg-blue-500" />}
+                              <span className="sr-only">Availability: {avail.lines.join('; ')}</span>
+                            </div>
                           )}
                           {isDraft && (
                             <div className="text-[9px] uppercase tracking-wide text-amber-600 leading-none mb-0.5">
@@ -723,11 +706,13 @@ export const RosterPlanner = () => {
             </Badge>
             = unpublished (hidden from employees)
           </span>
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1" aria-label="Availability markers legend">
             <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" aria-hidden="true" />
-            unavailable
+            unavailable all day
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block ml-2" aria-hidden="true" />
+            unavailable for a shift
             <span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block ml-2" aria-hidden="true" />
-            prefers a shift (hover the dot)
+            prefers a shift (hover for detail)
           </span>
         </div>
       )}

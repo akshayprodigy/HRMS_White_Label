@@ -66,6 +66,8 @@ class OpenShiftRead(BaseModel):
     note: Optional[str] = None
     status: str
     auto_confirm: bool
+    # caller may cancel it (creator or roster admin)
+    can_cancel: bool = False
     created_by_id: Optional[int] = None
     created_by_name: Optional[str] = None
     source_drop_id: Optional[int] = None

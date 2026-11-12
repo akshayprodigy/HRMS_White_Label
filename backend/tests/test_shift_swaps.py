@@ -758,3 +758,22 @@ async def test_cells_exposed_and_active_recheck(client, world):
     h2 = await _login(client, w["email"]("e2"))
     r = await client.post(f"{SW}/{sid}/accept", headers=h2)
     assert r.status_code == 400
+
+
+async def test_queue_include_warnings_flag(client, world, rules_cfg):
+    w, ids = world, world["ids"]
+    await rules_cfg(min_rest_hours=11, max_consecutive_days=6,
+                    max_consecutive_nights=4, max_weekly_hours=168)
+    await _pub(ids["e1"], dn(0), ids["tn"])
+    await _pub(ids["e2"], dn(0), ids["t1"])
+    await _pub(ids["e2"], dn(1), ids["t1"])
+    sid = (await _create(client, w)).json()["id"]
+    await client.post(f"{SW}/{sid}/accept",
+                      headers=await _login(client, w["email"]("e2")))
+    hd = await _login(client, w["email"]("deleg"))
+    r = await client.get(SW, headers=hd)
+    row = next(x for x in r.json() if x["id"] == sid)
+    assert row["warnings"] == []                      # default: not computed
+    r = await client.get(SW, headers=hd, params={"include_warnings": 1})
+    row = next(x for x in r.json() if x["id"] == sid)
+    assert [x["rule"] for x in row["warnings"]] == ["min_rest"]

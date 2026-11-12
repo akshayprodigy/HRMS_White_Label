@@ -166,6 +166,7 @@ export type SchedOpenShift = OpenShift & {
   shift_template_id: number;
   status: string;
   auto_confirm: boolean;
+  can_cancel: boolean;
   created_by_name: string | null;
   claims: OpenShiftClaim[];
 };
@@ -187,7 +188,8 @@ const R = ENDPOINTS.ROSTER;
 const data = async <T,>(p: Promise<{ data: T }>): Promise<T> => (await p).data;
 
 export const schedulerApi = {
-  swapQueue: () => data<ApproverSwap[]>(client.get(R.SWAPS)),
+  swapQueue: () =>
+    data<ApproverSwap[]>(client.get(R.SWAPS, { params: { include_warnings: 1 } })),
   swapCheck: (id: number) => data<SwapWarning[]>(client.get(R.SWAP_CHECK(id))),
   decideSwap: (id: number, action: 'approve' | 'reject', note: string | null) =>
     data<ApproverSwap>(client.post(R.SWAP_DECIDE(id), { action, note })),
