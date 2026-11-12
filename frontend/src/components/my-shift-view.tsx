@@ -3,6 +3,8 @@ import { toast } from 'sonner';
 import {
   CalendarClock,
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Moon,
   RefreshCw,
@@ -14,6 +16,28 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter } f
 import { MyRegularizations, TeamRegularizations } from './regularization-requests';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
+import { todayIso } from './schedule-delegations-utils';
+import { AvailabilityPanel } from './my-schedule/availability-panel';
+import { SwapPanel } from './my-schedule/swap-panel';
+import { SwapDialog } from './my-schedule/swap-dialog';
+import { GiveawayDialog } from './my-schedule/giveaway-dialog';
+import { OpenShiftsPanel } from './my-schedule/open-shifts-panel';
+import { CalendarFeedCard } from './my-schedule/calendar-feed-card';
+
+type MyTab = 'week' | 'availability' | 'swaps' | 'open' | 'calendar';
+const TABS: { id: MyTab; label: string }[] = [
+  { id: 'week', label: 'Week' },
+  { id: 'availability', label: 'Availability' },
+  { id: 'swaps', label: 'Swaps & give-aways' },
+  { id: 'open', label: 'Open shifts' },
+  { id: 'calendar', label: 'Calendar' },
+];
+
+const addDays = (iso: string, n: number) => {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
 
 // Section R: employee self-service — current shift, assignment history,
 // and shift-change requests (approved Manager -> HR via the chain
@@ -54,6 +78,11 @@ export const MyShiftView: React.FC = () => {
 
   // W7: roster week + per-day change requests
   const [rosterWeek, setRosterWeek] = useState<any | null>(null);
+  const [weekStart, setWeekStart] = useState<string | null>(null); // null = current week
+  const [tab, setTab] = useState<MyTab>('week');
+  const [swapDay, setSwapDay] = useState<any | null>(null);
+  const [giveDay, setGiveDay] = useState<any | null>(null);
+  const [selfReload, setSelfReload] = useState(0);
   const [rosterReqs, setRosterReqs] = useState<any[]>([]);
   const [rosterReqOpen, setRosterReqOpen] = useState(false);
   const [rosterBusy, setRosterBusy] = useState(false);
@@ -72,7 +101,7 @@ export const MyShiftView: React.FC = () => {
         client.get(ENDPOINTS.SHIFTS.MY_HISTORY).catch(() => ({ data: [] })),
         client.get(ENDPOINTS.SHIFTS.CHANGE_REQUESTS_MY).catch(() => ({ data: [] })),
         client.get(ENDPOINTS.SHIFTS.TEMPLATES).catch(() => ({ data: [] })),
-        client.get(ENDPOINTS.ROSTER.MY_WEEK).catch(() => ({ data: null })),
+        client.get(ENDPOINTS.ROSTER.MY_WEEK, { params: weekStart ? { start: weekStart } : undefined }).catch(() => ({ data: null })),
         client.get(ENDPOINTS.ROSTER.CHANGE_REQUESTS_MY).catch(() => ({ data: [] })),
       ]);
       setCurrent(cur.data);
@@ -85,7 +114,7 @@ export const MyShiftView: React.FC = () => {
       setLoading(false);
     }
   };
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); }, [weekStart]);
 
   const openRosterReq = (workDate: string) => {
     setRosterForm({
@@ -248,11 +277,24 @@ export const MyShiftView: React.FC = () => {
         <Card className="p-5 border-slate-200 bg-white">
           <div className="flex items-center justify-between mb-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-[#0F172A] flex items-center gap-1.5">
-              <CalendarDays size={13} className="text-indigo-600" /> My Roster · This Week
+              <CalendarDays size={13} className="text-indigo-600" /> My Roster ·{' '}
+              {rosterWeek.days.some((x: any) => x.is_today) ? 'This Week' : `Week of ${rosterWeek.start}`}
             </p>
-            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-              tap a day to request a change
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="hidden sm:block text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                tap a day to request a change
+              </span>
+              <button type="button" aria-label="Previous week"
+                onClick={() => setWeekStart(addDays(rosterWeek.start, -7))}
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100">
+                <ChevronLeft size={14} />
+              </button>
+              <button type="button" aria-label="Next week"
+                onClick={() => setWeekStart(addDays(rosterWeek.start, 7))}
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100">
+                <ChevronRight size={14} />
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
             {rosterWeek.days.map((d: any) => {
@@ -261,15 +303,23 @@ export const MyShiftView: React.FC = () => {
               const weekOff =
                 d.shift?.name === 'Week off' ||
                 (!!d.is_weekend && d.shift?.source !== 'roster');
+              // A published roster shift (not a default/assigned one) can be
+              // swapped or given away while it is today or later.
+              const published =
+                d.shift?.source === 'roster' && !!d.shift?.start_time && !d.on_leave;
+              const canAct = published && d.date >= todayIso();
               return (
-              <button
+              <div
                 key={d.date}
-                type="button"
-                onClick={() => openRosterReq(d.date)}
                 className={cn(
-                  'text-left border rounded-xl p-2.5 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40',
+                  'border rounded-xl transition-colors hover:border-indigo-300 hover:bg-indigo-50/40 flex flex-col',
                   d.is_today ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-100',
                 )}
+              >
+              <button
+                type="button"
+                onClick={() => openRosterReq(d.date)}
+                className="text-left p-2.5 flex-1"
               >
                 <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">
                   {new Date(d.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit' })}
@@ -288,6 +338,23 @@ export const MyShiftView: React.FC = () => {
                   </p>
                 )}
               </button>
+              {canAct && (
+                <div className="flex gap-2 px-2.5 pb-2">
+                  <button type="button"
+                    aria-label={`Swap shift on ${d.date}`}
+                    onClick={() => setSwapDay(d)}
+                    className="text-[9px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-600">
+                    Swap
+                  </button>
+                  <button type="button"
+                    aria-label={`Give away shift on ${d.date}`}
+                    onClick={() => setGiveDay(d)}
+                    className="text-[9px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-600">
+                    Give away
+                  </button>
+                </div>
+              )}
+              </div>
               );
             })}
           </div>
@@ -328,6 +395,37 @@ export const MyShiftView: React.FC = () => {
         </Card>
       ) : null}
 
+      <div role="tablist" aria-label="My schedule sections"
+        className="flex gap-1 border-b border-slate-200 overflow-x-auto">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            id={`myshift-tab-${t.id}`}
+            aria-selected={tab === t.id}
+            aria-controls="myshift-tabpanel"
+            onClick={() => setTab(t.id)}
+            className={cn(
+              'px-4 py-2.5 text-[10px] font-black uppercase tracking-widest whitespace-nowrap border-b-2 -mb-px',
+              tab === t.id
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-400 hover:text-slate-600',
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div id="myshift-tabpanel" role="tabpanel" aria-labelledby={`myshift-tab-${tab}`} className="space-y-6">
+      {tab === 'availability' && (
+        <AvailabilityPanel shifts={templates.map((t: any) => ({ id: t.id, name: t.name }))} />
+      )}
+      {tab === 'swaps' && <SwapPanel reloadKey={selfReload} />}
+      {tab === 'open' && <OpenShiftsPanel />}
+      {tab === 'calendar' && <CalendarFeedCard />}
+      {tab === 'week' && (<>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* My requests */}
         <Card className="p-5 border-slate-200 bg-white">
@@ -402,6 +500,25 @@ export const MyShiftView: React.FC = () => {
 
       <MyRegularizations />
       <TeamRegularizations />
+      </>)}
+      </div>
+
+      {swapDay && (
+        <SwapDialog
+          date={swapDay.date}
+          shiftName={swapDay.shift?.name}
+          onClose={() => setSwapDay(null)}
+          onDone={() => { setSwapDay(null); setSelfReload((n) => n + 1); setTab('swaps'); }}
+        />
+      )}
+      {giveDay && (
+        <GiveawayDialog
+          date={giveDay.date}
+          shiftName={giveDay.shift?.name}
+          onClose={() => setGiveDay(null)}
+          onDone={() => { setGiveDay(null); setSelfReload((n) => n + 1); setTab('swaps'); }}
+        />
+      )}
 
       {/* Request dialog */}
       {reqOpen && (

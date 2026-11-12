@@ -136,6 +136,21 @@ export const ENDPOINTS = {
     INSIGHTS: '/roster/insights',
     COVERAGE_REQUIREMENTS: '/roster/coverage-requirements',
     COVERAGE_REQUIREMENT: (id: number) => `/roster/coverage-requirements/${id}`,
+    AVAILABILITY_MY: '/roster/availability/my',
+    AVAILABILITY_MY_DETAIL: (id: number) => `/roster/availability/my/${id}`,
+    SWAP_CANDIDATES: '/roster/swaps/candidates',
+    SWAPS: '/roster/swaps',
+    SWAPS_MY: '/roster/swaps/my',
+    SWAP_ACTION: (id: number, action: 'accept' | 'decline' | 'cancel') =>
+      `/roster/swaps/${id}/${action}`,
+    OPEN_SHIFTS_AVAILABLE: '/roster/open-shifts/available',
+    OPEN_SHIFT_CLAIM: (id: number) => `/roster/open-shifts/${id}/claim`,
+    OPEN_SHIFT_CLAIM_WITHDRAW: (claimId: number) =>
+      `/roster/open-shifts/claims/${claimId}/withdraw`,
+    DROPS: '/roster/drops',
+    DROPS_MY: '/roster/drops/my',
+    DROP_CANCEL: (id: number) => `/roster/drops/${id}/cancel`,
+    CALENDAR_FEED: '/roster/my/calendar-feed',
   },
   GEO: {
     FENCES: '/geo/fences',
