@@ -308,8 +308,8 @@ class CoverageRequirementBase(BaseModel):
     location: Optional[str] = Field(default=None, max_length=100)
     shift_template_id: Annotated[StrictInt, Field(ge=1, le=2**31 - 1)]
     weekday: Optional[StrictInt] = Field(default=None, ge=0, le=6)
-    min_headcount: StrictInt = Field(..., ge=0)
-    max_headcount: Optional[StrictInt] = Field(default=None, ge=0)
+    min_headcount: StrictInt = Field(..., ge=0, le=100000)
+    max_headcount: Optional[StrictInt] = Field(default=None, ge=0, le=100000)
 
 
 class CoverageRequirementCreate(CoverageRequirementBase):
@@ -326,8 +326,8 @@ class CoverageRequirementUpdate(BaseModel):
     location: Optional[str] = Field(default=None, max_length=100)
     shift_template_id: Optional[Annotated[StrictInt, Field(ge=1, le=2**31 - 1)]] = None
     weekday: Optional[StrictInt] = Field(default=None, ge=0, le=6)
-    min_headcount: Optional[StrictInt] = Field(default=None, ge=0)
-    max_headcount: Optional[StrictInt] = Field(default=None, ge=0)
+    min_headcount: Optional[StrictInt] = Field(default=None, ge=0, le=100000)
+    max_headcount: Optional[StrictInt] = Field(default=None, ge=0, le=100000)
     is_active: Optional[bool] = None
 
 

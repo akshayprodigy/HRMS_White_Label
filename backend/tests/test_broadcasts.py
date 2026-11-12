@@ -448,3 +448,28 @@ async def test_sms_dlt_and_truncation(world, monkeypatch):
             assert res.ok and sent[0][1] == "DLT123" and len(sent[0][0]) <= 300
     finally:
         nd.set_sms_provider(prev)
+
+
+async def test_concurrent_responses_same_user_never_500(client, world):
+    import asyncio
+    b = await send(client, world)
+    bid = b["id"]
+    h = await login(client, world, "e1")
+    calls = []
+    for _ in range(5):
+        calls += [client.post(f"{API}/{bid}/ack", headers=h),
+                  client.post(f"{API}/{bid}/read", headers=h),
+                  client.post(f"{API}/{bid}/safety", json={"status": "safe"},
+                              headers=h)]
+    res = await asyncio.gather(*calls)
+    assert all(r.status_code == 200 for r in res), [r.text for r in res if r.status_code != 200]
+    my = (await client.get(f"{API}/my", headers=h)).json()
+    assert my[0]["acked_at"] and my[0]["safety_status"] == "safe"
+
+
+async def test_list_params_are_bounded(client, world):
+    h = await login(client, world, "sender")
+    for url in (f"{API}?page=999999999999", f"{API}?page=10001",
+                f"{API}?page_size=100000"):
+        assert (await client.get(url, headers=h)).status_code == 422, url
+    assert (await client.get(f"{API}?page=10000", headers=h)).status_code == 200

@@ -982,7 +982,7 @@ async def get_employees(
     *,
     db: deps.DBDep,
     current_user: User = Depends(deps.check_permissions([HR_READ])),
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=10000),
     size: int = Query(20, ge=1, le=500),
     department: Optional[str] = None,
     role: Optional[str] = None,

@@ -5,15 +5,18 @@ Sender endpoints need 'broadcast send'. /broadcasts/my, /read, /ack and
 deliberately NOT attendance-gated: people must be able to respond before they
 punch in.
 """
+import asyncio
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api import deps
 from app.api.v1.endpoints.roster_common import commit_or_409
+from app.services import roster as roster_svc
 from app.models.broadcast import (
     Broadcast, BroadcastAudience, BroadcastRecipient, BroadcastSeverity,
     SafetyStatus,
@@ -139,7 +142,7 @@ async def send_broadcast(body: BroadcastIn, db: deps.DBDep,
 @router.get("")
 async def list_broadcasts(
     db: deps.DBDep, me: User = SENDER,
-    page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=PAGE_MAX),
+    page: int = Query(1, ge=1, le=10000), page_size: int = Query(50, ge=1, le=PAGE_MAX),
 ):
     total = (await db.execute(select(func.count()).select_from(Broadcast))).scalar_one()
     bs = (await db.execute(
@@ -197,40 +200,73 @@ async def my_broadcasts(db: deps.DBDep, me: deps.CurrentUser):
     return [_my_row(b, r) for b, r in rows]
 
 
-async def _own(db, broadcast_id: int, me: User):
-    b = await db.get(Broadcast, broadcast_id)
+async def _own(db, broadcast_id: int, me_id: int):
+    # The caller's own recipient row is the very first thing locked/read so
+    # concurrent responders serialise on it.
     r = (await db.execute(
         select(BroadcastRecipient)
         .where(BroadcastRecipient.broadcast_id == broadcast_id,
-               BroadcastRecipient.user_id == me.id)
-        .with_for_update()  # lock only the caller's own recipient row
+               BroadcastRecipient.user_id == me_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )).scalar_one_or_none()
+    b = await db.get(Broadcast, broadcast_id, populate_existing=True)
     if b is None or r is None:
         raise HTTPException(404, "Broadcast not found")
     return b, r
 
 
+async def _respond(db, fn, tries: int = 8):
+    """Run a recipient write transactionally. MariaDB's snapshot isolation makes
+    the locking read fail (1020/1213) when a concurrent responder committed
+    after our snapshot: roll back and retry on a fresh snapshot, so concurrent
+    duplicates serialise and all return the idempotent result. `fn` must
+    return a plain dict and must not commit."""
+    for attempt in range(tries):
+        try:
+            out = await fn()
+            await roster_svc.flush_emergency(db)
+            await db.commit()
+            return out
+        except (OperationalError, IntegrityError) as exc:
+            await db.rollback()
+            lock = (isinstance(exc, OperationalError)
+                    and roster_svc.is_lock_conflict(exc))
+            if lock and attempt < tries - 1:
+                await asyncio.sleep(0.05 * (attempt + 1))
+                continue
+            if lock or isinstance(exc, IntegrityError):
+                raise HTTPException(409, "Concurrent update; retry") from exc
+            raise
+
+
 @router.post("/{broadcast_id}/read")
 async def mark_read(broadcast_id: int, db: deps.DBDep, me: deps.CurrentUser):
-    b, r = await _own(db, broadcast_id, me)
-    if r.read_at is None:
-        r.read_at = datetime.now(timezone.utc).replace(microsecond=0)
-        await commit_or_409(db)
-    return _my_row(b, r)
+    me_id = me.id
+
+    async def go():
+        b, r = await _own(db, broadcast_id, me_id)
+        if r.read_at is None:
+            r.read_at = datetime.now(timezone.utc).replace(microsecond=0)
+        return _my_row(b, r)
+    return await _respond(db, go)
 
 
 @router.post("/{broadcast_id}/ack")
 async def acknowledge(broadcast_id: int, db: deps.DBDep, me: deps.CurrentUser):
-    b, r = await _own(db, broadcast_id, me)
-    if b.closed_at is not None and r.acked_at is None:
-        raise HTTPException(400, "Broadcast is closed")
-    if r.acked_at is None:
-        now = datetime.now(timezone.utc).replace(microsecond=0)
-        r.acked_at = now
-        r.read_at = r.read_at or now
-        r.responded_at = r.responded_at or now
-        await commit_or_409(db)
-    return _my_row(b, r)
+    me_id = me.id
+
+    async def go():
+        b, r = await _own(db, broadcast_id, me_id)
+        if b.closed_at is not None and r.acked_at is None:
+            raise HTTPException(400, "Broadcast is closed")
+        if r.acked_at is None:
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            r.acked_at = now
+            r.read_at = r.read_at or now
+            r.responded_at = r.responded_at or now
+        return _my_row(b, r)
+    return await _respond(db, go)
 
 
 async def _alert_recipients(db, b: Broadcast, exclude: int) -> List[int]:
@@ -249,7 +285,15 @@ async def _alert_recipients(db, b: Broadcast, exclude: int) -> List[int]:
 @router.post("/{broadcast_id}/safety")
 async def mark_safety(broadcast_id: int, body: SafetyIn, db: deps.DBDep,
                       me: deps.CurrentUser):
-    b, r = await _own(db, broadcast_id, me)
+    me_id, me_name = me.id, (me.full_name or me.email)
+
+    async def go():
+        return await _safety(db, broadcast_id, body, me_id, me_name)
+    return await _respond(db, go)
+
+
+async def _safety(db, broadcast_id, body, me_id, me_name):
+    b, r = await _own(db, broadcast_id, me_id)
     if not b.safety_check:
         raise HTTPException(400, "This broadcast has no safety check")
     if b.closed_at is not None:
@@ -271,20 +315,19 @@ async def mark_safety(broadcast_id: int, body: SafetyIn, db: deps.DBDep,
     if became_help:
         emp = (await db.execute(
             select(Employee.department, Employee.location)
-            .where(Employee.user_id == me.id))).first()
-        who = me.full_name or me.email
+            .where(Employee.user_id == me_id))).first()
+        who = me_name
         where = ", ".join(x for x in (emp or ()) if x)
         title = f"{who} needs help"[:200]
         msg = (f"{who} reported NEED HELP for broadcast '{b.title}'"
                + (f" ({where})" if where else "")
                + (f": {note}" if note else ""))[:1000]
-        for uid in await _alert_recipients(db, b, me.id):
+        for uid in await _alert_recipients(db, b, me_id):
             await notify(
                 db, user_id=uid, event_type="emergency_need_help",
                 title=title, message=msg, resource_type="broadcast",
                 resource_id=str(b.id), notif_type="error",
                 context={"title": title, "message": msg})
-    await commit_or_409(db)
     return _my_row(b, r)
 
 
@@ -311,7 +354,7 @@ async def broadcast_dashboard(
     filter: Optional[Literal["need_help", "no_response", "safe",
                              "acked", "read"]] = None,
     search: Optional[str] = Query(None, max_length=100),
-    page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=PAGE_MAX),
+    page: int = Query(1, ge=1, le=10000), page_size: int = Query(50, ge=1, le=PAGE_MAX),
 ):
     b = await db.get(Broadcast, broadcast_id)
     if b is None:
