@@ -136,15 +136,7 @@ async def apply_swap(db, swap, actor_id: int, a_cells, b_cells) -> Dict[int, set
         ))).scalars().all()
     }
     changed: Dict[int, set] = {}
-    # Lock window: the approver's rights apply (the employees initiated it).
-    actor = await roster_svc.actor_user(db, actor_id)
-    locked = await roster_svc.lock_guard(db, actor, [
-        (uid, d, tuple(old[d]), tuple(written_cell(new[d])))
-        for uid, old, new in (
-            (swap.requester_id, a_cells, new_a),
-            (swap.counterparty_id, b_cells, new_b))
-        for d in dates
-    ], reason=f"Shift swap #{swap.id}")
+    # Lock window: both parties consented, so the swap is exempt.
     for uid, old, new in (
         (swap.requester_id, a_cells, new_a),
         (swap.counterparty_id, b_cells, new_b),
@@ -164,7 +156,6 @@ async def apply_swap(db, swap, actor_id: int, a_cells, b_cells) -> Dict[int, set
                 old_tpl=old[d][0], old_off=old[d][1],
                 new_tpl=tpl, new_off=off, action="update",
                 reason=f"Shift swap #{swap.id}", actor_id=actor_id,
-                emergency=(uid, d) in locked,
             )
             changed.setdefault(uid, set()).add(d)
     return changed

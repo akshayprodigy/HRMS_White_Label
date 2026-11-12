@@ -396,7 +396,10 @@ async def lock_guard(
     db: AsyncSession, actor: Optional[User], cells, *, reason: Optional[str],
     today: Optional[pydate] = None,
 ) -> set:
-    """Enforce the schedule lock window (`schedule.lock_days`).
+    """Enforce the schedule lock window (`schedule.lock_days`) for changes
+    IMPOSED on an employee (scheduler-initiated). Changes the employee
+    initiated or consented to (swap, give-away, open-shift claim, own change
+    request) are exempt and never call this.
 
     `cells` = [(user_id, date, old_cell, new_cell)] where old/new are the
     LIVE cells the employee sees before/after (see `live_cell`). Cells with

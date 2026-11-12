@@ -243,6 +243,14 @@ async def _assert_emergency(uid, day, n=1):
     return hs[-1]
 
 
+async def _assert_exempt(uid, day, history=True):
+    """Employee-initiated change: recorded in history but not an emergency."""
+    hs = await _hist(uid, day)
+    assert bool(hs) == history and not any(h.is_emergency for h in hs)
+    assert await _acks(uid) == []
+    assert not await _notes(uid, "Urgent schedule change - please acknowledge")
+
+
 def _locked_403(r, day=None):
     assert r.status_code == 403, r.text
     assert "locked" in r.text
@@ -415,7 +423,8 @@ async def test_copy_never_touches_published(client, world):
     assert (await _cell(ids["e1"], TODAY + timedelta(days=1)))[0] == ids["t1"]
 
 
-async def test_change_request_decide(client, world):
+async def test_change_request_decide_exempt(client, world):
+    """The employee asked for it: any approver may approve inside the window."""
     ids = world["ids"]
     await _pub(ids["e1"], W, ids["t1"])
     he = await _h(client, world, "e1")
@@ -424,15 +433,12 @@ async def test_change_request_decide(client, world):
         "reason": "doctor appointment"})
     assert r.status_code == 200, r.text
     cid = r.json()["id"]
-    hx = await _h(client, world, "sx")
-    _locked_403(await client.post(f"{R}/change-requests/{cid}/decide",
-                                  headers=hx, json={"action": "approve"}), W)
-    ha = await _h(client, world, "admin")
-    r = await client.post(f"{R}/change-requests/{cid}/decide", headers=ha,
-                          json={"action": "approve"})
+    hx = await _h(client, world, "sx")      # head, no override
+    r = await client.post(f"{R}/change-requests/{cid}/decide",
+                          headers=hx, json={"action": "approve"})
     assert r.status_code == 200, r.text
-    h = await _assert_emergency(ids["e1"], W)
-    assert h.reason == "doctor appointment"
+    assert (await _cell(ids["e1"], W))[0] == ids["t2"]
+    await _assert_exempt(ids["e1"], W)
 
 
 async def test_publish_drafts(client, world):
@@ -469,7 +475,7 @@ async def test_publish_drafts_service_for_request_approval(world):
 
 # ------------------------------ employee-initiated flows ------------------------------
 
-async def test_swap_follows_approver_rights(client, world):
+async def test_swap_exempt(client, world):
     ids = world["ids"]
     await _pub(ids["e1"], W, ids["t1"])
     await _pub(ids["e2"], W, ids["t2"])
@@ -480,20 +486,16 @@ async def test_swap_follows_approver_rights(client, world):
     assert r.status_code == 200, r.text
     sid = r.json()["id"]
     assert (await client.post(f"{R}/swaps/{sid}/accept", headers=h2)).status_code == 200
-    hn = await _h(client, world, "dnv")
-    _locked_403(await client.post(f"{R}/swaps/{sid}/decide", headers=hn,
-                                  json={"action": "approve"}))
-    assert (await _cell(ids["e1"], W))[0] == ids["t1"]
-    ho = await _h(client, world, "dov")
-    r = await client.post(f"{R}/swaps/{sid}/decide", headers=ho,
+    hn = await _h(client, world, "dnv")     # no override
+    r = await client.post(f"{R}/swaps/{sid}/decide", headers=hn,
                           json={"action": "approve"})
     assert r.status_code == 200, r.text
     assert (await _cell(ids["e1"], W))[0] == ids["t2"]
-    await _assert_emergency(ids["e1"], W)
-    await _assert_emergency(ids["e2"], W)
+    await _assert_exempt(ids["e1"], W)
+    await _assert_exempt(ids["e2"], W)
 
 
-async def test_drop_decide(client, world):
+async def test_drop_decide_exempt(client, world):
     ids = world["ids"]
     await _pub(ids["e1"], W, ids["t1"])
     he = await _h(client, world, "e1")
@@ -501,16 +503,12 @@ async def test_drop_decide(client, world):
         "work_date": W.isoformat(), "reason": "sick child"})
     assert r.status_code == 200, r.text
     did = r.json()["id"]
-    hn = await _h(client, world, "dnv")
-    _locked_403(await client.post(f"{R}/drops/{did}/decide", headers=hn,
-                                  json={"action": "approve", "post_open_shift": False}))
-    assert (await _cell(ids["e1"], W))[0] == ids["t1"]
-    ho = await _h(client, world, "dov")
-    r = await client.post(f"{R}/drops/{did}/decide", headers=ho,
+    hn = await _h(client, world, "dnv")     # no override
+    r = await client.post(f"{R}/drops/{did}/decide", headers=hn,
                           json={"action": "approve", "post_open_shift": False})
     assert r.status_code == 200, r.text
     assert (await _cell(ids["e1"], W))[1] is True
-    await _assert_emergency(ids["e1"], W)
+    await _assert_exempt(ids["e1"], W)
 
 
 async def _post_open_shift(client, h, w, auto=False, day=W):
@@ -521,7 +519,7 @@ async def _post_open_shift(client, h, w, auto=False, day=W):
     return r.json()["id"]
 
 
-async def test_open_shift_claim_decide(client, world):
+async def test_open_shift_claim_decide_exempt(client, world):
     ids = world["ids"]
     ha = await _h(client, world, "admin")
     sid = await _post_open_shift(client, ha, world)
@@ -531,33 +529,27 @@ async def test_open_shift_claim_decide(client, world):
     async with SessionLocal() as db:
         cid = (await db.execute(select(OpenShiftClaim.id).where(
             OpenShiftClaim.user_id == ids["e3"]))).scalar_one()
-    hx = await _h(client, world, "sx")
-    _locked_403(await client.post(f"{R}/open-shifts/claims/{cid}/decide",
-                                  headers=hx, json={"action": "approve"}))
-    r = await client.post(f"{R}/open-shifts/claims/{cid}/decide", headers=ha,
+    hx = await _h(client, world, "sx")      # head, no override
+    r = await client.post(f"{R}/open-shifts/claims/{cid}/decide", headers=hx,
                           json={"action": "approve"})
     assert r.status_code == 200, r.text
-    await _assert_emergency(ids["e3"], W)
+    assert (await _cell(ids["e3"], W))[0] == ids["t1"]
+    await _assert_exempt(ids["e3"], W)
 
 
-async def test_open_shift_auto_confirm_uses_creator_rights(client, world):
+async def test_open_shift_auto_confirm_exempt(client, world):
     ids = world["ids"]
     h3 = await _h(client, world, "e3")
-    # created by a head without override: employee's claim is refused
-    hx = await _h(client, world, "sx")
+    hx = await _h(client, world, "sx")      # creator without override
     r = await client.post(f"{R}/open-shifts", headers=hx, json={
         "work_date": W.isoformat(), "shift_template_id": ids["t1"],
         "department": world["dept"], "slots": 1, "auto_confirm": True})
-    if r.status_code == 200:   # heads may be allowed to post
-        sid = r.json()["id"]
-        _locked_403(await client.post(f"{R}/open-shifts/{sid}/claim", headers=h3))
-        assert await _acks(ids["e3"]) == []
-    # created by an admin: confirmed instantly as an emergency change
-    ha = await _h(client, world, "admin")
-    sid = await _post_open_shift(client, ha, world, auto=True, day=W2)
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
     r = await client.post(f"{R}/open-shifts/{sid}/claim", headers=h3)
     assert r.status_code == 200, r.text
-    await _assert_emergency(ids["e3"], W2)
+    assert (await _cell(ids["e3"], W))[0] == ids["t1"]
+    await _assert_exempt(ids["e3"], W)
 
 
 async def test_gap_assign(client, world):

@@ -746,15 +746,7 @@ async def decide_change_request(
         )
         cr_reason = (roster_svc.clean_reason(cr.reason)
                      or f"approved change request #{cr.id}")
-        old_live, new_live = await _live_transition(
-            db, cr.employee_id, cr.work_date, prior_snap,
-            RosterStatus.PUBLISHED, new_tpl, cr.requested_week_off,
-        )
-        locked = await roster_svc.lock_guard(
-            db, current_user,
-            [(cr.employee_id, cr.work_date, old_live, new_live)],
-            reason=cr_reason,
-        )
+        # Lock window: the employee requested this change -> exempt.
         _e, _o = await roster_svc.upsert_entry(
             db,
             employee_id=cr.employee_id,
@@ -774,15 +766,13 @@ async def decide_change_request(
         )
         live_changed = was_live and (prior_snap[0], prior_snap[1]) != (
             new_tpl, cr.requested_week_off)
-        if live_changed or locked:
-            await db.flush()
+        if live_changed:
             roster_svc.record_change(
                 db, _e, employee_id=cr.employee_id, work_date=cr.work_date,
-                old_tpl=old_live[0] if locked else prior_snap[0],
-                old_off=old_live[1] if locked else prior_snap[1],
+                old_tpl=prior_snap[0], old_off=prior_snap[1],
                 new_tpl=new_tpl, new_off=cr.requested_week_off,
                 action="update", reason=cr_reason,
-                actor_id=current_user.id, emergency=bool(locked),
+                actor_id=current_user.id,
             )
         if live_changed or not was_live:
             await roster_svc.notify_schedule_changed(
