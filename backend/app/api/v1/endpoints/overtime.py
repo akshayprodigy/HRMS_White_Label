@@ -7,7 +7,7 @@ Payroll injection is NOT here — that's wired in payroll.generate_draft so
 that the lines appear in the existing line editor and payslip flow.
 """
 import calendar as _cal
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -33,7 +33,7 @@ from app.models.overtime import (
 )
 from app.models.payroll import PayrollRun, PayrollRunStatus
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
-from app.models.user import User
+from app.models.user import Role, User
 from app.schemas.overtime import (
     NightAllowanceEntryRead,
     NightRuleCreate,
@@ -54,6 +54,9 @@ from app.services.overtime import (
     classify_day_type,
     compute_night_allowance,
     compute_overtime,
+)
+from app.services.effective_shift import (
+    EffectiveShift, effective_shift_on, effective_shifts_for_range,
 )
 from app.services.shift_resolver import worked_hours as compute_worked_hours
 
@@ -659,6 +662,13 @@ async def action_ot_entry(
 # ----------------------------------------------------------------------
 
 
+def _aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """MariaDB hands back naive datetimes; they are stored as UTC."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 async def _resolve_one(
     db,
     *,
@@ -666,10 +676,16 @@ async def _resolve_one(
     work_date: date,
     attendance: Optional[Attendance],
     holiday_set: set[date],
-    requested_by_id: int,
+    requested_by_id: Optional[int],
+    eff: Optional[EffectiveShift] = None,
 ) -> Tuple[int, int, int]:
     """Compute (and upsert) one OT entry + one night entry for the
     (user, work_date) pair.
+
+    `eff` is the pre-resolved effective shift for (user, work_date); when
+    omitted it is looked up. `requested_by_id` may be None (nightly job):
+    a PENDING OT entry whose employee has no manager is then routed to the
+    HR role instead of a named approver.
 
     Returns (ot_state, night_state, ot_minutes_used_for_running_total)
     where states are 0=skipped(finalized), 1=created, 2=updated.
@@ -705,20 +721,35 @@ async def _resolve_one(
     if attendance is None:
         return (0, 0, ot_existing.ot_minutes if ot_existing else 0)
 
-    shift = None
+    if eff is None:
+        eff = await effective_shift_on(db, user_id, work_date)
+
+    # Baseline shift. A published roster is authoritative (it may have
+    # changed after the punch was stamped); otherwise keep the shift
+    # snapshotted on the attendance row, falling back to the effective one.
+    snap_shift = None
     if attendance.shift_template_id:
-        shift = await db.get(ShiftTemplate, attendance.shift_template_id)
+        snap_shift = await db.get(ShiftTemplate, attendance.shift_template_id)
+    if eff.source == "roster":
+        # roster week-off has no shift of its own -> keep the snapshot.
+        shift = eff.shift if eff.shift is not None else snap_shift
+    else:
+        shift = snap_shift or eff.shift
+    shift_id = shift.id if shift is not None else attendance.shift_template_id
 
     basic = await _basic_for(db, user_id)
-    ot_rule = await _pick_ot_rule(db, attendance.shift_template_id)
-    night_rule = await _pick_night_rule(db, attendance.shift_template_id)
+    ot_rule = await _pick_ot_rule(db, shift_id)
+    night_rule = await _pick_night_rule(db, shift_id)
 
     # OT computation.
     worked = compute_worked_hours(
         attendance.captured_at, attendance.punch_out_time, shift,
     )
     day_type = classify_day_type(
-        work_date, shift, holiday_set
+        work_date, shift, holiday_set,
+        # Only a published roster overrides the shift's weekly_offs; for
+        # assignment/none keep the legacy shift-based decision.
+        is_week_off=eff.is_week_off if eff.source == "roster" else None,
     )
     monthly_used = await _monthly_used_minutes(
         db, user_id, work_date,
@@ -741,7 +772,7 @@ async def _resolve_one(
             new_ot = OvertimeEntry(
                 user_id=user_id, work_date=work_date,
                 attendance_id=attendance.id,
-                shift_template_id=attendance.shift_template_id,
+                shift_template_id=shift_id,
                 rule_id=ot_rule.id,
                 ot_minutes=ot.ot_minutes, ot_amount=ot.ot_amount,
                 hourly_rate_used=ot.hourly_rate_used,
@@ -762,7 +793,7 @@ async def _resolve_one(
                 or ot_existing.multiplier_used != ot.multiplier_used
             ):
                 ot_existing.attendance_id = attendance.id
-                ot_existing.shift_template_id = attendance.shift_template_id
+                ot_existing.shift_template_id = shift_id
                 ot_existing.rule_id = ot_rule.id
                 ot_existing.ot_minutes = ot.ot_minutes
                 ot_existing.ot_amount = ot.ot_amount
@@ -791,10 +822,19 @@ async def _resolve_one(
             )
             db.add(item)
             await db.flush()
+            approver_id = getattr(emp, "manager_id", None) or requested_by_id
+            hr_role_id = None
+            if approver_id is None:
+                # Unattended run (nightly job) and no manager: route the
+                # step to the HR role so it is never orphaned.
+                hr_role_id = (await db.execute(
+                    select(Role.id).where(Role.name == "HR")
+                )).scalar_one_or_none()
             step = ApprovalStep(
                 approval_item_id=item.id,
                 step_number=1,
-                approver_id=getattr(emp, "manager_id", None) or requested_by_id,
+                approver_id=approver_id,
+                role_id=hr_role_id,
                 status=ApprovalStatus.PENDING,
             )
             db.add(step)
@@ -824,8 +864,8 @@ async def _resolve_one(
 
     # Night allowance.
     night = compute_night_allowance(
-        punch_in=attendance.captured_at,
-        punch_out=attendance.punch_out_time,
+        punch_in=_aware_utc(attendance.captured_at),
+        punch_out=_aware_utc(attendance.punch_out_time),
         work_date=work_date, rule=night_rule,
     )
     night_state = 0
@@ -861,32 +901,55 @@ async def _resolve_one(
     return (ot_state, night_state, ot.ot_minutes)
 
 
-@router.post("/recompute", response_model=RecomputeResult)
-async def recompute(
-    payload: RecomputeRequest,
-    db: deps.DBDep,
-    request: Request,
-    current_user: User = Depends(deps.check_permissions([PERM_RULE_WRITE])),
-) -> Any:
-    """Re-evaluate OT + night-allowance for every attendance row in the
-    period. Never touches entries that have a payroll_run_id (already
-    rolled into a finalized payroll run)."""
-    if payload.end_date < payload.start_date:
-        raise HTTPException(400, "end_date cannot be before start_date")
+_EFF_CHUNK_DAYS = 31
 
+
+async def recompute_range(
+    db,
+    start: date,
+    end: date,
+    user_ids: Optional[List[int]] = None,
+    requested_by_id: Optional[int] = None,
+    *,
+    require_punch_out: bool = False,
+) -> dict:
+    """Re-evaluate OT + night-allowance for every attendance row in
+    [start, end] (optionally scoped to `user_ids`). Never touches entries
+    that have a payroll_run_id. Does NOT commit or audit-log (callers do).
+
+    `requested_by_id` is only the fallback approver for PENDING OT entries
+    of employees without a manager; None routes those to the HR role.
+    `require_punch_out` skips still-open attendance rows (nightly job).
+    """
     # Holidays for the whole window.
-    holiday_set = await _load_holidays(db, payload.start_date, payload.end_date)
+    holiday_set = await _load_holidays(db, start, end)
 
     # Pull all attendance rows in the window, scoped to user_ids if given.
     att_q = select(Attendance).where(
         and_(
-            Attendance.work_date >= payload.start_date,
-            Attendance.work_date <= payload.end_date,
+            Attendance.work_date >= start,
+            Attendance.work_date <= end,
         )
     )
-    if payload.user_ids:
-        att_q = att_q.where(Attendance.user_id.in_(payload.user_ids))
+    if user_ids:
+        att_q = att_q.where(Attendance.user_id.in_(user_ids))
+    if require_punch_out:
+        att_q = att_q.where(Attendance.punch_out_time.isnot(None))
     att_rows = (await db.execute(att_q)).scalars().all()
+
+    # Effective shifts resolved in batches (2 queries per <=31-day chunk)
+    # instead of one lookup per row.
+    eff_map: dict = {}
+    if att_rows:
+        uids = sorted({a.user_id for a in att_rows})
+        cur = min(a.work_date for a in att_rows)
+        last = max(a.work_date for a in att_rows)
+        while cur <= last:
+            chunk_end = min(cur + timedelta(days=_EFF_CHUNK_DAYS - 1), last)
+            eff_map.update(
+                await effective_shifts_for_range(db, uids, cur, chunk_end)
+            )
+            cur = chunk_end + timedelta(days=1)
 
     created_ot = updated_ot = skipped_ot = 0
     created_night = updated_night = skipped_night = 0
@@ -895,7 +958,8 @@ async def recompute(
         ot_state, night_state, _ = await _resolve_one(
             db, user_id=att.user_id, work_date=att.work_date,
             attendance=att, holiday_set=holiday_set,
-            requested_by_id=current_user.id,
+            requested_by_id=requested_by_id,
+            eff=eff_map.get((att.user_id, att.work_date)),
         )
         if ot_state == 1: created_ot += 1
         elif ot_state == 2: updated_ot += 1
@@ -923,13 +987,39 @@ async def recompute(
     night_skipped_q = await db.execute(
         select(func.count(NightAllowanceEntry.id)).where(
             and_(
-                NightAllowanceEntry.work_date >= payload.start_date,
-                NightAllowanceEntry.work_date <= payload.end_date,
+                NightAllowanceEntry.work_date >= start,
+                NightAllowanceEntry.work_date <= end,
                 NightAllowanceEntry.payroll_run_id.isnot(None),
             )
         )
     )
     skipped_night = int(night_skipped_q.scalar() or 0)
+
+    return {
+        "ot_created": created_ot, "ot_updated": updated_ot,
+        "ot_skipped_finalized": skipped_ot,
+        "night_created": created_night, "night_updated": updated_night,
+        "night_skipped_finalized": skipped_night,
+    }
+
+
+@router.post("/recompute", response_model=RecomputeResult)
+async def recompute(
+    payload: RecomputeRequest,
+    db: deps.DBDep,
+    request: Request,
+    current_user: User = Depends(deps.check_permissions([PERM_RULE_WRITE])),
+) -> Any:
+    """Re-evaluate OT + night-allowance for every attendance row in the
+    period. Never touches entries that have a payroll_run_id (already
+    rolled into a finalized payroll run)."""
+    if payload.end_date < payload.start_date:
+        raise HTTPException(400, "end_date cannot be before start_date")
+
+    counts = await recompute_range(
+        db, payload.start_date, payload.end_date,
+        user_ids=payload.user_ids, requested_by_id=current_user.id,
+    )
 
     await log_audit(
         db, current_user.id, "OT_RECOMPUTE", "overtime_entry", "*",
@@ -937,10 +1027,7 @@ async def recompute(
             "start": payload.start_date.isoformat(),
             "end": payload.end_date.isoformat(),
             "user_ids": payload.user_ids,
-            "ot_created": created_ot, "ot_updated": updated_ot,
-            "ot_skipped_finalized": skipped_ot,
-            "night_created": created_night, "night_updated": updated_night,
-            "night_skipped_finalized": skipped_night,
+            **counts,
         },
         request,
     )
@@ -948,11 +1035,12 @@ async def recompute(
 
     return RecomputeResult(
         period_start=payload.start_date, period_end=payload.end_date,
-        ot_entries_created=created_ot, ot_entries_updated=updated_ot,
-        ot_entries_skipped_finalized=skipped_ot,
-        night_entries_created=created_night,
-        night_entries_updated=updated_night,
-        night_entries_skipped_finalized=skipped_night,
+        ot_entries_created=counts["ot_created"],
+        ot_entries_updated=counts["ot_updated"],
+        ot_entries_skipped_finalized=counts["ot_skipped_finalized"],
+        night_entries_created=counts["night_created"],
+        night_entries_updated=counts["night_updated"],
+        night_entries_skipped_finalized=counts["night_skipped_finalized"],
     )
 
 

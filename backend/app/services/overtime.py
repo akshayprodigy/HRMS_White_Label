@@ -139,15 +139,23 @@ def classify_day_type(
     work_date: date,
     shift: Optional[ShiftLike],
     holiday_dates: set[date],
+    *,
+    is_week_off: Optional[bool] = None,
 ) -> DayType:
     """Decide which multiplier applies.
 
     Holiday wins over weekly-off (HR convention: a public holiday that
     happens to fall on a weekly-off pays at the holiday rate, not the
     weekly-off rate).
+
+    `is_week_off`, when not None, is authoritative for the weekly-off
+    decision (e.g. a published roster week-off) and overrides the shift's
+    `weekly_offs`. None keeps the legacy shift-based behaviour.
     """
     if work_date in holiday_dates:
         return DayType.HOLIDAY
+    if is_week_off is not None:
+        return DayType.WEEKLY_OFF if is_week_off else DayType.WEEKDAY
     if shift is not None and shift.weekly_offs:
         if work_date.weekday() in shift.weekly_offs:
             return DayType.WEEKLY_OFF

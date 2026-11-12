@@ -1,0 +1,75 @@
+{
+  "night": [],
+  "ot": [
+    {
+      "date": "2030-06-12",
+      "day_type": "holiday",
+      "hourly_rate_used": 125.0,
+      "multiplier_used": 2.5,
+      "ot_amount": 625.0,
+      "ot_minutes": 120,
+      "rule": "PLOT-day",
+      "shift": "t_day",
+      "status": "auto_approved",
+      "user": "hol"
+    },
+    {
+      "date": "2030-06-10",
+      "day_type": "weekday",
+      "hourly_rate_used": 125.0,
+      "multiplier_used": 1.5,
+      "ot_amount": 375.0,
+      "ot_minutes": 120,
+      "rule": "PLOT-org",
+      "shift": null,
+      "status": "pending",
+      "user": "nos"
+    },
+    {
+      "date": "2030-06-10",
+      "day_type": "weekday",
+      "hourly_rate_used": 125.0,
+      "multiplier_used": 1.25,
+      "ot_amount": 78.12,
+      "ot_minutes": 30,
+      "rule": "PLOT-night",
+      "shift": "t_night",
+      "status": "auto_approved",
+      "user": "ovn"
+    },
+    {
+      "date": "2030-06-10",
+      "day_type": "weekday",
+      "hourly_rate_used": 125.0,
+      "multiplier_used": 1.5,
+      "ot_amount": 281.25,
+      "ot_minutes": 90,
+      "rule": "PLOT-day",
+      "shift": "t_day",
+      "status": "auto_approved",
+      "user": "wd"
+    },
+    {
+      "date": "2030-06-16",
+      "day_type": "weekly_off",
+      "hourly_rate_used": 125.0,
+      "multiplier_used": 2.0,
+      "ot_amount": 250.0,
+      "ot_minutes": 60,
+      "rule": "PLOT-day",
+      "shift": "t_day",
+      "status": "auto_approved",
+      "user": "wo"
+    }
+  ],
+  "response": {
+    "night_entries_created": 0,
+    "night_entries_skipped_finalized": 0,
+    "night_entries_updated": 0,
+    "ot_entries_created": 5,
+    "ot_entries_skipped_finalized": 0,
+    "ot_entries_updated": 0,
+    "period_end": "2030-06-16",
+    "period_start": "2030-06-10"
+  }
+}

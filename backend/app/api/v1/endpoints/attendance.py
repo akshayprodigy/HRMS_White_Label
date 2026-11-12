@@ -285,8 +285,17 @@ async def _maybe_create_comp_off_accrual(
         .where(HolidayCalendar.location.in_(["All", "HQ"]))
         .limit(1)
     )).scalar_one_or_none()
+    holiday_name: Optional[str] = holiday.name if holiday is not None else None
     if holiday is None:
-        return None
+        # Optional: working a rostered / scheduled week-off earns comp-off
+        # too, behind a time rule (default off).
+        rules = await get_time_rules(db)
+        if rules.get("attendance.weekoff_comp_off_enabled", "0").strip() != "1":
+            return None
+        eff = await effective_shift_on(db, user.id, work_date)
+        if not eff.is_week_off:
+            return None
+        holiday_name = "Week-off work"
 
     worked_minutes = int((punch_out - punch_in).total_seconds() // 60)
     if worked_minutes < COMP_OFF_THRESHOLD_MINUTES:
@@ -306,14 +315,14 @@ async def _maybe_create_comp_off_accrual(
     accrual = CompOffAccrual(
         user_id=user.id,
         holiday_date=work_date,
-        holiday_name=holiday.name,
+        holiday_name=holiday_name,
         attendance_id=attendance.id,
         worked_minutes=worked_minutes,
         days_credited=1.0,
         status="pending",
         reason=(
             f"Worked {worked_minutes // 60}h {worked_minutes % 60:02d}m on "
-            f"{holiday.name} ({work_date.isoformat()})"
+            f"{holiday_name} ({work_date.isoformat()})"
         ),
     )
     db.add(accrual)

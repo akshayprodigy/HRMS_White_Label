@@ -78,6 +78,10 @@ export const TimeRulesTab: React.FC = () => {
     (rules['attendance.absence_lop_enabled'] ?? '').trim().toLowerCase(),
   );
 
+  const weekoffCompOff = ['1', 'true', 'yes', 'on'].includes(
+    (rules['attendance.weekoff_comp_off_enabled'] ?? '').trim().toLowerCase(),
+  );
+
   const save = async () => {
     for (const f of SCHEDULE_FIELDS) {
       const raw = (rules[f.key] ?? '').toString().trim();
@@ -189,6 +193,34 @@ export const TimeRulesTab: React.FC = () => {
             />
             <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
               {absenceLop ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </div>
+
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+              <Clock3 size={15} className="text-blue-600" /> Week-off Comp-off
+            </h3>
+            <p className="text-[10px] font-bold text-slate-500 mt-1">
+              Grant a comp-off accrual (manager and HR approval) when an
+              employee works a rostered week-off for at least 6.5 hours.
+            </p>
+          </div>
+          <label className="inline-flex items-center gap-2 cursor-pointer select-none shrink-0">
+            <input
+              type="checkbox"
+              checked={weekoffCompOff}
+              onChange={(e) =>
+                setRules({
+                  ...rules,
+                  'attendance.weekoff_comp_off_enabled': e.target.checked ? '1' : '0',
+                })
+              }
+              className="w-4 h-4 accent-blue-600"
+            />
+            <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
+              {weekoffCompOff ? 'Enabled' : 'Disabled'}
             </span>
           </label>
         </div>

@@ -40,6 +40,11 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Count unexplained absences on scheduled working days as LOP in "
         "payroll (1/0)",
     ),
+    "attendance.weekoff_comp_off_enabled": (
+        "0",
+        "Grant a comp-off accrual (manager -> HR approval) for working a "
+        "rostered week-off (1/0)",
+    ),
     "attendance.default_weekly_offs": (
         "6",
         "Comma-separated weekdays off for employees with no shift "
@@ -103,6 +108,13 @@ async def set_time_rules(
                 "weekday numbers 0-6 (Mon=0..Sun=6), e.g. '6' or '5,6'"
             )
     updates = dict(updates)
+    wk = updates.get("attendance.weekoff_comp_off_enabled")
+    if wk is not None:
+        if str(wk).strip() not in ("0", "1"):
+            raise ValueError(
+                "attendance.weekoff_comp_off_enabled must be 0 or 1"
+            )
+        updates["attendance.weekoff_comp_off_enabled"] = str(wk).strip()
     for key, cap in SCHEDULE_INT_CAPS.items():
         v = updates.get(key)
         if v is not None:

@@ -415,3 +415,18 @@ class TestRecomputeNoDoubleCount:
         b = compute_night_allowance(**kw)
         assert a.night_minutes == b.night_minutes
         assert a.amount == b.amount
+
+
+def test_classify_day_type_is_week_off_override():
+    sun, mon = date(2030, 6, 16), date(2030, 6, 10)
+    shift = FakeShift()  # weekly off = Sunday
+    assert classify_day_type(mon, shift, set()) == DayType.WEEKDAY
+    assert classify_day_type(sun, shift, set()) == DayType.WEEKLY_OFF
+    # None == legacy behaviour
+    assert classify_day_type(sun, shift, set(), is_week_off=None) == DayType.WEEKLY_OFF
+    # explicit value overrides weekly_offs, both directions
+    assert classify_day_type(mon, shift, set(), is_week_off=True) == DayType.WEEKLY_OFF
+    assert classify_day_type(sun, shift, set(), is_week_off=False) == DayType.WEEKDAY
+    assert classify_day_type(mon, None, set(), is_week_off=True) == DayType.WEEKLY_OFF
+    # holiday still wins
+    assert classify_day_type(mon, shift, {mon}, is_week_off=True) == DayType.HOLIDAY
