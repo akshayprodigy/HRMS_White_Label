@@ -14,7 +14,7 @@ from app.models.geofence import (
     EmployeeGeoConfig, EmployeeGeoFenceLink, GeoFenceLocation,
 )
 from app.models.notification import Notification
-from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
+from app.models.shift import ShiftTemplate
 from app.models.user import Role, User as UserModel
 from app.services.effective_shift import effective_shift_on
 from app.services.geofence import (

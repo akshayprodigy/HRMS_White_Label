@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from app.models.roster import RosterEntry, RosterStatus
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
@@ -49,8 +49,13 @@ def _resolve(
 async def effective_shifts_for_range(
     db, user_ids: list[int], start: date, end: date
 ) -> dict[tuple[int, date], EffectiveShift]:
-    """Batched resolution: two queries (roster + assignments) regardless of
-    window size. Returns an entry for every (user_id, date) inclusive."""
+    """Batched resolution: exactly two queries (roster + assignments, with
+    templates joined in) regardless of window size. Returns an entry for
+    every (user_id, date) inclusive.
+
+    The result is a dense dict (one entry per user per day), so callers
+    should keep windows to about a month. Queries use populate_existing so
+    long-lived sessions never see stale roster/assignment rows."""
     out: dict[tuple[int, date], EffectiveShift] = {}
     if not user_ids or end < start:
         return out
@@ -58,19 +63,20 @@ async def effective_shifts_for_range(
 
     roster_rows = (await db.execute(
         select(RosterEntry)
-        .options(selectinload(RosterEntry.shift_template))
+        .options(joinedload(RosterEntry.shift_template))
         .where(
             RosterEntry.employee_id.in_(uids),
             RosterEntry.work_date >= start,
             RosterEntry.work_date <= end,
             RosterEntry.status == RosterStatus.PUBLISHED,
         )
+        .execution_options(populate_existing=True)
     )).scalars().all()
     roster_by_key = {(r.employee_id, r.work_date): r for r in roster_rows}
 
     asg_rows = (await db.execute(
         select(EmployeeShiftAssignment)
-        .options(selectinload(EmployeeShiftAssignment.shift_template))
+        .options(joinedload(EmployeeShiftAssignment.shift_template))
         .where(
             EmployeeShiftAssignment.employee_id.in_(uids),
             EmployeeShiftAssignment.effective_from <= end,
@@ -80,6 +86,7 @@ async def effective_shifts_for_range(
             ),
         )
         .order_by(EmployeeShiftAssignment.effective_from.desc())
+        .execution_options(populate_existing=True)
     )).scalars().all()
     # Already sorted latest effective_from first per user.
     asg_by_user: dict[int, list[EmployeeShiftAssignment]] = {}

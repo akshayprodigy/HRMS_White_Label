@@ -20,50 +20,60 @@ assert MON.weekday() == 0
 
 @pytest.fixture
 async def env():
+    uids: list[int] = []
+    tpl_ids: list[int] = []
     async with SessionLocal() as db:
-        tag = uuid.uuid4().hex[:8]
-        user = User(email=f"eff_{tag}@test.com", full_name="Eff", hashed_password="x")
-        db.add(user)
-        await db.flush()
-        asg_tpl = ShiftTemplate(
-            name=f"EffA_{tag}", start_time=time(9, 0), end_time=time(18, 0),
-            weekly_offs=[6],
-        )
-        ros_tpl = ShiftTemplate(
-            name=f"EffR_{tag}", start_time=time(22, 0), end_time=time(6, 0),
-            is_overnight=True, weekly_offs=[],
-        )
-        db.add_all([asg_tpl, ros_tpl])
-        await db.flush()
-        await db.commit()
-        # Plain ids: ORM instances expire on commit (async can't lazy-load).
-        uid, asg_id, ros_id = user.id, asg_tpl.id, ros_tpl.id
-        ctx = {"db": db, "uid": uid, "asg_id": asg_id, "ros_id": ros_id}
         try:
-            yield ctx
+            tag = uuid.uuid4().hex[:8]
+            users = [
+                User(email=f"eff{i}_{tag}@test.com", full_name="Eff", hashed_password="x")
+                for i in range(2)
+            ]
+            db.add_all(users)
+            await db.flush()
+            uids.extend(u.id for u in users)
+            asg_tpl = ShiftTemplate(
+                name=f"EffA_{tag}", start_time=time(9, 0), end_time=time(18, 0),
+                weekly_offs=[6],
+            )
+            ros_tpl = ShiftTemplate(
+                name=f"EffR_{tag}", start_time=time(22, 0), end_time=time(6, 0),
+                is_overnight=True, weekly_offs=[],
+            )
+            db.add_all([asg_tpl, ros_tpl])
+            await db.flush()
+            tpl_ids.extend([asg_tpl.id, ros_tpl.id])
+            await db.commit()
+            # Plain ids: ORM instances expire on commit (async can't lazy-load).
+            yield {
+                "db": db, "uid": uids[0], "uid2": uids[1],
+                "asg_id": tpl_ids[0], "ros_id": tpl_ids[1],
+            }
         finally:
             await db.rollback()
-            await db.execute(delete(RosterEntry).where(RosterEntry.employee_id == uid))
-            await db.execute(delete(EmployeeShiftAssignment).where(
-                EmployeeShiftAssignment.employee_id == uid))
-            await db.execute(delete(ShiftTemplate).where(
-                ShiftTemplate.id.in_([asg_id, ros_id])))
-            await db.execute(delete(User).where(User.id == uid))
+            if uids:
+                await db.execute(delete(RosterEntry).where(RosterEntry.employee_id.in_(uids)))
+                await db.execute(delete(EmployeeShiftAssignment).where(
+                    EmployeeShiftAssignment.employee_id.in_(uids)))
+            if tpl_ids:
+                await db.execute(delete(ShiftTemplate).where(ShiftTemplate.id.in_(tpl_ids)))
+            if uids:
+                await db.execute(delete(User).where(User.id.in_(uids)))
             await db.commit()
     await engine.dispose()
 
 
-async def _assign(e, frm=date(2031, 1, 1), to=None):
+async def _assign(e, frm=date(2031, 1, 1), to=None, uid=None, tpl=None):
     e["db"].add(EmployeeShiftAssignment(
-        employee_id=e["uid"], shift_template_id=e["asg_id"],
+        employee_id=uid or e["uid"], shift_template_id=tpl or e["asg_id"],
         effective_from=frm, effective_to=to,
     ))
     await e["db"].commit()
 
 
-async def _roster(e, d, status=RosterStatus.PUBLISHED, shift=None, off=False):
+async def _roster(e, d, status=RosterStatus.PUBLISHED, shift=None, off=False, uid=None):
     e["db"].add(RosterEntry(
-        employee_id=e["uid"], work_date=d, status=status,
+        employee_id=uid or e["uid"], work_date=d, status=status,
         shift_template_id=shift if shift else None, is_week_off=off,
     ))
     await e["db"].commit()
@@ -137,3 +147,39 @@ async def test_range_agrees_with_single_day(env):
         assert (got.shift.id if got.shift else None, got.is_week_off, got.source) == (
             one.shift.id if one.shift else None, one.is_week_off, one.source
         ), d
+
+
+async def test_overlapping_assignments_latest_wins(env):
+    await _assign(env, frm=date(2031, 1, 1))
+    await _assign(env, frm=date(2031, 3, 1), tpl=env["ros_id"])
+    uid, db = env["uid"], env["db"]
+    r = await effective_shift_on(db, uid, MON)
+    assert r.shift.id == env["ros_id"] and r.source == "assignment"
+    rng = await effective_shifts_for_range(db, [uid], MON, MON)
+    assert rng[(uid, MON)].shift.id == env["ros_id"]
+    assert (await effective_shift_on(db, uid, date(2031, 2, 1))).shift.id == env["asg_id"]
+
+
+async def test_multi_user_range_with_duplicate_ids(env):
+    await _assign(env)  # user 1: assignment
+    await _roster(env, MON, shift=env["ros_id"], uid=env["uid2"])  # user 2: roster
+    u1, u2, db = env["uid"], env["uid2"], env["db"]
+    rng = await effective_shifts_for_range(db, [u1, u2, u1], MON, date(2031, 3, 4))
+    assert len(rng) == 4
+    assert rng[(u1, MON)].source == "assignment"
+    assert rng[(u2, MON)].source == "roster" and rng[(u2, MON)].shift.id == env["ros_id"]
+    assert rng[(u2, date(2031, 3, 4))].source == "none"
+    assert rng[(u1, date(2031, 3, 4))].source == "assignment"
+
+
+async def test_week_off_wins_over_shift_on_same_row(env):
+    await _assign(env)
+    await _roster(env, MON, shift=env["ros_id"], off=True)
+    r = await effective_shift_on(env["db"], env["uid"], MON)
+    assert r.shift is None and r.is_week_off and r.source == "roster"
+
+
+async def test_empty_inputs_return_empty(env):
+    db = env["db"]
+    assert await effective_shifts_for_range(db, [], MON, MON) == {}
+    assert await effective_shifts_for_range(db, [env["uid"]], date(2031, 3, 5), MON) == {}
