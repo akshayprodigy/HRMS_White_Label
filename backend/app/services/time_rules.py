@@ -92,6 +92,11 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "the leave type requires (else it converts to LOP). 0 = the "
         "certificate must be attached upfront (0-60)",
     ),
+    "approvals.sla_hours": (
+        "48",
+        "Hours an approver has to act before an overdue step escalates to "
+        "their manager (else HR). 0 = no SLA / no escalation (0-720)",
+    ),
 }
 
 # key -> inclusive upper bound
@@ -103,7 +108,9 @@ SCHEDULE_INT_CAPS: Dict[str, int] = {
     "schedule.no_show_minutes": 240,
 }
 SCHEDULE_INT_KEYS = tuple(SCHEDULE_INT_CAPS)
-LOCK_INT_CAPS: Dict[str, int] = {"schedule.lock_days": 30}
+LOCK_INT_CAPS: Dict[str, int] = {
+    "schedule.lock_days": 30, "approvals.sla_hours": 720,
+}
 CALLBACK_MODES = ("none", "comp_off", "allowance")
 LEAVE_INT_CAPS: Dict[str, int] = {
     "leave.emergency_backdate_days": 31,

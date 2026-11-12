@@ -79,6 +79,8 @@ EVENT_CATEGORY_MAP = {
     "approval_pending": EventCategory.APPROVALS,
     "approval_approved": EventCategory.APPROVALS,
     "approval_rejected": EventCategory.APPROVALS,
+    "approval_escalated": EventCategory.APPROVALS,
+    "approval_delegated": EventCategory.APPROVALS,
     "overtime_submitted": EventCategory.OVERTIME,
     "overtime_approved": EventCategory.OVERTIME,
     "payslip_published": EventCategory.PAYROLL,

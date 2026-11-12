@@ -57,6 +57,11 @@ export const ApprovalsView = () => {
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState<
+    { id: number; ok: boolean; error?: string | null }[] | null
+  >(null);
 
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
@@ -206,6 +211,46 @@ export const ApprovalsView = () => {
     }
   };
 
+  const isBulkable = (item: ApprovalItem) =>
+    item.status === 'pending' &&
+    item.resource_type !== 'estimate' &&
+    item.resource_type !== 'estimate_version';
+
+  const toggleSelected = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const runBulk = async (action: 'approve' | 'reject') => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    setBulkResult(null);
+    try {
+      const ids = Array.from(selected);
+      const res = await client.post(ENDPOINTS.APPROVALS.BULK, {
+        action,
+        comment: 'Bulk action via approvals center',
+        items: ids.map((id) => ({ kind: 'legacy', id })),
+      });
+      const results = (res.data?.results ?? []) as { id: number; ok: boolean; error?: string | null }[];
+      setBulkResult(results);
+      const okCount = results.filter((r) => r.ok).length;
+      if (okCount === results.length) toast.success(`${okCount} request(s) ${action === 'approve' ? 'approved' : 'rejected'}`);
+      else toast.warning(`${okCount} of ${results.length} succeeded`);
+      // Keep only the ones that failed selected so they can be retried/inspected.
+      setSelected(new Set(results.filter((r) => !r.ok).map((r) => r.id)));
+      fetchApprovals();
+    } catch (error: any) {
+      toast.error(error.message || 'Bulk action failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const filteredApprovals = approvals.filter((item) => {
     const needle = search.trim().toLowerCase();
     if (!needle) return true;
@@ -310,6 +355,46 @@ export const ApprovalsView = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4">
+          {(selected.size > 0 || bulkResult) && (
+            <Card className="p-4 border-blue-100 bg-blue-50 rounded-2xl space-y-2" data-testid="bulk-bar">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs font-black uppercase tracking-widest text-blue-700">
+                  {selected.size} selected
+                </span>
+                <Button
+                  onClick={() => runBulk('approve')}
+                  disabled={bulkBusy || selected.size === 0}
+                  className="h-9 px-4 rounded-xl bg-green-600 hover:bg-green-700 font-black text-[10px] uppercase tracking-widest"
+                >
+                  {bulkBusy ? <Loader2 size={14} className="animate-spin" /> : 'Bulk approve'}
+                </Button>
+                <Button
+                  onClick={() => runBulk('reject')}
+                  disabled={bulkBusy || selected.size === 0}
+                  variant="outline"
+                  className="h-9 px-4 rounded-xl border-red-200 text-red-600 hover:bg-red-50 font-black text-[10px] uppercase tracking-widest"
+                >
+                  Bulk reject
+                </Button>
+                <Button
+                  onClick={() => { setSelected(new Set()); setBulkResult(null); }}
+                  disabled={bulkBusy}
+                  variant="outline"
+                  className="h-9 px-4 rounded-xl font-black text-[10px] uppercase tracking-widest"
+                >
+                  Clear
+                </Button>
+              </div>
+              {bulkResult && (
+                <div className="text-xs font-bold text-slate-700" data-testid="bulk-result">
+                  {bulkResult.filter((r) => r.ok).length} succeeded, {bulkResult.filter((r) => !r.ok).length} failed
+                  {bulkResult.filter((r) => !r.ok).map((r) => (
+                    <div key={r.id} className="text-red-600">#{r.id}: {r.error}</div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
           {filteredApprovals.map((item) => (
             <Card
               key={item.id}
@@ -318,6 +403,17 @@ export const ApprovalsView = () => {
             >
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="flex items-center space-x-4">
+                  {isBulkable(item) && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Select request ${item.id}`}
+                      data-testid={`bulk-select-${item.id}`}
+                      checked={selected.has(item.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleSelected(item.id)}
+                      className="w-5 h-5 accent-blue-600 cursor-pointer"
+                    />
+                  )}
                   <div className="w-14 h-14 rounded-2xl bg-slate-50 flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all duration-500">
                     <CheckCircle2 size={24} />
                   </div>
@@ -342,6 +438,16 @@ export const ApprovalsView = () => {
                       >
                         {item.status}
                       </Badge>
+                      {item.is_overdue && (
+                        <Badge className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-widest bg-red-100 text-red-700">
+                          Overdue
+                        </Badge>
+                      )}
+                      {item.acting_for && (
+                        <Badge className="rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-widest bg-blue-100 text-blue-700">
+                          Acting for {item.acting_for.name || `user #${item.acting_for.user_id}`}
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 </div>

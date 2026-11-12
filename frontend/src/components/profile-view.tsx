@@ -32,6 +32,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
+import { OutOfOfficeCard } from './out-of-office-card';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { toast } from 'sonner';
@@ -541,6 +542,7 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
                       </div>
                    </div>
                 </section>
+                <OutOfOfficeCard />
              </div>
            )}
 

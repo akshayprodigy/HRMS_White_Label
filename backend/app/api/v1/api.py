@@ -7,7 +7,7 @@ from app.api.v1.endpoints import (
     onboarding, clients, bd_bid_tasks, bd_lead_documents,
     admin_bid_line_items, bd_bid_line_items, exit_management,
     salary_advance, shifts, geofence, overtime, revisions, statutory, tax,
-    performance, approval_chains, expenses, dashboard, plumbing,
+    performance, approval_chains, approver_delegations, expenses, dashboard, plumbing,
     notifications_admin, functional_head, employment_types,
     salary_structure, late_mark, leave_policies, roster,
     roster_publish, roster_rules, roster_rotations, roster_availability,
@@ -281,4 +281,11 @@ api_router.include_router(
     geofence.router,
     prefix="/geo",
     tags=["geofence"],
+)
+
+api_router.include_router(
+    approver_delegations.router,
+    prefix="",
+    tags=["approver-delegations"],
+    dependencies=[Depends(deps.verify_attendance)],
 )

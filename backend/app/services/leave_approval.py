@@ -237,6 +237,8 @@ async def apply_leave_decision(
                         if s.step_number == item.current_step_number + 1), None)
         if nxt is not None:
             item.current_step_number += 1
+            from app.services.approval_sla import next_due
+            item.due_date = await next_due(db, now)
             outcome = "advanced"
         else:
             if override_all:

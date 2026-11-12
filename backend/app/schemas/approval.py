@@ -23,6 +23,9 @@ class ApprovalItemRead(BaseModel):
     requested_by_name: Optional[str] = None
     created_at: datetime
     due_date: Optional[datetime]
+    due_at: Optional[datetime] = None
+    is_overdue: bool = False
+    acting_for: Optional[dict] = None
     steps: List[ApprovalStepRead]
     model_config = ConfigDict(from_attributes=True)
 
@@ -30,3 +33,13 @@ class ApprovalAction(BaseModel):
     status: ApprovalStatus  # APPROVED, REJECTED, CHANGES_REQUESTED
     comment: Optional[str] = None
     next_approver_id: Optional[int] = None
+
+
+class BulkApprovalRef(BaseModel):
+    kind: str  # 'legacy' | 'chain'
+    id: int
+
+class BulkApprovalAction(BaseModel):
+    items: List[BulkApprovalRef]
+    action: str  # 'approve' | 'reject'
+    comment: Optional[str] = None

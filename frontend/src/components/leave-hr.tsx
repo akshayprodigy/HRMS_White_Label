@@ -218,6 +218,14 @@ export const LeaveHR = () => {
                           <span className="text-xs font-black uppercase tracking-widest">Resource ID: {item.resource_id}</span>
                         </div>
                         <Badge variant="warning" className="text-[8px] px-2 h-5 font-black uppercase tracking-widest">Action Required</Badge>
+                        {item.is_overdue && (
+                          <Badge variant="error" className="text-[8px] px-2 h-5 font-black uppercase tracking-widest">Overdue</Badge>
+                        )}
+                        {item.acting_for && (
+                          <Badge variant="info" className="text-[8px] px-2 h-5 font-black uppercase tracking-widest">
+                            Acting for {item.acting_for.name || `user #${item.acting_for.user_id}`}
+                          </Badge>
+                        )}
                         {(item as any).leave_detail?.is_emergency && (
                           <Badge variant="error" className="text-[8px] px-2 h-5 font-black uppercase tracking-widest">Emergency</Badge>
                         )}

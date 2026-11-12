@@ -765,7 +765,9 @@ def _serialize_leave_for_approval(lr: LeaveRequest) -> dict:
     }
 
 
-def _build_approver_step_filter(current_user: User) -> Any:
+def _build_approver_step_filter(
+    current_user: User, delegator_ids: Optional[list] = None,
+) -> Any:
     """Build the OR-clause that matches pending steps an approver can action."""
     role_ids = [r.id for r in current_user.roles]
     role_clause = (
@@ -773,6 +775,8 @@ def _build_approver_step_filter(current_user: User) -> Any:
     )
     return or_(
         ApprovalStep.approver_id == current_user.id,
+        # Out-of-office delegation: steps named on a user who delegated to me.
+        ApprovalStep.approver_id.in_(delegator_ids or [-1]),
         and_(
             ApprovalStep.approver_id == None,  # noqa: E711 (SA column compare)
             or_(
@@ -792,6 +796,10 @@ async def get_leave_approvals(
     )
 ) -> Any:
     """Get pending leave approvals for the current user."""
+    from app.services.approval_sla import is_overdue
+    from app.services.approver_delegation import delegator_ids, user_names
+    delegators = await delegator_ids(db, current_user.id)
+    del_names = await user_names(db, delegators)
     query = (
         select(ApprovalItem)
         .join(ApprovalStep)
@@ -800,7 +808,7 @@ async def get_leave_approvals(
                 ApprovalItem.status == ApprovalStatus.PENDING,
                 ApprovalStep.status == ApprovalStatus.PENDING,
                 ApprovalItem.current_step_number == ApprovalStep.step_number,
-                _build_approver_step_filter(current_user),
+                _build_approver_step_filter(current_user, delegators),
             )
         )
         .options(
@@ -830,6 +838,15 @@ async def get_leave_approvals(
         d = ApprovalItemRead.model_validate(item).model_dump()
         d['requested_by_name'] = (
             item.requested_by.full_name if item.requested_by else None
+        )
+        d['due_at'] = item.due_date
+        d['is_overdue'] = is_overdue(item.due_date)
+        cur = next((st for st in item.steps
+                    if st.step_number == item.current_step_number), None)
+        d['acting_for'] = (
+            {"user_id": cur.approver_id, "name": del_names.get(cur.approver_id)}
+            if cur is not None and cur.approver_id in delegators
+            and cur.approver_id != current_user.id else None
         )
         if item.resource_type == "leave_request":
             lr_id = _parse_leave_resource_id(item.resource_id)
@@ -898,6 +915,12 @@ async def action_approval(
         current_step.approver_id == current_user.id
         or (current_step.approver_id is None and (current_step.role_id in role_ids or current_step.role_id is None))
     )
+    acting_for = None
+    if not can_action and current_step.approver_id:
+        from app.services.approver_delegation import delegator_ids
+        if current_step.approver_id in await delegator_ids(db, current_user.id):
+            can_action = True
+            acting_for = current_step.approver_id
 
     if not can_action:
         raise HTTPException(status_code=403, detail="Not authorized to action this step")
@@ -918,6 +941,8 @@ async def action_approval(
         action=f"APPROVAL_{action.status}",
         resource_type=approval_item.resource_type,
         resource_id=approval_item.resource_id,
+        details=({"acting_for_user_id": acting_for}
+                 if acting_for else None),
         ip_address=request.client.host if request.client else None
     ))
     

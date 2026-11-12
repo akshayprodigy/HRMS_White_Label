@@ -791,3 +791,23 @@ register_job(JobSpec(
     default_cadence_cron="15 2 * * *",     # daily 02:15 UTC
     fn=_job_emergency_leave_proof_check,
 ))
+
+
+async def _job_approval_escalation(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.approval_sla import escalate_overdue
+    return await escalate_overdue(session)
+
+
+register_job(JobSpec(
+    name="approval_escalation",
+    display_name="Approval SLA escalation",
+    description=(
+        "Hourly: pending approval steps past their SLA "
+        "(`approvals.sla_hours`, default 48h; 0 = off) are re-routed to the "
+        "approver's manager, else the HR role; the new approver, the "
+        "original approver and the requester are notified. A step "
+        "escalates at most once per SLA period."
+    ),
+    default_cadence_cron="5 * * * *",
+    fn=_job_approval_escalation,
+))

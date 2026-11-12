@@ -248,6 +248,16 @@ class ChainedApprovalStepInstance(Base):
         DateTime(timezone=True)
     )
     label: Mapped[Optional[str]] = mapped_column(String(120))
+    # SLA (Task 6): when the step became actionable + escalation trail.
+    due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    escalated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    escalated_from_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete=SET_NULL), nullable=True
+    )
 
     instance: Mapped[ChainedApprovalInstance] = relationship(
         back_populates="step_instances"

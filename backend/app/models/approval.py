@@ -71,3 +71,28 @@ class ApprovalStep(Base):
         "User", foreign_keys=[approver_id]
     )
     role: Mapped[Optional["Role"]] = relationship("Role")
+    # SLA escalation (Task 6): set when an overdue step was re-routed.
+    escalated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    escalated_from_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete=SET_NULL), nullable=True
+    )
+
+
+# --- SLA: stamp due_date centrally on every new ApprovalItem -------------
+# Covers every creator (leave, comp-off, overtime, estimates, requisitions,
+# revisions...) without editing each one. Runs inside the flush using the
+# flush's own connection; a missing/invalid setting falls back to 48h and 0
+# disables (due_date stays NULL).
+from sqlalchemy import event as _event  # noqa: E402
+
+
+@_event.listens_for(ApprovalItem, "before_insert")
+def _stamp_due_date(mapper, connection, target) -> None:
+    if target.due_date is not None:
+        return
+    from app.services.approval_sla import sla_hours_sync, due_from
+    hours = sla_hours_sync(connection)
+    target.due_date = due_from(
+        target.created_at or datetime.now(timezone.utc), hours)

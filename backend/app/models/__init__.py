@@ -236,3 +236,4 @@ __all__ = [
     "NotificationDelivery",
 ]
 from .coverage_gap import CoverageGap, GapSource, GapStatus
+from .approver_delegation import ApproverDelegation

@@ -1,6 +1,6 @@
 from typing import Any, List, Optional
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 from app.api import deps
@@ -14,7 +14,12 @@ from app.models.notification import Notification
 from app.models.bd import EstimateVersion, EstimateStatus
 from app.models.leave import LeaveRequest, LeaveStatus
 from app.schemas.approval import (
-    ApprovalItemRead, ApprovalAction
+    ApprovalItemRead, ApprovalAction, BulkApprovalAction,
+)
+from app.models.audit import AuditLog
+from app.services.approval_sla import is_overdue, next_due
+from app.services.approver_delegation import (
+    active_delegators, delegator_ids, user_names,
 )
 from app.schemas.bd import EstimateVersionDetailed
 from app.schemas.leave import LeaveRequestRead
@@ -35,6 +40,28 @@ def _attach_requester_names(items):
         u = getattr(it, "requested_by", None)
         if u is not None:
             it.requested_by_name = u.full_name or u.email
+    return items
+
+
+async def _decorate_sla(db, items, current_user, delegators=None):
+    """Add due_at / is_overdue / acting_for to inbox payload items."""
+    if delegators is None:
+        delegators = await delegator_ids(db, current_user.id)
+    names = await user_names(db, delegators)
+    role_ids = {r.id for r in (current_user.roles or [])}
+    for it in items:
+        it.due_at = it.due_date
+        it.is_overdue = (
+            it.status == ApprovalStatus.PENDING and is_overdue(it.due_date))
+        it.acting_for = None
+        step = next((s for s in it.steps
+                     if s.step_number == it.current_step_number
+                     and s.status == ApprovalStatus.PENDING), None)
+        if (step is not None and step.approver_id in delegators
+                and step.approver_id != current_user.id
+                and not (step.role_id and step.role_id in role_ids)):
+            it.acting_for = {"user_id": step.approver_id,
+                             "name": names.get(step.approver_id)}
     return items
 
 
@@ -120,6 +147,13 @@ def _user_can_view_approval(
     return False
 
 
+async def _can_view(db, item, user) -> bool:
+    if _user_can_view_approval(item, user):
+        return True
+    delegators = await delegator_ids(db, user.id)
+    return any(st.approver_id in delegators for st in item.steps or [])
+
+
 async def create_notification(
     db: deps.DBDep,
     user_id: int,
@@ -152,6 +186,7 @@ async def get_approvals_inbox(
 
     is_admin_approver = _is_admin_approver(current_user)
     user_role_ids = [role.id for role in current_user.roles]
+    delegators = await delegator_ids(db, current_user.id)
 
     # Admin: when explicitly filtering non-pending statuses,
     # return items by status ("history" view).
@@ -171,7 +206,9 @@ async def get_approvals_inbox(
             query = query.where(ApprovalItem.due_date <= due_before)
 
         result = await db.execute(query)
-        return _attach_requester_names(result.scalars().all())
+        return await _decorate_sla(
+            db, _attach_requester_names(result.scalars().all()),
+            current_user, delegators)
 
     # Non-admin: support non-pending history view too, but limit it to:
     # - requests created by the current user, or
@@ -203,7 +240,9 @@ async def get_approvals_inbox(
             query = query.where(ApprovalItem.due_date <= due_before)
 
         result = await db.execute(query)
-        return _attach_requester_names(result.scalars().all())
+        return await _decorate_sla(
+            db, _attach_requester_names(result.scalars().all()),
+            current_user, delegators)
 
     base_conditions = [
         ApprovalItem.current_step_number == ApprovalStep.step_number,
@@ -214,6 +253,7 @@ async def get_approvals_inbox(
             or_(
                 ApprovalStep.approver_id == current_user.id,
                 ApprovalStep.role_id.in_(user_role_ids),
+                ApprovalStep.approver_id.in_(delegators or [-1]),
             )
         )
 
@@ -235,7 +275,81 @@ async def get_approvals_inbox(
         query = query.where(ApprovalItem.due_date <= due_before)
         
     result = await db.execute(query)
-    return _attach_requester_names(result.scalars().all())
+    return await _decorate_sla(
+        db, _attach_requester_names(result.scalars().unique().all()),
+        current_user, delegators)
+
+
+
+MAX_BULK = 100
+
+
+@router.post("/bulk-action")
+async def bulk_action(
+    payload: BulkApprovalAction,
+    request: Request,
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Approve/reject many items. Each item is processed on its own (own
+    commit; rollback on failure) via the same code as the single-item
+    endpoints, so one failure never blocks the rest. Estimates needing a
+    next approver and other single-item flows are not special-cased here."""
+    if payload.action not in ("approve", "reject"):
+        raise HTTPException(400, "action must be 'approve' or 'reject'")
+    if not payload.items:
+        raise HTTPException(400, "No items given")
+    if len(payload.items) > MAX_BULK:
+        raise HTTPException(400, f"At most {MAX_BULK} items per request")
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from app.api.v1.endpoints.approval_chains import act_on_instance
+    from app.models.user import Role
+    maker = async_sessionmaker(bind=db.bind, expire_on_commit=False,
+                               autoflush=False)
+    results = []
+    seen = set()
+    for ref in payload.items:
+        key = (ref.kind, ref.id)
+        res = {"kind": ref.kind, "id": ref.id, "ok": False, "error": None}
+        results.append(res)
+        if key in seen:
+            res["error"] = "Duplicate item in request"
+            continue
+        seen.add(key)
+        # Own session + transaction per item; a failure leaves no residue
+        # and cannot expire state needed by the next item.
+        async with maker() as s2:
+            try:
+                actor = (await s2.execute(
+                    select(User).where(User.id == current_user.id).options(
+                        selectinload(User.roles).selectinload(
+                            Role.permissions)))).scalar_one()
+                if ref.kind == "legacy":
+                    await action_approval(
+                        ref.id,
+                        ApprovalAction(
+                            status=(ApprovalStatus.APPROVED
+                                    if payload.action == "approve"
+                                    else ApprovalStatus.REJECTED),
+                            comment=payload.comment),
+                        s2, actor)
+                elif ref.kind == "chain":
+                    await act_on_instance(
+                        s2, ref.id, payload.action, payload.comment, request,
+                        actor)
+                else:
+                    raise HTTPException(
+                        400, "kind must be 'legacy' or 'chain'")
+                res["ok"] = True
+            except HTTPException as exc:
+                await s2.rollback()
+                res["error"] = str(exc.detail)
+            except Exception:  # pragma: no cover
+                await s2.rollback()
+                res["error"] = "Unexpected error"
+    return {"results": results,
+            "ok_count": sum(1 for r in results if r["ok"]),
+            "failed_count": sum(1 for r in results if not r["ok"])}
 
 
 @router.get("/{id}", response_model=ApprovalItemRead)
@@ -254,7 +368,7 @@ async def get_approval_details(
 
     # Authorization: allow viewing for admin approvers, the requester,
     # or any user who is an approver on any step.
-    if not _user_can_view_approval(item, current_user):
+    if not await _can_view(db, item, current_user):
         raise HTTPException(status_code=403, detail="Not authorized")
         
     return item
@@ -274,7 +388,7 @@ async def get_approval_resource(
     if not item:
         raise HTTPException(status_code=404, detail="Approval item not found")
 
-    if not _user_can_view_approval(item, current_user):
+    if not await _can_view(db, item, current_user):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # Return a minimal, safe resource payload for common approval types.
@@ -421,8 +535,22 @@ async def action_approval(
             and current_step.role_id in user_role_ids
         )
     )
+    acting_for = None
+    if not is_authorized and current_step.approver_id:
+        # Out-of-office delegation (direct delegations only, no chains).
+        if current_step.approver_id in await delegator_ids(db, current_user.id):
+            is_authorized = True
+            acting_for = current_step.approver_id
     if not is_authorized and _is_admin_approver(current_user):
         is_authorized = True
+    if acting_for is not None:
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action=f"APPROVAL_{action.status}",
+            resource_type=item.resource_type,
+            resource_id=item.resource_id,
+            details={"acting_for_user_id": acting_for,
+                     "approval_item_id": item.id}))
     if not is_authorized:
         raise HTTPException(
             status_code=403,
@@ -563,6 +691,7 @@ async def action_approval(
             )
         )
         item.current_step_number = next_step_number
+        item.due_date = await next_due(db)
         item.status = ApprovalStatus.PENDING
         await _notify_next_approver(next_user.id)
 
@@ -618,6 +747,7 @@ async def action_approval(
         # Move to next step or mark item as approved
         if item.current_step_number < total_steps:
             item.current_step_number += 1
+            item.due_date = await next_due(db)
             # Notify next approver?
         else:
             item.status = ApprovalStatus.APPROVED

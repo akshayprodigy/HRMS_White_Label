@@ -30,6 +30,9 @@ from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
+from app.services.approval_sla import is_overdue, next_due
+from app.services.approver_delegation import delegator_ids, user_names
+from app.services.self_approval import guard_self_approval
 from app.models.approval_chain import (
     ApprovalChain, ApprovalChainStep, ApproverType,
     ChainEntityType, ChainedApprovalInstance,
@@ -184,6 +187,12 @@ def _step_instance_dict(si: ChainedApprovalStepInstance) -> dict:
         "mode": si.mode, "parallel_rule": si.parallel_rule,
         "status": si.status, "comment": si.comment,
         "actioned_at": si.actioned_at, "label": si.label,
+        "due_at": si.due_at,
+        "is_overdue": (
+            si.status == StepInstanceStatus.PENDING and is_overdue(si.due_at)
+        ),
+        "escalated_at": si.escalated_at,
+        "escalated_from_id": si.escalated_from_id,
     }
 
 
@@ -779,6 +788,7 @@ async def instantiate_for_entity(
     )
     db.add(instance)
     await db.flush()
+    first_due = await next_due(db)
 
     for step, approver_ids in materialized:
         if not approver_ids:
@@ -805,6 +815,8 @@ async def instantiate_for_entity(
                 mode=step.mode, parallel_rule=step.parallel_rule,
                 status=StepInstanceStatus.PENDING,
                 label=step.label,
+                due_at=(first_due if step.step_order
+                        == materialized[0][0].step_order else None),
             ))
             db.add(Notification(
                 user_id=uid,
@@ -929,12 +941,16 @@ async def my_queue(
     entity_type: Optional[str] = Query(None),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    """Every pending step-instance assigned to me across all entity types."""
+    """Every pending step-instance assigned to me (or to someone who has
+    delegated to me while out of office), across all entity types."""
+    delegators = await delegator_ids(db, current_user.id)
+    names = await user_names(db, delegators)
     stmt = (
         select(ChainedApprovalStepInstance)
         .where(
             and_(
-                ChainedApprovalStepInstance.approver_user_id == current_user.id,
+                ChainedApprovalStepInstance.approver_user_id.in_(
+                    [current_user.id, *delegators]),
                 ChainedApprovalStepInstance.status == StepInstanceStatus.PENDING,
             )
         )
@@ -965,10 +981,18 @@ async def my_queue(
         summary = await _entity_summary(
             db, inst.entity_type, inst.entity_id
         )
+        acting = (
+            {"user_id": si.approver_user_id,
+             "name": names.get(si.approver_user_id)}
+            if si.approver_user_id != current_user.id else None
+        )
         out.append({
             "step_instance": _step_instance_dict(si),
             "instance": _instance_dict(inst),
             "entity": summary,
+            "due_at": si.due_at,
+            "is_overdue": _step_instance_dict(si)["is_overdue"],
+            "acting_for": acting,
         })
     return out
 
@@ -981,7 +1005,18 @@ async def act_on_step(
     request: Request,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    if payload.action not in ("approve", "reject"):
+    return await act_on_instance(
+        db, instance_id, payload.action, payload.comment, request,
+        current_user)
+
+
+async def act_on_instance(
+    db, instance_id: int, action: str, comment: Optional[str],
+    request: Request, current_user: User,
+) -> dict:
+    """Approve/reject my (or a delegator's) pending step on an instance.
+    Shared by the single `act` endpoint and POST /approvals/bulk-action."""
+    if action not in ("approve", "reject"):
         raise HTTPException(400, "action must be 'approve' or 'reject'")
 
     instance = (await db.execute(
@@ -994,24 +1029,37 @@ async def act_on_step(
     if instance.status != ChainedApprovalStatus.PENDING:
         raise HTTPException(400, f"Instance is {instance.status}")
 
-    # Find MY pending row at the current step.
+    # Find MY pending row at the current step (or one I hold by an
+    # out-of-office delegation; direct delegations only, never chained).
+    delegators = await delegator_ids(db, current_user.id)
+    pending_here = [
+        si for si in instance.step_instances
+        if si.step_order == instance.current_step_order
+        and si.status == StepInstanceStatus.PENDING
+    ]
     my_row = next(
-        (
-            si for si in instance.step_instances
-            if si.approver_user_id == current_user.id
-            and si.step_order == instance.current_step_order
-            and si.status == StepInstanceStatus.PENDING
-        ),
+        (si for si in pending_here if si.approver_user_id == current_user.id),
         None,
     )
+    acting_for = None
+    if my_row is None:
+        my_row = next(
+            (si for si in pending_here if si.approver_user_id in delegators),
+            None,
+        )
+        if my_row is not None:
+            acting_for = my_row.approver_user_id
+            # SoD still applies to the delegate.
+            if action == "approve":
+                guard_self_approval(current_user.id, instance.submitter_id)
     if not my_row:
         raise HTTPException(403, "You have no pending action on this instance")
 
     my_row.status = (
-        StepInstanceStatus.APPROVED if payload.action == "approve"
+        StepInstanceStatus.APPROVED if action == "approve"
         else StepInstanceStatus.REJECTED
     )
-    my_row.comment = payload.comment
+    my_row.comment = comment
     my_row.actioned_at = datetime.now(timezone.utc)
 
     all_rows_dicts = [
@@ -1027,7 +1075,7 @@ async def act_on_step(
     outcome = advance_state(
         all_step_instances=all_rows_dicts,
         acted_step_order=instance.current_step_order,
-        action=payload.action,
+        action=action,
     )
 
     if outcome.finalize:
@@ -1113,7 +1161,9 @@ async def act_on_step(
             and si.status == StepInstanceStatus.PENDING
             and si.approver_user_id
         ]
+        step_due = await next_due(db)
         for si in next_rows:
+            si.due_at = step_due
             db.add(Notification(
                 user_id=si.approver_user_id,
                 title=f"Approval pending: {instance.entity_type}",
@@ -1129,14 +1179,15 @@ async def act_on_step(
     await db.commit()
     await log_audit(
         db, current_user.id,
-        f"chained_approval_{payload.action}",
+        f"chained_approval_{action}",
         "chained_approval_step_instance", str(my_row.id),
         {
             "instance_id": instance.id,
             "entity_type": instance.entity_type,
             "entity_id": instance.entity_id,
             "outcome_status": outcome.next_status,
-            "comment": payload.comment,
+            "comment": comment,
+            **({"acting_for_user_id": acting_for} if acting_for else {}),
         },
         request,
     )

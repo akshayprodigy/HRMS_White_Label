@@ -514,6 +514,9 @@ export const ENDPOINTS = {
     DETAIL: (id: number) => `/approvals/${id}`,
     RESOURCE: (id: number) => `/approvals/${id}/resource`,
     ACTION: (id: number) => `/approvals/${id}/action`,
+    BULK: '/approvals/bulk-action',
+    MY_DELEGATIONS: '/me/approval-delegations',
+    MY_DELEGATION: (id: number) => `/me/approval-delegations/${id}`,
   },
   REPORTS: {
     SUMMARY: '/reports/summary',

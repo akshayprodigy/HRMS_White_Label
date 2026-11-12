@@ -190,6 +190,9 @@ export interface ApprovalItem {
   requested_by_name?: string;
   created_at: string;
   due_date?: string;
+  due_at?: string | null;
+  is_overdue?: boolean;
+  acting_for?: { user_id: number; name?: string | null } | null;
   steps: ApprovalStep[];
 }
 
