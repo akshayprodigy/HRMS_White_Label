@@ -277,6 +277,9 @@ async def test_happy_path_same_day(client, world):
     assert [x["id"] for x in r.json()] == [sid]
     assert r.json()[0]["requester_cell"]["shift_template_id"] == ids["t1"]
     assert r.json()[0]["counterparty_cell"]["shift_template_id"] == ids["t2"]
+    assert r.json()[0]["direction"] == "outgoing"
+    r2 = await client.get(f"{SW}/my", headers=h2)
+    assert [x["direction"] for x in r2.json()] == ["incoming"]
 
 
 async def test_different_day_classic(client, world):

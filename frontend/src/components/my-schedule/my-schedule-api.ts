@@ -51,6 +51,7 @@ export interface Swap {
   counterparty_cell: SwapCell | null;
   decision_note: string | null;
   created_at: string | null;
+  direction: 'incoming' | 'outgoing' | null;
   cells: SwapExchangedCell[];
 }
 export interface SwapCandidate {

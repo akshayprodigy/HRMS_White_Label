@@ -1,8 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, Button, Badge } from '../ui-elements';
-import { client } from '../../api/client';
-import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import {
   Drop, Swap, STATUS_TONE, fmtDate, mySchedule, statusLabel,
@@ -20,30 +18,29 @@ const StatusBadge = ({ s }: { s: string }) => (
 
 /** Swap requests (incoming/outgoing) and give-away requests of the user. */
 export const SwapPanel: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) => {
-  const [meId, setMeId] = useState<number | null>(null);
   const [swaps, setSwaps] = useState<Swap[]>([]);
   const [drops, setDrops] = useState<Drop[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const seq = useRef(0);
 
   const load = useCallback(async () => {
+    const my = ++seq.current;
     try {
       const [s, d] = await Promise.all([mySchedule.mySwaps(), mySchedule.myDrops()]);
+      if (my !== seq.current) return;
       setSwaps(s);
       setDrops(d);
     } catch (e: any) {
-      toast.error(errMsg(e, 'Failed to load swaps'));
+      if (my === seq.current) toast.error(errMsg(e, 'Failed to load swaps'));
     } finally {
-      setLoading(false);
+      if (my === seq.current) setLoading(false);
     }
   }, []);
   useEffect(() => { load(); }, [load, reloadKey]);
-  useEffect(() => {
-    client.get(ENDPOINTS.AUTH.ME).then((r) => setMeId(r.data?.id ?? null)).catch(() => {});
-  }, []);
 
   const act = async (key: string, fn: () => Promise<unknown>, ok: string, fail: string) => {
-    setBusyKey(key);
+    setBusy((b) => new Set(b).add(key));
     try {
       await fn();
       toast.success(ok);
@@ -51,12 +48,12 @@ export const SwapPanel: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) =
     } catch (e: any) {
       toast.error(errMsg(e, fail));
     } finally {
-      setBusyKey(null);
+      setBusy((b) => { const n = new Set(b); n.delete(key); return n; });
     }
   };
 
-  const incoming = swaps.filter((s) => s.counterparty_id === meId);
-  const outgoing = swaps.filter((s) => s.requester_id === meId);
+  const incoming = swaps.filter((s) => s.direction === 'incoming');
+  const outgoing = swaps.filter((s) => s.direction === 'outgoing');
 
   const swapRow = (s: Swap, mine: boolean) => {
     const other = mine ? s.counterparty_name : s.requester_name;
@@ -81,13 +78,13 @@ export const SwapPanel: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) =
           {!mine && s.status === 'pending_peer' && (
             <>
               <Button size="sm" className="h-8"
-                isLoading={busyKey === `a${s.id}`}
+                isLoading={busy.has(`a${s.id}`)}
                 onClick={() => act(`a${s.id}`, () => mySchedule.swapAction(s.id, 'accept'),
                   'Swap accepted — sent for approval', 'Failed to accept swap')}>
                 Accept
               </Button>
               <Button size="sm" variant="outline" className="h-8"
-                isLoading={busyKey === `d${s.id}`}
+                isLoading={busy.has(`d${s.id}`)}
                 onClick={() => act(`d${s.id}`, () => mySchedule.swapAction(s.id, 'decline'),
                   'Swap declined', 'Failed to decline swap')}>
                 Decline
@@ -95,7 +92,8 @@ export const SwapPanel: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) =
             </>
           )}
           {mine && (s.status === 'pending_peer' || s.status === 'pending_approval') && (
-            <InlineConfirm label="Cancel request" busy={busyKey === `c${s.id}`}
+            <InlineConfirm label="Cancel request" ariaLabel={`Cancel swap with ${other || 'colleague'}`}
+              busy={busy.has(`c${s.id}`)}
               onConfirm={() => act(`c${s.id}`, () => mySchedule.swapAction(s.id, 'cancel'),
                 'Swap cancelled', 'Failed to cancel swap')} />
           )}
@@ -150,7 +148,8 @@ export const SwapPanel: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) =
                 {d.decision_note && <p className="text-[10px] text-slate-500 mt-1">Note: {d.decision_note}</p>}
                 {d.status === 'pending' && (
                   <div className="mt-2">
-                    <InlineConfirm label="Cancel request" busy={busyKey === `x${d.id}`}
+                    <InlineConfirm label="Cancel request" ariaLabel={`Cancel give-away for ${fmtDate(d.work_date)}`}
+                      busy={busy.has(`x${d.id}`)}
                       onConfirm={() => act(`x${d.id}`, () => mySchedule.cancelDrop(d.id),
                         'Give-away cancelled', 'Failed to cancel give-away')} />
                   </div>

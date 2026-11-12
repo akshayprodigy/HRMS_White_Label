@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Plus, Trash2 } from 'lucide-react';
 import { Card, Button, Badge } from '../ui-elements';
@@ -12,7 +12,7 @@ import {
 
 export const ruleText = (r: AvailabilityRule, shifts: ShiftOption[]): string => {
   const shiftName = r.shift_template_id
-    ? shifts.find((s) => s.id === r.shift_template_id)?.name || `shift #${r.shift_template_id}`
+    ? shifts.find((s) => s.id === r.shift_template_id)?.name || 'a shift'
     : null;
   const when = r.weekday !== null && r.weekday !== undefined
     ? `every ${WEEKDAYS[r.weekday].slice(0, 3)}`
@@ -48,13 +48,16 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
   const [confirmId, setConfirmId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const seq = useRef(0);
   const load = useCallback(async () => {
+    const my = ++seq.current;
     try {
-      setRules(await mySchedule.listAvailability());
+      const r = await mySchedule.listAvailability();
+      if (my === seq.current) setRules(r);
     } catch (e: any) {
-      toast.error(errMsg(e, 'Failed to load availability'));
+      if (my === seq.current) toast.error(errMsg(e, 'Failed to load availability'));
     } finally {
-      setLoading(false);
+      if (my === seq.current) setLoading(false);
     }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -174,7 +177,7 @@ export const AvailabilityPanel: React.FC<{ shifts: ShiftOption[] }> = ({ shifts 
                   <label htmlFor="av-mode" className={labelCls}>Applies to</label>
                   <select id="av-mode" className={inputCls} value={form.mode}
                     onChange={(e) => setForm({ ...form, mode: e.target.value as any })}>
-                    <option value="weekday">Every weekday</option>
+                    <option value="weekday">Every week (pick a day)</option>
                     <option value="date">A specific date</option>
                   </select>
                 </div>

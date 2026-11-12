@@ -109,11 +109,22 @@ export const CalendarFeedCard: React.FC = () => {
       )}
 
       <div className="flex items-center gap-4 flex-wrap">
-        <Button onClick={rotate} isLoading={busy === 'rotate'} className="h-9">
-          {status?.active ? 'Regenerate link' : 'Create link'}
-        </Button>
+        {status?.active ? (
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] text-slate-500">
+              Regenerating makes existing calendar subscriptions stop updating.
+            </span>
+            <InlineConfirm label="Regenerate link" confirmLabel="Regenerate" tone="neutral"
+              ariaLabel="Regenerate calendar link" busy={busy !== null} onConfirm={rotate} />
+          </div>
+        ) : (
+          <Button onClick={rotate} isLoading={busy === 'rotate'} className="h-9">
+            Create link
+          </Button>
+        )}
         {status?.active && (
-          <InlineConfirm label="Turn off" confirmLabel="Turn off" busy={busy === 'off'} onConfirm={turnOff} />
+          <InlineConfirm label="Turn off" confirmLabel="Turn off" ariaLabel="Turn off calendar feed"
+            busy={busy !== null} onConfirm={turnOff} />
         )}
       </div>
     </Card>

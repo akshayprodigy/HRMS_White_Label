@@ -68,6 +68,8 @@ class SwapRead(BaseModel):
     created_at: Optional[datetime] = None
     cells: List[SwapExchangedCell] = []
     warnings: List[SwapViolationRead] = []
+    # Relative to the caller; only set on /swaps/my.
+    direction: Optional[str] = None
 
     @field_validator("peer_responded_at", "decided_at", "created_at")
     @classmethod

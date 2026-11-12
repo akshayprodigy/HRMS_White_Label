@@ -1,28 +1,31 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, Button, Badge } from '../ui-elements';
 import { errMsg } from '../schedule-delegations-utils';
 import { OpenShift, STATUS_TONE, fmtDate, mySchedule, statusLabel } from './my-schedule-api';
 import { InlineConfirm } from './inline-confirm';
 
-export const OpenShiftsPanel: React.FC = () => {
+export const OpenShiftsPanel: React.FC<{ reloadKey?: number }> = ({ reloadKey = 0 }) => {
   const [rows, setRows] = useState<OpenShift[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState<number | null>(null);
+  const [busy, setBusy] = useState<Set<number>>(new Set());
+  const seq = useRef(0);
 
   const load = useCallback(async () => {
+    const my = ++seq.current;
     try {
-      setRows(await mySchedule.availableOpenShifts());
+      const r = await mySchedule.availableOpenShifts();
+      if (my === seq.current) setRows(r);
     } catch (e: any) {
-      toast.error(errMsg(e, 'Failed to load open shifts'));
+      if (my === seq.current) toast.error(errMsg(e, 'Failed to load open shifts'));
     } finally {
-      setLoading(false);
+      if (my === seq.current) setLoading(false);
     }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, reloadKey]);
 
   const run = async (id: number, fn: () => Promise<OpenShift>, ok: string, fail: string) => {
-    setBusyId(id);
+    setBusy((b) => new Set(b).add(id));
     try {
       const r = await fn();
       toast.success(r?.my_claim_status === 'approved' ? 'Claim confirmed — the shift is yours' : ok);
@@ -32,7 +35,7 @@ export const OpenShiftsPanel: React.FC = () => {
       toast.error(errMsg(e, fail));
       await load();
     } finally {
-      setBusyId(null);
+      setBusy((b) => { const n = new Set(b); n.delete(id); return n; });
     }
   };
 
@@ -74,11 +77,11 @@ export const OpenShiftsPanel: React.FC = () => {
                   </Badge>
                 )}
                 {o.my_claim_status === 'pending' && o.my_claim_id ? (
-                  <InlineConfirm label="Withdraw" tone="neutral" busy={busyId === o.id}
+                  <InlineConfirm label="Withdraw" tone="neutral" ariaLabel={`Withdraw claim for ${fmtDate(o.work_date)}`} busy={busy.has(o.id)}
                     onConfirm={() => run(o.id, () => mySchedule.withdraw(o.my_claim_id as number),
                       'Claim withdrawn', 'Failed to withdraw claim')} />
                 ) : !o.my_claim_status || o.my_claim_status === 'withdrawn' ? (
-                  <Button size="sm" className="h-8" isLoading={busyId === o.id}
+                  <Button size="sm" className="h-8" isLoading={busy.has(o.id)}
                     aria-label={`Claim open shift on ${fmtDate(o.work_date)}`}
                     onClick={() => run(o.id, () => mySchedule.claim(o.id),
                       'Claim submitted — awaiting confirmation', 'Failed to claim shift')}>

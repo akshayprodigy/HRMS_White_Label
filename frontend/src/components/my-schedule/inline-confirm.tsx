@@ -6,24 +6,27 @@ interface Props {
   busy?: boolean;
   onConfirm: () => void;
   tone?: 'danger' | 'neutral';
+  ariaLabel?: string;
 }
 
 /** Two-step inline confirmation (no window.confirm). */
 export const InlineConfirm: React.FC<Props> = ({
-  label, confirmLabel = 'Yes', busy, onConfirm, tone = 'danger',
+  label, confirmLabel = 'Yes', busy, onConfirm, tone = 'danger', ariaLabel,
 }) => {
   const [asking, setAsking] = useState(false);
   const color = tone === 'danger' ? 'text-rose-500 hover:text-rose-700' : 'text-slate-600 hover:text-slate-900';
   if (!asking) {
     return (
       <button type="button" onClick={() => setAsking(true)} disabled={busy}
+        aria-label={ariaLabel}
         className={`text-[9px] font-black uppercase tracking-widest ${color}`}>
         {label}
       </button>
     );
   }
   return (
-    <span className="inline-flex items-center gap-2 text-[9px] font-black uppercase tracking-widest">
+    <span role="group" aria-label={ariaLabel ? `Confirm: ${ariaLabel}` : 'Confirm'}
+      className="inline-flex items-center gap-2 text-[9px] font-black uppercase tracking-widest">
       <span className="text-slate-500">Sure?</span>
       <button type="button" disabled={busy}
         onClick={() => { setAsking(false); onConfirm(); }}

@@ -292,7 +292,11 @@ async def my_swaps(
         )).order_by(ShiftSwapRequest.created_at.desc(), ShiftSwapRequest.id.desc())
         .limit(100)
     )).scalars().all()
-    return await _read_many(db, rows)
+    out = await _read_many(db, rows)
+    for o in out:
+        o.direction = ("outgoing" if o.requester_id == current_user.id
+                       else "incoming")
+    return out
 
 
 @router.get("/swaps", response_model=List[SwapRead])

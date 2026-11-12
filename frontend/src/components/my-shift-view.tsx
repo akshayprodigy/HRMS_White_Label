@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   CalendarClock,
@@ -93,28 +93,49 @@ export const MyShiftView: React.FC = () => {
     reason: '',
   });
 
+  const weekSeq = useRef(0);
+  const [weekLoading, setWeekLoading] = useState(false);
+  // Keeps the previous week on failure; stale responses are ignored.
+  const loadWeek = async (start: string | null) => {
+    const my = ++weekSeq.current;
+    setWeekLoading(true);
+    try {
+      const r = await client.get(ENDPOINTS.ROSTER.MY_WEEK, {
+        params: start ? { start } : undefined,
+      });
+      if (my === weekSeq.current) {
+        setRosterWeek(r.data);
+        setWeekStart(start);
+      }
+    } catch (e: any) {
+      if (my === weekSeq.current) toast.error(errMsg(e, 'Failed to load roster week'));
+    } finally {
+      if (my === weekSeq.current) setWeekLoading(false);
+    }
+  };
+
   const refresh = async () => {
     setLoading(true);
     try {
-      const [cur, hist, reqs, tpls, rWeek, rReqs] = await Promise.all([
+      const weekP = loadWeek(weekStart);
+      const [cur, hist, reqs, tpls, rReqs] = await Promise.all([
         client.get(ENDPOINTS.SHIFTS.MY_CURRENT).catch(() => ({ data: null })),
         client.get(ENDPOINTS.SHIFTS.MY_HISTORY).catch(() => ({ data: [] })),
         client.get(ENDPOINTS.SHIFTS.CHANGE_REQUESTS_MY).catch(() => ({ data: [] })),
         client.get(ENDPOINTS.SHIFTS.TEMPLATES).catch(() => ({ data: [] })),
-        client.get(ENDPOINTS.ROSTER.MY_WEEK, { params: weekStart ? { start: weekStart } : undefined }).catch(() => ({ data: null })),
         client.get(ENDPOINTS.ROSTER.CHANGE_REQUESTS_MY).catch(() => ({ data: [] })),
       ]);
       setCurrent(cur.data);
       setHistory(hist.data || []);
       setRequests(reqs.data || []);
       setTemplates((tpls.data || []).filter((t: any) => t.is_active));
-      setRosterWeek(rWeek.data);
+      await weekP;
       setRosterReqs(rReqs.data || []);
     } finally {
       setLoading(false);
     }
   };
-  useEffect(() => { refresh(); }, [weekStart]);
+  useEffect(() => { refresh(); }, []);
 
   const openRosterReq = (workDate: string) => {
     setRosterForm({
@@ -284,14 +305,20 @@ export const MyShiftView: React.FC = () => {
               <span className="hidden sm:block text-[9px] font-bold text-slate-400 uppercase tracking-widest">
                 tap a day to request a change
               </span>
-              <button type="button" aria-label="Previous week"
-                onClick={() => setWeekStart(addDays(rosterWeek.start, -7))}
-                className="p-1 rounded-md text-slate-500 hover:bg-slate-100">
+              {!rosterWeek.days.some((x: any) => x.is_today) && (
+                <button type="button" disabled={weekLoading} onClick={() => loadWeek(null)}
+                  className="text-[9px] font-black uppercase tracking-widest text-indigo-600 hover:underline px-1">
+                  This week
+                </button>
+              )}
+              <button type="button" aria-label="Previous week" disabled={weekLoading}
+                onClick={() => loadWeek(addDays(rosterWeek.start, -7))}
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-50">
                 <ChevronLeft size={14} />
               </button>
-              <button type="button" aria-label="Next week"
-                onClick={() => setWeekStart(addDays(rosterWeek.start, 7))}
-                className="p-1 rounded-md text-slate-500 hover:bg-slate-100">
+              <button type="button" aria-label="Next week" disabled={weekLoading}
+                onClick={() => loadWeek(addDays(rosterWeek.start, 7))}
+                className="p-1 rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-50">
                 <ChevronRight size={14} />
               </button>
             </div>
@@ -405,9 +432,12 @@ export const MyShiftView: React.FC = () => {
             id={`myshift-tab-${t.id}`}
             aria-selected={tab === t.id}
             aria-controls="myshift-tabpanel"
-            onClick={() => setTab(t.id)}
+            onClick={() => {
+              setTab(t.id);
+              if (t.id === 'swaps' || t.id === 'open') setSelfReload((n) => n + 1);
+            }}
             className={cn(
-              'px-4 py-2.5 text-[10px] font-black uppercase tracking-widest whitespace-nowrap border-b-2 -mb-px',
+              'px-4 py-2.5 text-[10px] font-black uppercase tracking-widest whitespace-nowrap border-b-2',
               tab === t.id
                 ? 'border-indigo-600 text-indigo-700'
                 : 'border-transparent text-slate-400 hover:text-slate-600',
@@ -419,13 +449,14 @@ export const MyShiftView: React.FC = () => {
       </div>
 
       <div id="myshift-tabpanel" role="tabpanel" aria-labelledby={`myshift-tab-${tab}`} className="space-y-6">
-      {tab === 'availability' && (
+      {/* Panels stay mounted (hidden) so in-progress state survives tab switches. */}
+      <div hidden={tab !== 'availability'}>
         <AvailabilityPanel shifts={templates.map((t: any) => ({ id: t.id, name: t.name }))} />
-      )}
-      {tab === 'swaps' && <SwapPanel reloadKey={selfReload} />}
-      {tab === 'open' && <OpenShiftsPanel />}
-      {tab === 'calendar' && <CalendarFeedCard />}
-      {tab === 'week' && (<>
+      </div>
+      <div hidden={tab !== 'swaps'}><SwapPanel reloadKey={selfReload} /></div>
+      <div hidden={tab !== 'open'}><OpenShiftsPanel reloadKey={selfReload} /></div>
+      <div hidden={tab !== 'calendar'}><CalendarFeedCard /></div>
+      <div hidden={tab !== 'week'} className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* My requests */}
         <Card className="p-5 border-slate-200 bg-white">
@@ -500,7 +531,7 @@ export const MyShiftView: React.FC = () => {
 
       <MyRegularizations />
       <TeamRegularizations />
-      </>)}
+      </div>
       </div>
 
       {swapDay && (

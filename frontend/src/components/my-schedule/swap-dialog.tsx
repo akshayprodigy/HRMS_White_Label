@@ -10,6 +10,12 @@ import {
   SwapCandidate, fmtDate, inputCls, labelCls, mySchedule,
 } from './my-schedule-api';
 
+const addDays = (iso: string, n: number) => {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
 const candShift = (c?: SwapCandidate) =>
   !c ? '—' : c.is_week_off ? 'Week off' : c.shift_name || 'No shift';
 
@@ -40,7 +46,9 @@ export const SwapDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }
     return () => { live = false; };
   }, [date]);
 
-  const rd = otherDay && returnDate && returnDate !== date ? returnDate : '';
+  const maxDate = addDays(todayIso(), 90);
+  const rd = otherDay && returnDate && returnDate !== date
+    && returnDate >= todayIso() && returnDate <= maxDate ? returnDate : '';
   useEffect(() => {
     if (!rd) { setReturnCands([]); return; }
     let live = true;
@@ -54,7 +62,10 @@ export const SwapDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }
 
   const submit = async () => {
     if (!pick) { toast.error('Pick a colleague to swap with.'); return; }
-    if (otherDay && !returnDate) { toast.error('Pick the return date, or untick the option.'); return; }
+    if (otherDay && !rd) {
+      toast.error(`Pick a return date between today and ${fmtDate(maxDate)} that differs from ${fmtDate(date)}, or untick the option.`);
+      return;
+    }
     setBusy(true);
     try {
       await mySchedule.createSwap({
@@ -105,7 +116,7 @@ export const SwapDialog: React.FC<Props> = ({ date, shiftName, onClose, onDone }
           {otherDay && (
             <div className="space-y-1">
               <label htmlFor="sw-ret" className={labelCls}>Return date</label>
-              <input id="sw-ret" type="date" className={inputCls} min={todayIso()}
+              <input id="sw-ret" type="date" className={inputCls} min={todayIso()} max={maxDate}
                 value={returnDate} onChange={(e) => setReturnDate(e.target.value)} />
               {rd && chosen && (
                 <p className="text-[10px] text-slate-600">
