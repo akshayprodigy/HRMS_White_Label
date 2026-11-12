@@ -24,8 +24,10 @@ from app.models.roster import (
     RosterChangeRequest, RosterEntry, RosterEntryHistory, RosterStatus,
 )
 from app.models.shift import ShiftTemplate
+from app.models.system import SystemSetting
 from app.models.user import User
 from app.services import open_shifts as os_svc
+from app.services.time_rules import set_time_rules
 
 API = f"{settings.API_V1_STR}/roster/open-shifts"
 PW = "test@12345"
@@ -99,6 +101,14 @@ async def world():
                 AuditLog.user_id.in_(uids), AuditLog.action.like("roster.%")))
             await db.execute(delete(Notification).where(
                 Notification.user_id.in_(uids)))
+            # company-wide shifts also notify real dev-DB employees
+            shift_ids = [str(i) for i in (await db.execute(
+                select(OpenShift.id).where(
+                    OpenShift.created_by_id.in_(uids)))).scalars().all()]
+            if shift_ids:
+                await db.execute(delete(Notification).where(
+                    Notification.resource_type == "open_shift",
+                    Notification.resource_id.in_(shift_ids)))
             await db.execute(delete(OpenShiftClaim).where(
                 OpenShiftClaim.user_id.in_(uids)))
             await db.execute(delete(OpenShift).where(
@@ -396,8 +406,31 @@ async def test_same_person_two_shifts_same_day_second_approve_fails(client, worl
         client.post(f"{API}/claims/{c2}/decide", headers=h, json={"action": "approve"}))
     codes = sorted([r1.status_code, r2.status_code])
     assert codes[0] == 200 and codes[1] in (400, 409), (r1.text, r2.text)
-    cell = await _cell(ids["e1"], dn())
-    assert cell in ((ids["t1"], False), (ids["t2"], False))
+    win_tpl = ids["t1"] if r1.status_code == 200 else ids["t2"]
+    async with SessionLocal() as db:
+        cl = {c.id: c.status for c in (await db.execute(select(OpenShiftClaim).where(
+            OpenShiftClaim.user_id == ids["e1"]))).scalars().all()}
+    assert sorted(cl.values()) == ["approved", "pending"]
+    assert cl[c1 if r1.status_code == 200 else c2] == "approved"
+    assert await _cell(ids["e1"], dn()) == (win_tpl, False)
+
+
+async def test_same_person_two_auto_confirm_shifts_concurrent(client, world):
+    w, ids = world, world["ids"]
+    j1 = await _mk(client, w, auto_confirm=True)
+    j2 = await _mk(client, w, shift_template_id=ids["t2"], auto_confirm=True)
+    h = await _h(client, w, "e1")
+    r1, r2 = await asyncio.gather(
+        client.post(f"{API}/{j1['id']}/claim", headers=h),
+        client.post(f"{API}/{j2['id']}/claim", headers=h))
+    codes = sorted([r1.status_code, r2.status_code])
+    assert codes[0] == 200 and codes[1] in (400, 409), (r1.text, r2.text)
+    win_tpl = ids["t1"] if r1.status_code == 200 else ids["t2"]
+    async with SessionLocal() as db:
+        cl = (await db.execute(select(OpenShiftClaim).where(
+            OpenShiftClaim.user_id == ids["e1"]))).scalars().all()
+        assert [c.status for c in cl] == ["approved"]
+    assert await _cell(ids["e1"], dn()) == (win_tpl, False)
 
 
 async def test_auto_confirm(client, world):
@@ -575,3 +608,150 @@ async def test_lists(client, world):
     r = await client.get(API, headers=await _h(client, w, "sx"), params=q)
     row = next(x for x in r.json() if x["id"] == j["id"])
     assert "scheduled" in row["claims"][0]["eligibility_reason"]
+
+
+# ------------------------ review follow-ups ------------------------
+
+async def _set_head(w, uid):
+    async with SessionLocal() as db:
+        await db.execute(Department.__table__.update().where(
+            Department.name == w["dept"]).values(head_user_id=uid))
+        await db.commit()
+
+
+async def test_creator_cannot_claim_own_shift(client, world):
+    w, ids = world, world["ids"]
+    await _set_head(w, ids["e3"])          # e3 is an employee AND the scheduler
+    j = await _mk(client, w, who="e3")
+    r = await _claim(client, w, j["id"], "e3")
+    assert r.status_code == 400 and "posted" in r.json()["error"]["message"]
+    assert [x for x in await _notes(ids["e3"], "Open shift available")
+            if x.resource_id == str(j["id"])] == []
+    j2 = await _mk(client, w, who="e3", auto_confirm=True)
+    assert (await _claim(client, w, j2["id"], "e3")).status_code == 400
+    assert await _cell(ids["e3"], dn()) is None
+    assert (await _claim(client, w, j2["id"], "e1")).status_code == 200
+
+
+async def test_decide_after_creator_deactivated_or_lost_scope(client, world):
+    w, ids = world, world["ids"]
+    j = await _mk(client, w)
+    cid = (await _claim(client, w, j["id"], "e1")).json()["my_claim_id"]
+    async with SessionLocal() as db:
+        await db.execute(User.__table__.update().where(
+            User.id == ids["sx"]).values(is_active=False))
+        await db.commit()
+    r = await _decide(client, w, cid, who="admin")   # approver supplies scope
+    assert r.status_code == 200, r.text
+    assert await _cell(ids["e1"], dn()) == (ids["t1"], False)
+    # creator loses scope: 403 (not a later 400)
+    async with SessionLocal() as db:
+        await db.execute(User.__table__.update().where(
+            User.id == ids["sx"]).values(is_active=True))
+        await db.commit()
+    j2 = await _mk(client, w, work_date=dd(1))
+    cid2 = (await _claim(client, w, j2["id"], "e3")).json()["my_claim_id"]
+    await _set_head(w, None)
+    r = await _decide(client, w, cid2, who="sx")
+    assert r.status_code == 403
+    assert (await _decide(client, w, cid2, who="admin")).status_code == 200
+
+
+async def test_other_head_can_approve_when_creator_lacks_scope(client, world):
+    w, ids = world, world["ids"]
+    j = await _mk(client, w)
+    cid = (await _claim(client, w, j["id"], "e1")).json()["my_claim_id"]
+    # head moves from sx to e3; sx (creator) no longer covers e1
+    await _set_head(w, ids["e3"])
+    r = await _decide(client, w, cid, who="e3")
+    assert r.status_code == 200, r.text
+
+
+async def test_excluded_user_and_notification_exclusion(client, world):
+    w, ids = world, world["ids"]
+    async with SessionLocal() as db:
+        actor = await db.get(User, ids["sx"])
+        s = await os_svc.create_open_shift(
+            db, actor, work_date=dn(), shift_template_id=ids["t1"],
+            department=w["dept"], excluded_user_id=ids["e1"],
+            exclude_user_ids=[ids["e6"]], source_drop_id=5)
+        await db.commit()
+        sid = s.id
+    for tag, n in (("e1", 0), ("e6", 0), ("e3", 1)):
+        got = [x for x in await _notes(ids[tag], "Open shift available")
+               if x.resource_id == str(sid)]
+        assert len(got) == n, tag
+    r = await _claim(client, w, sid, "e1")
+    assert r.status_code == 400 and "gave away" in r.json()["error"]["message"]
+    assert (await _claim(client, w, sid, "e6")).status_code == 200  # only not notified
+    r = await client.get(f"{API}/available", headers=await _h(client, w, "e1"))
+    assert sid not in {x["id"] for x in r.json()}
+
+
+async def test_available_query_count_is_bounded(client, world):
+    from sqlalchemy import event
+    from app.db.session import engine
+    w, ids = world, world["ids"]
+    for i in range(6):
+        await _mk(client, w, work_date=dd(i))
+    h = await _h(client, w, "e1")
+    n = {"q": 0}
+
+    def count(*a, **k):
+        n["q"] += 1
+    event.listen(engine.sync_engine, "before_cursor_execute", count)
+    try:
+        r = await client.get(f"{API}/available", headers=h)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count)
+    assert r.status_code == 200 and len(
+        [x for x in r.json() if x["department"] == w["dept"]]) == 6
+    assert n["q"] < 20, n["q"]      # not O(shifts)
+
+
+async def test_warnings_draft_replaced_and_rest_violation(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(), ids["t2"], status=RosterStatus.DRAFT)
+    j = await _mk(client, w, auto_confirm=True)
+    r = await _claim(client, w, j["id"], "e1")
+    assert r.status_code == 200
+    assert any("draft" in x for x in r.json()["warnings"])
+    # rest rule: t2 (14-22) the evening before, then t1 (09-17)
+    async with SessionLocal() as db:
+        old = {}
+        for k in ("min_rest_hours",):
+            row = await db.get(SystemSetting, f"schedule.{k}")
+            old[k] = row.value if row else None
+        await set_time_rules(db, {"schedule.min_rest_hours": "12"})
+    try:
+        await _pub(ids["e3"], dn(-1), ids["t2"])
+        j2 = await _mk(client, w, work_date=dd(0), department=w["dept"])
+        cid = (await _claim(client, w, j2["id"], "e3")).json()["my_claim_id"]
+        r = await _decide(client, w, cid)
+        assert r.status_code == 200, r.text
+        assert any("rest" in x.lower() for x in r.json()["warnings"]), r.json()
+    finally:
+        async with SessionLocal() as db:
+            row = await db.get(SystemSetting, "schedule.min_rest_hours")
+            if old["min_rest_hours"] is None:
+                if row:
+                    await db.delete(row)
+            elif row:
+                row.value = old["min_rest_hours"]
+            await db.commit()
+
+
+async def test_decide_response_scopes_claims(client, world):
+    w, ids = world, world["ids"]
+    # admin posts a company-wide shift; claims from both departments
+    r = await client.post(API, headers=await _h(client, w, "admin"), json={
+        "work_date": dd(), "shift_template_id": ids["t1"], "slots": 2})
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
+    c1 = (await _claim(client, w, sid, "e1")).json()["my_claim_id"]
+    assert (await _claim(client, w, sid, "e4")).status_code == 200
+    r = await _decide(client, w, c1)     # sx heads dept X only
+    assert r.status_code == 200, r.text
+    assert {c["user_id"] for c in r.json()["claims"]} == {ids["e1"]}
+    r = await _decide(client, w, c1, who="admin")  # already decided; still 409
+    assert r.status_code == 409

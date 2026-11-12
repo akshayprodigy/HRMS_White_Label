@@ -73,6 +73,7 @@ class OpenShiftRead(BaseModel):
     my_claim_id: Optional[int] = None
     my_claim_status: Optional[str] = None
     claims: List[OpenShiftClaimRead] = []
+    warnings: List[str] = []
 
     @field_validator("created_at")
     @classmethod

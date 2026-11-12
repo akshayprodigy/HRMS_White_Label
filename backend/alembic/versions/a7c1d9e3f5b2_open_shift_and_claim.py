@@ -27,6 +27,7 @@ def upgrade():
         sa.Column("status", sa.String(16), nullable=False),
         sa.Column("auto_confirm", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("created_by_id", sa.Integer(), sa.ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("excluded_user_id", sa.Integer(), sa.ForeignKey("user.id", ondelete="SET NULL"), nullable=True),
         sa.Column("source_drop_id", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )

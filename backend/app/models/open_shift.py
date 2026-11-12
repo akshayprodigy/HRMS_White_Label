@@ -49,6 +49,9 @@ class OpenShift(Base):
     created_by_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
     # Set by Task 4 when the shift was posted from a give-away request.
+    # The employee who gave this shift away; may not claim it back.
+    excluded_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
     source_drop_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

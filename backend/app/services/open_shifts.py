@@ -6,8 +6,8 @@ caller, so `filled` / `status` are fresh.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from typing import Dict, Iterable, List, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -21,7 +21,9 @@ from app.models.roster import RosterEntry, RosterStatus
 from app.models.shift import ShiftTemplate
 from app.models.user import User
 from app.services import roster as roster_svc
+from app.services import schedule_rules
 from app.services import swaps as swap_svc
+from app.services.time_rules import get_schedule_rules
 from app.services.availability import availability_by_day
 from app.services.effective_shift import effective_shifts_for_range
 
@@ -35,73 +37,109 @@ def today() -> date:
 
 # ----------------------------- eligibility -----------------------------
 
-async def eligibility_reasons(
-    db, shift: OpenShift, user_ids: Iterable[int]
-) -> Dict[int, Optional[str]]:
-    """user_id -> None when eligible, else the first failing reason."""
-    ids = sorted(set(user_ids))
-    out: Dict[int, Optional[str]] = {u: None for u in ids}
-    if not ids:
+async def eligibility_matrix(
+    db, pairs: Iterable[Tuple[OpenShift, int]], approver: Optional[User] = None,
+) -> Dict[Tuple[int, int], Optional[str]]:
+    """THE eligibility rules, evaluated over (shift, user_id) pairs with the
+    shared lookups (employees, creators' publish scope, effective shifts,
+    leave, availability) loaded once. Returns {(shift.id, user_id): None when
+    eligible, else the first failing reason}. `approver` (decide time) may
+    also supply the publish rights the creator lacks."""
+    pairs = list(pairs)
+    out: Dict[Tuple[int, int], Optional[str]] = {}
+    if not pairs:
         return out
-    # 1. active employee matching department / location
+    uids = {u for _, u in pairs}
+    shifts = {s.id: s for s, _ in pairs}
     emps = {
         e.user_id: e for e in (await db.execute(
             select(Employee).join(User, User.id == Employee.user_id).where(
-                Employee.user_id.in_(ids),
+                Employee.user_id.in_(uids),
                 Employee.status == EmployeeStatus.ACTIVE,
                 User.is_active.is_(True),
             ))).scalars().all()
     }
-    for u in ids:
-        e = emps.get(u)
-        if e is None:
-            out[u] = "Not an active employee"
-        elif shift.department and e.department != shift.department:
-            out[u] = f"Not in the {shift.department} department"
-        elif shift.location and (e.location or "") != shift.location:
-            out[u] = f"Not at the {shift.location} location"
-    # 2. the creator can publish for the user
-    creator = (await db.get(User, shift.created_by_id)
-               if shift.created_by_id else None)
-    pending = [u for u in ids if out[u] is None]
-    if pending:
-        ok = (
-            await roster_svc.publishable_subset(db, creator, pending)
-            if creator is not None and creator.is_active else set()
-        )
-        for u in pending:
-            if u not in ok:
-                out[u] = "Outside the scope of the scheduler who posted this shift"
-    # 3. not in the past
-    if shift.work_date < today():
-        for u in ids:
-            out[u] = out[u] or "This shift is in the past"
-    pending = [u for u in ids if out[u] is None]
-    if not pending:
-        return out
-    d = shift.work_date
-    # 4. no working shift that day
-    eff = await effective_shifts_for_range(db, pending, d, d)
-    for u in pending:
-        es = eff[(u, d)]
-        if es.shift is not None and not es.is_week_off:
-            out[u] = "Already scheduled to work that day"
-    pending = [u for u in ids if out[u] is None]
-    if not pending:
-        return out
-    # 5. not on approved leave, not unavailable for the shift
-    leave = await roster_svc.approved_leave_days(db, pending, d, d)
-    avail = await availability_by_day(db, pending, d, d)
-    for u in pending:
-        if (u, d) in leave:
-            out[u] = "On approved leave that day"
-        elif (u, d) in avail and avail[(u, d)].blocks(shift.shift_template_id):
-            out[u] = "Marked unavailable for this shift"
+    cids = {s.created_by_id for s in shifts.values() if s.created_by_id}
+    creators = {u.id: u for u in (await db.execute(
+        select(User).where(User.id.in_(cids)))).scalars().all()} if cids else {}
+    creator_pub: Dict[int, set] = {}
+    creator_admin: Dict[int, bool] = {}
+    for cid, cu in creators.items():
+        creator_admin[cid] = roster_svc.is_roster_admin(cu)
+        creator_pub[cid] = (
+            await roster_svc.publishable_subset(db, cu, uids)
+            if cu.is_active else set())
+    approver_pub = (
+        await roster_svc.publishable_subset(db, approver, uids)
+        if approver is not None else set())
+    t = today()
+    live = [s for s in shifts.values() if s.work_date >= t]
+    eff: dict = {}
+    leave: set = set()
+    avail: dict = {}
+    if live:
+        lo = min(s.work_date for s in live)
+        hi = max(s.work_date for s in live)
+        eff = await effective_shifts_for_range(db, sorted(uids), lo, hi)
+        leave = await roster_svc.approved_leave_days(db, uids, lo, hi)
+        avail = await availability_by_day(db, uids, lo, hi)
+    for sh, u in pairs:
+        out[(sh.id, u)] = _reason(
+            sh, u, emps.get(u), creator_pub.get(sh.created_by_id, set()),
+            creator_admin.get(sh.created_by_id, False), approver_pub, t,
+            eff, leave, avail)
     return out
 
 
-async def eligible_reason(db, shift: OpenShift, user_id: int) -> Optional[str]:
-    return (await eligibility_reasons(db, shift, [user_id]))[user_id]
+def _reason(sh, u, emp, creator_pub, creator_is_admin, approver_pub, t,
+            eff, leave, avail) -> Optional[str]:
+    d = sh.work_date
+    # 0. the poster cannot take their own shift (unless roster admin), and
+    # the person who gave a shift away cannot take it back.
+    if sh.created_by_id == u and not creator_is_admin:
+        return "You posted this shift"
+    if sh.excluded_user_id is not None and sh.excluded_user_id == u:
+        return "You gave away this shift"
+    # 1. active employee matching department / location
+    if emp is None:
+        return "Not an active employee"
+    if sh.department and emp.department != sh.department:
+        return f"Not in the {sh.department} department"
+    if sh.location and (emp.location or "") != sh.location:
+        return f"Not at the {sh.location} location"
+    # 2. publish scope: the creator's, or (decide time) the approver's
+    if u not in creator_pub and u not in approver_pub:
+        return "Outside the scope of the scheduler who posted this shift"
+    # 3. not in the past
+    if d < t:
+        return "This shift is in the past"
+    # 4. no working shift that day
+    es = eff[(u, d)]
+    if es.shift is not None and not es.is_week_off:
+        return "Already scheduled to work that day"
+    # 5. not on approved leave (half-day leave does not block, by convention
+    # shared with the rest of the roster), not unavailable for the shift
+    if (u, d) in leave:
+        return "On approved leave that day"
+    day = avail.get((u, d))
+    if day is not None and day.blocks(sh.shift_template_id):
+        return "Marked unavailable for this shift"
+    return None
+
+
+async def eligibility_reasons(
+    db, shift: OpenShift, user_ids: Iterable[int],
+    approver: Optional[User] = None,
+) -> Dict[int, Optional[str]]:
+    ids = sorted(set(user_ids))
+    m = await eligibility_matrix(db, [(shift, u) for u in ids], approver)
+    return {u: m[(shift.id, u)] for u in ids}
+
+
+async def eligible_reason(
+    db, shift: OpenShift, user_id: int, approver: Optional[User] = None,
+) -> Optional[str]:
+    return (await eligibility_reasons(db, shift, [user_id], approver))[user_id]
 
 
 async def eligible_user_ids(
@@ -118,6 +156,8 @@ async def create_open_shift(
     department: Optional[str] = None, location: Optional[str] = None,
     slots: int = 1, note: Optional[str] = None, auto_confirm: bool = False,
     source_drop_id: Optional[int] = None, check_scope: bool = True,
+    excluded_user_id: Optional[int] = None,
+    exclude_user_ids: Iterable[int] = (),
 ) -> OpenShift:
     """Validate, insert and notify eligible employees. Flushes, never
     commits. Raises HTTPException (400 validation, 403 scope)."""
@@ -139,6 +179,9 @@ async def create_open_shift(
         q = q.where(Employee.location == location)
     cand = set((await db.execute(q)).scalars().all())
     cand.discard(actor.id)
+    skip = set(exclude_user_ids) | (
+        {excluded_user_id} if excluded_user_id else set())
+    cand -= skip
     scope = await roster_svc.publishable_subset(db, actor, cand)
     if check_scope and not scope:
         raise HTTPException(
@@ -150,6 +193,7 @@ async def create_open_shift(
         slots=slots, filled=0, note=(note or None),
         status=OpenShiftStatus.OPEN, auto_confirm=bool(auto_confirm),
         created_by_id=actor.id, source_drop_id=source_drop_id,
+        excluded_user_id=excluded_user_id,
     )
     db.add(shift)
     await db.flush()
@@ -193,12 +237,50 @@ async def reject_pending(
     return len(hit)
 
 
+async def _claim_warnings(db, shift, uid, entry) -> List[str]:
+    """Advisory warnings: a replaced DRAFT, and work-rule violations (min
+    rest / consecutive days / weekly hours) the claim would CREATE (same
+    machinery as swap_warnings: diff of before/after violations)."""
+    out: List[str] = []
+    if (entry is not None and entry.status == RosterStatus.DRAFT
+            and (entry.is_week_off
+                 or entry.shift_template_id != shift.shift_template_id)):
+        out.append(
+            f"An unpublished draft for {shift.work_date.isoformat()} was "
+            f"replaced")
+    d = shift.work_date
+    start, end = d - timedelta(days=7), d + timedelta(days=7)
+    eff = await effective_shifts_for_range(db, [uid], start, end)
+    days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    cur = {x: swap_svc.cell_of(eff[(uid, x)]) for x in days}
+    after = dict(cur)
+    after[d] = (shift.shift_template_id, False)
+    templates = {t.id: t for t in (await db.execute(
+        select(ShiftTemplate))).scalars().all()}
+    rules = await get_schedule_rules(db)
+
+    def violations(cells):
+        spans = schedule_rules.build_spans(
+            [(uid, x, c[0]) for x, c in cells.items() if swap_svc.is_working(c)],
+            templates)
+        return schedule_rules.check_rules(spans, rules, window_start=d)
+
+    before = {(v.user_id, v.work_date, v.rule) for v in violations(cur)}
+    for v in violations(after):
+        if (v.user_id, v.work_date, v.rule) not in before:
+            out.append(v.message)
+    return out
+
+
 async def confirm_claim(
     db, shift: OpenShift, claim: OpenShiftClaim, actor_id: Optional[int],
-) -> None:
+    approver: Optional[User] = None,
+) -> List[str]:
     """Approve `claim`: re-check eligibility, write a PUBLISHED cell, record
     history, bump `filled`, close the shift when full. The caller must have
-    locked `shift` (lock_row). Raises HTTPException 400/409."""
+    locked `shift` (lock_row). `approver` (decide time) may supply publish
+    rights the creator lacks; the auto-confirm path leaves it None. Returns
+    advisory warnings. Raises HTTPException 400/409."""
     if shift.status != OpenShiftStatus.OPEN:
         raise HTTPException(status_code=409, detail="Open shift is no longer open")
     if shift.filled >= shift.slots:
@@ -215,11 +297,15 @@ async def confirm_claim(
             and not entry.is_week_off and entry.shift_template_id is not None):
         raise HTTPException(
             status_code=400, detail="Already scheduled to work that day")
-    reason = await eligible_reason(db, shift, uid)
+    reason = await eligible_reason(db, shift, uid, approver)
     if reason:
         raise HTTPException(status_code=400, detail=reason)
-    eff = (await effective_shifts_for_range(db, [uid], d, d))[(uid, d)]
-    old = swap_svc.cell_of(eff)
+    warnings = await _claim_warnings(db, shift, uid, entry)
+    if entry is not None and entry.status == RosterStatus.PUBLISHED:
+        old = (entry.shift_template_id, bool(entry.is_week_off))
+    else:  # no live roster cell: the live state is the assignment fallback
+        eff = (await effective_shifts_for_range(db, [uid], d, d))[(uid, d)]
+        old = swap_svc.cell_of(eff)
     # Pending change requests on this cell are superseded.
     now = datetime.now(timezone.utc)
     crs = await swap_svc.pending_requests(db, {(uid, d)}, lock=True)
@@ -261,3 +347,4 @@ async def confirm_claim(
             db, shift, actor_id,
             f"The {_label(shift)} was filled by someone else",
             exclude_id=claim.id)
+    return warnings
