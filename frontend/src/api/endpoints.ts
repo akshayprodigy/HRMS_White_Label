@@ -108,6 +108,16 @@ export const ENDPOINTS = {
     CHANGE_REQUESTS_MY: '/shifts/change-requests/my',
     CHANGE_REQUEST_CANCEL: (id: number) => `/shifts/change-requests/${id}/cancel`,
   },
+  BROADCASTS: {
+    BASE: '/broadcasts',
+    OPTIONS: '/broadcasts/audience-options',
+    MY: '/broadcasts/my',
+    DETAIL: (id: number) => `/broadcasts/${id}`,
+    CLOSE: (id: number) => `/broadcasts/${id}/close`,
+    READ: (id: number) => `/broadcasts/${id}/read`,
+    ACK: (id: number) => `/broadcasts/${id}/ack`,
+    SAFETY: (id: number) => `/broadcasts/${id}/safety`,
+  },
   ROSTER: {
     PLAN: '/roster/plan',
     BULK: '/roster/bulk',

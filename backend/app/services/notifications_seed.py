@@ -205,6 +205,41 @@ STARTER_TEMPLATES: List[Dict[str, Any]] = [
         ),
         body_text="{message}\nOpen the ERP → Statutory Filings.",
     ),
+
+    # ---- Emergency (bypass quiet hours / opt-outs in the delivery layer) ----
+    _t(
+        event_type="emergency_broadcast", channel=Channel.EMAIL,
+        category=EventCategory.EMERGENCY,
+        subject="[{severity}] {title}",
+        body_html=(
+            "<p><b>{title}</b></p><p>{message}</p>"
+            "<p>Open the app to acknowledge or mark yourself safe.</p>"
+        ),
+        body_text=(
+            "{title}\n\n{message}\n\n"
+            "Open the app to acknowledge or mark yourself safe."
+        ),
+    ),
+    _t(
+        event_type="emergency_broadcast", channel=Channel.SMS,
+        category=EventCategory.EMERGENCY,
+        body_text="EMERGENCY: {title} - {message}",
+    ),
+    _t(
+        event_type="emergency_need_help", channel=Channel.EMAIL,
+        category=EventCategory.EMERGENCY,
+        subject="NEEDS HELP: {title}",
+        body_html=(
+            "<p><b>{title}</b></p><p>{message}</p>"
+            "<p>Open the Emergency broadcast dashboard.</p>"
+        ),
+        body_text="{title}\n\n{message}\n\nOpen the Emergency broadcast dashboard.",
+    ),
+    _t(
+        event_type="emergency_need_help", channel=Channel.SMS,
+        category=EventCategory.EMERGENCY,
+        body_text="NEEDS HELP: {title} - {message}",
+    ),
 ]
 
 

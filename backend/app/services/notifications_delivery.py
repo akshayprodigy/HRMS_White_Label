@@ -506,6 +506,67 @@ def should_dead_letter(attempts: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
+EMERGENCY_CATEGORY = "emergency"
+_BULK_CHUNK = 500
+
+
+async def notify_emergency_bulk(
+    session: AsyncSession,
+    *,
+    user_ids: List[int],
+    event_type: str,
+    title: str,
+    message: str,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+    notif_type: str = "warning",
+) -> int:
+    """Batched emergency fan-out: in-app Notification + EMAIL/SMS delivery
+    rows for every user, with NO per-user queries (contact lookup and inserts
+    are chunked). Email/SMS rows are only created where the user has an
+    email / phone. Like all emergency-category sends it ignores quiet hours,
+    preferences and hard opt-out. Returns the number of users notified."""
+    from app.models.notification import Notification
+    from app.models.notification_channel import (
+        Channel, DeliveryStatus, NotificationDelivery,
+    )
+    from app.models.user import User
+
+    ids = sorted(set(user_ids))
+    ctx = context or {"title": title, "message": message}
+    for i in range(0, len(ids), _BULK_CHUNK):
+        chunk = ids[i:i + _BULK_CHUNK]
+        contacts = {
+            uid: (email, phone)
+            for uid, email, phone in (await session.execute(
+                select(User.id, User.email, User.phone).where(User.id.in_(chunk))
+            )).all()
+        }
+        notifs = [
+            Notification(
+                user_id=uid, title=title[:200], message=message[:1000],
+                type=notif_type, resource_type=resource_type,
+                resource_id=resource_id, event_type=event_type)
+            for uid in chunk if uid in contacts
+        ]
+        session.add_all(notifs)
+        await session.flush()
+        rows = []
+        for n in notifs:
+            email, phone = contacts[n.user_id]
+            for channel, has in ((Channel.EMAIL, bool(email)),
+                                 (Channel.SMS, bool(phone))):
+                if has:
+                    rows.append(NotificationDelivery(
+                        notification_id=n.id, event_type=event_type,
+                        recipient_user_id=n.user_id, channel=channel,
+                        status=DeliveryStatus.QUEUED, context_json=ctx))
+        session.add_all(rows)
+        await session.flush()
+    return len(ids)
+
+
 async def notify(
     session: AsyncSession,
     *,
@@ -597,6 +658,21 @@ async def dispatch_notification(
 
     created: List[int] = []
     now = datetime.now(timezone.utc)
+    if category == EMERGENCY_CATEGORY:
+        # Safety communications: ignore preferences, hard opt-out and quiet
+        # hours. Deliberately limited to this one category.
+        for channel in (Channel.EMAIL, Channel.SMS):
+            if channel in existing_channels:
+                continue
+            row = NotificationDelivery(
+                notification_id=notification_id, event_type=event_type,
+                recipient_user_id=recipient_user_id, channel=channel,
+                status=DeliveryStatus.QUEUED, context_json=context,
+            )
+            session.add(row)
+            await session.flush()
+            created.append(row.id)
+        return created
     for channel in (Channel.EMAIL, Channel.SMS):
         if channel in existing_channels:
             continue

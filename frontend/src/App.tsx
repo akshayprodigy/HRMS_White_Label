@@ -33,6 +33,8 @@ import { LetterTemplatesHR } from './components/letter-templates';
 import { CelebrationsReport } from './components/celebrations-report';
 import { RosterPlanner } from './components/roster-planner';
 import { LiveBoard } from './components/live-board';
+import { EmergencyBroadcastPage } from './components/broadcast/emergency-broadcast-page';
+import { BroadcastAlerts } from './components/broadcast/broadcast-alerts';
 import { ExecutiveReports } from './components/executive-reports';
 import { AdminView } from './components/admin-view';
 import { OrgChartView } from './components/org-chart-view';
@@ -425,6 +427,8 @@ const App = () => {
         return <ShiftsWorkspace role={userRole} />;
       case 'roster-planner':
         return <RosterPlanner />;
+      case 'emergency-broadcast':
+        return <EmergencyBroadcastPage />;
       case 'live-board':
         return <LiveBoard />;
       case 'geo-workspace':
@@ -585,6 +589,7 @@ const App = () => {
       'shifts-workspace': 'Shift Management',
       'roster-planner': 'Roster Planner',
       'live-board': 'Live Board',
+      'emergency-broadcast': 'Emergency Broadcast',
       'geo-workspace': 'Geo Attendance',
       'overtime-admin': 'Overtime Administration',
       'revisions-workspace': 'Salary Revisions',
@@ -680,6 +685,7 @@ const App = () => {
   return (
     <TimerProvider>
       <div className="min-h-screen bg-[#F8FAFC] flex">
+        <BroadcastAlerts />
         {/* Attendance Modal is now mandatory for ALL roles (including HR) after login */}
         {!hasMarkedAttendance && userRole !== 'super admin' && userRole !== 'admin' && (
           <AttendanceModal onSuccess={handleAttendanceSuccess} />

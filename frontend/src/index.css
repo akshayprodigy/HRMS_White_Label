@@ -4769,4 +4769,18 @@ html {
     .md\:grid-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .md\:col-span-4 { grid-column: span 4 / span 4; }
   }
+  /* Emergency broadcast (Phase 2 T7) */
+  .bg-slate-900\/80 { background-color: color-mix(in oklab, var(--color-slate-900, #0f172a) 80%, transparent); }
+  .border-red-300 { border-color: var(--color-red-300, #fca5a5); }
+  .border-red-500 { border-color: var(--color-red-500, #ef4444); }
+  .border-slate-300 { border-color: var(--color-slate-300, #cbd5e1); }
+  .border-slate-900 { border-color: var(--color-slate-900, #0f172a); }
+  .hover\:text-slate-900:hover { color: var(--color-slate-900, #0f172a); }
+  .max-h-\[60vh\] { max-height: 60vh; }
+  .max-h-full { max-height: 100%; }
+  .pr-3 { padding-right: calc(var(--spacing, .25rem) * 3); }
+  .text-red-800 { color: var(--color-red-800, #991b1b); }
+  .whitespace-pre-wrap { white-space: pre-wrap; }
+  .z-\[150\] { z-index: 150; }
+  .z-\[200\] { z-index: 200; }
 }

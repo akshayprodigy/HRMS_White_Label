@@ -12,6 +12,7 @@ import { MobileAttendance } from './screens/mobile-attendance';
 import { MobileLeave } from './screens/mobile-leave';
 import { MobilePayslip } from './screens/mobile-payslip';
 import { MobileApprovals } from './screens/mobile-approvals';
+import { BroadcastAlerts } from '../components/broadcast/broadcast-alerts';
 
 interface MobileShellProps {
   userRole: UserRole;
@@ -144,6 +145,7 @@ export const MobileShell: React.FC<MobileShellProps> = ({
         showApprovals={showApprovals}
         badges={badges}
       />
+      <BroadcastAlerts />
       <Toaster position="top-center" richColors />
     </div>
   );

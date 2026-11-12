@@ -14,7 +14,7 @@ from app.api.v1.endpoints import (
     roster_swaps, roster_autofill, roster_gaps,
     roster_open_shifts, calendar_feed, roster_live, roster_late,
     roster_on_call, roster_acks,
-    attendance_regularization, schedule_delegations,
+    attendance_regularization, schedule_delegations, broadcasts,
 )
 
 api_router = APIRouter()
@@ -25,6 +25,10 @@ api_router.include_router(
     prefix="/attendance/regularizations",
     tags=["attendance-regularization"],
 )
+# Emergency broadcast: NOT attendance-gated (people must be able to respond
+# to a safety check before punching in).
+api_router.include_router(
+    broadcasts.router, prefix="/broadcasts", tags=["broadcasts"])
 api_router.include_router(
     attendance.router, prefix="/attendance", tags=["attendance"]
 )

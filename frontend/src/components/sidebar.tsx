@@ -38,6 +38,7 @@ import {
   ScrollText,
   MapPin,
   Timer,
+  ShieldAlert,
 } from "lucide-react";
 import { cn } from "./ui-elements";
 import logoImg from "../assets/veliora-logo.png";
@@ -257,6 +258,13 @@ const menuItems: MenuItem[] = [
     label: "Live Board",
     icon: Activity,
     roles: ["hr", "pm", "dept head", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
+    id: "emergency-broadcast",
+    label: "Emergency Broadcast",
+    icon: ShieldAlert,
+    roles: ["hr", "admin", "super admin"],
     group: "Time & Attendance",
   },
   {

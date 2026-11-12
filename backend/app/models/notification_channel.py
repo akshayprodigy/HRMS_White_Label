@@ -66,6 +66,7 @@ class EventCategory:
     PERFORMANCE = "performance"
     EXPENSE = "expense"
     STATUTORY = "statutory"
+    EMERGENCY = "emergency"
     OTHER = "other"
 
 
@@ -93,6 +94,8 @@ EVENT_CATEGORY_MAP = {
     "review_submit_reminder": EventCategory.PERFORMANCE,
     "statutory_due": EventCategory.STATUTORY,
     "report_scheduled": EventCategory.OTHER,
+    "emergency_broadcast": EventCategory.EMERGENCY,
+    "emergency_need_help": EventCategory.EMERGENCY,
 }
 
 
