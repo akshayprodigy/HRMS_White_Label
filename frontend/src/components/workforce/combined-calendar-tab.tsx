@@ -217,6 +217,7 @@ export const CombinedCalendarTab: React.FC = () => {
           allLeaves={leaves}
           allHolidays={holidays}
           allCorrections={corrections}
+          onChanged={refetch}
           onClose={() => setDrillId(null)}
         />
       )}

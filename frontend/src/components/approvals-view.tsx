@@ -16,6 +16,7 @@ import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { ApprovalItem } from '../types/erp';
 import { toast } from 'sonner';
+import { RegularizationQueue } from './regularization-requests';
 import { normalizeRoleName } from '../utils/roles';
 import {
   Dialog,
@@ -30,7 +31,8 @@ type ResourceTypeFilter =
   | 'estimate_version'
   | 'leave_request'
   | 'comp_off_accrual'
-  | 'requisition';
+  | 'requisition'
+  | 'attendance_correction';
 type ApprovalStatusFilter = 'all' | 'pending' | 'approved' | 'rejected' | 'changes_requested';
 
 type ApprovalResourcePayload = {
@@ -233,6 +235,7 @@ export const ApprovalsView = () => {
               { value: 'leave_request', label: 'leave' },
               { value: 'comp_off_accrual', label: 'comp-off' },
               { value: 'requisition', label: 'requisition' },
+              { value: 'attendance_correction', label: 'attendance fixes' },
             ].map((tab) => (
               <button
                 key={tab.value}
@@ -296,7 +299,9 @@ export const ApprovalsView = () => {
         </div>
       </div>
 
-      {loading ? (
+      {resourceType === 'attendance_correction' ? (
+        <RegularizationQueue />
+      ) : loading ? (
         <div className="py-20 flex justify-center">
            <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
         </div>

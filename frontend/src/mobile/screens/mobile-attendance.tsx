@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { client } from '../../api/client';
+import { RegularizationRequestDialog } from '../../components/regularization-requests';
 import { ENDPOINTS } from '../../api/endpoints';
 import { cn, errMsg } from '../../components/ui-elements';
 
@@ -153,6 +154,7 @@ export const MobileAttendance: React.FC<MobileAttendanceProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0); // 1Hz clock for elapsed
+  const [correctionOpen, setCorrectionOpen] = useState(false);
   const watchIdRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -344,6 +346,17 @@ export const MobileAttendance: React.FC<MobileAttendanceProps> = ({
             You've punched in and out for this shift. See you tomorrow.
           </div>
         )}
+        <button
+          type="button"
+          onClick={() => setCorrectionOpen(true)}
+          className="w-full h-12 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700 active:bg-slate-50"
+        >
+          Missed a punch? Request correction
+        </button>
+        <RegularizationRequestDialog
+          open={correctionOpen}
+          onClose={() => setCorrectionOpen(false)}
+        />
       </div>
     </div>
   );

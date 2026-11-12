@@ -15,6 +15,12 @@ export const ENDPOINTS = {
     TODAY: '/attendance/today',
     ALL: '/attendance/all',
     FLAGGED: '/attendance/flagged',
+    // Punch-time regularization (employee request -> manager/HR decision)
+    // Trailing slash: the backend router is mounted at "", so the bare path 307-redirects.
+    REGULARIZATIONS: '/attendance/regularizations/',
+    REGULARIZATIONS_MY: '/attendance/regularizations/my',
+    REGULARIZATION_DECIDE: (id: number | string) => `/attendance/regularizations/${id}/decide`,
+    REGULARIZATION_CANCEL: (id: number | string) => `/attendance/regularizations/${id}/cancel`,
   },
   TIMESHEET: {
     TIMER_STATUS: '/timesheets/timer/status',

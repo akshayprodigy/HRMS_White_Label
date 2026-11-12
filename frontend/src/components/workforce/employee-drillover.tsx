@@ -31,6 +31,7 @@ import {
   type DayStatus,
 } from './workforce-data';
 import { exportEmployeePdf } from './workforce-export';
+import { RegularizationList } from '../regularization-requests';
 import { EditPunchModal, AddMissedPunchModal } from './edit-punch-modal';
 
 // Section Q: HR/admin can hand-edit punches. Backend enforces the
@@ -172,7 +173,7 @@ export const EmployeeDrillover: React.FC<EmployeeDrilloverProps> = ({
     () => allCorrections.filter(c => c.user_id === employee.user_id),
     [allCorrections, employee.user_id],
   );
-  const pendingCount = empCorrections.filter(c => c.status === 'submitted').length;
+  const pendingCount = empCorrections.filter(c => c.status === 'pending').length;
 
   const empLogs = useMemo(() => {
     const fromIso = toIsoDate(range.from);
@@ -306,7 +307,7 @@ export const EmployeeDrillover: React.FC<EmployeeDrilloverProps> = ({
             />
           )}
           {tab === 'hours' && <HoursView days={heatmap} />}
-          {tab === 'corrections' && <CorrectionsView corrections={empCorrections} />}
+          {tab === 'corrections' && <CorrectionsView corrections={empCorrections} onChanged={onChanged} />}
         </div>
       </aside>
 
@@ -683,60 +684,13 @@ const LegendDot: React.FC<{ className: string; label: string }> = ({ className, 
   </span>
 );
 
-const CorrectionsView: React.FC<{ corrections: CorrectionRecord[] }> = ({ corrections }) => {
-  const handleAction = async (id: number, status: 'approved' | 'rejected') => {
-    try {
-      await client.post(ENDPOINTS.HR.ATTENDANCE_CORRECTION_ACTION(id), { status });
-      toast.success(`Correction ${status}`);
-    } catch {
-      toast.error(`Failed to ${status} correction`);
-    }
-  };
-
-  if (corrections.length === 0) {
-    return (
-      <EmptyState
-        text="No correction requests"
-        icon={<CheckCircle size={28} className="mx-auto text-slate-200 mb-2" />}
-      />
-    );
-  }
-  return (
-    <div className="space-y-2">
-      {corrections.map(c => (
-        <div key={c.id} className="p-3 rounded-xl border border-slate-200 bg-white space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <p className="sb-item-sm font-black text-[#0F172A] tabular-nums">{c.date}</p>
-            <Badge
-              variant={c.status === 'submitted' ? 'warning' : c.status === 'approved' ? 'success' : 'error'}
-              className="text-[8px] uppercase"
-            >
-              {c.status}
-            </Badge>
-          </div>
-          <p className="sb-item-sm font-medium text-slate-500">
-            Requested mode: <span className="font-black text-slate-600">{c.requested_mode}</span>
-          </p>
-          {c.reason && <p className="sb-item-sm italic text-slate-500">"{c.reason}"</p>}
-          {c.status === 'submitted' && (
-            <div className="flex gap-2 pt-1">
-              <Button
-                onClick={() => handleAction(c.id, 'approved')}
-                className="flex-1 h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-black uppercase text-[9px] tracking-wider"
-              >
-                <CheckCircle size={11} className="mr-1" /> Approve
-              </Button>
-              <Button
-                onClick={() => handleAction(c.id, 'rejected')}
-                variant="outline"
-                className="flex-1 h-8 border-rose-200 text-rose-600 hover:bg-rose-50 font-black uppercase text-[9px] tracking-wider"
-              >
-                <XCircle size={11} className="mr-1" /> Reject
-              </Button>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-};
+const CorrectionsView: React.FC<{ corrections: CorrectionRecord[]; onChanged?: () => void }> = ({
+  corrections,
+  onChanged,
+}) => (
+  <RegularizationList
+    items={corrections}
+    onDecided={() => onChanged?.()}
+    emptyText="No correction requests"
+  />
+);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
+import type { Regularization } from '../../api/regularization';
 import { toIsoDate, fromIsoDate, type DateRange } from '../period-picker';
 
 // Sunday only — Saturdays are working days.
@@ -72,15 +73,9 @@ export interface LeaveRecord {
   status: string;
 }
 
-export interface CorrectionRecord {
-  id: number;
-  user_id: number;
-  date: string;
-  requested_mode: string;
-  reason: string;
-  status: string;
-  created_at: string;
-}
+// Attendance regularization requests (GET /attendance/regularizations).
+// Supersedes the legacy /hr/attendance-corrections feed.
+export type CorrectionRecord = Regularization;
 
 export interface HolidayRecord {
   id: number;
@@ -309,7 +304,7 @@ function aggregateRoster(args: {
   }
   const pendingByUser = new Map<number, number>();
   for (const c of corrections) {
-    if (c.status === 'submitted') {
+    if (c.status === 'pending') {
       pendingByUser.set(c.user_id, (pendingByUser.get(c.user_id) || 0) + 1);
     }
   }
@@ -470,7 +465,7 @@ export function useWorkforceData(range: DateRange): WorkforceData {
           client.get(ENDPOINTS.ATTENDANCE.ALL, { params: { date_from: dateFrom, date_to: dateTo } }),
           client.get(ENDPOINTS.LEAVE.HISTORY, { params: { limit: 1000 } }),
           client.get(ENDPOINTS.HR.HOLIDAYS),
-          client.get(ENDPOINTS.HR.ATTENDANCE_CORRECTIONS),
+          client.get(ENDPOINTS.ATTENDANCE.REGULARIZATIONS, { params: { status: 'all' } }),
         ]);
         if (cancelled) return;
         const empList = Array.isArray(empRes.data)
