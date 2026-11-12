@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
-import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -276,7 +276,7 @@ export const LeaveView = () => {
             ))
           ) : (
             balances.map((bal) => (
-              <Card key={bal.id} className="relative overflow-hidden group border-slate-200 hover:border-indigo-200 transition-all duration-300 bg-white">
+              <Card key={bal.leave_type?.id ?? bal.leave_type?.name} className="relative overflow-hidden group border-slate-200 hover:border-indigo-200 transition-all duration-300 bg-white">
                 <div className="p-5 flex items-start gap-4">
                   <div className={cn("p-2.5 rounded-xl border transition-colors duration-300", getBalanceColor(bal.leave_type.name))}>
                     {getBalanceIcon(bal.leave_type.name)}
@@ -508,7 +508,7 @@ export const LeaveView = () => {
           <div className="bg-indigo-600 p-8 text-white relative">
              <div className="relative z-10">
                 <DialogTitle className="text-2xl font-bold tracking-tight">Submit Leave Request</DialogTitle>
-                <p className="text-indigo-100 mt-2 text-sm max-w-sm">Please provide the details below to request a workspace separation period.</p>
+                <DialogDescription className="text-indigo-100 mt-2 text-sm max-w-sm">Please provide the details below to request a workspace separation period.</DialogDescription>
              </div>
              <div className="absolute -right-8 -bottom-8 opacity-20 pointer-events-none">
                 <Umbrella size={180} />

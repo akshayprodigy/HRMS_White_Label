@@ -21,6 +21,7 @@ export interface MyBroadcast {
   pending: boolean;
 }
 
+const BANNER_SLOT_ID = 'broadcast-banner-slot';
 const POLL_MS = 60_000;
 const POLL_CRITICAL_MS = 20_000; // faster while a critical alert is pending
 
@@ -168,30 +169,35 @@ export const BroadcastAlerts: React.FC = () => {
   };
 
   if (!pending.length) return null;
+  const bannerBox = banners.length > 0 && (
+    <div className="p-2 space-y-2 max-h-[40vh] overflow-y-auto bg-[#F8FAFC] border-b border-slate-200"
+      role="region" aria-label="Broadcast alerts">
+      {banners.map((b) => {
+        const { box, Icon } = TONE[b.severity] ?? TONE.info;
+        return (
+          <div key={b.id} role="alert"
+            className={`mx-auto max-w-3xl rounded-xl border p-3 shadow-sm ${box}`}>
+            <div className="flex items-start gap-2">
+              <Icon className="w-5 h-5 mt-0.5 flex-shrink-0" />
+              <div className="min-w-0">
+                <p className="font-bold text-sm">{b.title}</p>
+                <p className="text-sm whitespace-pre-wrap break-words">{b.message}</p>
+              </div>
+            </div>
+            {renderActions(b)}
+          </div>
+        );
+      })}
+      {error && <p role="alert" className="text-xs text-red-700 text-center">{error}</p>}
+    </div>
+  );
+  // Non-critical banners live in normal flow at the top of the main content
+  // area (below the header) via the layout's slot; fixed overlay as a fallback.
+  const slot = banners.length > 0 ? document.getElementById(BANNER_SLOT_ID) : null;
   return (
     <>
-      {banners.length > 0 && (
-        <div className="fixed top-0 left-0 right-0 z-[150] p-2 space-y-2 max-h-[60vh] overflow-y-auto"
-          role="region" aria-label="Broadcast alerts">
-          {banners.map((b) => {
-            const { box, Icon } = TONE[b.severity] ?? TONE.info;
-            return (
-              <div key={b.id} role="alert"
-                className={`mx-auto max-w-3xl rounded-xl border p-3 shadow-lg ${box}`}>
-                <div className="flex items-start gap-2">
-                  <Icon className="w-5 h-5 mt-0.5 flex-shrink-0" />
-                  <div className="min-w-0">
-                    <p className="font-bold text-sm">{b.title}</p>
-                    <p className="text-sm whitespace-pre-wrap break-words">{b.message}</p>
-                  </div>
-                </div>
-                {renderActions(b)}
-              </div>
-            );
-          })}
-          {error && <p role="alert" className="text-xs text-red-700 text-center">{error}</p>}
-        </div>
-      )}
+      {bannerBox && (slot ? createPortal(bannerBox, slot)
+        : <div className="fixed top-0 left-0 right-0 z-[150]">{bannerBox}</div>)}
       {critical && createPortal(
         <div className="fixed inset-0 z-[200] bg-slate-900/80 flex items-center justify-center p-4"
           role="alertdialog" aria-modal="true"

@@ -5,7 +5,9 @@ import { Card, Button, Badge } from '../ui-elements';
 import { errMsg } from '../schedule-delegations-utils';
 import { fmtDate, inputCls } from '../my-schedule/my-schedule-api';
 import { InlineConfirm } from '../my-schedule/inline-confirm';
-import { schedulerApi, type CoverageGap, type GapSuggestion } from './roster-api';
+import { schedulerApi, addDays, type CoverageGap, type GapSuggestion } from './roster-api';
+import { OPEN_SHIFT_HORIZON_DAYS } from './use-requests';
+import { todayIso } from '../schedule-delegations-utils';
 
 const SOURCE_LABEL: Record<CoverageGap['source'], string> = {
   emergency_leave: 'Emergency leave',
@@ -105,7 +107,13 @@ const GapCard = ({
         <Button size="sm" variant="outline" className="h-10" disabled={!!busy || broadcast}
           isLoading={busy === 'broadcast'}
           aria-label={`Broadcast gap ${gap.id} as open shift`}
-          onClick={() => run('broadcast', () => schedulerApi.broadcastGap(gap.id, auto),
+          onClick={() => run('broadcast', async () => {
+            const g = await schedulerApi.broadcastGap(gap.id, auto);
+            if (g.work_date > addDays(todayIso(), OPEN_SHIFT_HORIZON_DAYS)) {
+              toast.info(`The open shift is on ${fmtDate(g.work_date)}, beyond the ${OPEN_SHIFT_HORIZON_DAYS}-day Open shifts list below. It is live but not listed here yet.`);
+            }
+            return g;
+          },
             () => [auto ? 'Broadcast as open shift — first claim is auto-confirmed' : 'Broadcast as open shift — claims need your approval', []])}>
           <Radio size={14} className="mr-1.5" /> Broadcast
         </Button>

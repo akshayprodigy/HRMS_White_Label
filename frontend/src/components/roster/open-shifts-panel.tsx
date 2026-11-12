@@ -71,7 +71,7 @@ export const OpenShiftsSchedulerPanel: React.FC<Props> = ({
       {shifts.length === 0 ? (
         !error && (
           <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 py-6 text-center">
-            No open shifts
+            No open shifts in the next {OPEN_SHIFT_HORIZON_DAYS} days
           </p>
         )
       ) : (

@@ -24,7 +24,7 @@ import {
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { Textarea } from './ui/textarea';
 import { Input } from './ui/input';
 import { client } from '../api/client';
@@ -270,6 +270,22 @@ export const LeaveHR = () => {
                               </div>
                             )}
                           </div>
+                          {ld.is_emergency && (
+                            <div className="mt-4">
+                              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Emergency proof</p>
+                              <p className="text-xs font-black uppercase tracking-tight mt-1" data-testid="pending-proof-status">
+                                {ld.converted_to_lop_at ? (
+                                  <span className="text-slate-800">Converted to LOP</span>
+                                ) : ld.proof_submitted_at ? (
+                                  <span className="text-emerald-700">Proof submitted</span>
+                                ) : ld.proof_due_date ? (
+                                  <span className="text-amber-700">Proof due by {ld.proof_due_date}</span>
+                                ) : (
+                                  <span className="text-slate-400">No proof required</span>
+                                )}
+                              </p>
+                            </div>
+                          )}
                           {ld.reason && (
                             <div className="mt-4">
                               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Reason</p>
@@ -424,7 +440,7 @@ export const LeaveHR = () => {
             <DialogTitle className="text-2xl font-black tracking-tighter flex items-center gap-3">
               Application Rejection
             </DialogTitle>
-            <p className="text-red-100 text-[10px] font-bold uppercase tracking-widest mt-1">Specify decline reason for {selectedLeave?.requested_by_name || 'this employee'}</p>
+            <DialogDescription className="text-red-100 text-[10px] font-bold uppercase tracking-widest mt-1">Specify decline reason for {selectedLeave?.requested_by_name || 'this employee'}</DialogDescription>
           </DialogHeader>
           <div className="p-8 space-y-4 flex-1 overflow-y-auto min-h-0">
             <div className="space-y-2">

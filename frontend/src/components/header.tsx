@@ -146,10 +146,10 @@ export const Header = ({ title, userName, userRole, avatarUrl, onLogout, onNavig
         </div>
       )}
       <div className="h-20 flex items-center justify-between px-10">
-        <div className="flex items-center gap-6">
-          <h1 className="text-xl font-black text-[#0F172A] tracking-tighter uppercase whitespace-nowrap">{title}</h1>
-          <div className="h-6 w-px bg-slate-200 hidden md:block" />
-          <form onSubmit={handleSearch} className="relative hidden lg:block">
+        <div className="flex items-center gap-6 min-w-0 flex-1">
+          <h1 title={title} className="text-xl font-black text-[#0F172A] tracking-tighter uppercase whitespace-nowrap truncate min-w-0">{title}</h1>
+          <div className="h-6 w-px bg-slate-200 hidden xl:block shrink-0" />
+          <form onSubmit={handleSearch} className="relative hidden xl:block shrink-0">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#94A3B8]" />
             <>
               <input
@@ -172,7 +172,7 @@ export const Header = ({ title, userName, userRole, avatarUrl, onLogout, onNavig
           </form>
         </div>
 
-        <div className="flex items-center space-x-6">
+        <div className="flex items-center space-x-6 shrink-0 ml-4">
           <div className="relative">
             <button 
               onClick={() => setShowNotifications(!showNotifications)}

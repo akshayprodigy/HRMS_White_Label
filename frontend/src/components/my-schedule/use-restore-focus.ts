@@ -19,3 +19,24 @@ export const useRestoreFocus = () => {
     }
   };
 };
+
+/**
+ * For dialogs that are always mounted and opened by state (no Radix trigger):
+ * call `capture()` in the opener to remember the focused element, spread
+ * `onCloseAutoFocus` on <DialogContent> to return focus to it on close.
+ */
+export const useReturnFocus = () => {
+  const ref = useRef<HTMLElement | null>(null);
+  const capture = () => {
+    const el = typeof document !== 'undefined' ? document.activeElement : null;
+    ref.current = el instanceof HTMLElement && el !== document.body ? el : null;
+  };
+  const onCloseAutoFocus = (e: Event) => {
+    const el = ref.current;
+    if (el && el.isConnected) {
+      e.preventDefault();
+      el.focus();
+    }
+  };
+  return { capture, onCloseAutoFocus };
+};

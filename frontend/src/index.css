@@ -4784,4 +4784,42 @@ html {
   .z-\[150\] { z-index: 150; }
   .z-\[200\] { z-index: 200; }
   .underline { text-decoration-line: underline; }
+
+  /* Phase 2 QA: classes used by Phase 2 UI that the shipped sheet lacked */
+  .pl-9 { padding-left: calc(var(--spacing) * 9); }
+  .ml-1 { margin-left: calc(var(--spacing) * 1); }
+  .ml-4 { margin-left: calc(var(--spacing) * 4); }
+  .mt-1\.5 { margin-top: calc(var(--spacing) * 1.5); }
+  .gap-x-8 { column-gap: calc(var(--spacing) * 8); }
+  .gap-y-4 { row-gap: calc(var(--spacing) * 4); }
+  .py-14 { padding-block: calc(var(--spacing) * 14); }
+  .py-24 { padding-block: calc(var(--spacing) * 24); }
+  .max-w-\[260px\] { max-width: 260px; }
+  .max-h-\[40vh\] { max-height: 40vh; }
+  .overflow-auto { overflow: auto; }
+  .font-extrabold {
+    --tw-font-weight: var(--font-weight-extrabold, 800);
+    font-weight: var(--font-weight-extrabold, 800);
+  }
+  :where(.space-x-3 > :not(:last-child)) {
+    --tw-space-x-reverse: 0;
+    margin-inline-start: calc(calc(var(--spacing) * 3) * var(--tw-space-x-reverse));
+    margin-inline-end: calc(calc(var(--spacing) * 3) * calc(1 - var(--tw-space-x-reverse)));
+  }
+  .rounded-\[32px\] { border-radius: 32px; }
+  .rounded-\[40px\] { border-radius: 40px; }
+  .text-white\/70 { color: color-mix(in srgb, #fff 70%, transparent); }
+  @supports (color: color-mix(in lab, red, red)) {
+    .text-white\/70 { color: color-mix(in oklab, var(--color-white) 70%, transparent); }
+  }
+  @media (hover: hover) {
+    .hover\:bg-amber-50:hover { background-color: var(--color-amber-50); }
+  }
+  .focus\:ring-blue-500:focus { --tw-ring-color: var(--color-blue-500); }
+  @media (width >= 48rem) {
+    .md\:items-start { align-items: flex-start; }
+  }
+  @media (width >= 80rem) {
+    .xl\:block { display: block; }
+  }
 }

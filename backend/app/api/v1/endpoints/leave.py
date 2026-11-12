@@ -769,6 +769,8 @@ def _serialize_leave_for_approval(lr: LeaveRequest) -> dict:
         "attachment_url": lr.attachment_url,
         "is_emergency": bool(lr.is_emergency),
         "proof_due_date": lr.proof_due_date.isoformat() if lr.proof_due_date else None,
+        "proof_submitted_at": lr.proof_submitted_at.isoformat() if lr.proof_submitted_at else None,
+        "converted_to_lop_at": lr.converted_to_lop_at.isoformat() if lr.converted_to_lop_at else None,
     }
 
 

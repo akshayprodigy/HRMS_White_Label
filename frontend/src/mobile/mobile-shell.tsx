@@ -137,6 +137,7 @@ export const MobileShell: React.FC<MobileShellProps> = ({
           paddingBottom: `calc(env(safe-area-inset-bottom) + 72px)`,
         }}
       >
+        <div id="broadcast-banner-slot" />
         {renderContent()}
       </main>
       <MobileNav

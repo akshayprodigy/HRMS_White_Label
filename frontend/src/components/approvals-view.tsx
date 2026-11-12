@@ -23,6 +23,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from './ui/dialog';
 
 type ResourceTypeFilter =
@@ -548,6 +549,7 @@ export const ApprovalsView = () => {
             <DialogTitle>
               {bulkConfirm === 'approve' ? 'Approve' : 'Reject'} {selected.size} request(s)?
             </DialogTitle>
+            <DialogDescription className="sr-only">Confirm the bulk decision on the selected approval requests.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <p className="text-xs font-bold text-slate-600">
@@ -580,9 +582,9 @@ export const ApprovalsView = () => {
             <DialogTitle className="text-xl font-black uppercase tracking-tight">
               Approval Details
             </DialogTitle>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-white/70">
+            <DialogDescription className="text-[10px] font-bold uppercase tracking-widest text-white/70">
               Review steps and underlying request data
-            </p>
+            </DialogDescription>
           </DialogHeader>
 
           <div className="p-6 overflow-y-auto">

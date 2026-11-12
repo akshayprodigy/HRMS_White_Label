@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
-import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
+import { useReturnFocus } from './my-schedule/use-restore-focus';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { errMsg, parseServerDate } from './schedule-delegations-utils';
@@ -89,6 +90,42 @@ const RESULT_LABEL: Record<BulkResult['status'], string> = {
   error: 'Failed',
 };
 
+/** Client-side mirror of the bulk-mark time rules (attendance_bulk.py):
+ * HH:MM punch-out <= punch-in means "next day" (night shift), equal is an
+ * error, the span is capped at 24 h and punch-in may not be in the future.
+ * Returns an error message, or null when valid. */
+export const validateMarkTimes = (
+  punchIn: string,
+  punchOut: string,
+  workDates: string[],
+  now: Date = new Date()
+): string | null => {
+  const m = /^(\d{2}):(\d{2})$/.exec(punchIn);
+  if (!m) return 'Enter the punch-in time.';
+  const inMin = Number(m[1]) * 60 + Number(m[2]);
+  if (punchOut) {
+    const o = /^(\d{2}):(\d{2})$/.exec(punchOut);
+    if (!o) return 'Enter a valid punch-out time.';
+    const outMin = Number(o[1]) * 60 + Number(o[2]);
+    if (outMin === inMin) return 'Punch-out must be after punch-in.';
+    const span = outMin > inMin ? outMin - inMin : outMin + 24 * 60 - inMin;
+    if (span > 24 * 60) return 'Punch-out must be within 24 hours of punch-in.';
+  }
+  for (const d of workDates) {
+    const t = Date.parse(`${d}T${punchIn}:00Z`);
+    if (Number.isFinite(t) && t > now.getTime() + 5 * 60_000) {
+      return `Punch-in cannot be in the future (${d} ${punchIn} UTC).`;
+    }
+  }
+  return null;
+};
+
+/** "Ends next day" hint for an overnight punch-out. */
+const overnightHint = (punchIn: string, punchOut: string): string | null =>
+  punchIn && punchOut && punchOut < punchIn
+    ? `Punch-out ${punchOut} is treated as the next day (night shift).`
+    : null;
+
 const hhmm = (iso: string | null) =>
   iso
     ? parseServerDate(iso).toLocaleTimeString([], {
@@ -143,6 +180,7 @@ export const LiveBoard: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [markError, setMarkError] = useState<string | null>(null);
   const [markResults, setMarkResults] = useState<BulkResult[] | null>(null);
+  const markFocus = useReturnFocus();
 
   const load = useCallback(
     async (background: boolean) => {
@@ -225,6 +263,7 @@ export const LiveBoard: React.FC = () => {
     });
 
   const openMark = () => {
+    markFocus.capture();
     setPunchIn(selectedRows.find((r) => r.start_hhmm)?.start_hhmm ?? '09:00');
     setPunchOut('');
     setReason('');
@@ -238,8 +277,9 @@ export const LiveBoard: React.FC = () => {
       setMarkError('Enter a reason of at least 5 characters.');
       return;
     }
-    if (!punchIn) {
-      setMarkError('Enter the punch-in time.');
+    const timeErr = validateMarkTimes(punchIn, punchOut, Array.from(new Set(selectedRows.map((r) => r.work_date))));
+    if (timeErr) {
+      setMarkError(timeErr);
       return;
     }
     setSubmitting(true);
@@ -520,10 +560,13 @@ export const LiveBoard: React.FC = () => {
         </table>
       </Card>
       <Dialog open={markOpen} onOpenChange={(o: boolean) => !o && !submitting && setMarkOpen(false)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md" onCloseAutoFocus={markFocus.onCloseAutoFocus}>
           <DialogTitle className="text-base font-semibold text-gray-900">
             Mark present (system outage)
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            Record the selected employees as present with a punch-in time and reason.
+          </DialogDescription>
           {markResults ? (
             <div className="space-y-3" role="status">
               <p className="text-sm text-gray-700">
@@ -534,10 +577,13 @@ export const LiveBoard: React.FC = () => {
                   <li key={x.user_id} className="flex items-start justify-between gap-3">
                     <span className="text-gray-900">{nameOf(x.user_id)}</span>
                     <span
-                      className={x.status === 'created' ? 'text-emerald-700' : 'text-amber-700'}
+                      className={cn('text-right', x.status === 'created' ? 'text-emerald-700' : 'text-amber-700')}
                       title={x.message ?? undefined}
                     >
                       {RESULT_LABEL[x.status]}
+                      {x.message && x.status !== 'created' && (
+                        <span className="block text-xs text-gray-600 font-normal">{x.message}</span>
+                      )}
                     </span>
                   </li>
                 ))}
@@ -558,7 +604,7 @@ export const LiveBoard: React.FC = () => {
                   <input
                     type="time"
                     value={punchIn}
-                    onChange={(e) => setPunchIn(e.target.value)}
+                    onChange={(e) => { setPunchIn(e.target.value); setMarkError(null); }}
                     className={cn(selectCls, 'w-full')}
                   />
                 </label>
@@ -567,11 +613,14 @@ export const LiveBoard: React.FC = () => {
                   <input
                     type="time"
                     value={punchOut}
-                    onChange={(e) => setPunchOut(e.target.value)}
+                    onChange={(e) => { setPunchOut(e.target.value); setMarkError(null); }}
                     className={cn(selectCls, 'w-full')}
                   />
                 </label>
               </div>
+              {overnightHint(punchIn, punchOut) && (
+                <p className="text-xs text-gray-600">{overnightHint(punchIn, punchOut)}</p>
+              )}
               <label className="text-sm text-gray-700 space-y-1 block">
                 Reason
                 <textarea

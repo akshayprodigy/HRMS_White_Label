@@ -721,6 +721,8 @@ const App = () => {
             isImpersonated={isImpersonated}
           />
 
+          <div id="broadcast-banner-slot" />
+
           <div className="flex-1 overflow-y-auto scrollbar-none">
             {(hasMarkedAttendance || userRole === 'super admin' || userRole === 'admin' || (gateBypass && activeTab === 'emergency-broadcast')) ? renderContent() : (
               <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-8">

@@ -60,6 +60,9 @@ export const OnCallPanel = ({ start, end, department, employees, isAdmin }: Prop
         rule_id: Number(ruleId), note: note.trim() || null,
       });
       toast.success('On-call assigned — employee notified');
+      if (date < start || date > end) {
+        toast.info(`${date} is outside the period shown (${start} to ${end}) — change the period to see it.`);
+      }
       setNote('');
       await load();
     } catch (e: any) {

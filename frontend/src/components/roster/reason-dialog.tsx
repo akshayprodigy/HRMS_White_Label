@@ -1,4 +1,5 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useState } from 'react';
+import { useReturnFocus } from '../my-schedule/use-restore-focus';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '../ui-elements';
 import {
@@ -36,6 +37,12 @@ export const ReasonDialog = ({
 }: Props) => {
   const [text, setText] = useState('');
   const fieldId = useId();
+  const returnFocus = useReturnFocus();
+  // Remember the opener before Radix moves focus into the dialog.
+  useLayoutEffect(() => {
+    if (open) returnFocus.capture();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
   useEffect(() => {
     if (open) setText('');
   }, [open]);
@@ -43,7 +50,7 @@ export const ReasonDialog = ({
   const valid = trimmed.length >= minLength;
   return (
     <Dialog open={open} onOpenChange={(o: boolean) => !o && !busy && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" onCloseAutoFocus={returnFocus.onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription className="sr-only">{description || 'Provide a reason for this change.'}</DialogDescription>

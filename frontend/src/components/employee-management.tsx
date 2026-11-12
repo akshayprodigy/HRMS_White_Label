@@ -1562,8 +1562,8 @@ const EmployeeDetails = ({
               <TabsTrigger value="compensation" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">2. Compensation</TabsTrigger>
               <TabsTrigger value="documents" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">3. Documents</TabsTrigger>
               <TabsTrigger value="assets" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">4. Assets</TabsTrigger>
-              <TabsTrigger value="safety" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">6. Safety</TabsTrigger>
               <TabsTrigger value="exit" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">5. Exit Management</TabsTrigger>
+              <TabsTrigger value="safety" className="rounded-xl px-6 font-black text-[10px] uppercase tracking-widest data-[state=active]:bg-white data-[state=active]:shadow-md h-full">6. Safety</TabsTrigger>
             </>
           )}
         </TabsList>
