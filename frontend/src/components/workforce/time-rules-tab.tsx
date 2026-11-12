@@ -49,6 +49,7 @@ const SCHEDULE_FIELDS: { key: string; label: string; hint: string; max: number }
   { key: 'schedule.max_consecutive_nights', label: 'Max Consecutive Nights', hint: 'Longest run of night shifts. 0 = off (range 0–31)', max: 31 },
   { key: 'schedule.max_weekly_hours', label: 'Max Weekly Hours', hint: 'Scheduled hours per week. 0 = off (range 0–168)', max: 168 },
   { key: 'schedule.no_show_minutes', label: 'No-show After (minutes)', hint: 'Minutes after shift start with no punch-in before a no-show alert. 0 = no automatic alerts; the board still shows missed shifts after they end (range 0–240)', max: 240 },
+  { key: 'schedule.lock_days', label: 'Schedule Lock Window (days)', hint: 'Published shifts from today up to this many days ahead can only be changed by HR/admin or an emergency-override delegate, with a reason; the employee must acknowledge. 0 = off (range 0–30)', max: 30 },
 ];
 
 const LEAVE_FIELDS: { key: string; label: string; hint: string; max: number }[] = [
@@ -99,6 +100,11 @@ export const TimeRulesTab: React.FC = () => {
         toast.error(`${f.label} must be a whole number from 0 to ${f.max}`);
         return;
       }
+    }
+    const amt = Number((rules['schedule.callback_allowance_amount'] ?? '0').toString().trim());
+    if (!Number.isFinite(amt) || amt < 0) {
+      toast.error('Call-back allowance must be a number of 0 or more');
+      return;
     }
     setBusy(true);
     try {
@@ -285,6 +291,62 @@ export const TimeRulesTab: React.FC = () => {
               <p className="text-[9px] font-bold text-slate-400">{f.hint}</p>
             </div>
           ))}
+        </div>
+      </Card>
+
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
+        <div>
+          <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+            <Clock3 size={15} className="text-blue-600" /> Call-back compensation
+          </h3>
+          <p className="text-[10px] font-bold text-slate-500 mt-1">
+            When an emergency change (inside the lock window) calls an employee
+            in on a day off. Not reversed if the change is later undone.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label
+              htmlFor="schedule.callback_compensation"
+              className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+            >
+              Compensation
+            </label>
+            <select
+              id="schedule.callback_compensation"
+              className={inputCls}
+              value={rules['schedule.callback_compensation'] ?? 'none'}
+              onChange={(e) =>
+                setRules({ ...rules, 'schedule.callback_compensation': e.target.value })
+              }
+            >
+              <option value="none">None</option>
+              <option value="comp_off">Comp-off (manager → HR approval)</option>
+              <option value="allowance">Allowance (added to payroll)</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label
+              htmlFor="schedule.callback_allowance_amount"
+              className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+            >
+              Allowance per call-back day
+            </label>
+            <input
+              id="schedule.callback_allowance_amount"
+              type="number"
+              min={0}
+              step="0.01"
+              className={inputCls}
+              value={rules['schedule.callback_allowance_amount'] ?? '0'}
+              onChange={(e) =>
+                setRules({ ...rules, 'schedule.callback_allowance_amount': e.target.value })
+              }
+            />
+            <p className="text-[9px] font-bold text-slate-400">
+              Used when compensation is Allowance (0 or more)
+            </p>
+          </div>
         </div>
       </Card>
 

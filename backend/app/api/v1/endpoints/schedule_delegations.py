@@ -130,6 +130,7 @@ async def create_delegation(
         ),
         can_publish=body.can_publish,
         can_approve_changes=body.can_approve_changes,
+        can_emergency_override=body.can_emergency_override,
         valid_from=body.valid_from,
         valid_to=body.valid_to,
         granted_by_id=current_user.id,
@@ -212,7 +213,8 @@ async def update_delegation(
     if d.revoked_at is not None:
         raise HTTPException(status_code=409, detail="Delegation is revoked")
     changes = body.model_dump(exclude_unset=True)
-    for nn in ("can_publish", "can_approve_changes", "valid_from"):
+    for nn in ("can_publish", "can_approve_changes", "can_emergency_override",
+               "valid_from"):
         if nn in changes and changes[nn] is None:
             raise HTTPException(status_code=422, detail=f"{nn} cannot be null.")
     vf = changes.get("valid_from", d.valid_from)

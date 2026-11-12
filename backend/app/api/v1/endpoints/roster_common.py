@@ -2,6 +2,7 @@
 import functools
 import logging
 from datetime import date as pydate
+from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -18,6 +19,7 @@ from app.schemas.roster import (
     RosterEntryRead,
 )
 from app.services import roster as roster_svc
+from app.services.time_rules import get_lock_rules
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,7 @@ async def commit_or_409(db, msg: str = CONFLICT_MSG) -> None:
     duplicate key and MariaDB 1020/1213 -> 409, other integrity errors ->
     409 (neutral message), DataError -> 422."""
     try:
+        await roster_svc.flush_emergency(db)
         await db.commit()
     except (IntegrityError, DataError, OperationalError) as exc:
         mapped = await _map_db_error(db, exc, msg)
@@ -182,13 +185,17 @@ async def validate_templates(db, ids) -> None:
 async def write_cells(
     db, user: User, allowed: set, cells, status: str, overwrite: bool,
     result: RosterBulkResult, protect_all_published: bool = False,
-    reason: str = "bulk re-plan",
+    reason: str = "bulk re-plan", lock_reason: Optional[str] = None,
 ) -> None:
     """Write (uid, date, tpl, week_off) cells for `allowed` employees.
     Publish rights are resolved ONCE; non-publishers' cells are saved as
     draft (one message per employee) and never overwrite a live cell.
     Edits to PUBLISHED cells are recorded in history and each affected
-    employee is notified once."""
+    employee is notified once. Cells that would change the LIVE schedule
+    inside the lock window are checked up front (`lock_guard`, `lock_reason`
+    = the caller-supplied reason): the whole request is refused with 403
+    unless the actor may override, and such cells are recorded as emergency
+    changes."""
     pub = await roster_svc.publishable_subset(db, user, allowed)
     dept_by_uid = {
         e.user_id: e.department
@@ -204,6 +211,39 @@ async def write_cells(
             db, allowed, min(c[1] for c in cells), max(c[1] for c in cells)
         ) if cells else {}
     )
+    # ---- lock window pre-check (before any write) ----
+    locked: set = set()
+    locked_base: dict = {}
+    lock_days = (await get_lock_rules(db))["lock_days"]
+    if lock_days and cells:
+        win = []
+        for (uid, wd, tpl_id, week_off) in cells:
+            if not roster_svc.in_lock_window(wd, lock_days):
+                continue
+            prior = existing_map.get((uid, wd))
+            can_pub = uid in pub
+            if prior is not None and not overwrite:
+                continue  # skipped by upsert_entry
+            if prior is not None and (
+                not can_pub or protect_all_published
+            ) and prior.status == RosterStatus.PUBLISHED:
+                continue  # skipped by upsert_entry: live cell untouched
+            eff = status if (can_pub or status == RosterStatus.DRAFT) \
+                else RosterStatus.DRAFT
+            win.append((uid, wd, tpl_id, week_off, prior, eff))
+        base = await roster_svc.assignment_cells(
+            db, {(w[0], w[1]) for w in win})
+        guard = [
+            (uid, wd,
+             roster_svc.live_cell(
+                 (prior.shift_template_id, prior.is_week_off, prior.status)
+                 if prior is not None else None, base[(uid, wd)]),
+             roster_svc.norm_cell(tpl_id, week_off)
+             if eff == RosterStatus.PUBLISHED else base[(uid, wd)])
+            for (uid, wd, tpl_id, week_off, prior, eff) in win
+        ]
+        locked = await roster_svc.lock_guard(db, user, guard, reason=lock_reason)
+        locked_base = {(g[0], g[1]): (g[2], g[3]) for g in guard}
     changed: dict = {}
     for (uid, wd, tpl_id, week_off) in cells:
         prior = existing_map.get((uid, wd))
@@ -224,7 +264,18 @@ async def write_cells(
                 protect_published=(not can_pub) or protect_all_published,
                 existing_map=existing_map,
             )
-        if (
+        emerg = (uid, wd) in locked and outcome != "skipped"
+        if emerg:
+            old, new = locked_base[(uid, wd)]
+            await db.flush()
+            roster_svc.record_change(
+                db, _e, employee_id=uid, work_date=wd,
+                old_tpl=old[0], old_off=old[1],
+                new_tpl=new[0], new_off=new[1], action="update",
+                reason=lock_reason, actor_id=user.id, emergency=True,
+            )
+            changed.setdefault(uid, set()).add(wd)
+        elif (
             outcome == "updated" and prior_snap is not None
             and prior_snap[2] == RosterStatus.PUBLISHED
         ):

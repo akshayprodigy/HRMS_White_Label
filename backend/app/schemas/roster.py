@@ -48,6 +48,11 @@ class RosterGridResponse(BaseModel):
     rows: List[RosterGridRow]
     is_admin: bool = False
     can_publish: bool = False
+    # schedule.lock_days (0 = off): published cells in [today, today+N] are
+    # locked; `can_override_lock` says whether the viewer may change them
+    # (admin, or override delegate for every employee shown).
+    lock_days: int = 0
+    can_override_lock: bool = False
 
 
 class RosterEntryInput(BaseModel):
@@ -88,6 +93,8 @@ class RosterBulkRequest(BaseModel):
     # pattern: weekday int (Mon=0..Sun=6) -> template_id | None (None=week-off)
     pattern: Optional[Dict[int, Optional[IntId]]] = None
     entries: Optional[List[RosterEntryInput]] = None
+    # Required when the write changes a cell inside the lock window.
+    reason: Optional[str] = Field(default=None, max_length=500)
 
     @field_validator("status")
     @classmethod
@@ -239,6 +246,7 @@ class RotationApplyRequest(BaseModel):
     default_offset: int = Field(default=0, ge=-1000, le=1000)
     overwrite: bool = True
     status: str = "draft"
+    reason: Optional[str] = Field(default=None, max_length=500)
 
     @field_validator("status")
     @classmethod
@@ -332,6 +340,8 @@ class RosterPublishBody(BaseModel):
     end: pydate
     department: Optional[str] = Field(default=None, max_length=100)
     employee_ids: Optional[List[IntId]] = None
+    # Required when drafts inside the lock window are published.
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class RosterPublishResult(BaseModel):
@@ -414,6 +424,7 @@ class RosterHistoryRead(BaseModel):
     changed_by_id: Optional[int] = None
     changed_by_name: Optional[str] = None
     changed_at: datetime
+    is_emergency: bool = False
 
     @field_validator("changed_at", mode="after")
     @classmethod

@@ -175,6 +175,9 @@ export const ScheduleDelegations = () => {
                           {d.can_approve_changes && (
                             <Badge variant="info">Approves changes</Badge>
                           )}
+                          {d.can_emergency_override && (
+                            <Badge variant="warning">Emergency override</Badge>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-gray-600">

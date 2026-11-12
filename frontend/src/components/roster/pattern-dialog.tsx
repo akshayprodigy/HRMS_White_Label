@@ -24,6 +24,7 @@ interface Props {
   range: () => { start: string; end: string };
   department: string;
   status: 'draft' | 'published';
+  lockDays?: number;
   onClose: () => void;
   onDone: () => void;
 }
@@ -35,14 +36,19 @@ export const PatternDialog = ({
   range,
   department,
   status,
+  lockDays = 0,
   onClose,
   onDone,
 }: Props) => {
+  const [reason, setReason] = useState('');
   const [pattern, setPattern] = useState<Record<number, string>>({});
   const [applying, setApplying] = useState(false);
 
   useEffect(() => {
-    if (!open) setPattern({}); // reset on close so reopening has no stale first frame
+    if (!open) {
+      setPattern({});
+      setReason('');
+    } // reset on close so reopening has no stale first frame
   }, [open]);
   const close = () => {
     if (!applying) onClose();
@@ -68,6 +74,7 @@ export const PatternDialog = ({
         status,
         overwrite: true,
         pattern: pat,
+        reason: reason.trim() || undefined,
       });
       const r = res.data as any;
       toast.success(
@@ -129,6 +136,20 @@ export const PatternDialog = ({
             </div>
           ))}
         </div>
+        {lockDays > 0 && status === 'published' && (
+          <div className="space-y-1">
+            <label htmlFor="pattern-reason" className="text-sm font-medium text-gray-700">
+              Reason (required if it changes published shifts in the next {lockDays} days)
+            </label>
+            <input
+              id="pattern-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              maxLength={500}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            />
+          </div>
+        )}
         <DialogFooter>
           <Button variant="outline" disabled={applying} onClick={close}>
             Cancel

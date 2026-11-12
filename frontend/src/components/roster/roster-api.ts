@@ -34,6 +34,8 @@ export interface RosterGrid {
   rows: RosterGridRow[];
   is_admin: boolean;
   can_publish: boolean;
+  lock_days?: number;
+  can_override_lock?: boolean;
 }
 export interface BulkResult {
   created: number;
@@ -221,7 +223,26 @@ export interface GapSuggestion {
 const R = ENDPOINTS.ROSTER;
 const data = async <T,>(p: Promise<{ data: T }>): Promise<T> => (await p).data;
 
+export interface ScheduleAck {
+  id: number;
+  history_id: number;
+  employee_id: number;
+  employee_name: string | null;
+  work_date: string;
+  old_shift_name: string | null;
+  old_is_week_off: boolean;
+  new_shift_name: string | null;
+  new_is_week_off: boolean;
+  reason: string | null;
+  changed_by_name: string | null;
+  changed_at: string | null;
+  acknowledged_at: string | null;
+}
+
 export const schedulerApi = {
+  acks: (status = 'pending') =>
+    data<ScheduleAck[]>(client.get(ENDPOINTS.ROSTER.ACKS, { params: { status } })),
+
   swapQueue: () =>
     data<ApproverSwap[]>(client.get(R.SWAPS, { params: { include_warnings: 1 } })),
   swapCheck: (id: number) => data<SwapWarning[]>(client.get(R.SWAP_CHECK(id))),

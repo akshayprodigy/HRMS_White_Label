@@ -313,6 +313,10 @@ async def assign_gap(
     else:
         eff = (await effective_shifts_for_range(db, [uid], d, d))[(uid, d)]
         old = swap_svc.cell_of(eff)
+    locked = await roster_svc.lock_guard(
+        db, current_user,
+        [(uid, d, tuple(old), (gap.shift_template_id, False))],
+        reason=f"Coverage gap #{gap.id}")
     await supersede_pending(
         db, {(uid, d)}, "coverage gap", gap.id, current_user.id, RTYPE)
     await _cancel_linked(
@@ -330,7 +334,7 @@ async def assign_gap(
         db, entry, employee_id=uid, work_date=d, old_tpl=old[0],
         old_off=old[1], new_tpl=gap.shift_template_id, new_off=False,
         action="update", reason=f"Coverage gap #{gap.id}",
-        actor_id=current_user.id)
+        actor_id=current_user.id, emergency=bool(locked))
     gap.status = GapStatus.FILLED
     gap.filled_by_user_id = uid
     gap.resolved_by_id = current_user.id

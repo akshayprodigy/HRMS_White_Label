@@ -24,6 +24,7 @@ import { GiveawayDialog } from './my-schedule/giveaway-dialog';
 import { OpenShiftsPanel } from './my-schedule/open-shifts-panel';
 import { RunningLateCard } from './my-schedule/running-late-card';
 import { MyOnCallCard } from './my-schedule/my-on-call-card';
+import { MyAcksBanner } from './my-schedule/my-acks-banner';
 import { CalendarFeedCard } from './my-schedule/calendar-feed-card';
 import { STATUS_TONE, inputCls } from './my-schedule/my-schedule-api';
 
@@ -285,6 +286,7 @@ export const MyShiftView: React.FC = () => {
         )}
       </Card>
 
+      <MyAcksBanner />
       <RunningLateCard />
       <MyOnCallCard />
 

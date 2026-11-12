@@ -40,6 +40,10 @@ class ScheduleDelegation(Base):
     can_approve_changes: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # May change PUBLISHED cells inside the schedule lock window.
+    can_emergency_override: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     valid_from: Mapped[pydate] = mapped_column(Date, nullable=False)
     valid_to: Mapped[Optional[pydate]] = mapped_column(Date, nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(

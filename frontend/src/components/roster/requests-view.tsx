@@ -10,6 +10,7 @@ import {
   type CoverageGap,
   type SchedDrop,
   type SchedOpenShift,
+  type ScheduleAck,
 } from './roster-api';
 import { OpenShiftsSchedulerPanel } from './open-shifts-panel';
 import { CoverageGapsPanel } from './coverage-gaps-panel';
@@ -163,6 +164,7 @@ interface Props {
   drops: SchedDrop[];
   shifts: SchedOpenShift[];
   gaps: CoverageGap[];
+  acks?: ScheduleAck[];
   loading: boolean;
   errors: Partial<Record<QueueKey, string>>;
   reload: () => void | Promise<void>;
@@ -175,7 +177,7 @@ interface Props {
 interface Result { title: string; lines: string[]; warn: boolean }
 
 export const RequestsView: React.FC<Props> = ({
-  swaps, drops, shifts, gaps, loading, errors, reload, onRosterChanged, onNewOpenShift, canPostOpenShift,
+  swaps, drops, shifts, gaps, acks = [], loading, errors, reload, onRosterChanged, onNewOpenShift, canPostOpenShift,
 }) => {
   const [pending, setPending] = useState<Pending>(new Map());
   // outcome of the latest decision (warnings / skipped reasons stay visible)
@@ -288,6 +290,30 @@ export const RequestsView: React.FC<Props> = ({
           <ul className="space-y-2">
             {drops.map((d) => (
               <DropCard key={d.id} drop={d} pending={pending.get(`drop-${d.id}`)} onDecide={decideDrop} />
+            ))}
+          </ul>
+        )}
+      </Card>
+      <Card className="p-5 border-slate-200 bg-white" aria-label="Unacknowledged emergency changes">
+        <p className="text-[10px] font-black uppercase tracking-widest text-[#0F172A] mb-3">
+          Unacknowledged emergency changes <Badge variant="neutral" className="ml-2">{acks.length}</Badge>
+        </p>
+        <QueueError msg={errors.acks} onRetry={() => reload()} />
+        {acks.length === 0 ? (!errors.acks && empty('Every emergency change has been acknowledged')) : (
+          <ul className="space-y-2">
+            {acks.map((a) => (
+              <li key={a.id} className="rounded-xl border border-slate-200 px-4 py-3 text-[11px]">
+                <p className="font-black text-[#0F172A]">
+                  {person(a.employee_name, a.employee_id)} · {fmtDate(a.work_date)}
+                </p>
+                <p className="text-slate-600">
+                  {cellText({ shift_name: a.old_shift_name, is_week_off: a.old_is_week_off })}
+                  <ArrowRight size={11} className="inline mx-1" aria-hidden="true" />
+                  {cellText({ shift_name: a.new_shift_name, is_week_off: a.new_is_week_off })}
+                  {a.changed_by_name ? ` · by ${a.changed_by_name}` : ''}
+                </p>
+                {a.reason && <p className="text-slate-500">Reason: {a.reason}</p>}
+              </li>
             ))}
           </ul>
         )}

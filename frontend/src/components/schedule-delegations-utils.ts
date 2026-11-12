@@ -7,6 +7,7 @@ export interface Delegation {
   employee_ids: number[];
   can_publish: boolean;
   can_approve_changes: boolean;
+  can_emergency_override?: boolean;
   valid_from: string;
   valid_to: string | null;
   revoked_at: string | null;

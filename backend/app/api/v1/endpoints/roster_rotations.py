@@ -193,7 +193,8 @@ async def apply_rotation(
                 cells.append((uid, wd, tpl_id, wo))
         await write_cells(
             db, current_user, allowed, cells, body.status, body.overwrite,
-            result,
+            result, reason=roster_svc.clean_reason(body.reason) or "bulk re-plan",
+            lock_reason=body.reason,
         )
         await commit_or_409(db)
     if not (result.created or result.updated):

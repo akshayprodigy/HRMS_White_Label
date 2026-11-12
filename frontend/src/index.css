@@ -4760,6 +4760,8 @@ html {
   :where(.divide-slate-100 > :not(:last-child)) {
     border-color: var(--color-slate-100);
   }
+  .bottom-1 { bottom: calc(var(--spacing) * 1); }
+  .mx-1 { margin-inline: calc(var(--spacing) * 1); }
   @media (width >= 40rem) {
     .sm\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }

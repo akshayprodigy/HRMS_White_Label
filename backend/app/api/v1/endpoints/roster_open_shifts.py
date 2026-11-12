@@ -627,10 +627,13 @@ async def decide_drop(
             raise HTTPException(
                 status_code=409,
                 detail="Schedule changed since the request was made")
+        old = (entry.shift_template_id, bool(entry.is_week_off))
+        locked = await roster_svc.lock_guard(
+            db, current_user, [(uid, d, tuple(old), (None, True))],
+            reason=f"Shift give-away #{drop.id}: {drop.reason}")
         await supersede_pending(
             db, {(uid, d)}, "shift give-away", drop.id, current_user.id,
             DROP_RTYPE, skip_drop_id=drop.id)
-        old = (entry.shift_template_id, bool(entry.is_week_off))
         dept = (await db.execute(
             select(Employee.department).where(Employee.user_id == uid))).scalar()
         entry, _o = await roster_svc.upsert_entry(
@@ -643,7 +646,7 @@ async def decide_drop(
             old_tpl=old[0], old_off=old[1], new_tpl=None, new_off=True,
             action="update",
             reason=f"Shift give-away #{drop.id}: {drop.reason}",
-            actor_id=current_user.id)
+            actor_id=current_user.id, emergency=bool(locked))
         await roster_svc.notify_schedule_changed(db, {uid: {d}})
         if post:
             shift = await os_svc.create_open_shift(

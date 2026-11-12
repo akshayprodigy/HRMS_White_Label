@@ -25,6 +25,7 @@ interface Props {
   onClose: () => void;
   isAdmin: boolean;
   canPublish: boolean;
+  lockDays?: number;
   templates: ShiftTemplateLite[];
   rows: RosterGridRow[];
   start: string;
@@ -39,8 +40,9 @@ const inputCls =
 const rep = (v: number | null, n: number): Cycle => Array(n).fill(v);
 
 export const RotationDialog = ({
-  open, onClose, isAdmin, canPublish, templates, rows, start, end, onApplied,
+  open, onClose, isAdmin, canPublish, lockDays = 0, templates, rows, start, end, onApplied,
 }: Props) => {
+  const [reason, setReason] = useState('');
   const [patterns, setPatterns] = useState<RotationPattern[]>([]);
   const [loading, setLoading] = useState(false);
   const reqId = useRef(0);
@@ -85,6 +87,7 @@ export const RotationDialog = ({
     setSelected(new Set());
     setOffsets({});
     setStatus('draft');
+    setReason('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -191,6 +194,7 @@ export const RotationDialog = ({
           default_offset: 0,
           overwrite: true,
           status: canPublish ? status : 'draft',
+          reason: reason.trim() || undefined,
         }
       );
       toast.success(
@@ -405,6 +409,20 @@ export const RotationDialog = ({
               </tbody>
             </table>
           </div>
+          {lockDays > 0 && canPublish && status === 'published' && (
+            <div className="space-y-1">
+              <label htmlFor="rot-reason" className="text-sm font-medium text-gray-700">
+                Reason (required if it changes published shifts in the next {lockDays} days)
+              </label>
+              <input
+                id="rot-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                maxLength={500}
+                className={`w-full ${inputCls}`}
+              />
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={onClose} disabled={applying}>Close</Button>
             <Button

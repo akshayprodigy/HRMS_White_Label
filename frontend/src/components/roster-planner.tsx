@@ -12,6 +12,7 @@ import {
   Copy,
   History,
   PhoneCall,
+  Lock,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
@@ -206,6 +207,11 @@ export const RosterPlanner = () => {
   };
 
   const canPublish = !!grid?.can_publish;
+  const lockDays = grid?.lock_days || 0;
+  const canOverrideLock = !!grid?.can_override_lock;
+  // Inside the schedule lock window: [today, today + lock_days].
+  const inLockWindow = (d: string) =>
+    lockDays > 0 && d >= todayIso() && d <= addDays(todayIso(), lockDays);
   const osDepartments = Array.from(new Set([
     ...(grid?.rows || []).map((r) => r.department),
     appliedDept,
@@ -215,7 +221,9 @@ export const RosterPlanner = () => {
 
   const requestEdit = (row: RosterGridRow, c: RosterCell, value: string) => {
     const isPublished = c.source === 'roster' && c.status === 'published';
-    if (isPublished && value !== cellValue(c)) {
+    // Writing a live cell inside the lock window also needs a reason.
+    const liveInLock = effStatus === 'published' && inLockWindow(c.work_date);
+    if ((isPublished || liveInLock) && value !== cellValue(c)) {
       setPendingEdit({ row, c, value });
       return;
     }
@@ -342,6 +350,7 @@ export const RosterPlanner = () => {
           drops={reqs.drops}
           shifts={reqs.shifts}
           gaps={reqs.gaps}
+          acks={reqs.acks}
           loading={reqs.loading}
           errors={reqs.errors}
           reload={reqs.reload}
@@ -538,6 +547,13 @@ export const RosterPlanner = () => {
           end={grid.end}
           department={appliedDept}
           disabled={loading}
+          lockDays={lockDays}
+          lockedDraftCount={(grid?.rows || []).reduce(
+            (n, r) =>
+              n +
+              r.cells.filter((c) => c.status === 'draft' && inLockWindow(c.work_date)).length,
+            0
+          )}
           onDone={() => {
             fetchGrid(true);
             setPrKey((k) => k + 1);
@@ -653,14 +669,28 @@ export const RosterPlanner = () => {
                       const avail = availMarks?.get(availabilityKey(row.employee_id, c.work_date));
                       const lockedPublished =
                         !canPublish && c.source === 'roster' && c.status === 'published';
+                      const inLock = inLockWindow(c.work_date);
+                      const lockedWindow =
+                        inLock && !canOverrideLock && c.source === 'roster' && c.status === 'published';
                       return (
                         <td
                           key={c.work_date}
                           className={cn(
                             'relative px-1.5 py-1.5 text-center',
-                            c.is_week_off && 'bg-amber-50'
+                            c.is_week_off && 'bg-amber-50',
+                            inLock && !c.is_week_off && 'bg-rose-50'
                           )}
                         >
+                          {inLock && (
+                            <div
+                              className="absolute bottom-1 right-1 text-rose-500 leading-none"
+                              title={`Locked window (next ${lockDays} days): changes are emergency changes`}
+                              role="img"
+                              aria-label="Inside the schedule lock window"
+                            >
+                              <Lock className="w-3 h-3" />
+                            </div>
+                          )}
                           {warns && (
                             <div
                               className="absolute top-1 right-1 text-amber-600 leading-none"
@@ -690,8 +720,14 @@ export const RosterPlanner = () => {
                           <select
                             aria-label={`${row.full_name || 'Employee'}, ${c.work_date}`}
                             value={val}
-                            disabled={savingCell === key || lockedPublished}
-                            title={lockedPublished ? 'Published — publishing requires HR approval' : undefined}
+                            disabled={savingCell === key || lockedPublished || lockedWindow}
+                            title={
+                              lockedPublished
+                                ? 'Published — publishing requires HR approval'
+                                : lockedWindow
+                                  ? `Locked for the next ${lockDays} days — only HR or an emergency-override delegate can change it`
+                                  : undefined
+                            }
                             onChange={(e) => requestEdit(row, c, e.target.value)}
                             className={cn(
                               'w-full text-xs px-1.5 py-1 border rounded focus:ring-1 focus:ring-indigo-500',
@@ -728,6 +764,14 @@ export const RosterPlanner = () => {
         </div>
       </Card>
 
+      {grid && lockDays > 0 && (
+        <div className="flex items-center gap-2 text-xs text-rose-700">
+          <Lock className="w-3 h-3" aria-hidden="true" />
+          Shaded cells are inside the {lockDays}-day lock window — changes there
+          are emergency changes (reason required, employee must acknowledge).
+        </div>
+      )}
+
       {grid && (
         <div className="flex items-center gap-4 text-xs text-gray-500">
           <span className="flex items-center gap-1">
@@ -761,10 +805,17 @@ export const RosterPlanner = () => {
 
       <ReasonDialog
         open={!!pendingEdit}
-        title="Change a published schedule"
+        title={
+          pendingEdit && inLockWindow(pendingEdit.c.work_date)
+            ? 'Emergency change (inside lock window)'
+            : 'Change a published schedule'
+        }
         description={
           pendingEdit
-            ? `${pendingEdit.row.full_name || 'Employee'} on ${pendingEdit.c.work_date} is already published. ` +
+            ? (inLockWindow(pendingEdit.c.work_date)
+                ? `${pendingEdit.c.work_date} is inside the ${lockDays}-day lock window: this is recorded as an emergency change and ${pendingEdit.row.full_name || 'the employee'} must acknowledge it. `
+                : '') +
+              `${pendingEdit.row.full_name || 'Employee'} on ${pendingEdit.c.work_date} is already published. ` +
               (effStatus === 'draft' && pendingEdit.value !== ''
                 ? 'Saving as Draft will unpublish this cell and hide it from the employee until it is published again.'
                 : 'The employee will be notified of the change.')
@@ -784,6 +835,7 @@ export const RosterPlanner = () => {
         onClose={() => setRotOpen(false)}
         isAdmin={!!grid?.is_admin}
         canPublish={canPublish}
+        lockDays={lockDays}
         templates={templates}
         rows={grid?.rows || []}
         start={grid?.start || ''}
@@ -816,6 +868,7 @@ export const RosterPlanner = () => {
         range={range}
         department={appliedDept}
         status={effStatus}
+        lockDays={lockDays}
         onClose={() => setPatternOpen(false)}
         onDone={refresh}
       />

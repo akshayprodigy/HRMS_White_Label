@@ -39,6 +39,22 @@ from app.api.v1.endpoints.roster_common import (
 router = APIRouter()
 
 
+async def _live_transition(
+    db, uid: int, wd: pydate, prior_snap, new_status: str,
+    new_tpl: Optional[int], new_off: bool,
+):
+    """(old_live, new_live) cells the employee sees before/after a write of
+    one cell, for the lock-window check. `prior_snap` = (tpl, off, status)
+    of the existing row or None."""
+    base = (await roster_svc.assignment_cells(db, {(uid, wd)}))[(uid, wd)]
+    old = roster_svc.live_cell(prior_snap, base)
+    new = (
+        roster_svc.norm_cell(new_tpl, new_off)
+        if new_status == RosterStatus.PUBLISHED else base
+    )
+    return old, new
+
+
 # ----------------------------- planner -----------------------------
 
 @router.get("/plan", response_model=RosterGridResponse)
@@ -117,7 +133,9 @@ async def bulk_plan(
             for uid in sorted(allowed) for (wd, tpl_id, week_off) in pc
         ]
     await write_cells(
-        db, current_user, allowed, cells, body.status, body.overwrite, result
+        db, current_user, allowed, cells, body.status, body.overwrite, result,
+        reason=roster_svc.clean_reason(body.reason) or "bulk re-plan",
+        lock_reason=body.reason,
     )
 
     await commit_or_409(db)
@@ -180,6 +198,19 @@ async def upsert_single_entry(
     )
     if live_change and reason is None:
         raise HTTPException(status_code=422, detail=REASON_MSG)
+    old_live, new_live = await _live_transition(
+        db, body.employee_id, body.work_date, prior_snap,
+        eff_status, body.shift_template_id, body.is_week_off,
+    )
+    if prior_snap is not None and prior_snap[2] == RosterStatus.PUBLISHED \
+            and not can_pub:
+        raise HTTPException(status_code=403, detail=NO_PUBLISH_MSG)
+    locked = await roster_svc.lock_guard(
+        db, current_user,
+        [(body.employee_id, body.work_date, old_live, new_live)],
+        reason=reason,
+    )
+    emergency = bool(locked)
     entry, outcome = await roster_svc.upsert_entry(
         db,
         employee_id=body.employee_id,
@@ -194,14 +225,19 @@ async def upsert_single_entry(
     )
     if outcome == "skipped":
         raise HTTPException(status_code=403, detail=NO_PUBLISH_MSG)
-    if live_change:
+    if live_change or emergency:
         new_tpl = None if body.is_week_off else body.shift_template_id
+        new_off = body.is_week_off
+        if emergency:  # history shows what the employee actually sees
+            new_tpl, new_off = new_live
+        await db.flush()
         roster_svc.record_change(
             db, entry, employee_id=body.employee_id,
             work_date=body.work_date,
-            old_tpl=prior_snap[0], old_off=prior_snap[1],
-            new_tpl=new_tpl, new_off=body.is_week_off, action="update",
-            reason=reason, actor_id=current_user.id,
+            old_tpl=old_live[0] if emergency else prior_snap[0],
+            old_off=old_live[1] if emergency else prior_snap[1],
+            new_tpl=new_tpl, new_off=new_off, action="update",
+            reason=reason, actor_id=current_user.id, emergency=emergency,
         )
         await roster_svc.notify_schedule_changed(
             db, {body.employee_id: {body.work_date}}
@@ -280,17 +316,36 @@ async def update_entry(
     )
     if live_change and reason is None:
         raise HTTPException(status_code=422, detail=REASON_MSG)
+    n_tpl = changes.get("shift_template_id", old_tpl)
+    n_off = changes.get("is_week_off", old_off)
+    if n_off:
+        n_tpl = None
+    old_live, new_live = await _live_transition(
+        db, entry.employee_id, entry.work_date,
+        (old_tpl, old_off, entry.status),
+        changes.get("status", entry.status), n_tpl, n_off,
+    )
+    locked = await roster_svc.lock_guard(
+        db, current_user,
+        [(entry.employee_id, entry.work_date, old_live, new_live)],
+        reason=reason,
+    )
+    emergency = bool(locked)
     for k, v in changes.items():
         setattr(entry, k, v)
     if entry.is_week_off:
         entry.shift_template_id = None
     entry.assigned_by_id = current_user.id
-    if live_change:
+    if live_change or emergency:
         roster_svc.record_change(
             db, entry, employee_id=entry.employee_id,
-            work_date=entry.work_date, old_tpl=old_tpl, old_off=old_off,
-            new_tpl=entry.shift_template_id, new_off=entry.is_week_off,
+            work_date=entry.work_date,
+            old_tpl=old_live[0] if emergency else old_tpl,
+            old_off=old_live[1] if emergency else old_off,
+            new_tpl=new_live[0] if emergency else entry.shift_template_id,
+            new_off=new_live[1] if emergency else entry.is_week_off,
             action="update", reason=reason, actor_id=current_user.id,
+            emergency=emergency,
         )
         await roster_svc.notify_schedule_changed(
             db, {entry.employee_id: {entry.work_date}}
@@ -327,12 +382,22 @@ async def delete_entry(
         reason = roster_svc.clean_reason(reason)
         if reason is None:
             raise HTTPException(status_code=422, detail=REASON_MSG)
+        old_live, new_live = await _live_transition(
+            db, entry.employee_id, entry.work_date,
+            (entry.shift_template_id, entry.is_week_off, entry.status),
+            RosterStatus.DRAFT, None, False,
+        )
+        locked = await roster_svc.lock_guard(
+            db, current_user,
+            [(entry.employee_id, entry.work_date, old_live, new_live)],
+            reason=reason,
+        )
         roster_svc.record_change(
             db, None, employee_id=entry.employee_id,
             work_date=entry.work_date,
             old_tpl=entry.shift_template_id, old_off=entry.is_week_off,
             new_tpl=None, new_off=False, action="delete", reason=reason,
-            actor_id=current_user.id,
+            actor_id=current_user.id, emergency=bool(locked),
         )
         await roster_svc.notify_schedule_changed(
             db, {entry.employee_id: {entry.work_date}}
@@ -679,6 +744,17 @@ async def decide_change_request(
         new_tpl = (
             None if cr.requested_week_off else cr.requested_shift_template_id
         )
+        cr_reason = (roster_svc.clean_reason(cr.reason)
+                     or f"approved change request #{cr.id}")
+        old_live, new_live = await _live_transition(
+            db, cr.employee_id, cr.work_date, prior_snap,
+            RosterStatus.PUBLISHED, new_tpl, cr.requested_week_off,
+        )
+        locked = await roster_svc.lock_guard(
+            db, current_user,
+            [(cr.employee_id, cr.work_date, old_live, new_live)],
+            reason=cr_reason,
+        )
         _e, _o = await roster_svc.upsert_entry(
             db,
             employee_id=cr.employee_id,
@@ -698,15 +774,15 @@ async def decide_change_request(
         )
         live_changed = was_live and (prior_snap[0], prior_snap[1]) != (
             new_tpl, cr.requested_week_off)
-        if live_changed:
+        if live_changed or locked:
+            await db.flush()
             roster_svc.record_change(
                 db, _e, employee_id=cr.employee_id, work_date=cr.work_date,
-                old_tpl=prior_snap[0], old_off=prior_snap[1],
+                old_tpl=old_live[0] if locked else prior_snap[0],
+                old_off=old_live[1] if locked else prior_snap[1],
                 new_tpl=new_tpl, new_off=cr.requested_week_off,
-                action="update",
-                reason=(roster_svc.clean_reason(cr.reason)
-                        or f"approved change request #{cr.id}"),
-                actor_id=current_user.id,
+                action="update", reason=cr_reason,
+                actor_id=current_user.id, emergency=bool(locked),
             )
         if live_changed or not was_live:
             await roster_svc.notify_schedule_changed(

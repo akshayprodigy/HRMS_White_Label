@@ -53,6 +53,7 @@ export const ScheduleDelegationDialog = ({
   const [empSearch, setEmpSearch] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [canApprove, setCanApprove] = useState(false);
+  const [canOverride, setCanOverride] = useState(false);
   const [validFrom, setValidFrom] = useState(todayIso());
   const [validTo, setValidTo] = useState('');
   const [note, setNote] = useState('');
@@ -72,6 +73,7 @@ export const ScheduleDelegationDialog = ({
     setEmpSearch('');
     setCanPublish(d ? d.can_publish : false);
     setCanApprove(d ? d.can_approve_changes : false);
+    setCanOverride(d ? !!d.can_emergency_override : false);
     setValidFrom(d ? d.valid_from : todayIso());
     setValidTo(d?.valid_to || '');
     setNote(d?.note || '');
@@ -129,6 +131,7 @@ export const ScheduleDelegationDialog = ({
         await client.patch(ENDPOINTS.ROSTER.DELEGATION_DETAIL(editing.id), {
           can_publish: canPublish,
           can_approve_changes: canApprove,
+          can_emergency_override: canOverride,
           valid_from: validFrom,
           valid_to: validTo || null,
           note: note.trim() || null,
@@ -145,6 +148,7 @@ export const ScheduleDelegationDialog = ({
           employee_ids: scopeType === 'employees' ? empIds : [],
           can_publish: canPublish,
           can_approve_changes: canApprove,
+          can_emergency_override: canOverride,
           valid_from: validFrom,
           valid_to: validTo || null,
           note: note.trim() || null,
@@ -350,6 +354,18 @@ export const ScheduleDelegationDialog = ({
               />
               <span>
                 <b>Can approve change requests</b> from employees in scope.
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-gray-700">
+              <input
+                type="checkbox"
+                checked={canOverride}
+                onChange={(e) => setCanOverride(e.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <b>Can make emergency changes</b> inside the schedule lock
+                window (with a reason; the employee must acknowledge).
               </span>
             </label>
           </div>

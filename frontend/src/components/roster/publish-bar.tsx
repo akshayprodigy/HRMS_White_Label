@@ -23,6 +23,8 @@ interface Props {
   end: string;
   department: string;
   disabled?: boolean;
+  lockedDraftCount?: number;
+  lockDays?: number;
   onDone: () => void;
 }
 
@@ -33,8 +35,11 @@ export const PublishBar = ({
   end,
   department,
   disabled,
+  lockedDraftCount = 0,
+  lockDays = 0,
   onDone,
 }: Props) => {
+  const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [reqOpen, setReqOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -45,7 +50,7 @@ export const PublishBar = ({
     try {
       const { data } = await client.post<PublishResult>(
         ENDPOINTS.ROSTER.PUBLISH,
-        body
+        { ...body, reason: reason.trim() || undefined }
       );
       const np = data.not_permitted.length;
       toast.success(
@@ -53,6 +58,7 @@ export const PublishBar = ({
           (np ? `; ${np} not permitted` : '')
       );
       setConfirmOpen(false);
+      setReason('');
       onDone();
     } catch (err: any) {
       toast.error(errMsg(err, 'Failed to publish'));
@@ -123,13 +129,32 @@ export const PublishBar = ({
             {department ? <> in <b>{department}</b></> : null}? Affected
             employees will be notified.
           </p>
+          {lockedDraftCount > 0 && (
+            <div className="space-y-1 pb-2">
+              <p className="text-xs text-amber-700">
+                {lockedDraftCount} of these fall inside the {lockDays}-day lock
+                window: publishing them is an emergency change (employees must
+                acknowledge).
+              </p>
+              <label htmlFor="publish-reason" className="text-sm font-medium text-gray-700">
+                Emergency change reason
+              </label>
+              <input
+                id="publish-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                maxLength={500}
+                className="w-full px-3 py-2 border rounded-lg text-sm"
+              />
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={busy}>
               Cancel
             </Button>
             <Button
               onClick={publish}
-              disabled={busy}
+              disabled={busy || (lockedDraftCount > 0 && reason.trim().length < 3)}
               className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2"
             >
               {busy && <RefreshCw className="w-4 h-4 animate-spin" />}

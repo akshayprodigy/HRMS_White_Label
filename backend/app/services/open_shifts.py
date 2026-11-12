@@ -316,6 +316,11 @@ async def confirm_claim(
     else:  # no live roster cell: the live state is the assignment fallback
         eff = (await effective_shifts_for_range(db, [uid], d, d))[(uid, d)]
         old = swap_svc.cell_of(eff)
+    # Lock window: the approver's rights apply (auto-confirm: the creator's).
+    locked = await roster_svc.lock_guard(
+        db, approver or await roster_svc.actor_user(db, actor_id),
+        [(uid, d, tuple(old), (shift.shift_template_id, False))],
+        reason=f"Open shift #{shift.id}")
     now = datetime.now(timezone.utc)
     await supersede_pending(
         db, {(uid, d)}, "open shift", shift.id, actor_id, RTYPE)
@@ -333,6 +338,7 @@ async def confirm_claim(
         old_tpl=old[0], old_off=old[1],
         new_tpl=shift.shift_template_id, new_off=False, action="update",
         reason=f"Open shift #{shift.id}", actor_id=actor_id,
+        emergency=bool(locked),
     )
     claim.status = ClaimStatus.APPROVED
     claim.decided_by_id = actor_id

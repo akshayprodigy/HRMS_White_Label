@@ -63,7 +63,7 @@ async def publish_roster(
     if not allowed:
         return RosterPublishResult()
     res = await roster_svc.publish_drafts(
-        db, current_user, allowed, body.start, body.end
+        db, current_user, allowed, body.start, body.end, reason=body.reason
     )
     await commit_or_409(db)
     if res["published"]:
@@ -233,7 +233,8 @@ async def decide_publish_request(
     res = None
     if body.approve:
         res = await roster_svc.publish_drafts(
-            db, current_user, pr.employee_ids or [], pr.start, pr.end
+            db, current_user, pr.employee_ids or [], pr.start, pr.end,
+            reason=note or f"approved publish request #{pr.id}",
         )
         pr.status = "approved"
         await roster_svc.notify(
@@ -391,7 +392,7 @@ async def _history_rows(db, q) -> List[RosterHistoryRead]:
             new_is_week_off=r.new_is_week_off, action=r.action,
             reason=r.reason, changed_by_id=r.changed_by_id,
             changed_by_name=nm.get(r.changed_by_id),
-            changed_at=r.changed_at,
+            changed_at=r.changed_at, is_emergency=bool(r.is_emergency),
         ) for r in rows
     ]
 

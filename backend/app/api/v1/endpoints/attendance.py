@@ -16,6 +16,7 @@ from app.models.geofence import (
 from app.models.notification import Notification
 from app.models.shift import ShiftTemplate
 from app.models.user import Role, User as UserModel
+from app.services.comp_off_accrual import create_comp_off_accrual
 from app.services.effective_shift import effective_shift_on
 from app.services.geofence import (
     EnforcementMode,
@@ -312,57 +313,18 @@ async def _maybe_create_comp_off_accrual(
     if existing is not None:
         return None
 
-    accrual = CompOffAccrual(
-        user_id=user.id,
-        holiday_date=work_date,
+    return await create_comp_off_accrual(
+        db,
+        user=user,
+        work_date=work_date,
         holiday_name=holiday_name,
         attendance_id=attendance.id,
         worked_minutes=worked_minutes,
-        days_credited=1.0,
-        status="pending",
         reason=(
             f"Worked {worked_minutes // 60}h {worked_minutes % 60:02d}m on "
             f"{holiday_name} ({work_date.isoformat()})"
         ),
     )
-    db.add(accrual)
-    await db.flush()
-
-    approval_item = ApprovalItem(
-        resource_type="comp_off_accrual",
-        resource_id=str(accrual.id),
-        status=ApprovalStatus.PENDING,
-        current_step_number=1,
-        requested_by_id=user.id,
-    )
-    db.add(approval_item)
-    await db.flush()
-
-    step_idx = 1
-    if user.manager_id:
-        db.add(ApprovalStep(
-            approval_item_id=approval_item.id,
-            step_number=step_idx,
-            approver_id=user.manager_id,
-            status=ApprovalStatus.PENDING,
-        ))
-        step_idx += 1
-
-    hr_role = (await db.execute(
-        select(Role).where(Role.name == "HR")
-    )).scalar_one_or_none()
-    if hr_role is None:
-        raise RuntimeError(
-            "HR role not configured — comp-off accrual skipped"
-        )
-    db.add(ApprovalStep(
-        approval_item_id=approval_item.id,
-        step_number=step_idx,
-        role_id=hr_role.id,
-        status=ApprovalStatus.PENDING,
-    ))
-
-    return accrual
 
 
 # --- punch endpoints ----------------------------------------------------

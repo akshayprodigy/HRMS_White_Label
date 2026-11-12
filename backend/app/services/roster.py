@@ -22,10 +22,13 @@ from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.leave import LeaveRequest, LeaveStatus
 from app.models.notification import Notification
-from app.models.roster import RosterEntry, RosterEntryHistory, RosterStatus
+from app.models.roster import (
+    RosterEntry, RosterEntryHistory, RosterStatus, ScheduleChangeAck,
+)
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import User
+from app.services.time_rules import get_lock_rules
 
 PERM_ROSTER = "roster manage"
 logger = logging.getLogger(__name__)
@@ -299,6 +302,218 @@ async def schedule_approver_ids(db: AsyncSession, employee_user_ids: set) -> set
         .where(User.is_active.is_(True), Permission.name == PERM_ROSTER)
     )).scalars().all())
     return admins - ids
+
+
+
+# ---------------- schedule lock window / emergency changes ----------------
+
+EMERGENCY_KEY = "roster_emergency_rows"
+Cell = Tuple[Optional[int], bool]
+LOCK_REASON_MSG = (
+    "A reason (at least 3 characters) is required to change a locked "
+    "schedule"
+)
+
+
+def norm_cell(tpl: Optional[int], off: bool) -> Cell:
+    """Canonical (template, is_week_off): a week-off carries no template."""
+    return (None, True) if off else (tpl, False)
+
+
+def utc_today() -> pydate:
+    return datetime.now(timezone.utc).date()
+
+
+def in_lock_window(d: pydate, lock_days: int, today: Optional[pydate] = None) -> bool:
+    """True when `d` is within [today, today + lock_days] (lock_days 0 = the
+    lock is off)."""
+    if lock_days <= 0:
+        return False
+    today = today or utc_today()
+    return today <= d <= today + timedelta(days=lock_days)
+
+
+async def assignment_cells(db: AsyncSession, keys) -> Dict[Tuple[int, pydate], Cell]:
+    """Cell each (user_id, date) shows when it has NO live roster cell: the
+    standing EmployeeShiftAssignment (template weekly-off => week-off), else
+    blank (None, False). Batched; ignores roster entries."""
+    keys = set(keys)
+    out: Dict[Tuple[int, pydate], Cell] = {k: (None, False) for k in keys}
+    if not keys:
+        return out
+    uids = sorted({k[0] for k in keys})
+    lo = min(k[1] for k in keys)
+    hi = max(k[1] for k in keys)
+    asgs: Dict[int, list] = {}
+    for a in (await db.execute(
+        select(EmployeeShiftAssignment).where(
+            EmployeeShiftAssignment.employee_id.in_(uids),
+            EmployeeShiftAssignment.effective_from <= hi,
+            or_(EmployeeShiftAssignment.effective_to.is_(None),
+                EmployeeShiftAssignment.effective_to >= lo),
+        ).order_by(EmployeeShiftAssignment.effective_from.desc())
+    )).scalars().all():
+        asgs.setdefault(a.employee_id, []).append(a)
+    tpl_ids = {a.shift_template_id for v in asgs.values() for a in v}
+    tpls = {}
+    if tpl_ids:
+        tpls = {t.id: t for t in (await db.execute(
+            select(ShiftTemplate).where(ShiftTemplate.id.in_(tpl_ids))
+        )).scalars().all()}
+    for (uid, d) in keys:
+        a = active_assignment(asgs.get(uid, ()), d)
+        t = tpls.get(a.shift_template_id) if a else None
+        if t is None:
+            continue
+        out[(uid, d)] = (
+            (None, True) if d.weekday() in (t.weekly_offs or [])
+            else (t.id, False)
+        )
+    return out
+
+
+def live_cell(prior: Optional[tuple], base: Cell) -> Cell:
+    """The cell an employee sees today for a day: `prior` is the existing
+    roster row as (template, week_off, status) or None."""
+    if prior is not None and prior[2] == RosterStatus.PUBLISHED:
+        return norm_cell(prior[0], prior[1])
+    return base
+
+
+async def override_user_ids(db: AsyncSession, actor: Optional[User]) -> set:
+    """User ids `actor` may change inside the lock window via a delegation
+    with can_emergency_override (roster admins are handled separately)."""
+    if actor is None:
+        return set()
+    ids: set = set()
+    for d in await active_delegations(db, actor):
+        if d.can_emergency_override:
+            ids |= await delegation_user_ids(db, d)
+    return ids
+
+
+async def lock_guard(
+    db: AsyncSession, actor: Optional[User], cells, *, reason: Optional[str],
+    today: Optional[pydate] = None,
+) -> set:
+    """Enforce the schedule lock window (`schedule.lock_days`).
+
+    `cells` = [(user_id, date, old_cell, new_cell)] where old/new are the
+    LIVE cells the employee sees before/after (see `live_cell`). Cells with
+    old == new, or outside [today, today + lock_days], are ignored. Returns
+    the set of (user_id, date) that are locked AND permitted (the caller
+    must record them with emergency=True). Raises 403 (listing the locked
+    dates) unless `actor` is a roster admin or holds an active delegation
+    with can_emergency_override covering the employee, and 422 when a
+    locked change has no reason of >= 3 characters. lock_days == 0 => no-op.
+    """
+    cells = list(cells)
+    if not cells:
+        return set()
+    lock_days = (await get_lock_rules(db))["lock_days"]
+    if not lock_days:
+        return set()
+    today = today or utc_today()
+    locked = {
+        (uid, d) for (uid, d, old, new) in cells
+        if in_lock_window(d, lock_days, today) and tuple(old) != tuple(new)
+    }
+    if not locked:
+        return set()
+    if actor is None or not is_roster_admin(actor):
+        ok = await override_user_ids(db, actor)
+        bad = sorted(d for (uid, d) in locked if uid not in ok)
+        if bad:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"The schedule is locked for the next {lock_days} day(s) "
+                    f"(until {(today + timedelta(days=lock_days)).isoformat()}"
+                    f"). You cannot change: {format_dates(bad)}. Ask a "
+                    "roster admin or a delegate with emergency override."
+                ),
+            )
+    if clean_reason(reason) is None:
+        raise HTTPException(status_code=422, detail=LOCK_REASON_MSG)
+    return locked
+
+
+async def actor_user(db: AsyncSession, actor_id: Optional[int]) -> Optional[User]:
+    return await db.get(User, actor_id) if actor_id else None
+
+
+async def flush_emergency(db: AsyncSession) -> None:
+    """For every emergency history row recorded in this session: create the
+    employee's acknowledgement, notify them, and apply call-back
+    compensation. Idempotent per row; called by commit_or_409 before commit."""
+    info = getattr(db, "info", None)  # test doubles have no session info
+    rows = info.pop(EMERGENCY_KEY, []) if info else []
+    if not rows:
+        return
+    await db.flush()
+    rules = await get_lock_rules(db)
+    notes = []
+    for r in rows:
+        db.add(ScheduleChangeAck(history_id=r.id, user_id=r.employee_id))
+        notes.append((
+            r.employee_id, "Urgent schedule change - please acknowledge",
+            f"Your schedule for {r.work_date.isoformat()} was changed at "
+            f"short notice" + (f": {r.reason}" if r.reason else ""),
+            "schedule_change_ack", str(r.id),
+        ))
+        if (
+            r.action in ("update", "publish")
+            and r.new_shift_template_id is not None
+            and not r.new_is_week_off
+            and (r.old_shift_template_id is None or r.old_is_week_off)
+        ):
+            await _callback_compensation(db, r, rules)
+    await notify_many(db, notes)
+
+
+async def _callback_compensation(db: AsyncSession, row, rules) -> None:
+    """An off/week-off/blank day became a working shift through an emergency
+    change: record compensation per `schedule.callback_compensation`. Never
+    modifies existing (possibly paid) rows and never claws back if the change
+    is later reverted. Failures are logged, never block the change."""
+    mode = rules["callback_compensation"]
+    if mode == "none":
+        return
+    uid, d = row.employee_id, row.work_date
+    try:
+        async with db.begin_nested():
+            if mode == "comp_off":
+                from app.models.comp_off import CompOffAccrual
+                from app.services.comp_off_accrual import create_comp_off_accrual
+                if (await db.execute(select(CompOffAccrual.id).where(
+                    CompOffAccrual.user_id == uid,
+                    CompOffAccrual.holiday_date == d))).first():
+                    return
+                u = await db.get(User, uid)
+                await create_comp_off_accrual(
+                    db, user=u, work_date=d, holiday_name="Call-back",
+                    attendance_id=None, worked_minutes=0,
+                    reason=f"Called in on {d.isoformat()} (emergency schedule "
+                           "change)")
+            elif mode == "allowance":
+                from app.models.shift_allowance import (
+                    ShiftAllowanceEntry, ShiftAllowanceKind,
+                )
+                amount = float(rules["callback_allowance_amount"])
+                if amount <= 0:
+                    return
+                if (await db.execute(select(ShiftAllowanceEntry.id).where(
+                    ShiftAllowanceEntry.user_id == uid,
+                    ShiftAllowanceEntry.work_date == d,
+                    ShiftAllowanceEntry.kind == ShiftAllowanceKind.CALLBACK,
+                ))).first():
+                    return
+                db.add(ShiftAllowanceEntry(
+                    user_id=uid, work_date=d,
+                    kind=ShiftAllowanceKind.CALLBACK, amount=amount,
+                    minutes=0, source_id=row.id))
+    except Exception:
+        logger.warning("call-back compensation failed", exc_info=True)
 
 
 def expand_pattern(
@@ -611,6 +826,10 @@ async def build_grid(
 
     pub = await publishable_subset(db, user, set(user_ids))
     can_pub = admin or (bool(user_ids) and set(user_ids) <= pub)
+    lock_days = (await get_lock_rules(db))["lock_days"]
+    can_override = bool(lock_days) and (
+        admin or (bool(user_ids)
+                  and set(user_ids) <= await override_user_ids(db, user)))
 
     return RosterGridResponse(
         start=start,
@@ -626,6 +845,8 @@ async def build_grid(
         rows=grid_rows,
         is_admin=admin,
         can_publish=can_pub,
+        lock_days=lock_days,
+        can_override_lock=can_override,
     )
 
 
@@ -637,17 +858,23 @@ def record_change(
     old_tpl: Optional[int], old_off: bool,
     new_tpl: Optional[int], new_off: bool,
     action: str, reason: Optional[str], actor_id: Optional[int],
+    emergency: bool = False,
 ) -> RosterEntryHistory:
-    """Add one history row (caller commits). For deletes pass entry=None."""
+    """Add one history row (caller commits). For deletes pass entry=None.
+    `emergency=True` flags a change inside the lock window: the row is
+    tracked and `flush_emergency` (run by commit_or_409) creates the
+    acknowledgement, the notification and any call-back compensation."""
     row = RosterEntryHistory(
         employee_id=employee_id, work_date=work_date,
         roster_entry_id=entry.id if entry is not None else None,
         old_shift_template_id=old_tpl, old_is_week_off=bool(old_off),
         new_shift_template_id=new_tpl, new_is_week_off=bool(new_off),
         action=action, reason=reason[:500] if reason else None,
-        changed_by_id=actor_id,
+        changed_by_id=actor_id, is_emergency=bool(emergency),
     )
     db.add(row)
+    if emergency:
+        db.info.setdefault(EMERGENCY_KEY, []).append(row)
     return row
 
 
@@ -758,6 +985,7 @@ def is_lock_conflict(exc: Exception) -> bool:
 
 async def publish_drafts(
     db: AsyncSession, actor: User, user_ids, start: pydate, end: pydate,
+    reason: Optional[str] = None,
 ) -> dict:
     """Flip DRAFT -> PUBLISHED in [start, end] for the employees in
     `user_ids` that `actor` may publish for. Drafts are row-locked (ordered
@@ -798,6 +1026,21 @@ async def publish_drafts(
                 RosterEntry.status == RosterStatus.DRAFT,
             ).distinct()
         )).scalars().all())
+    # Lock window: publishing a draft inside it changes the live schedule
+    # (the live cell today is the standing assignment, as a draft is never
+    # live), so it needs override rights + a reason.
+    lock_days = (await get_lock_rules(db))["lock_days"]
+    base: Dict[Tuple[int, pydate], Cell] = {}
+    locked: set = set()
+    if lock_days:
+        win = [d for d in todo if in_lock_window(d.work_date, lock_days)]
+        base = await assignment_cells(
+            db, {(d.employee_id, d.work_date) for d in win})
+        locked = await lock_guard(db, actor, [
+            (d.employee_id, d.work_date, base[(d.employee_id, d.work_date)],
+             norm_cell(d.shift_template_id, d.is_week_off))
+            for d in win
+        ], reason=reason)
     now = datetime.now(timezone.utc)
     for i in range(0, len(todo), 500):
         await db.execute(
@@ -809,16 +1052,17 @@ async def publish_drafts(
             .values(status=RosterStatus.PUBLISHED, updated_at=now)
             .execution_options(synchronize_session=False)
         )
-    db.add_all([
-        RosterEntryHistory(
-            employee_id=d.employee_id, work_date=d.work_date,
-            roster_entry_id=d.id,
-            old_shift_template_id=None, old_is_week_off=False,
-            new_shift_template_id=d.shift_template_id,
-            new_is_week_off=d.is_week_off,
-            action="publish", reason=None, changed_by_id=actor.id,
-        ) for d in todo
-    ])
+    for d in todo:
+        emerg = (d.employee_id, d.work_date) in locked
+        old = base.get((d.employee_id, d.work_date), (None, False))
+        record_change(
+            db, d, employee_id=d.employee_id, work_date=d.work_date,
+            old_tpl=old[0] if emerg else None,
+            old_off=old[1] if emerg else False,
+            new_tpl=d.shift_template_id, new_off=d.is_week_off,
+            action="publish", reason=clean_reason(reason) if emerg else None,
+            actor_id=actor.id, emergency=emerg,
+        )
     employees = sorted({d.employee_id for d in todo})
     await notify_many(db, [
         (uid, "Schedule published",

@@ -183,6 +183,36 @@ class RosterEntryHistory(Base):
         DateTime(timezone=True), index=True,
         default=lambda: datetime.now(timezone.utc), nullable=False,
     )
+    # True when the change landed inside the schedule lock window
+    # (schedule.lock_days) -- the employee must acknowledge it.
+    is_emergency: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+
+
+class ScheduleChangeAck(Base):
+    """One acknowledgement owed by an employee per emergency change."""
+    __tablename__ = "schedule_change_ack"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("history_id", "user_id", name="uq_sched_ack_hist_user"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    history_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("roster_entry_history.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc), nullable=False,
+    )
 
 
 class RosterPublishRequest(Base):

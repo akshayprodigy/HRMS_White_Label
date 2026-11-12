@@ -68,6 +68,20 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Minutes after shift start with no punch-in before an employee is "
         "flagged a no-show and alerts are sent (0 = off)",
     ),
+    "schedule.lock_days": (
+        "0",
+        "Published schedule is locked this many days ahead (0 = off, 0-30): "
+        "only roster admins / emergency-override delegates may change it, "
+        "with a reason, and the employee must acknowledge",
+    ),
+    "schedule.callback_compensation": (
+        "none",
+        "Compensation when an emergency change calls an employee in on a "
+        "day off: none | comp_off | allowance",
+    ),
+    "schedule.callback_allowance_amount": (
+        "0", "Call-back allowance paid per call-back day (>= 0)"
+    ),
     "leave.emergency_backdate_days": (
         "3",
         "Emergency leave may start up to this many days in the past (0-31)",
@@ -89,6 +103,8 @@ SCHEDULE_INT_CAPS: Dict[str, int] = {
     "schedule.no_show_minutes": 240,
 }
 SCHEDULE_INT_KEYS = tuple(SCHEDULE_INT_CAPS)
+LOCK_INT_CAPS: Dict[str, int] = {"schedule.lock_days": 30}
+CALLBACK_MODES = ("none", "comp_off", "allowance")
 LEAVE_INT_CAPS: Dict[str, int] = {
     "leave.emergency_backdate_days": 31,
     "leave.emergency_proof_days": 60,
@@ -130,7 +146,9 @@ async def set_time_rules(
                 "attendance.weekoff_comp_off_enabled must be 0 or 1"
             )
         updates["attendance.weekoff_comp_off_enabled"] = str(wk).strip()
-    for key, cap in {**SCHEDULE_INT_CAPS, **LEAVE_INT_CAPS}.items():
+    for key, cap in {
+        **SCHEDULE_INT_CAPS, **LEAVE_INT_CAPS, **LOCK_INT_CAPS
+    }.items():
         v = updates.get(key)
         if v is not None:
             sv = str(v).strip()
@@ -139,6 +157,24 @@ async def set_time_rules(
                     f"{key} must be a whole number between 0 and {cap}"
                 )
             updates[key] = sv  # store the stripped value
+    cm = updates.get("schedule.callback_compensation")
+    if cm is not None:
+        cm = str(cm).strip()
+        if cm not in CALLBACK_MODES:
+            raise ValueError(
+                "schedule.callback_compensation must be one of: "
+                + ", ".join(CALLBACK_MODES))
+        updates["schedule.callback_compensation"] = cm
+    amt = updates.get("schedule.callback_allowance_amount")
+    if amt is not None:
+        try:
+            f = float(str(amt).strip())
+            if not (f == f and 0 <= f < 1e9):  # NaN / negative / absurd
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                "schedule.callback_allowance_amount must be a number >= 0")
+        updates["schedule.callback_allowance_amount"] = str(f)
     for key, value in updates.items():
         if key not in TIME_RULE_DEFAULTS:
             continue
@@ -241,3 +277,30 @@ async def get_emergency_leave_rules(db: AsyncSession) -> Dict[str, int]:
                            raw.get(key), key)
             out[short] = int(TIME_RULE_DEFAULTS[key][0])
     return out
+
+
+async def get_lock_rules(db: AsyncSession) -> Dict[str, object]:
+    """{'lock_days': int, 'callback_compensation': str,
+    'callback_allowance_amount': float}; corrupt stored values fall back to
+    the defaults (logged)."""
+    raw = await get_time_rules(db)
+    try:
+        lock_days = int(str(raw["schedule.lock_days"]).strip())
+        if not 0 <= lock_days <= 30:
+            raise ValueError
+    except (TypeError, ValueError):
+        logger.warning("Invalid stored schedule.lock_days; using 0")
+        lock_days = 0
+    mode = str(raw["schedule.callback_compensation"]).strip()
+    if mode not in CALLBACK_MODES:
+        logger.warning("Invalid stored schedule.callback_compensation")
+        mode = "none"
+    try:
+        amount = float(str(raw["schedule.callback_allowance_amount"]).strip())
+        if not (amount == amount and amount >= 0):
+            raise ValueError
+    except (TypeError, ValueError):
+        logger.warning("Invalid stored schedule.callback_allowance_amount")
+        amount = 0.0
+    return {"lock_days": lock_days, "callback_compensation": mode,
+            "callback_allowance_amount": amount}

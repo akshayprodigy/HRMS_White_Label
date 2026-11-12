@@ -16,6 +16,7 @@ class DelegationCreate(BaseModel):
     employee_ids: List[IntId] = Field(default_factory=list)
     can_publish: bool = False
     can_approve_changes: bool = False
+    can_emergency_override: bool = False
     valid_from: pydate
     valid_to: Optional[pydate] = None
     note: Optional[str] = Field(None, max_length=255)
@@ -24,6 +25,7 @@ class DelegationCreate(BaseModel):
 class DelegationUpdate(BaseModel):
     can_publish: Optional[bool] = None
     can_approve_changes: Optional[bool] = None
+    can_emergency_override: Optional[bool] = None
     valid_from: Optional[pydate] = None
     valid_to: Optional[pydate] = None
     note: Optional[str] = Field(None, max_length=255)
@@ -40,6 +42,7 @@ class DelegationRead(BaseModel):
     employee_ids: List[int] = Field(default_factory=list)
     can_publish: bool
     can_approve_changes: bool
+    can_emergency_override: bool = False
     valid_from: pydate
     valid_to: Optional[pydate] = None
     revoked_at: Optional[datetime] = None
