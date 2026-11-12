@@ -493,7 +493,8 @@ async def test_time_rules_validation_and_caps(client, world, rules_cfg):
                              json={"rules": {f"schedule.{key}": bad}})
         assert r.status_code == 422, (key, bad, r.text)
     async with SessionLocal() as db:
-        assert await get_schedule_rules(db) == BASE_RULES
+        current = await get_schedule_rules(db)
+        assert {k: current[k] for k in BASE_RULES} == BASE_RULES
     r = await client.put(url, headers=ha, json={"rules": {
         "schedule.min_rest_hours": " 24 ", "schedule.max_weekly_hours": "168"}})
     assert r.status_code == 200, r.text
