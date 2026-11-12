@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     salary_structure, late_mark, leave_policies, roster,
     roster_publish, roster_rules, roster_rotations, roster_availability,
     roster_swaps,
+    roster_open_shifts,
     attendance_regularization, schedule_delegations,
 )
 
@@ -164,7 +165,8 @@ api_router.include_router(
 # that could shadow them, and roster.router (with /entries/{id} etc.) is last.
 for _r in (
     roster_publish.router, roster_rules.router, roster_availability.router,
-    roster_rotations.router, roster_swaps.router, roster.router,
+    roster_rotations.router, roster_swaps.router, roster_open_shifts.router,
+    roster.router,
 ):
     api_router.include_router(
         _r,

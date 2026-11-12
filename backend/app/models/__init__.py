@@ -55,6 +55,7 @@ from .schedule_delegation import ScheduleDelegation, DelegationScope
 from .rotation_pattern import RotationPattern
 from .availability import EmployeeAvailability, AvailabilityKind
 from .shift_swap import ShiftSwapRequest, SwapStatus
+from .open_shift import OpenShift, OpenShiftClaim, OpenShiftStatus, ClaimStatus
 from .coverage_requirement import CoverageRequirement
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
