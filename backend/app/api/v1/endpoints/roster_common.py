@@ -135,6 +135,20 @@ async def lock_row(db, stmt, msg: str = "Request already decided"):
         raise mapped from exc
 
 
+async def lock_user_rows(db, ids, msg: str = CONFLICT_MSG) -> None:
+    """Lock the given user rows (id order) to serialize concurrent writers."""
+    try:
+        await db.execute(
+            select(User.id).where(User.id.in_(list(ids)))
+            .order_by(User.id).with_for_update()
+        )
+    except OperationalError as exc:
+        mapped = await _map_db_error(db, exc, msg)
+        if mapped is None:
+            raise
+        raise mapped from exc
+
+
 async def validate_templates(db, ids) -> None:
     ids = {i for i in ids if i is not None}
     if not ids:

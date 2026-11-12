@@ -140,9 +140,9 @@ async def apply_swap(db, swap, actor_id: int, a_cells, b_cells) -> Dict[int, set
         (swap.counterparty_id, b_cells, new_b),
     ):
         for d in dates:
-            if old[d] == new[d]:
-                continue
             tpl, off = written_cell(new[d])
+            if old[d] == (tpl, off):
+                continue
             entry, _o = await roster_svc.upsert_entry(
                 db, employee_id=uid, work_date=d, shift_template_id=tpl,
                 is_week_off=off, status=RosterStatus.PUBLISHED,
@@ -186,14 +186,19 @@ async def _unpublished_conflicts(db, written) -> List[schedule_rules.Violation]:
     return out
 
 
-async def pending_requests(db, written) -> List[RosterChangeRequest]:
+async def pending_requests(
+    db, written, lock: bool = False
+) -> List[RosterChangeRequest]:
     if not written:
         return []
-    rows = (await db.execute(select(RosterChangeRequest).where(
+    q = select(RosterChangeRequest).where(
         RosterChangeRequest.employee_id.in_({u for u, _ in written}),
         RosterChangeRequest.work_date.in_({d for _, d in written}),
         RosterChangeRequest.status == "pending",
-    ))).scalars().all()
+    ).order_by(RosterChangeRequest.id)
+    if lock:  # fresh locked read; a concurrently decided request drops out
+        q = q.with_for_update().execution_options(populate_existing=True)
+    rows = (await db.execute(q)).scalars().all()
     return [c for c in rows if (c.employee_id, c.work_date) in written]
 
 
@@ -209,7 +214,7 @@ def written_keys(swap, a_cells, b_cells) -> set:
 async def supersede_change_requests(db, swap, actor_id: int, written) -> None:
     """Cancel pending change requests on written cells and notify owners."""
     from datetime import datetime, timezone
-    rows = await pending_requests(db, written)
+    rows = await pending_requests(db, written, lock=True)
     for c in rows:
         c.status = "cancelled"
         c.decision_note = f"Superseded by shift swap #{swap.id}"

@@ -17,7 +17,7 @@ from sqlalchemy import or_, select
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.api.v1.endpoints.roster_common import (
-    commit_or_409, guard_conflicts, lock_row, names,
+    commit_or_409, guard_conflicts, lock_row, lock_user_rows, names,
 )
 from app.models.employee import Employee, EmployeeStatus
 from app.models.roster import RosterStatus
@@ -119,23 +119,6 @@ async def _read_one(db, r, warnings=None) -> SwapRead:
     return (await _read_many(db, [r], {r.id: warnings or []}))[0]
 
 
-async def lock_row_ids(db, ids) -> None:
-    from app.models.user import User as _U
-    await lock_row_many(db, select(_U.id).where(_U.id.in_(ids)).order_by(_U.id))
-
-
-async def lock_row_many(db, stmt) -> None:
-    from sqlalchemy.exc import OperationalError
-    from app.api.v1.endpoints.roster_common import _map_db_error
-    try:
-        await db.execute(stmt.with_for_update())
-    except OperationalError as exc:
-        mapped = await _map_db_error(db, exc, "Roster changed concurrently; retry")
-        if mapped is None:
-            raise
-        raise mapped from exc
-
-
 async def _lock_swap(db, swap_id: int) -> ShiftSwapRequest:
     s = await lock_row(
         db, select(ShiftSwapRequest).where(ShiftSwapRequest.id == swap_id),
@@ -227,7 +210,7 @@ async def create_swap(
             status_code=400, detail="You cannot swap a shift with yourself")
     # Serialize concurrent creates for the same people: lock both user rows
     # (id order) before the duplicate check.
-    await lock_row_ids(db, [a, b])
+    await lock_user_rows(db, [a, b])
     me = (await db.execute(select(Employee.department).where(
         Employee.user_id == a))).first()
     cp = (await db.execute(
@@ -255,6 +238,8 @@ async def create_swap(
     if not swap_svc.changes_something(a_cells, b_cells, dates):
         raise HTTPException(
             status_code=400, detail="Both employees already have the same schedule")
+    # FOR UPDATE: the request's REPEATABLE READ snapshot predates the user
+    # lock, so a plain read would miss a competing create's commit.
     # No other open swap involving either party on any of these dates.
     open_rows = (await db.execute(
         select(ShiftSwapRequest).where(
