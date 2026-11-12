@@ -260,6 +260,7 @@ export const RequestsView: React.FC<Props> = ({
       )}
       <CoverageGapsPanel
         gaps={gaps}
+        canPublish={canPostOpenShift}
         error={errors.gaps}
         onRetry={() => reload()}
         onResult={(title, lines) => setResult({ title, lines, warn: lines.length > 0 })}

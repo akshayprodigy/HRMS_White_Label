@@ -25,6 +25,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from app.api.v1.endpoints.roster_common import lock_user_rows
 from app.models.coverage_gap import CoverageGap, GapSource, GapStatus
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
@@ -63,21 +64,54 @@ async def _scheduler_ids(db, gap: CoverageGap) -> set:
     return await roster_svc.schedule_approver_ids(db, set())
 
 
+def _key_stmt(absent_user_id, work_date, source):
+    return select(CoverageGap).where(
+        CoverageGap.absent_user_id == absent_user_id,
+        CoverageGap.work_date == work_date, CoverageGap.source == source)
+
+
+async def _find_committed(db, absent_user_id, work_date, source):
+    """The gap for the idempotency key, including one committed by a
+    concurrent transaction AFTER this transaction's snapshot. A FOR UPDATE
+    read of such a row fails on MariaDB with 1020 and rolls the whole
+    transaction back, so the (already-committed) row is read through a short
+    separate session and attached without reloading; callers only need
+    id/status, and a later commit makes this session see it normally."""
+    from app.db.session import SessionLocal
+    stmt = _key_stmt(absent_user_id, work_date, source)
+    async with SessionLocal() as other:
+        row = (await other.execute(stmt)).scalars().first()
+        if row is None:
+            return None
+        other.expunge(row)
+    return await db.merge(row, load=False)
+
+
 async def open_gap(
     db, *, work_date: date, shift_template_id: int,
     department: Optional[str] = None, location: Optional[str] = None,
     absent_user_id: Optional[int] = None, source: str,
     source_id: Optional[int] = None, note: Optional[str] = None,
+    notify: bool = True, notify_exclude: Iterable[int] = (),
 ) -> CoverageGap:
-    """Create the gap (idempotent per (absent_user_id, work_date, source):
-    an existing row is returned as is) and notify the schedulers in-app."""
+    """Create the gap and (when `notify`) notify the schedulers in-app,
+    except `notify_exclude` (e.g. the approver who triggered it).
+
+    Idempotent per (absent_user_id, work_date, source): an existing row is
+    returned AS IS, whatever its status (a dismissed/filled gap is not
+    reopened by a repeat trigger). Race-safe: concurrent openers are
+    serialized on the absentee's user row (lock_user_rows; a FOR UPDATE on
+    the missing key would take gap locks and deadlock concurrent inserters),
+    and the unique key is the backstop: a duplicate insert falls back to
+    `_find_committed`, which sees the winner even when the REPEATABLE READ
+    snapshot predates its commit."""
     if source not in GapSource.ALL:
         raise ValueError(f"unknown gap source {source!r}")
     if absent_user_id is not None:
-        q = select(CoverageGap).where(
-            CoverageGap.absent_user_id == absent_user_id,
-            CoverageGap.work_date == work_date, CoverageGap.source == source)
-        existing = (await db.execute(q)).scalars().first()
+        await lock_user_rows(db, [absent_user_id])
+        existing = (await db.execute(_key_stmt(
+            absent_user_id, work_date, source).execution_options(
+                populate_existing=True))).scalars().first()
         if existing is not None:
             return existing
         if department is None or location is None:
@@ -96,14 +130,12 @@ async def open_gap(
             db.add(gap)
             await db.flush()
     except IntegrityError:  # lost the race to an identical gap
-        again = (await db.execute(select(CoverageGap).where(
-            CoverageGap.absent_user_id == absent_user_id,
-            CoverageGap.work_date == work_date,
-            CoverageGap.source == source).execution_options(
-                populate_existing=True))).scalars().first()
+        again = await _find_committed(db, absent_user_id, work_date, source)
         if again is None:
             raise
         return again
+    if not notify:
+        return gap
     tpl = await db.get(ShiftTemplate, shift_template_id)
     who = None
     if absent_user_id:
@@ -116,7 +148,7 @@ async def open_gap(
          f"{label} on {work_date.isoformat()}"
          + (f" ({who} absent)" if who else "") + " needs a replacement",
          RTYPE, str(gap.id))
-        for uid in sorted(await _scheduler_ids(db, gap))])
+        for uid in sorted((await _scheduler_ids(db, gap)) - set(notify_exclude))])
     return gap
 
 
@@ -239,6 +271,22 @@ async def _ot_caps(db, tpl_id: int) -> Optional[int]:
     return min(caps) if caps else None
 
 
+async def ot_usage(db, user_ids, tpl_id: int, d: date):
+    """(monthly cap minutes or None, {user_id: OT minutes used in d's month})."""
+    cap = await _ot_caps(db, tpl_id)
+    if cap is None:
+        return None, {}
+    m0 = d.replace(day=1)
+    m1 = d.replace(day=calendar.monthrange(d.year, d.month)[1])
+    return cap, {u: int(m or 0) for u, m in (await db.execute(
+        select(OvertimeEntry.user_id,
+               func.coalesce(func.sum(OvertimeEntry.ot_minutes), 0))
+        .where(OvertimeEntry.user_id.in_(list(user_ids)),
+               OvertimeEntry.work_date >= m0, OvertimeEntry.work_date <= m1,
+               OvertimeEntry.status.in_(OT_COUNTED))
+        .group_by(OvertimeEntry.user_id))).all()}
+
+
 async def suggest_replacements(
     db, gap: CoverageGap, actor: Optional[User] = None,
     limit: int = MAX_SUGGESTIONS,
@@ -269,17 +317,7 @@ async def suggest_replacements(
     hi = max(m1, d + timedelta(days=7))
     eff = await effective_shifts_for_range(db, ok, lo, hi)
     days = [lo + timedelta(days=i) for i in range((hi - lo).days + 1)]
-    cap = await _ot_caps(db, gap.shift_template_id)
-    used: Dict[int, int] = {}
-    if cap is not None:
-        used = {u: int(m or 0) for u, m in (await db.execute(
-            select(OvertimeEntry.user_id,
-                   func.coalesce(func.sum(OvertimeEntry.ot_minutes), 0))
-            .where(OvertimeEntry.user_id.in_(ok),
-                   OvertimeEntry.work_date >= m0,
-                   OvertimeEntry.work_date <= m1,
-                   OvertimeEntry.status.in_(OT_COUNTED))
-            .group_by(OvertimeEntry.user_id))).all()}
+    cap, used = await ot_usage(db, ok, gap.shift_template_id, d)
     cands: List[Candidate] = []
     for u in ok:
         cur = {x: swap_svc.cell_of(eff[(u, x)]) for x in days}

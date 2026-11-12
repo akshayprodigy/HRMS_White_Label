@@ -7,7 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
-from _cleanup import purge_shift_templates
+from _cleanup import purge_gap_notifications, purge_shift_templates
 from app.api import deps
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -155,6 +155,7 @@ async def world():
                 AuditLog.user_id.in_(uids), AuditLog.action.like("roster.%")))
             await db.execute(delete(NoShowAlert).where(NoShowAlert.user_id.in_(uids)))
             await db.execute(delete(Attendance).where(Attendance.user_id.in_(uids)))
+            await purge_gap_notifications(db, tids)
             await db.execute(delete(CoverageGap).where(
                 CoverageGap.shift_template_id.in_(tids)))
             await db.execute(delete(OpenShiftClaim).where(
@@ -175,6 +176,7 @@ async def world():
             await db.execute(delete(Employee).where(Employee.user_id.in_(uids)))
             await db.execute(delete(Department).where(
                 Department.name.in_([dept_x, dept_y])))
+            await purge_gap_notifications(db, tids)
             await purge_shift_templates(db, tids)
             await db.execute(delete(User).where(User.id.in_(uids)))
             await db.commit()
@@ -609,6 +611,119 @@ async def test_suggestions_respect_monthly_ot_cap(client, world):
         async with SessionLocal() as db:
             await db.execute(delete(OvertimeEntry).where(
                 OvertimeEntry.user_id.in_([ids["e2"], ids["e3"], ids["e6"]])))
+            await db.execute(delete(OvertimeRule).where(
+                OvertimeRule.name == f"GOT{w['sfx']}"))
+            await db.commit()
+
+
+# ------------------------------ review follow-ups ------------------------------
+
+async def test_open_gap_concurrent_sessions_same_gap(world):
+    w, ids = world, world["ids"]
+
+    async def one():
+        async with SessionLocal() as db:
+            # establish the snapshot BEFORE the other session commits
+            await db.execute(select(CoverageGap.id).where(
+                CoverageGap.shift_template_id == ids["t1"]))
+            await asyncio.sleep(0.2)
+            g = await gap_svc.open_gap(
+                db, work_date=dn(), shift_template_id=ids["t1"],
+                absent_user_id=ids["e1"], source="manual")
+            gid = g.id
+            await db.commit()
+            return gid
+    got = await asyncio.gather(one(), one(), one())
+    assert len(set(got)) == 1, got
+    async with SessionLocal() as db:
+        assert len((await db.execute(select(CoverageGap).where(
+            CoverageGap.absent_user_id == ids["e1"]))).scalars().all()) == 1
+
+
+async def test_open_gap_notify_false(world):
+    w, ids = world, world["ids"]
+    async with SessionLocal() as db:
+        g = await gap_svc.open_gap(
+            db, work_date=dn(), shift_template_id=ids["t1"],
+            absent_user_id=ids["e1"], source="emergency_leave", notify=False)
+        await db.commit()
+        gid = g.id
+    assert not [n for n in await _notes(ids["sx"])
+                if n.resource_id == str(gid)]
+
+
+async def test_no_show_gap_does_not_double_notify(world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(), ids["t1"])
+    now = datetime.combine(dn(), time(11, 0), timezone.utc)
+    async with SessionLocal() as db:
+        await no_show_job(db, now=now, user_ids=[ids["e1"]])
+    assert not await _notes(ids["sx"], "Coverage gap needs a replacement")
+    async with SessionLocal() as db:
+        assert (await db.execute(select(CoverageGap).where(
+            CoverageGap.absent_user_id == ids["e1"]))).scalars().one()
+
+
+async def test_drop_gap_does_not_notify_approver(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(), ids["t1"])
+    did = await _drop(client, w)
+    r = await client.post(f"{DR}/{did}/decide", headers=await _h(client, w, "sx"),
+                          json={"action": "approve", "post_open_shift": False})
+    assert r.status_code == 200, r.text
+    assert not await _notes(ids["sx"], "Coverage gap needs a replacement")
+
+
+async def test_create_gap_existing_not_open_or_other_template_409(client, world):
+    w, ids = world, world["ids"]
+    H = await _h(client, w, "sx")
+    body = {"work_date": D.isoformat(), "shift_template_id": ids["t1"],
+            "absent_user_id": ids["e1"], "source": "sick_call"}
+    gid = (await client.post(API, headers=H, json=body)).json()["id"]
+    assert (await client.post(f"{API}/{gid}/dismiss", json={}, headers=H)
+            ).status_code == 200
+    r = await client.post(API, headers=H, json=body)
+    assert r.status_code == 409 and "dismissed" in r.json()["error"]["message"]
+    async with SessionLocal() as db:
+        t2 = ShiftTemplate(name=f"GT1{w['sfx']}b", start_time=time(10),
+                           end_time=time(18))
+        db.add(t2)
+        await db.commit()
+        t2id = t2.id
+    g2 = await _gap(w, source="manual", day=3)
+    r = await client.post(API, headers=H, json={
+        "work_date": dn(3).isoformat(), "shift_template_id": t2id,
+        "absent_user_id": ids["e1"], "source": "manual"})
+    assert r.status_code == 409, r.text
+    assert (await _get_gap(g2)).shift_template_id == ids["t1"]
+    async with SessionLocal() as db:
+        await purge_shift_templates(db, [t2id])
+        await db.commit()
+
+
+async def test_assign_warns_when_replacement_over_ot_cap(client, world):
+    from app.models.overtime import OvertimeEntry, OvertimeRule
+    w, ids = world, world["ids"]
+    async with SessionLocal() as db:
+        rule = OvertimeRule(name=f"GOT{w['sfx']}", scope="shift",
+                            shift_template_id=ids["t1"],
+                            monthly_ot_cap_minutes=60, is_active=True)
+        db.add(rule)
+        await db.flush()
+        db.add(OvertimeEntry(user_id=ids["e2"], work_date=dn(-3),
+                             ot_minutes=90, status="approved", rule_id=rule.id))
+        await db.commit()
+    try:
+        gid = await _gap(w)
+        r = await client.post(f"{API}/{gid}/assign",
+                              headers=await _h(client, w, "sx"),
+                              json={"user_id": ids["e2"]})
+        assert r.status_code == 200, r.text
+        assert any("overtime cap" in x for x in r.json()["warnings"]), r.json()
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(OvertimeEntry).where(
+                OvertimeEntry.user_id == ids["e2"]))
             await db.execute(delete(OvertimeRule).where(
                 OvertimeRule.name == f"GOT{w['sfx']}"))
             await db.commit()

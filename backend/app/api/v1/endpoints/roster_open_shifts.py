@@ -658,7 +658,7 @@ async def decide_drop(
             await gap_svc.open_gap(
                 db, work_date=d, shift_template_id=drop.shift_template_id,
                 department=dept, absent_user_id=uid, source="drop",
-                source_id=drop.id)
+                source_id=drop.id, notify_exclude={current_user.id})
         drop.post_open_shift = bool(post)
         drop.status = DropStatus.APPROVED
         await roster_svc.notify(

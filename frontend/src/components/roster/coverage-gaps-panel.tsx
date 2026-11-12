@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { Radio, UserCheck } from 'lucide-react';
 import { Card, Button, Badge } from '../ui-elements';
 import { errMsg } from '../schedule-delegations-utils';
-import { fmtDate, inputCls, labelCls } from '../my-schedule/my-schedule-api';
+import { fmtDate, inputCls } from '../my-schedule/my-schedule-api';
 import { InlineConfirm } from '../my-schedule/inline-confirm';
 import { schedulerApi, type CoverageGap, type GapSuggestion } from './roster-api';
 
@@ -21,12 +21,15 @@ interface Props {
   onRetry: () => void;
   onChanged: () => void | Promise<void>;
   onResult: (title: string, lines: string[]) => void;
+  /** viewer may publish schedules; gates Assign / Broadcast */
+  canPublish?: boolean;
 }
 
 const GapCard = ({
-  gap, onChanged, onResult,
+  gap, onChanged, onResult, canPublish,
 }: {
   gap: CoverageGap;
+  canPublish: boolean;
   onChanged: () => void | Promise<void>;
   onResult: (title: string, lines: string[]) => void;
 }) => {
@@ -97,6 +100,8 @@ const GapCard = ({
           aria-label={`Find replacement for ${fmtDate(gap.work_date)} ${gap.shift_name || 'shift'}`}>
           <UserCheck size={14} className="mr-1.5" /> {open ? 'Hide suggestions' : 'Find replacement'}
         </Button>
+        {canPublish && (
+          <>
         <Button size="sm" variant="outline" className="h-10" disabled={!!busy || broadcast}
           isLoading={busy === 'broadcast'}
           aria-label={`Broadcast gap ${gap.id} as open shift`}
@@ -108,6 +113,11 @@ const GapCard = ({
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
           Auto-confirm first claim
         </label>
+          </>
+        )}
+        <input aria-label={`Dismiss note for gap ${gap.id}`} className={inputCls + ' h-10 max-w-xs'}
+          maxLength={255} value={note} onChange={(e) => setNote(e.target.value)}
+          placeholder="Dismiss note (optional)" />
         <InlineConfirm label="Dismiss" ariaLabel={`Dismiss gap ${gap.id}`} busy={!!busy}
           onConfirm={() => run('dismiss', () => schedulerApi.dismissGap(gap.id, note.trim() || null),
             () => ['Coverage gap dismissed', []])} />
@@ -143,22 +153,17 @@ const GapCard = ({
                       {s.reasons.map((r, j) => <li key={j}>{r}</li>)}
                     </ul>
                   </div>
-                  <Button size="sm" className="h-10" disabled={!!busy}
+                  {canPublish && <Button size="sm" className="h-10" disabled={!!busy}
                     isLoading={busy === `assign-${s.user_id}`}
                     aria-label={`Assign ${s.name}`}
                     onClick={() => run(`assign-${s.user_id}`, () => schedulerApi.assignGap(gap.id, s.user_id),
                       (g) => [`${s.name} assigned — schedule published`, g.warnings || []])}>
                     Assign
-                  </Button>
+                  </Button>}
                 </li>
               ))}
             </ol>
           )}
-          <div className="space-y-1">
-            <label htmlFor={`gap-note-${gap.id}`} className={labelCls}>Dismiss note (optional)</label>
-            <input id={`gap-note-${gap.id}`} className={inputCls} maxLength={255} value={note}
-              onChange={(e) => setNote(e.target.value)} placeholder="e.g. covered by agency" />
-          </div>
         </div>
       )}
     </li>
@@ -166,7 +171,9 @@ const GapCard = ({
 };
 
 /** Open coverage gaps with ranked replacement suggestions. */
-export const CoverageGapsPanel: React.FC<Props> = ({ gaps, error, onRetry, onChanged, onResult }) => (
+export const CoverageGapsPanel: React.FC<Props> = ({
+  gaps, error, onRetry, onChanged, onResult, canPublish = true,
+}) => (
   <Card className="p-5 border-slate-200 bg-white" aria-label="Coverage gaps">
     <p className="text-[10px] font-black uppercase tracking-widest text-[#0F172A] mb-3">
       Coverage gaps <Badge variant="neutral" className="ml-2">{gaps.length}</Badge>
@@ -183,7 +190,7 @@ export const CoverageGapsPanel: React.FC<Props> = ({ gaps, error, onRetry, onCha
       </p>
     )) : (
       <ul className="space-y-2">
-        {gaps.map((g) => <GapCard key={g.id} gap={g} onChanged={onChanged} onResult={onResult} />)}
+        {gaps.map((g) => <GapCard key={g.id} gap={g} onChanged={onChanged} onResult={onResult} canPublish={canPublish} />)}
       </ul>
     )}
   </Card>

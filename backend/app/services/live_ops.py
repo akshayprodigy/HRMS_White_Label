@@ -344,7 +344,8 @@ async def no_show_job(
                     session, work_date=r.work_date,
                     shift_template_id=r.shift_template_id,
                     department=r.department, location=r.location,
-                    absent_user_id=r.user_id, source="no_show")
+                    absent_user_id=r.user_id, source="no_show",
+                    notify=False)  # the alert already notifies
                 gap_ids[r.user_id] = g.id
         except Exception:  # never let a gap failure drop the alerts
             logger.warning("no-show gap failed", exc_info=True)

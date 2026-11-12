@@ -7,7 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
-from _cleanup import purge_shift_templates
+from _cleanup import purge_gap_notifications, purge_shift_templates
 from app.api import deps
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -178,6 +178,7 @@ async def world():
             tids = list((await db.execute(select(ShiftTemplate.id).where(
                 ShiftTemplate.name.in_(
                     [f"SWT1{sfx}", f"SWT2{sfx}", f"SWTN{sfx}"])))).scalars().all())
+            await purge_gap_notifications(db, tids)
             await purge_shift_templates(db, tids)
             await db.execute(delete(User).where(User.id.in_(uids)))
             await db.commit()

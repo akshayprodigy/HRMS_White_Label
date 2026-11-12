@@ -7,7 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
-from _cleanup import purge_shift_templates
+from _cleanup import purge_gap_notifications, purge_shift_templates
 from app.api import deps
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -154,12 +154,7 @@ async def world():
                 User.email.like(f"lo\\_%\\_{sfx}@t.com")))).scalars().all())
             gtids = list((await db.execute(select(ShiftTemplate.id).where(
                 ShiftTemplate.name.in_([f"LD{sfx}", f"LN{sfx}"])))).scalars().all())
-            gids = [str(g) for g in (await db.execute(select(CoverageGap.id).where(
-                CoverageGap.shift_template_id.in_(gtids)))).scalars().all()]
-            if gids:  # gap notifications may have gone to real roster admins
-                await db.execute(delete(Notification).where(
-                    Notification.resource_type == "coverage_gap",
-                    Notification.resource_id.in_(gids)))
+            await purge_gap_notifications(db, gtids)
             await db.execute(delete(CoverageGap).where(
                 CoverageGap.shift_template_id.in_(gtids)))
             await db.execute(delete(NoShowAlert).where(NoShowAlert.user_id.in_(uids)))
@@ -177,6 +172,7 @@ async def world():
             await db.execute(delete(Department).where(Department.name.in_([dx, dy])))
             tids = (await db.execute(select(ShiftTemplate.id).where(
                 ShiftTemplate.name.in_([f"LD{sfx}", f"LN{sfx}"])))).scalars().all()
+            await purge_gap_notifications(db, tids)
             await purge_shift_templates(db, tids)
             await db.execute(delete(User).where(User.id.in_(uids)))
             await db.execute(delete(HolidayCalendar).where(

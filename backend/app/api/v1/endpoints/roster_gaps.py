@@ -225,6 +225,20 @@ async def create_gap(
             raise HTTPException(
                 status_code=403,
                 detail="Without an absent employee, a department you head is required.")
+    if body.absent_user_id:
+        dup = (await db.execute(select(CoverageGap).where(
+            CoverageGap.absent_user_id == body.absent_user_id,
+            CoverageGap.work_date == body.work_date,
+            CoverageGap.source == body.source))).scalars().first()
+        if dup is not None and (dup.status != GapStatus.OPEN
+                                or dup.shift_template_id != body.shift_template_id):
+            raise HTTPException(
+                status_code=409,
+                detail=(f"A {body.source} gap for this employee and date already "
+                        f"exists (#{dup.id}, {dup.status}"
+                        + ("" if dup.shift_template_id == body.shift_template_id
+                           else ", different shift")
+                        + ")"))
     gap = await gap_svc.open_gap(
         db, work_date=body.work_date, shift_template_id=body.shift_template_id,
         department=body.department, location=body.location,
@@ -288,6 +302,11 @@ async def assign_gap(
     if reason:
         raise HTTPException(status_code=400, detail=reason)
     warnings = await os_svc._claim_warnings(db, tshift, uid, entry)
+    cap, used = await gap_svc.ot_usage(db, [uid], gap.shift_template_id, d)
+    if cap is not None and used.get(uid, 0) >= cap:
+        warnings.append(
+            f"At or over the monthly overtime cap "
+            f"({used.get(uid, 0)} of {cap} min used)")
     if (entry is not None and entry.status == RosterStatus.PUBLISHED
             and (entry.is_week_off or entry.shift_template_id is not None)):
         old = (entry.shift_template_id, bool(entry.is_week_off))
