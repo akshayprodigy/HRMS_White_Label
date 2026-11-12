@@ -6,12 +6,14 @@ data. They are served ONLY by the routes below: to the employee themself
 to schedulers/managers for their scope (`/roster/team-contacts`, which omits
 gender). They are intentionally absent from every general employee schema.
 """
-from datetime import date, datetime, timezone
+import asyncio
+from datetime import date
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api import deps
 from app.api.v1.endpoints.hr import HR_READ, HR_WRITE, log_audit
@@ -46,6 +48,27 @@ class ContactPatch(BaseModel):
     relation: Optional[str] = Field(None, min_length=1, max_length=50)
     phone: Optional[str] = Field(None, max_length=20)
     is_primary: Optional[bool] = None
+
+
+async def _write(db, fn, tries: int = 8):
+    """Run a contact write transactionally. MariaDB's snapshot isolation makes
+    a locking read fail (1020/1213) when a concurrent writer committed after
+    our snapshot; roll back and retry on a fresh snapshot, which serialises
+    writers per employee. `fn` returns a plain dict (nothing lazy after commit)."""
+    for attempt in range(tries):
+        try:
+            out = await fn()
+            await db.commit()
+            return out
+        except (OperationalError, IntegrityError) as exc:
+            await db.rollback()
+            retry = (isinstance(exc, OperationalError)
+                     and roster_svc.is_lock_conflict(exc)) and attempt < tries - 1
+            if not retry:
+                if isinstance(exc, OperationalError) and roster_svc.is_lock_conflict(exc):
+                    raise HTTPException(409, "Concurrent update; retry") from exc
+                raise
+            await asyncio.sleep(0.05 * (attempt + 1))
 
 
 async def _profile(db, user_id: int) -> dict:
@@ -86,10 +109,11 @@ async def add_my_contact(
     *, db: deps.DBDep, body: ContactIn,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    c = await svc.add_contact(db, current_user.id, **body.model_dump())
-    await commit_or_409(db)
-    await db.refresh(c)
-    return svc.contact_dict(c)
+    uid = current_user.id
+
+    async def go():
+        return svc.contact_dict(await svc.add_contact(db, uid, **body.model_dump()))
+    return await _write(db, go)
 
 
 @me_router.put("/me/emergency-contacts/{contact_id}")
@@ -98,11 +122,12 @@ async def update_my_contact(
     *, db: deps.DBDep, contact_id: int, body: ContactPatch,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    c = await svc.update_contact(
-        db, current_user.id, contact_id, body.model_dump(exclude_unset=True))
-    await commit_or_409(db)
-    await db.refresh(c)
-    return svc.contact_dict(c)
+    uid = current_user.id
+
+    async def go():
+        return svc.contact_dict(await svc.update_contact(
+            db, uid, contact_id, body.model_dump(exclude_unset=True)))
+    return await _write(db, go)
 
 
 @me_router.delete("/me/emergency-contacts/{contact_id}")
@@ -111,9 +136,12 @@ async def delete_my_contact(
     *, db: deps.DBDep, contact_id: int,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    await svc.delete_contact(db, current_user.id, contact_id)
-    await commit_or_409(db)
-    return {"ok": True}
+    uid = current_user.id
+
+    async def go():
+        await svc.delete_contact(db, uid, contact_id)
+        return {"ok": True}
+    return await _write(db, go)
 
 
 # -------------------------------- HR ---------------------------------
@@ -141,6 +169,7 @@ async def hr_get_profile(
 ) -> Any:
     _hr_read(current_user)
     out = await _profile(db, user_id)
+    out["can_write"] = deps.user_has_permission(current_user, HR_WRITE)
     await _audit(db, request, current_user, "safety.profile.view", user_id)
     return out
 
@@ -167,11 +196,13 @@ async def hr_add_contact(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     _hr_write(current_user)
-    c = await svc.add_contact(db, user_id, **body.model_dump())
-    await commit_or_409(db)
-    await db.refresh(c)
-    await _audit(db, request, current_user, "safety.contact.add", user_id)
-    return svc.contact_dict(c)
+    actor = current_user
+
+    async def go():
+        return svc.contact_dict(await svc.add_contact(db, user_id, **body.model_dump()))
+    out = await _write(db, go)
+    await _audit(db, request, actor, "safety.contact.add", user_id)
+    return out
 
 
 @hr_router.put("/employees/{user_id}/emergency-contacts/{contact_id}")
@@ -181,12 +212,14 @@ async def hr_update_contact(
     body: ContactPatch, current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     _hr_write(current_user)
-    c = await svc.update_contact(
-        db, user_id, contact_id, body.model_dump(exclude_unset=True))
-    await commit_or_409(db)
-    await db.refresh(c)
-    await _audit(db, request, current_user, "safety.contact.update", user_id)
-    return svc.contact_dict(c)
+    actor = current_user
+
+    async def go():
+        return svc.contact_dict(await svc.update_contact(
+            db, user_id, contact_id, body.model_dump(exclude_unset=True)))
+    out = await _write(db, go)
+    await _audit(db, request, actor, "safety.contact.update", user_id)
+    return out
 
 
 @hr_router.delete("/employees/{user_id}/emergency-contacts/{contact_id}")
@@ -196,10 +229,14 @@ async def hr_delete_contact(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     _hr_write(current_user)
-    await svc.delete_contact(db, user_id, contact_id)
-    await commit_or_409(db)
-    await _audit(db, request, current_user, "safety.contact.delete", user_id)
-    return {"ok": True}
+    actor = current_user
+
+    async def go():
+        await svc.delete_contact(db, user_id, contact_id)
+        return {"ok": True}
+    out = await _write(db, go)
+    await _audit(db, request, actor, "safety.contact.delete", user_id)
+    return out
 
 
 # ---- night-shift consent (HR-managed; HR read can list) ----
@@ -222,7 +259,7 @@ async def _need_employee(db, user_id: int) -> None:
 
 @hr_router.get("/employees/{user_id}/night-consents")
 async def list_consents(
-    *, db: deps.DBDep, user_id: int,
+    *, db: deps.DBDep, request: Request, user_id: int,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     _hr_read(current_user)
@@ -231,6 +268,7 @@ async def list_consents(
         select(NightShiftConsent).where(NightShiftConsent.user_id == user_id)
         .order_by(NightShiftConsent.valid_from.desc(), NightShiftConsent.id.desc())
     )).scalars().all()
+    await _audit(db, request, current_user, "safety.consent.list", user_id)
     return [svc.consent_dict(c) for c in rows]
 
 
@@ -240,6 +278,9 @@ async def create_consent(
     *, db: deps.DBDep, request: Request, user_id: int, body: ConsentIn,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
+    """Record a consent row. Rows may overlap: among rows covering a date the
+    latest recorded (highest id) decides. Recording a refusal
+    (consent_given=false) end-dates (or withdraws) overlapping earlier grants."""
     _hr_write(current_user)
     await _need_employee(db, user_id)
     if body.valid_to is not None and body.valid_to < body.valid_from:
@@ -251,6 +292,9 @@ async def create_consent(
         document_url=(body.document_url or None),
         note=(body.note or None))
     db.add(c)
+    await db.flush()
+    if not c.consent_given:
+        await svc.apply_refusal(db, c)
     await commit_or_409(db)
     await db.refresh(c)
     await _audit(db, request, current_user, "safety.consent.create", user_id,
@@ -273,7 +317,7 @@ async def end_consent(
     ).scalars().first()
     if c is None:
         raise HTTPException(404, "Consent not found")
-    today = datetime.now(timezone.utc).date()
+    today = svc.utc_today()
     end = body.valid_to
     if end is None:
         if c.valid_from > today:

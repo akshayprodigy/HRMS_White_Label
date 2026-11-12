@@ -1413,6 +1413,20 @@ const ExitPipelinePanel = ({
   );
 };
 
+const HrSafetyTab = ({ userId }: { userId?: number }) => {
+  // Write controls follow the server-reported 'hr employee write' permission.
+  const [canWrite, setCanWrite] = useState(false);
+  if (userId == null) {
+    return <Card className="p-6 text-sm text-slate-500">This employee has no linked user account, so emergency info is unavailable.</Card>;
+  }
+  return (
+    <>
+      <EmergencyInfoCard userId={userId} canEdit={canWrite} onLoaded={(p) => setCanWrite(!!p.can_write)} />
+      <NightConsentPanel userId={userId} canWrite={canWrite} />
+    </>
+  );
+};
+
 const EmployeeDetails = ({
   emp,
   onBack,
@@ -1661,8 +1675,7 @@ const EmployeeDetails = ({
         </TabsContent>
         <TabsContent value="safety">
           <div className="space-y-8">
-            <EmergencyInfoCard userId={emp.user_id ?? emp.user?.id} />
-            <NightConsentPanel userId={emp.user_id ?? emp.user?.id} canWrite={true} />
+            <HrSafetyTab userId={emp.user_id ?? emp.user?.id} />
           </div>
         </TabsContent>
 

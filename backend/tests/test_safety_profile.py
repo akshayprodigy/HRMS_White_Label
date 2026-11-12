@@ -171,3 +171,30 @@ async def test_transport_toggle(client, world):
     assert r.json()["days"][0]["shift"]["transport_required"] is True
     r = await client.patch(url(pub), headers=hh, json={"required": False})
     assert r.json()["transport_required"] is False
+
+
+async def test_concurrent_adds_respect_cap_and_primary(client, world):
+    import asyncio
+    h = await login(client, world, "m")
+    u = f"{API}/me/emergency-contacts"
+    rs = await asyncio.gather(*[
+        client.post(u, headers=h, json={**C, "name": f"P{i}", "is_primary": i % 2 == 0})
+        for i in range(4)])
+    assert sorted(r.status_code for r in rs).count(201) == 3, [r.text for r in rs]
+    rows = (await client.get(u, headers=h)).json()
+    assert len(rows) == 3 and [r["is_primary"] for r in rows].count(True) == 1
+
+
+async def test_hr_profile_reports_can_write_and_list_is_audited(client, world):
+    from app.models.audit import AuditLog
+    ids = world["ids"]
+    for tag, exp in (("hrr", False), ("hrw", True)):
+        h = await login(client, world, tag)
+        r = await client.get(f"{API}/hr/employees/{ids['m']}/safety-profile", headers=h)
+        assert r.json()["can_write"] is exp
+    h = await login(client, world, "hrr")
+    await client.get(f"{API}/hr/employees/{ids['m']}/night-consents", headers=h)
+    async with SessionLocal() as db:
+        assert (await db.execute(select(AuditLog).where(
+            AuditLog.user_id == ids["hrr"],
+            AuditLog.action == "safety.consent.list"))).first() is not None

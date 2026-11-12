@@ -69,8 +69,9 @@ async def test_violation_matrix(client, world):
     key2 = (ids["f"], (D + timedelta(days=2)).isoformat())
     assert await violations(client, hh, world["dept"]) == [key2]
     # explicit refusal is not consent
+    # (latest recorded wins: the refusal also supersedes the earlier grant for D)
     await consent(client, hw, ids["f"], consent_given=False, valid_from=(D - timedelta(days=30)).isoformat())
-    assert await violations(client, hh, world["dept"]) == [key2]
+    assert await violations(client, hh, world["dept"]) == [key, key2]
     # open-ended consent clears all
     await consent(client, hw, ids["f"], valid_from=(D - timedelta(days=5)).isoformat())
     assert await violations(client, hh, world["dept"]) == []
@@ -107,3 +108,33 @@ async def test_consent_hr_endpoints(client, world):
     assert r.json()["valid_to"] is not None
     assert (await client.post(f"{base}/999999999/end", headers=hw, json={})
             ).status_code == 404
+
+
+async def test_latest_recorded_wins_and_refusal_ends_grant(client, world):
+    ids = world["ids"]
+    await add_entry(ids["f"], D, ids["night"])
+    hh = await login(client, world, "head")
+    hw = await login(client, world, "hrw")
+    base = f"{API}/hr/employees/{ids['f']}/night-consents"
+    key = (ids["f"], D.isoformat())
+    grant = await consent(client, hw, ids["f"], valid_from=(D - timedelta(days=10)).isoformat())
+    assert await violations(client, hh, world["dept"]) == []
+    # refusal effective D: the open grant is end-dated to the day before
+    ref = await consent(client, hw, ids["f"], consent_given=False, valid_from=D.isoformat())
+    rows = {r["id"]: r for r in (await client.get(base, headers=hw)).json()}
+    assert rows[grant["id"]]["valid_to"] == (D - timedelta(days=1)).isoformat()
+    assert rows[ref["id"]]["consent_given"] is False
+    assert await violations(client, hh, world["dept"]) == [key]
+    # a later grant overrides an earlier refusal on the dates it covers
+    await consent(client, hw, ids["f"], valid_from=D.isoformat())
+    assert await violations(client, hh, world["dept"]) == []
+
+
+def test_pure_latest_wins():
+    d = date(2030, 1, 5)
+    old_grant = (1, True, date(2030, 1, 1), None)
+    new_refusal = (2, False, date(2030, 1, 3), None)
+    assert sr.consent_active([old_grant], d)
+    assert not sr.consent_active([old_grant, new_refusal], d)
+    assert sr.consent_active([old_grant, new_refusal, (3, True, d, None)], d)
+    assert sr.consent_active([old_grant, new_refusal], date(2030, 1, 2))

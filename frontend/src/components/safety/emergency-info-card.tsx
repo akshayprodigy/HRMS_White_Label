@@ -19,18 +19,30 @@ const lbl = 'text-[10px] font-black text-slate-600 uppercase tracking-widest';
 
 /** Gender, blood group and up to 3 emergency contacts. `userId` undefined =
  *  the signed-in employee (/me/*); a number = HR editing that employee. */
-export const EmergencyInfoCard = ({ userId, canEdit = true }: { userId?: number; canEdit?: boolean }) => {
-  const api = userId == null
+export const EmergencyInfoCard = ({
+  self = false, userId, canEdit = true, onLoaded,
+}: {
+  /** true = the signed-in employee's own data (/me/*). Never inferred. */
+  self?: boolean;
+  /** HR mode: the employee's user id. Ignored when `self`. */
+  userId?: number;
+  canEdit?: boolean;
+  onLoaded?: (p: { can_write?: boolean }) => void;
+}) => {
+  const api = self
     ? {
         profile: ENDPOINTS.SAFETY.ME_PROFILE,
         contacts: ENDPOINTS.SAFETY.ME_CONTACTS,
         contact: (id: number) => ENDPOINTS.SAFETY.ME_CONTACT(id),
       }
     : {
-        profile: ENDPOINTS.SAFETY.HR_PROFILE(userId),
-        contacts: ENDPOINTS.SAFETY.HR_CONTACTS(userId),
-        contact: (id: number) => ENDPOINTS.SAFETY.HR_CONTACT(userId, id),
+        profile: ENDPOINTS.SAFETY.HR_PROFILE(userId as number),
+        contacts: ENDPOINTS.SAFETY.HR_CONTACTS(userId as number),
+        contact: (id: number) => ENDPOINTS.SAFETY.HR_CONTACT(userId as number, id),
       };
+  if (!self && userId == null) {
+    return <Card className="p-6 text-sm text-slate-500">This employee has no linked user account, so emergency info is unavailable.</Card>;
+  }
   const [data, setData] = useState<Profile | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [gender, setGender] = useState('');
@@ -45,11 +57,12 @@ export const EmergencyInfoCard = ({ userId, canEdit = true }: { userId?: number;
       setData(r.data);
       setGender(r.data.gender || '');
       setBlood(r.data.blood_group || '');
+      onLoaded?.(r.data);
     } catch (e) {
       setErr(errMsg(e, 'Failed to load emergency info'));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api.profile]);
+  }, [api.profile]); // eslint-disable-line
   useEffect(() => { load(); }, [load]);
 
   const run = async (fn: () => Promise<unknown>, ok: string) => {

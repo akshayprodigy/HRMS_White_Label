@@ -207,8 +207,11 @@ def is_night_template(t) -> bool:
 
 
 def consent_active(consents, d: date) -> bool:
-    """`consents`: iterable of (consent_given, valid_from, valid_to)."""
-    return any(g and vf <= d and (vt is None or vt >= d) for g, vf, vt in consents)
+    """`consents`: iterable of (id, consent_given, valid_from, valid_to).
+    Among rows covering `d`, the latest recorded (highest id) decides, so a
+    later refusal overrides an earlier grant and vice versa."""
+    covering = [c for c in consents if c[2] <= d and (c[3] is None or c[3] >= d)]
+    return bool(covering) and max(covering, key=lambda c: c[0])[1]
 
 
 def check_night_consent(
@@ -225,5 +228,5 @@ def check_night_consent(
         if not consent_active(consents.get(s.user_id, ()), s.work_date):
             out.append(Violation(
                 s.user_id, s.work_date, "night_consent_missing",
-                "Night shift without recorded consent"))
+                "Night-shift consent record missing"))
     return out

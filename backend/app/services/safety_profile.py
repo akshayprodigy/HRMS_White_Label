@@ -1,5 +1,5 @@
 """Emergency profile data + night-shift consent (Phase 2 Task 8)."""
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, List, Optional
 
 from fastapi import HTTPException
@@ -61,12 +61,16 @@ def contact_dict(c: EmployeeEmergencyContact) -> dict:
             "phone": c.phone, "is_primary": c.is_primary}
 
 
-async def list_contacts(db: AsyncSession, user_id: int):
-    return list((await db.execute(
-        select(EmployeeEmergencyContact)
-        .where(EmployeeEmergencyContact.user_id == user_id)
-        .order_by(EmployeeEmergencyContact.is_primary.desc(),
-                  EmployeeEmergencyContact.id))).scalars().all())
+async def list_contacts(db: AsyncSession, user_id: int, lock: bool = False):
+    """`lock=True` does a current read (FOR UPDATE, refreshing identity-map
+    rows): the transaction snapshot may predate the employee row lock."""
+    q = (select(EmployeeEmergencyContact)
+         .where(EmployeeEmergencyContact.user_id == user_id)
+         .order_by(EmployeeEmergencyContact.is_primary.desc(),
+                   EmployeeEmergencyContact.id))
+    if lock:
+        q = q.with_for_update().execution_options(populate_existing=True)
+    return list((await db.execute(q)).scalars().all())
 
 
 async def contacts_for_users(db: AsyncSession, user_ids: Iterable[int]) -> dict:
@@ -96,7 +100,7 @@ async def _normalise_primary(
 ) -> None:
     """Exactly one primary when any contact exists (prefer `prefer_id`,
     else keep the existing first primary, else the oldest contact)."""
-    rows = await list_contacts(db, user_id)
+    rows = await list_contacts(db, user_id, lock=True)
     if not rows:
         return
     keep = None
@@ -114,9 +118,7 @@ async def add_contact(
     is_primary: bool,
 ) -> EmployeeEmergencyContact:
     await _lock_employee(db, user_id)
-    count = (await db.execute(select(func.count()).select_from(
-        EmployeeEmergencyContact).where(
-        EmployeeEmergencyContact.user_id == user_id))).scalar_one()
+    count = len(await list_contacts(db, user_id, lock=True))
     if count >= MAX_CONTACTS:
         raise HTTPException(
             400, f"At most {MAX_CONTACTS} emergency contacts are allowed")
@@ -173,8 +175,34 @@ async def set_profile(db: AsyncSession, user_id: int, data: dict) -> Employee:
 
 # ---- night-shift consent ----
 
+def utc_today() -> date:
+    """The single 'today' for consent logic (UTC, like the rest of the roster)."""
+    return datetime.now(timezone.utc).date()
+
+
+async def apply_refusal(db: AsyncSession, refusal: NightShiftConsent) -> None:
+    """A recorded refusal (consent_given=False) supersedes earlier grants that
+    overlap its window: a grant that started before it is end-dated to the day
+    before the refusal's valid_from; one starting on/after it is withdrawn.
+    (Overlapping rows are otherwise allowed; the highest id wins per date.)"""
+    grants = (await db.execute(select(NightShiftConsent).where(
+        NightShiftConsent.user_id == refusal.user_id,
+        NightShiftConsent.consent_given.is_(True),
+        NightShiftConsent.id != refusal.id).with_for_update())).scalars().all()
+    for g in grants:
+        overlaps = (g.valid_to is None or g.valid_to >= refusal.valid_from) and (
+            refusal.valid_to is None or g.valid_from <= refusal.valid_to)
+        if not overlaps:
+            continue
+        if g.valid_from < refusal.valid_from:
+            g.valid_to = refusal.valid_from - timedelta(days=1)
+        else:
+            g.consent_given = False
+    await db.flush()
+
+
 def consent_dict(c: NightShiftConsent, today: Optional[date] = None) -> dict:
-    today = today or date.today()
+    today = today or utc_today()
     active = (c.consent_given and c.valid_from <= today
               and (c.valid_to is None or c.valid_to >= today))
     return {"id": c.id, "user_id": c.user_id, "consent_given": c.consent_given,
@@ -191,5 +219,5 @@ async def consents_for_users(db: AsyncSession, user_ids: Iterable[int]) -> dict:
     for c in (await db.execute(select(NightShiftConsent).where(
             NightShiftConsent.user_id.in_(ids)))).scalars().all():
         out.setdefault(c.user_id, []).append(
-            (c.consent_given, c.valid_from, c.valid_to))
+            (c.id, c.consent_given, c.valid_from, c.valid_to))
     return out

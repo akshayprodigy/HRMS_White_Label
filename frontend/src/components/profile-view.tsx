@@ -479,7 +479,7 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
              </div>
            )}
 
-           {activeSection === 'safety' && <EmergencyInfoCard />}
+           {activeSection === 'safety' && <EmergencyInfoCard self />}
            {activeSection === 'documents' && <MyDocumentsSection />}
 
            {activeSection === 'assets' && <MyAssetsSection />}
