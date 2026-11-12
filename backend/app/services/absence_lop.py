@@ -107,6 +107,15 @@ def count_absent_days(
             pass
         elif (eff is None or eff.source == "none") and d.weekday() in default_offs:
             pass
+        elif (
+            eff is not None
+            and eff.source == "assignment"
+            and not (eff.shift.weekly_offs if eff.shift is not None else None)
+            and d.weekday() in default_offs
+        ):
+            # Assigned template defines no weekly offs: use the org default.
+            # (Roster shifts are explicit working days; not applied there.)
+            pass
         elif key in punched or key in full_leave:
             pass
         elif key in half_leave:

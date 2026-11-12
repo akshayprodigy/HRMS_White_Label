@@ -2,7 +2,7 @@
 from datetime import date
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 
 async def assert_attendance_editable(db, work_date: date) -> None:
@@ -15,6 +15,10 @@ async def assert_attendance_editable(db, work_date: date) -> None:
             PayrollRun.month == work_date.month,
             PayrollRun.year == work_date.year,
             PayrollRun.status != PayrollRunStatus.DRAFT,
+            # Off-cycle (bonus/settlement) runs don't use attendance, so
+            # they must not lock it; NULL/legacy run_type counts as monthly.
+            or_(PayrollRun.run_type.is_(None),
+                PayrollRun.run_type != "off_cycle"),
         )
     )).scalars().first()
     if run:

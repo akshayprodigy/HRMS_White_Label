@@ -349,3 +349,29 @@ async def test_after_last_working_day_excluded(env):
     assert res[uid] == 2.0   # Mon, Tue
     assert res[uid2] == 5.0
     assert res[uid3] == 5.0
+
+
+# ---------- weekly-off fallback (pure) ----------
+
+class _Tpl:
+    def __init__(self, offs):
+        self.weekly_offs = offs
+
+
+def test_pure_assignment_with_empty_weekly_offs_uses_default():
+    sun = date(2031, 3, 9)
+    for offs in ([], None):
+        eff = {(1, sun): EffectiveShift(_Tpl(offs), False, "assignment")}
+        assert _count(sun, sun, shifts=eff) == 0.0
+    # Non-default-off weekday still working
+    eff = {(1, START): EffectiveShift(_Tpl([]), False, "assignment")}
+    assert _count(START, START, shifts=eff) == 1.0
+    # Template WITH offs does not fall back (Sunday not in its offs -> working)
+    eff = {(1, sun): EffectiveShift(_Tpl([5]), False, "assignment")}
+    assert _count(sun, sun, shifts=eff) == 1.0
+
+
+def test_pure_roster_shift_on_default_off_is_working_day():
+    sun = date(2031, 3, 9)
+    eff = {(1, sun): EffectiveShift(_Tpl([]), False, "roster")}
+    assert _count(sun, sun, shifts=eff) == 1.0
