@@ -79,3 +79,58 @@ class OpenShiftRead(BaseModel):
     @classmethod
     def _utc(cls, v):
         return as_utc(v)
+
+
+class DropCreate(BaseModel):
+    work_date: pydate
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("reason must be at least 3 characters")
+        return v
+
+
+class DropDecision(BaseModel):
+    action: str
+    note: Optional[str] = Field(default=None, max_length=500)
+    # None = default (post when the approver is allowed to).
+    post_open_shift: Optional[bool] = None
+
+    @field_validator("action")
+    @classmethod
+    def _action(cls, v: str) -> str:
+        if v not in ("approve", "reject"):
+            raise ValueError("action must be 'approve' or 'reject'")
+        return v
+
+
+class DropRead(BaseModel):
+    id: int
+    user_id: int
+    user_name: Optional[str] = None
+    work_date: pydate
+    shift_template_id: int
+    shift_name: Optional[str] = None
+    shift_start: Optional[str] = None
+    shift_end: Optional[str] = None
+    reason: str
+    status: str
+    post_open_shift: bool
+    open_shift_id: Optional[int] = None
+    # Set on the decide response when an open shift was wanted by default
+    # but could not be posted.
+    open_shift_skipped_reason: Optional[str] = None
+    decided_by_id: Optional[int] = None
+    decided_by_name: Optional[str] = None
+    decided_at: Optional[datetime] = None
+    decision_note: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    @field_validator("decided_at", "created_at")
+    @classmethod
+    def _utc(cls, v):
+        return as_utc(v)

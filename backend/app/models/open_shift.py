@@ -48,10 +48,10 @@ class OpenShift(Base):
         Boolean, nullable=False, default=False)
     created_by_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
-    # Set by Task 4 when the shift was posted from a give-away request.
     # The employee who gave this shift away; may not claim it back.
     excluded_user_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    # Set when the shift was posted from a give-away request.
     source_drop_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -76,6 +76,46 @@ class OpenShiftClaim(Base):
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
     decided_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class DropStatus:
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class ShiftDropRequest(Base):
+    """Give-away: an employee asks to drop one of their published shifts."""
+    __tablename__ = "shift_drop_request"  # type: ignore[assignment]
+    __table_args__ = (
+        Index("ix_shift_drop_user_status", "user_id", "status"),
+        Index("ix_shift_drop_status_date", "status", "work_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
+    work_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # Snapshot of the template at request time (stale-entry detection).
+    shift_template_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("shift_template.id", ondelete="CASCADE"),
+        nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=DropStatus.PENDING)
+    post_open_shift: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False)
+    open_shift_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("open_shift.id", ondelete="SET NULL"), nullable=True)
+    decided_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    decision_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc), nullable=False)

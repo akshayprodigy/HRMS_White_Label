@@ -28,6 +28,7 @@ from app.services.availability import availability_by_day
 from app.services.effective_shift import effective_shifts_for_range
 
 RTYPE = "open_shift"
+DRAFT_WARNING = "An unpublished draft"
 NOTIFY_CAP = 500
 
 
@@ -246,8 +247,8 @@ async def _claim_warnings(db, shift, uid, entry) -> List[str]:
             and (entry.is_week_off
                  or entry.shift_template_id != shift.shift_template_id)):
         out.append(
-            f"An unpublished draft for {shift.work_date.isoformat()} was "
-            f"replaced")
+            f"{DRAFT_WARNING} for {shift.work_date.isoformat()} "
+            f"was replaced")
     d = shift.work_date
     start, end = d - timedelta(days=7), d + timedelta(days=7)
     eff = await effective_shifts_for_range(db, [uid], start, end)
@@ -274,13 +275,14 @@ async def _claim_warnings(db, shift, uid, entry) -> List[str]:
 
 async def confirm_claim(
     db, shift: OpenShift, claim: OpenShiftClaim, actor_id: Optional[int],
-    approver: Optional[User] = None,
+    approver: Optional[User] = None, draft_notice_to: Optional[int] = None,
 ) -> List[str]:
     """Approve `claim`: re-check eligibility, write a PUBLISHED cell, record
     history, bump `filled`, close the shift when full. The caller must have
     locked `shift` (lock_row). `approver` (decide time) may supply publish
     rights the creator lacks; the auto-confirm path leaves it None. Returns
-    advisory warnings. Raises HTTPException 400/409."""
+    advisory warnings (a replaced-draft notice goes to `draft_notice_to` as a
+    notification instead, when given). Raises HTTPException 400/409."""
     if shift.status != OpenShiftStatus.OPEN:
         raise HTTPException(status_code=409, detail="Open shift is no longer open")
     if shift.filled >= shift.slots:
@@ -301,7 +303,14 @@ async def confirm_claim(
     if reason:
         raise HTTPException(status_code=400, detail=reason)
     warnings = await _claim_warnings(db, shift, uid, entry)
-    if entry is not None and entry.status == RosterStatus.PUBLISHED:
+    if draft_notice_to:
+        drafts = [w for w in warnings if w.startswith(DRAFT_WARNING)]
+        warnings = [w for w in warnings if w not in drafts]
+        await roster_svc.notify_many(db, [
+            (draft_notice_to, "Draft replaced by open shift", w, RTYPE,
+             str(shift.id)) for w in drafts])
+    if (entry is not None and entry.status == RosterStatus.PUBLISHED
+            and (entry.is_week_off or entry.shift_template_id is not None)):
         old = (entry.shift_template_id, bool(entry.is_week_off))
     else:  # no live roster cell: the live state is the assignment fallback
         eff = (await effective_shifts_for_range(db, [uid], d, d))[(uid, d)]

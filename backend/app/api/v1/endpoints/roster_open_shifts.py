@@ -18,19 +18,23 @@ from sqlalchemy import and_, or_, select
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.api.v1.endpoints.roster_common import (
-    check_window, commit_or_409, guard_conflicts, lock_row, names,
+    check_window, commit_or_409, guard_conflicts, lock_row, lock_user_rows,
+    names,
 )
 from app.models.employee import Employee, EmployeeStatus
 from app.models.open_shift import (
-    ClaimStatus, OpenShift, OpenShiftClaim, OpenShiftStatus,
+    ClaimStatus, DropStatus, OpenShift, OpenShiftClaim, OpenShiftStatus,
+    ShiftDropRequest,
 )
+from app.models.roster import RosterEntry, RosterStatus
 from app.models.shift import ShiftTemplate
 from app.models.user import User
 from app.schemas.open_shift import (
-    ClaimDecision, OpenShiftClaimRead, OpenShiftCreate, OpenShiftRead,
+    ClaimDecision, DropCreate, DropDecision, DropRead, OpenShiftClaimRead, OpenShiftCreate, OpenShiftRead,
 )
 from app.services import open_shifts as os_svc
 from app.services import roster as roster_svc
+from app.services import swaps as swap_svc
 
 router = APIRouter()
 
@@ -270,7 +274,9 @@ async def claim_open_shift(
     warns: List[str] = []
     if shift.auto_confirm:
         warns = await os_svc.confirm_claim(
-            db, shift, claim, shift.created_by_id)
+            db, shift, claim, shift.created_by_id,
+            draft_notice_to=(shift.created_by_id
+                             if shift.created_by_id != current_user.id else None))
     elif shift.created_by_id and shift.created_by_id != current_user.id:
         nm = await names(db, [current_user.id])
         await roster_svc.notify(
@@ -388,3 +394,274 @@ async def cancel_open_shift(
         db, current_user.id, "roster.open_shift.cancel", RTYPE, str(shift.id),
         {}, request)
     return (await _read_many(db, [shift], current_user, True))[0]
+
+
+# =========================== give-away (drops) ===========================
+
+DROP_RTYPE = "shift_drop"
+NO_POST_MSG = (
+    "You need publish rights over this employee to post an open shift; "
+    "approve with post_open_shift=false")
+
+
+async def _drop_read(db, rows, skipped: Optional[dict] = None) -> List[DropRead]:
+    uids = {r.user_id for r in rows} | {
+        r.decided_by_id for r in rows if r.decided_by_id}
+    nm = await names(db, uids)
+    tpls = {t.id: t for t in (await db.execute(select(ShiftTemplate).where(
+        ShiftTemplate.id.in_({r.shift_template_id for r in rows})
+    ))).scalars().all()} if rows else {}
+    out = []
+    for r in rows:
+        t = tpls.get(r.shift_template_id)
+        out.append(DropRead(
+            id=r.id, user_id=r.user_id, user_name=nm.get(r.user_id),
+            work_date=r.work_date, shift_template_id=r.shift_template_id,
+            shift_name=t.name if t else None,
+            shift_start=t.start_time.strftime("%H:%M") if t else None,
+            shift_end=t.end_time.strftime("%H:%M") if t else None,
+            reason=r.reason, status=r.status,
+            post_open_shift=r.post_open_shift, open_shift_id=r.open_shift_id,
+            open_shift_skipped_reason=(skipped or {}).get(r.id),
+            decided_by_id=r.decided_by_id,
+            decided_by_name=nm.get(r.decided_by_id),
+            decided_at=r.decided_at, decision_note=r.decision_note,
+            created_at=r.created_at))
+    return out
+
+
+async def _lock_drop(db, drop_id: int) -> ShiftDropRequest:
+    d = await lock_row(
+        db, select(ShiftDropRequest).where(ShiftDropRequest.id == drop_id),
+        "Request already decided")
+    if d is None:
+        raise HTTPException(status_code=404, detail="Give-away request not found")
+    return d
+
+
+@router.post("/drops", response_model=DropRead)
+@guard_conflicts
+async def create_drop(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    body: DropCreate,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    me = current_user.id
+    if body.work_date < os_svc.today():
+        raise HTTPException(status_code=400, detail="work_date cannot be in the past")
+    # Serialize concurrent creates for this person, then read fresh state.
+    await lock_user_rows(db, [me])
+    entry = await lock_row(
+        db, select(RosterEntry).where(
+            RosterEntry.employee_id == me, RosterEntry.work_date == body.work_date),
+        "Roster changed concurrently; retry")
+    if not (entry is not None and entry.status == RosterStatus.PUBLISHED
+            and not entry.is_week_off and entry.shift_template_id is not None):
+        raise HTTPException(
+            status_code=400,
+            detail="You have no published shift on that date to give away")
+    dup = (await db.execute(
+        select(ShiftDropRequest.id).where(
+            ShiftDropRequest.user_id == me,
+            ShiftDropRequest.work_date == body.work_date,
+            ShiftDropRequest.status == DropStatus.PENDING,
+        ).with_for_update().execution_options(populate_existing=True)
+    )).first()
+    if dup is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="You already have a pending give-away for that date")
+    drop = ShiftDropRequest(
+        user_id=me, work_date=body.work_date,
+        shift_template_id=entry.shift_template_id, reason=body.reason,
+        status=DropStatus.PENDING)
+    db.add(drop)
+    await db.flush()
+    approvers = await roster_svc.schedule_approver_ids(db, {me})
+    await roster_svc.notify_many(db, [
+        (a, "Shift give-away request",
+         f"{current_user.full_name or current_user.email} asks to give away "
+         f"the shift on {body.work_date.isoformat()}: {body.reason}",
+         DROP_RTYPE, str(drop.id)) for a in sorted(approvers)])
+    await commit_or_409(db)
+    await db.refresh(drop)
+    await log_audit(
+        db, me, "roster.drop.create", DROP_RTYPE, str(drop.id),
+        {"work_date": body.work_date.isoformat()}, request)
+    return (await _drop_read(db, [drop]))[0]
+
+
+@router.get("/drops/my", response_model=List[DropRead])
+async def my_drops(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    rows = (await db.execute(
+        select(ShiftDropRequest).where(
+            ShiftDropRequest.user_id == current_user.id
+        ).order_by(ShiftDropRequest.created_at.desc(),
+                   ShiftDropRequest.id.desc()).limit(100)
+    )).scalars().all()
+    return await _drop_read(db, rows)
+
+
+@router.get("/drops", response_model=List[DropRead])
+async def drop_queue(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Pending give-aways the caller may decide."""
+    admin = roster_svc.is_roster_admin(current_user)
+    q = select(ShiftDropRequest).where(
+        ShiftDropRequest.status == DropStatus.PENDING
+    ).order_by(ShiftDropRequest.work_date, ShiftDropRequest.id)
+    if not admin:
+        q = q.where(ShiftDropRequest.user_id != current_user.id)
+    rows = (await db.execute(q.limit(500))).scalars().all()
+    if not admin and rows:
+        ok = await roster_svc.approvable_subset(
+            db, current_user, {r.user_id for r in rows})
+        rows = [r for r in rows if r.user_id in ok]
+    return await _drop_read(db, rows)
+
+
+@router.post("/drops/{drop_id}/cancel", response_model=DropRead)
+@guard_conflicts
+async def cancel_drop(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    drop_id: int,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    drop = await _lock_drop(db, drop_id)
+    if drop.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your request")
+    if drop.status != DropStatus.PENDING:
+        raise HTTPException(
+            status_code=409, detail="Only pending requests can be cancelled")
+    drop.status = DropStatus.CANCELLED
+    await commit_or_409(db, "Request already decided")
+    await db.refresh(drop)
+    await log_audit(
+        db, current_user.id, "roster.drop.cancel", DROP_RTYPE, str(drop.id),
+        {}, request)
+    return (await _drop_read(db, [drop]))[0]
+
+
+@router.post("/drops/{drop_id}/decide", response_model=DropRead)
+@guard_conflicts
+async def decide_drop(
+    *,
+    db: deps.DBDep,
+    request: Request,
+    drop_id: int,
+    body: DropDecision,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    drop = await _lock_drop(db, drop_id)
+    admin = roster_svc.is_roster_admin(current_user)
+    if drop.user_id == current_user.id and not admin:
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot decide your own request (separation of duties).")
+    if not (admin or await roster_svc.can_approve_changes_for(
+            db, current_user, drop.user_id)):
+        raise HTTPException(
+            status_code=403, detail="This employee is outside your approval scope.")
+    if drop.status != DropStatus.PENDING:
+        raise HTTPException(status_code=409, detail="Request already decided")
+    now = datetime.now(timezone.utc)
+    d, uid = drop.work_date, drop.user_id
+    skipped: dict = {}
+    if body.action == "approve":
+        if d < os_svc.today():
+            raise HTTPException(status_code=400, detail="That date is in the past")
+        can_post = admin or await roster_svc.can_publish_for(
+            db, current_user, uid)
+        tpl = await db.get(ShiftTemplate, drop.shift_template_id)
+        post = True if body.post_open_shift is None else body.post_open_shift
+        if post and not can_post:
+            if body.post_open_shift:
+                raise HTTPException(status_code=400, detail=NO_POST_MSG)
+            post = False
+            skipped[drop.id] = (
+                "You lack publish rights over this employee, so no open "
+                "shift was posted")
+        elif post and (tpl is None or not tpl.is_active):
+            if body.post_open_shift:
+                raise HTTPException(
+                    status_code=400,
+                    detail="The shift template is inactive; cannot post an open shift")
+            post = False
+            skipped[drop.id] = "The shift template is inactive"
+        await lock_user_rows(db, [uid])
+        entry = await lock_row(
+            db, select(RosterEntry).where(
+                RosterEntry.employee_id == uid, RosterEntry.work_date == d),
+            "Roster changed concurrently; retry")
+        if not (entry is not None and entry.status == RosterStatus.PUBLISHED
+                and not entry.is_week_off
+                and entry.shift_template_id == drop.shift_template_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Schedule changed since the request was made")
+        # Pending change requests on this cell are superseded (as for swaps).
+        crs = await swap_svc.pending_requests(db, {(uid, d)}, lock=True)
+        for c in crs:
+            c.status = "cancelled"
+            c.decision_note = f"Superseded by shift give-away #{drop.id}"
+            c.decided_by_id = current_user.id
+            c.decided_at = now
+        await roster_svc.notify_many(db, [
+            (c.employee_id, "Change request superseded",
+             f"Your change request for {c.work_date.isoformat()} was cancelled "
+             f"because your give-away was approved", DROP_RTYPE, str(drop.id))
+            for c in crs])
+        old = (entry.shift_template_id, bool(entry.is_week_off))
+        dept = (await db.execute(
+            select(Employee.department).where(Employee.user_id == uid))).scalar()
+        entry, _o = await roster_svc.upsert_entry(
+            db, employee_id=uid, work_date=d, shift_template_id=None,
+            is_week_off=True, status=RosterStatus.PUBLISHED,
+            actor_id=current_user.id, department=dept, overwrite=True)
+        await db.flush()
+        roster_svc.record_change(
+            db, entry, employee_id=uid, work_date=d,
+            old_tpl=old[0], old_off=old[1], new_tpl=None, new_off=True,
+            action="update",
+            reason=f"Shift give-away #{drop.id}: {drop.reason}",
+            actor_id=current_user.id)
+        await roster_svc.notify_schedule_changed(db, {uid: {d}})
+        if post:
+            shift = await os_svc.create_open_shift(
+                db, current_user, work_date=d,
+                shift_template_id=drop.shift_template_id, department=dept,
+                slots=1, note=f"Given away: {drop.reason}"[:255],
+                source_drop_id=drop.id, excluded_user_id=uid,
+                check_scope=False)
+            drop.open_shift_id = shift.id
+        drop.post_open_shift = bool(post)
+        drop.status = DropStatus.APPROVED
+        await roster_svc.notify(
+            db, uid, "Shift give-away approved",
+            f"Your give-away for {d.isoformat()} was approved"
+            + (" and the shift was posted as open" if post else ""),
+            DROP_RTYPE, str(drop.id))
+    else:
+        drop.status = DropStatus.REJECTED
+        await roster_svc.notify(
+            db, uid, "Shift give-away rejected",
+            f"Your give-away for {d.isoformat()} was rejected"
+            + (f": {body.note}" if body.note else ""), DROP_RTYPE, str(drop.id))
+    drop.decided_by_id = current_user.id
+    drop.decided_at = now
+    drop.decision_note = body.note
+    await commit_or_409(db, "Request already decided")
+    await db.refresh(drop)
+    await log_audit(
+        db, current_user.id, "roster.drop.decide", DROP_RTYPE, str(drop.id),
+        {"action": body.action, "open_shift_id": drop.open_shift_id}, request)
+    return (await _drop_read(db, [drop], skipped))[0]

@@ -464,6 +464,18 @@ async def test_claim_supersedes_pending_change_request(client, world):
     assert len(await _notes(ids["e1"], "Change request superseded")) == 1
 
 
+async def test_blank_published_entry_uses_fallback_for_old(client, world):
+    w, ids = world, world["ids"]
+    await _pub(ids["e1"], dn(), None)   # published blank cell
+    j = await _mk(client, w, auto_confirm=True)
+    assert (await _claim(client, w, j["id"], "e1")).status_code == 200
+    async with SessionLocal() as db:
+        h = (await db.execute(select(RosterEntryHistory).where(
+            RosterEntryHistory.employee_id == ids["e1"]))).scalars().one()
+        assert (h.old_shift_template_id, h.old_is_week_off) == (None, False)
+    assert await _cell(ids["e1"], dn()) == (ids["t1"], False)
+
+
 async def test_approve_overwrites_draft_never_blank(client, world):
     w, ids = world, world["ids"]
     await _pub(ids["e1"], dn(), ids["t2"], status=RosterStatus.DRAFT)
@@ -715,7 +727,9 @@ async def test_warnings_draft_replaced_and_rest_violation(client, world):
     j = await _mk(client, w, auto_confirm=True)
     r = await _claim(client, w, j["id"], "e1")
     assert r.status_code == 200
-    assert any("draft" in x for x in r.json()["warnings"])
+    # claimant is not shown the draft warning; the creator is notified instead
+    assert not any("draft" in x for x in r.json()["warnings"])
+    assert len(await _notes(ids["sx"], "Draft replaced by open shift")) == 1
     # rest rule: t2 (14-22) the evening before, then t1 (09-17)
     async with SessionLocal() as db:
         old = {}
