@@ -262,3 +262,33 @@ async def test_public_base_url_override(client, world, monkeypatch):
     r = await client.post(f"{ROSTER}/my/calendar-feed", headers=h)
     assert r.json()["url"].startswith("https://hr.example.com/api/v1/calendar/")
     assert "//api" not in r.json()["url"].replace("https://", "")
+
+
+async def test_forwarded_host_used(client, world, monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_BASE_URL", None)
+    h = await _login(client, world["email"])
+    r = await client.post(f"{ROSTER}/my/calendar-feed", headers={
+        **h, "X-Forwarded-Host": "hr.corp.io:8443, internal",
+        "X-Forwarded-Proto": "https, http"})
+    assert r.json()["url"].startswith("https://hr.corp.io:8443/api/v1/calendar/")
+    r = await client.post(f"{ROSTER}/my/calendar-feed", headers={
+        **h, "X-Forwarded-Host": "localhost:5173"})
+    assert r.json()["url"].startswith("http://localhost:5173/api/v1/calendar/")
+
+
+@pytest.mark.parametrize("bad", ["evil.com/x", "a b", "h@ost", "x.com:99999999",
+                                 "-bad.com", "ex ample.com:80", "ht\\tp.com"])
+async def test_invalid_forwarded_host_ignored(client, world, monkeypatch, bad):
+    monkeypatch.setattr(settings, "PUBLIC_BASE_URL", None)
+    h = await _login(client, world["email"])
+    r = await client.post(f"{ROSTER}/my/calendar-feed",
+                          headers={**h, "X-Forwarded-Host": bad})
+    assert r.json()["url"].startswith("http://test/api/v1/calendar/")
+
+
+async def test_public_base_url_beats_forwarded(client, world, monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "https://hr.example.com")
+    h = await _login(client, world["email"])
+    r = await client.post(f"{ROSTER}/my/calendar-feed", headers={
+        **h, "X-Forwarded-Host": "other.io"})
+    assert r.json()["url"].startswith("https://hr.example.com/api/v1/calendar/")

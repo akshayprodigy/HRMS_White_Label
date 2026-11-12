@@ -34,6 +34,27 @@ FUTURE_DAYS = 90
 LAST_USED_THROTTLE = timedelta(minutes=5)
 
 
+_HOST_RE = re.compile(
+    r"^(?=.{1,253}(?::\d{1,5})?$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
+    r"(?::\d{1,5})?$")
+
+
+def _feed_base(request: Request) -> str:
+    """PUBLIC_BASE_URL, else the browser-facing host from X-Forwarded-*
+    (validated), else the request's own base URL."""
+    if settings.PUBLIC_BASE_URL:
+        return settings.PUBLIC_BASE_URL.rstrip("/")
+    host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    if host and _HOST_RE.match(host) and (
+            ":" not in host or int(host.rsplit(":", 1)[1]) <= 65535):
+        proto = request.headers.get(
+            "x-forwarded-proto", "").split(",")[0].strip().lower()
+        if proto not in ("http", "https"):
+            proto = request.url.scheme
+        return f"{proto}://{host}"
+    return str(request.base_url).rstrip("/")
+
+
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -60,7 +81,7 @@ async def rotate_feed(
     db.add(CalendarFeedToken(user_id=current_user.id, token_hash=_hash(token)))
     await commit_or_409(db)
     response.headers["Cache-Control"] = "no-store"
-    base = (settings.PUBLIC_BASE_URL or str(request.base_url)).rstrip("/")
+    base = _feed_base(request)
     return {"url": f"{base}{settings.API_V1_STR}/calendar/{token}.ics"}
 
 
