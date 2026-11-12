@@ -60,7 +60,8 @@ class Env:
         self.uid = self.eid = self.run_id = None
         self.original = {}
 
-    async def setup(self, client, *, ot=True, night=True):
+    async def setup(self, client, *, ot=True, night=True, salary=31000.0,
+                    etype=None, esic=False):
         async with SessionLocal() as db:
             for k in (K_ON, K_OFF):
                 row = await db.get(SystemSetting, k)
@@ -73,7 +74,8 @@ class Env:
             e = Employee(user_id=self.uid, employee_id=f"SA{self.tag}",
                          department="T", designation="T",
                          date_of_joining=date(2017, 1, 1), status="active",
-                         salary=31000.0, location="HQ")
+                         salary=salary, location="HQ", esic_applicable=esic,
+                         **({"employment_type": etype} if etype else {}))
             db.add(e)
             await db.flush()
             self.eid = e.id
@@ -202,9 +204,6 @@ async def _entries(uid):
 async def test_injection_stamping_regenerate_and_editor(client):
     env = Env(uuid.uuid4().hex[:8])
     try:
-        # no OT/night here: generate_draft's pre-existing behaviour is that a
-        # re-generate drops already-stamped OT/night, which would mask the
-        # idempotency this test asserts for the new kinds.
         await env.setup(client, ot=False, night=False)
         other_id = None
         await _add(
@@ -274,5 +273,79 @@ async def test_injection_stamping_regenerate_and_editor(client):
                 await db.execute(delete(PayrollRun).where(
                     PayrollRun.id == other_id))
                 await db.commit()
+    finally:
+        await env.cleanup()
+
+
+async def test_regenerate_keeps_ot_and_night(client):
+    """Regenerating a run releases its own OT/night stamps so the lines are
+    identical (previously the stamped OT/night silently dropped out)."""
+    env = Env(uuid.uuid4().hex[:8])
+    try:
+        await env.setup(client)
+        line = await env.generate(client)
+        line2 = await env.generate(client, relock=True)
+        assert _snap(line2) == _snap(line)
+        assert line2["allowances"]["overtime"] == 450.5
+        assert line2["allowances"]["night_allowance"] == 150.5
+        async with SessionLocal() as db:
+            stamped = (await db.execute(select(OvertimeEntry.payroll_run_id).where(
+                OvertimeEntry.user_id == env.uid))).scalars().all()
+            assert set(stamped) == {env.run_id}
+    finally:
+        await env.cleanup()
+
+
+async def test_contractual_path_with_and_without_entries(client):
+    env = Env(uuid.uuid4().hex[:8])
+    try:
+        await env.setup(client, ot=False, night=False, etype="contractual")
+        base = await env.generate(client)
+        assert base["deductions"]["engine"] == "legacy_contractual"
+        assert "on_call" not in base["allowances"]
+        # OT + night only: net moves by exactly their sum (formula unchanged)
+        await _add(
+            OvertimeEntry(user_id=env.uid, work_date=date(2018, 4, 10),
+                          ot_minutes=60, ot_amount=200.0, status="approved"),
+            NightAllowanceEntry(user_id=env.uid, work_date=date(2018, 4, 12),
+                                night_minutes=60, amount=50.0))
+        l1 = await env.generate(client, relock=True)
+        assert l1["net_pay"] == pytest.approx(base["net_pay"] + 250.0, abs=0.01)
+        assert l1["gross_pay"] == pytest.approx(base["gross_pay"] + 250.0, abs=0.01)
+        assert "on_call" not in l1["allowances"]
+        # + on-call and callback
+        await _add(_sa(env.uid, date(2018, 4, 5), "on_call", 500.0, 600),
+                   _sa(env.uid, date(2018, 4, 6), "callback", 120.0, 60))
+        l2 = await env.generate(client, relock=True)
+        assert l2["net_pay"] == pytest.approx(base["net_pay"] + 250.0 + 620.0, abs=0.01)
+        assert l2["gross_pay"] == pytest.approx(base["gross_pay"] + 870.0, abs=0.01)
+        assert l2["allowances"]["on_call"] == 500.0
+        assert l2["allowances"]["callback"] == 120.0
+        # line editor on the contractual line keeps them
+        r = await client.patch(f"{BASE}/{env.run_id}/lines/{l2['id']}",
+                               json={"incentive": 0.0, "reason": "t"}, headers=env.h)
+        assert r.status_code == 200, r.text
+        after = await env.line()
+        assert after["allowances"]["on_call"] == 500.0
+        assert after["gross_pay"] == pytest.approx(l2["gross_pay"], abs=0.01)
+        assert after["net_pay"] == pytest.approx(l2["net_pay"], abs=0.01)
+    finally:
+        await env.cleanup()
+
+
+async def test_unified_statutory_runs_on_full_gross(client):
+    """On-call pushes gross over the ESIC ceiling: ESIC / PT must react,
+    proving statutory is computed on gross incl. the new allowances."""
+    env = Env(uuid.uuid4().hex[:8])
+    try:
+        await env.setup(client, ot=False, night=False, salary=9000.0, esic=True)
+        base = await env.generate(client)
+        await _add(_sa(env.uid, date(2018, 4, 5), "on_call", 9000.0, 600))
+        big = await env.generate(client, relock=True)
+        assert big["gross_pay"] == pytest.approx(base["gross_pay"] + 9000.0)
+        bd, gd = base["deductions"], big["deductions"]
+        assert (bd["employee_esi"], bd["professional_tax"]) != \
+            (gd["employee_esi"], gd["professional_tax"]), (bd, gd)
+        assert big["net_pay"] == round(big["gross_pay"] - gd["total_deductions"], 2)
     finally:
         await env.cleanup()

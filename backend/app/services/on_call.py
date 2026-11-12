@@ -85,14 +85,35 @@ async def delete_entry(db, user_id: int, work_date: date) -> None:
 
 async def resync_rule(db, rule: OnCallRule) -> int:
     """After a rule's rates change, recompute every UNPAID entry of its
-    assignments. Paid entries are skipped. Returns rows refreshed."""
+    assignments with one locking read (paid entries are skipped; a missing
+    entry is recreated). Returns rows refreshed."""
     rows = (await db.execute(select(OnCallAssignment).where(
         OnCallAssignment.rule_id == rule.id))).scalars().all()
+    if not rows:
+        return 0
+    ents = {(e.user_id, e.work_date): e for e in (await db.execute(
+        select(ShiftAllowanceEntry).where(
+            ShiftAllowanceEntry.kind == ShiftAllowanceKind.ON_CALL,
+            ShiftAllowanceEntry.user_id.in_({a.user_id for a in rows}),
+            ShiftAllowanceEntry.work_date.in_({a.work_date for a in rows}),
+        ).with_for_update().execution_options(populate_existing=True)
+    )).scalars().all()}
+    now = datetime.now(timezone.utc)
     n = 0
     for a in rows:
-        try:
-            await sync_entry(db, a, rule)
-            n += 1
-        except StampedEntry:
+        e = ents.get((a.user_id, a.work_date))
+        if e is not None and e.payroll_run_id is not None:
             continue
+        minutes = duration_minutes(a.start_time, a.end_time)
+        amount = compute_amount(rule, minutes)
+        if e is None:
+            db.add(ShiftAllowanceEntry(
+                user_id=a.user_id, work_date=a.work_date,
+                kind=ShiftAllowanceKind.ON_CALL, amount=amount,
+                minutes=minutes, rule_id=rule.id, source_id=a.id,
+                computed_at=now))
+        else:
+            e.amount, e.minutes, e.rule_id = amount, minutes, rule.id
+            e.source_id, e.computed_at = a.id, now
+        n += 1
     return n

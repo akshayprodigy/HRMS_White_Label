@@ -320,3 +320,22 @@ async def test_list_window_scope_and_my(client, world):
     other = await client.get(f"{API.replace('/on-call', '/my/on-call')}",
                              headers=await login(client, world, "e2"))
     assert other.json() == []
+
+
+async def test_hourly_equal_times_rejected_flat_allows_24h(client, world):
+    ha = await login(client, world, "admin")
+    hourly = await mk_rule(client, ha, world, "h", payout_model="hourly",
+                           flat_amount=0, hourly_rate=10)
+    flat = await mk_rule(client, ha, world, "f")
+    r = await client.post(API, json=body(world, "e1", hourly["id"],
+                                         st="08:00", en="08:00"), headers=ha)
+    assert r.status_code == 400
+    r = await client.post(API, json=body(world, "e1", flat["id"],
+                                         st="08:00", en="08:00"), headers=ha)
+    assert r.status_code == 200 and r.json()["is_overnight"] is True
+    a = r.json()
+    # switching that 24h flat day to an hourly rule is also refused
+    r = await client.patch(f"{API}/{a['id']}", json={"rule_id": hourly["id"]},
+                           headers=ha)
+    assert r.status_code == 400
+    assert (await entry_of(world["ids"]["e1"], D)).minutes == 1440

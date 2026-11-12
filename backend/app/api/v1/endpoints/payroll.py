@@ -371,6 +371,21 @@ async def generate_draft(
     start_of_month = date(run.year, run.month, 1)
     end_of_month = date(run.year, run.month, num_days)
 
+    # Re-generating this same run: its lines were just deleted, so release
+    # the OT / night / shift-allowance entries this run stamped last time
+    # (otherwise they would silently drop out of the regenerated lines).
+    # Entries stamped by OTHER runs are never touched.
+    await db.execute(
+        sa_update(OvertimeEntry)
+        .where(OvertimeEntry.payroll_run_id == run_id)
+        .values(payroll_run_id=None)
+    )
+    await db.execute(
+        sa_update(NightAllowanceEntry)
+        .where(NightAllowanceEntry.payroll_run_id == run_id)
+        .values(payroll_run_id=None)
+    )
+
     # Pull OT + night-allowance for the period in ONE SHOT and group by user.
     # We filter on payroll_run_id IS NULL so already-finalized entries are
     # never double-counted. The `work_date` boundary respects the shift
@@ -407,10 +422,6 @@ async def generate_draft(
 
     # On-call / call-back allowances (Roadmap v2 Phase 2, T5): same contract
     # as night allowance — unstamped rows in the month window only.
-    # Re-generating this same run: its lines were just deleted, so release
-    # the entries it stamped last time (otherwise they would silently drop
-    # out of the regenerated lines). Entries stamped by OTHER runs are never
-    # touched.
     await db.execute(
         sa_update(ShiftAllowanceEntry)
         .where(ShiftAllowanceEntry.payroll_run_id == run_id)

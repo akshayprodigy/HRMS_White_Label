@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from _cleanup import purge_users_by_email_like
 from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.models.user import User, Role, user_roles
@@ -9,6 +10,18 @@ from datetime import datetime, timedelta, date
 
 @pytest.mark.asyncio
 async def test_leave_approval_scenarios():
+    unique_suffix = int(datetime.now().timestamp())
+    try:
+        await _scenarios(unique_suffix)
+    finally:
+        async with SessionLocal() as db:
+            await db.rollback()
+            await purge_users_by_email_like(db, [
+                f"hr_{unique_suffix}@test.com", f"man_{unique_suffix}@test.com",
+                f"emp_w_{unique_suffix}@test.com", f"emp_n_{unique_suffix}@test.com"])
+
+
+async def _scenarios(unique_suffix):
     async with SessionLocal() as db:
         # 1. Setup Roles
         hr_role_res = await db.execute(select(Role).where(Role.name == "HR"))
@@ -20,7 +33,6 @@ async def test_leave_approval_scenarios():
             await db.refresh(hr_role)
 
         # 2. Setup Users
-        unique_suffix = int(datetime.now().timestamp())
         hr_user = User(email=f"hr_{unique_suffix}@test.com", full_name="HR Admin", hashed_password="hashed", is_active=True)
         manager = User(email=f"man_{unique_suffix}@test.com", full_name="Manager User", hashed_password="hashed", is_active=True)
         db.add_all([hr_user, manager])
@@ -136,4 +148,4 @@ async def test_leave_approval_scenarios():
         print("Tests Completed Successfully")
 
 if __name__ == "__main__":
-    asyncio.run(test_leave_approval_scenarios())
+    asyncio.run(_scenarios(int(datetime.now().timestamp())))

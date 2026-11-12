@@ -164,9 +164,14 @@ async def _check_date(db, actor: User, d: pydate) -> None:
     await assert_attendance_editable(db, d)
 
 
-def _validate_times(start: dtime, end: dtime) -> None:
+def _validate_times(start: dtime, end: dtime, rule=None) -> None:
     if start.second or end.second or start.microsecond or end.microsecond:
         raise HTTPException(422, "Times must be HH:MM")
+    if (rule is not None and rule.payout_model == OnCallPayout.HOURLY
+            and start == end):
+        raise HTTPException(
+            400, "An hourly rule needs an end time different from the start "
+                 "(equal times mean 24h and are only allowed for flat rules).")
 
 
 async def _require_manage(db, actor: User, uid: int) -> None:
@@ -312,6 +317,7 @@ async def create_on_call(
         OnCallRule.id == body.rule_id))
     if rule is None or not rule.is_active:
         raise HTTPException(400, "On-call rule not found or inactive")
+    _validate_times(body.start_time, body.end_time, rule)
     await lock_user_rows(db, [body.user_id])
     dup = await lock_row(db, select(OnCallAssignment).where(
         OnCallAssignment.user_id == body.user_id,
@@ -360,6 +366,7 @@ async def update_on_call(
         OnCallRule.id == (data.get("rule_id") or a.rule_id)))
     if rule is None or (not rule.is_active and rule.id != a.rule_id):
         raise HTTPException(400, "On-call rule not found or inactive")
+    _validate_times(start, end, rule)
     a.start_time, a.end_time = start, end
     a.is_overnight = oc.is_overnight(start, end)
     a.rule_id = rule.id
@@ -416,7 +423,7 @@ async def my_on_call(
             OnCallAssignment.work_date >= s, OnCallAssignment.work_date <= e)
         .order_by(OnCallAssignment.work_date))).scalars().all()
     out = await _out_many(db, list(rows))
-    for o in out:  # employees do not need the money detail of the rule
+    for o in out:  # own days: no user fields (amount stays visible)
         o.pop("user_id", None)
         o.pop("user_name", None)
     return out

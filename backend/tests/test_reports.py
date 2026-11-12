@@ -392,6 +392,15 @@ class TestSalaryRegister:
         assert r.totals["gross_pay"] == 100000
         assert r.totals["net_pay"] == 84000
 
+    def test_on_call_and_callback_columns(self):
+        ln = _line(allowances={"overtime": 10.0, "on_call": 750.5, "callback": 300.0})
+        r = build_salary_register(lines=[ln, _line(user_id=2, employee_code="E2")],
+                                  filters=ReportFilter())
+        keys = [c.key for c in r.columns]
+        assert "on_call" in keys and "callback" in keys
+        assert r.rows[0]["on_call"] == 750.5 and r.rows[1]["on_call"] == 0.0
+        assert r.totals["on_call"] == 750.5 and r.totals["callback"] == 300.0
+
     def test_currency_column_type(self):
         r = build_salary_register(lines=[_line()], filters=ReportFilter())
         gross_col = next(c for c in r.columns if c.key == "gross_pay")

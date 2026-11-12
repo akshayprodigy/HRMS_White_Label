@@ -701,6 +701,8 @@ def build_salary_register(
         ColumnDef("other", "Other", ColumnType.CURRENCY, width=14),
         ColumnDef("overtime", "OT", ColumnType.CURRENCY, width=12),
         ColumnDef("night_allowance", "Night", ColumnType.CURRENCY, width=12),
+        ColumnDef("on_call", "On-call", ColumnType.CURRENCY, width=12),
+        ColumnDef("callback", "Call-back", ColumnType.CURRENCY, width=12),
         ColumnDef("arrear", "Arrear", ColumnType.CURRENCY, width=12),
         ColumnDef("gross_pay", "Gross", ColumnType.CURRENCY, width=14),
         ColumnDef("employee_pf", "PF", ColumnType.CURRENCY, width=12),
@@ -727,6 +729,8 @@ def build_salary_register(
             "other": al.get("other_allowance_actual", 0.0),
             "overtime": al.get("overtime", 0.0),
             "night_allowance": al.get("night_allowance", 0.0),
+            "on_call": al.get("on_call", 0.0),
+            "callback": al.get("callback", 0.0),
             "arrear": al.get("arrear", 0.0),
             "gross_pay": ln.gross_pay,
             "employee_pf": ded.get("employee_pf", 0.0),
@@ -738,7 +742,7 @@ def build_salary_register(
         })
     numeric_cols = [
         "basic", "hra", "conveyance", "other", "overtime", "night_allowance",
-        "arrear", "gross_pay", "employee_pf", "employee_esi",
+        "on_call", "callback", "arrear", "gross_pay", "employee_pf", "employee_esi",
         "professional_tax", "tds", "total_deductions", "net_pay",
     ]
     totals = {

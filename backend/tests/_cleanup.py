@@ -41,3 +41,37 @@ async def purge_gap_notifications(db, tpl_ids) -> None:
         await db.execute(delete(Notification).where(
             Notification.resource_type == "coverage_gap",
             Notification.resource_id.in_(gids)))
+
+
+PROTECTED_USER_IDS = (1, 133, 134, 135, 136, 137, 138)
+
+
+async def purge_users_by_email_like(db, patterns, protected=PROTECTED_USER_IDS) -> int:
+    """Delete test users whose email matches any SQL LIKE pattern (plus the
+    approval items/steps of their leave requests, which carry no FK). All
+    other dependents (leaves, ledger, attendance, employees, notifications,
+    user_roles, ...) go via ON DELETE CASCADE. Returns users deleted."""
+    from sqlalchemy import or_
+    from app.models.approval import ApprovalItem, ApprovalStep
+    from app.models.leave import LeaveRequest
+    from app.models.user import User
+
+    ids = list((await db.execute(select(User.id).where(
+        or_(*[User.email.like(p) for p in patterns]),
+        User.id.notin_(list(protected))))).scalars().all())
+    if not ids:
+        return 0
+    leave_ids = [str(i) for i in (await db.execute(select(LeaveRequest.id).where(
+        LeaveRequest.employee_id.in_(ids)))).scalars().all()]
+    if leave_ids:
+        item_ids = list((await db.execute(select(ApprovalItem.id).where(
+            ApprovalItem.resource_type == "leave",
+            ApprovalItem.resource_id.in_(leave_ids)))).scalars().all())
+        if item_ids:
+            await db.execute(delete(ApprovalStep).where(
+                ApprovalStep.approval_item_id.in_(item_ids)))
+            await db.execute(delete(ApprovalItem).where(
+                ApprovalItem.id.in_(item_ids)))
+    await db.execute(delete(User).where(User.id.in_(ids)))
+    await db.commit()
+    return len(ids)

@@ -1,4 +1,5 @@
 """Roster publish lifecycle, copy and change history."""
+import logging
 from datetime import date as pydate, datetime, time, timedelta, timezone
 from typing import Any, List, Optional
 
@@ -26,6 +27,7 @@ from app.api.v1.endpoints.roster_common import (
     write_cells, check_window, names,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -106,7 +108,9 @@ def _pr_read(r: RosterPublishRequest, nm: dict, counts: dict) -> PublishRequestR
     return out
 
 
-async def _roster_admin_ids(db, exclude: int, cap: int = 20) -> List[int]:
+async def _roster_admin_ids(db, exclude: int, cap: int = 200) -> List[int]:
+    """All active roster admins (deterministic id order); `cap` is only a
+    safety bound and logs a warning when hit."""
     rows = (await db.execute(
         select(User.id).where(
             User.is_active.is_(True),
@@ -118,6 +122,8 @@ async def _roster_admin_ids(db, exclude: int, cap: int = 20) -> List[int]:
             ),
         ).order_by(User.id).limit(cap)
     )).scalars().all()
+    if len(rows) >= cap:
+        logger.warning("roster admin notify list truncated at %d", cap)
     return list(rows)
 
 
