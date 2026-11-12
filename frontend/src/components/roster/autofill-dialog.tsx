@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../ui-elements';
@@ -40,7 +40,10 @@ export const AutofillDialog = ({ open, start, end, department, onClose, onDone }
   const [preview, setPreview] = useState<AutofillPreview | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
 
+  const reqSeq = useRef(0);
+
   const load = async () => {
+    const seq = ++reqSeq.current;
     setLoading(true);
     setError(null);
     setPreview(null);
@@ -50,17 +53,28 @@ export const AutofillDialog = ({ open, start, end, department, onClose, onDone }
         end,
         department: department || null,
       });
+      if (seq !== reqSeq.current) return; // stale response
       setPreview(data);
       setChecked(new Set(data.suggestions.map(keyOf)));
     } catch (err: any) {
+      if (seq !== reqSeq.current) return;
       setError(errMsg(err, 'Failed to generate suggestions'));
     } finally {
-      setLoading(false);
+      if (seq === reqSeq.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (open && start && end) load();
+    if (open && start && end) {
+      load();
+    } else {
+      // closed: drop any in-flight response and stale state
+      reqSeq.current++;
+      setPreview(null);
+      setChecked(new Set());
+      setError(null);
+      setLoading(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, start, end, department]);
 

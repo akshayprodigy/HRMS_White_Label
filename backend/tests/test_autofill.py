@@ -142,6 +142,88 @@ def test_one_cell_per_user_per_day():
     assert len(s) == 1 and len(u) == 1
 
 
+def _w(uid, n, tid=1):
+    return build_spans([(uid, D + timedelta(days=n), tid)], TPL)[0]
+
+
+def test_working_via_assignment_is_not_a_candidate():
+    # same template, different template, both already counted elsewhere
+    s, u = run([emp(1), emp(2), emp(3)], [Slot(D, 1, "A", None, 3)],
+               base_spans=[_w(1, 0, 1), _w(2, 0, 2)])
+    assert [x.user_id for x in s] == [3]
+    assert u[0].need == 2
+
+
+def test_weekly_off_assignment_is_not_a_candidate():
+    s, u = run([emp(1), emp(2)], [Slot(D, 1, "A", None, 2)],
+               weekly_off_days={(1, D)})
+    assert [x.user_id for x in s] == [2]
+
+
+def test_max_consecutive_days_creates_breach():
+    base = [_w(1, n) for n in range(-3, 0)]
+    d = D
+    s, _ = run([emp(1), emp(2)], [Slot(d, 1, "A", None, 1)], base_spans=base,
+               rules={"max_consecutive_days": 3})
+    assert [x.user_id for x in s] == [2]
+
+
+def test_max_consecutive_days_worsens_existing_breach():
+    base = [_w(1, n) for n in range(-5, 0)]  # already 5 > 3
+    s, _ = run([emp(1), emp(2)], [Slot(D, 1, "A", None, 1)], base_spans=base,
+               rules={"max_consecutive_days": 3})
+    assert [x.user_id for x in s] == [2]
+    # a day that does not touch the existing run is fine
+    s, _ = run([emp(1)], [Slot(D + timedelta(days=2), 1, "A", None, 1)],
+               days=[D + timedelta(days=2)], base_spans=base,
+               rules={"max_consecutive_days": 3})
+    assert [x.user_id for x in s] == [1]
+
+
+def test_max_weekly_hours_creates_and_worsens():
+    # D is a Monday; 8h shifts, cap 24h
+    three = [_w(1, n) for n in range(0, 3)]
+    s, _ = run([emp(1), emp(2)], [Slot(D + timedelta(days=3), 1, "A", None, 1)],
+               days=[D + timedelta(days=3)], base_spans=three,
+               rules={"max_weekly_hours": 24})
+    assert [x.user_id for x in s] == [2]
+    four = [_w(1, n) for n in range(0, 4)]  # already 32h > 24
+    s, _ = run([emp(1), emp(2)], [Slot(D + timedelta(days=4), 1, "A", None, 1)],
+               days=[D + timedelta(days=4)], base_spans=four,
+               rules={"max_weekly_hours": 24})
+    assert [x.user_id for x in s] == [2]
+
+
+def test_overlapping_requirements_specific_first_and_decremented():
+    g = Slot(D, 1, None, None, 1)       # global: 1 more
+    a = Slot(D, 1, "A", None, 1)        # dept A: 1 more
+    s, u = run([emp(1, "A"), emp(2, "B")], [g, a])
+    # specific (dept A) first -> emp 1, which also satisfies the global slot
+    assert [x.user_id for x in s] == [1]
+    assert u == []
+    s, u = run([emp(1, "A"), emp(2, "B")], [Slot(D, 1, None, None, 2), a])
+    assert sorted(x.user_id for x in s) == [1, 2] and u == []
+
+
+def test_location_filter():
+    s, u = run([emp(1, "A", "X"), emp(2, "A", "Y")],
+               [Slot(D, 1, "A", "Y", 1)])
+    assert [x.user_id for x in s] == [2]
+
+
+def test_perf_smoke():
+    import time as _t
+    emps = [emp(i) for i in range(1, 301)]
+    days = [D + timedelta(days=i) for i in range(31)]
+    slots = [Slot(d, t, "A", None, 5) for d in days for t in (1, 2, 3)]
+    t0 = _t.time()
+    s, u = run(emps, slots, days=days, rules={
+        "min_rest_hours": 11, "max_consecutive_days": 6,
+        "max_consecutive_nights": 3, "max_weekly_hours": 48})
+    assert _t.time() - t0 < 5
+    assert len(s) == 31 * 3 * 5 and u == []
+
+
 # ------------------------------- API -------------------------------
 
 ROSTER = f"{settings.API_V1_STR}/roster"
@@ -268,3 +350,15 @@ async def test_api_window_cap_and_no_scope(client, world):
     r = await client.post(f"{ROSTER}/autofill/preview", headers=h2, json={
         "start": D.isoformat(), "end": D.isoformat()})
     assert r.status_code == 403
+
+
+async def test_api_skips_past_days(client, world):
+    h = await _login(client, world["admin"])
+    r = await client.post(f"{ROSTER}/autofill/preview", headers=h, json={
+        "start": (TODAY - timedelta(days=3)).isoformat(),
+        "end": (TODAY + timedelta(days=1)).isoformat(),
+        "department": world["dx"]})
+    assert r.status_code == 200, r.text
+    dates = {s["work_date"] for s in r.json()["suggestions"]}
+    assert dates == {TODAY.isoformat(), (TODAY + timedelta(days=1)).isoformat()}
+    assert all(u["work_date"] >= TODAY.isoformat() for u in r.json()["unfilled"])

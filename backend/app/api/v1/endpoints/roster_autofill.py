@@ -1,7 +1,9 @@
 """Auto-fill preview (Roadmap v2 Phase 1B, Task 8). Read-only: nothing is
 written; the client applies accepted suggestions through POST /roster/bulk
 (status=draft, overwrite=False)."""
+import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -103,8 +105,11 @@ async def autofill_preview(
     leave = await roster_svc.approved_leave_days(db, cand_ids, start, end)
     avail = await availability_by_day(db, cand_ids, start, end)
 
-    sugg, unfilled = autofill_svc.suggest(
-        employees=cands, days=days, templates=templates, slots=slots,
+    plain = [SimpleNamespace(user_id=e.user_id, department=e.department,
+                             location=e.location) for e in cands]
+    sugg, unfilled = await asyncio.to_thread(
+        autofill_svc.suggest,
+        employees=plain, days=days, templates=templates, slots=slots,
         existing_cells=existing, leave_days=leave, availability=avail,
         rules=rules, window_start=start,
         base_spans=[s for s in spans if s.user_id in cand_ids],
