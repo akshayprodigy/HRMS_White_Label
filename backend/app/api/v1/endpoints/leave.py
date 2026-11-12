@@ -813,7 +813,7 @@ async def action_approval(
     await apply_leave_decision(
         db, approval_item, current_user,
         approve=action.status == ApprovalStatus.APPROVED,
-        comment=action.comment,
+        comment=action.comment, expected_step_id=current_step.id,
     )
 
     db.add(AuditLog(

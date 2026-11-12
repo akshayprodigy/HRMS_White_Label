@@ -447,6 +447,7 @@ async def action_approval(
         outcome = await apply_leave_decision(
             db, item, current_user, approve, action.comment,
             override_all=approve and _is_admin_approver(current_user),
+            expected_step_id=current_step.id,
         )
         if item.resource_type == COMP_OFF_RESOURCE and outcome != "advanced":
             if item.requested_by_id:

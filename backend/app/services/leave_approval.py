@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.models.approval import ApprovalItem, ApprovalStatus, ApprovalStep
@@ -44,19 +44,42 @@ async def _lock(db, stmt, msg):
     return await lock_row(db, stmt, msg)
 
 
-async def _debit_leave(db, leave: LeaveRequest) -> None:
-    days = leave_days(leave)
-    ledger = (await db.execute(select(LeaveBalanceLedger).where(and_(
-        LeaveBalanceLedger.user_id == leave.employee_id,
-        LeaveBalanceLedger.leave_type_id == leave.leave_type_id,
-    )))).scalar_one_or_none()
-    if ledger:
-        ledger.used += days
-    else:
+async def _bump_ledger(db, user_id: int, leave_type_id: int, *,
+                       used: float = 0.0, balance: float = 0.0) -> None:
+    """Atomic ledger adjustment. `UPDATE ... SET col = col + d` is a current
+    read, so concurrent approvals for the same employee never lose updates
+    (a SELECT ... FOR UPDATE would instead hit MariaDB 1020 on a stale
+    snapshot). The ledger has no unique (user, type) key, so the
+    create-if-missing path runs under the user-row lock; the UPDATE rowcount
+    (a current read) decides whether a row exists."""
+    from sqlalchemy.exc import OperationalError
+    from app.api.v1.endpoints.roster_common import _map_db_error, lock_user_rows
+    await lock_user_rows(db, [user_id], ALREADY_ACTIONED)
+    try:
+        res = await db.execute(
+            update(LeaveBalanceLedger).where(and_(
+                LeaveBalanceLedger.user_id == user_id,
+                LeaveBalanceLedger.leave_type_id == leave_type_id,
+            )).values(used=LeaveBalanceLedger.used + used,
+                      balance=LeaveBalanceLedger.balance + balance)
+            .execution_options(synchronize_session=False))
+    except OperationalError as exc:
+        # MariaDB 1020: ledger row changed since this transaction's snapshot
+        # (a concurrent approval for the same employee committed first).
+        # Nothing was applied; the client retries.
+        mapped = await _map_db_error(db, exc, ALREADY_ACTIONED)
+        if mapped is None:
+            raise
+        raise mapped from exc
+    if res.rowcount == 0:
         db.add(LeaveBalanceLedger(
-            user_id=leave.employee_id, leave_type_id=leave.leave_type_id,
-            balance=0.0, used=days,
-        ))
+            user_id=user_id, leave_type_id=leave_type_id,
+            balance=balance, used=used))
+
+
+async def _debit_leave(db, leave: LeaveRequest) -> None:
+    await _bump_ledger(db, leave.employee_id, leave.leave_type_id,
+                       used=leave_days(leave))
 
 
 async def _credit_comp_off(db, accrual: CompOffAccrual) -> None:
@@ -65,17 +88,8 @@ async def _credit_comp_off(db, accrual: CompOffAccrual) -> None:
     )).scalar_one_or_none()
     if co_type is None:
         return
-    bal = (await db.execute(select(LeaveBalanceLedger).where(and_(
-        LeaveBalanceLedger.user_id == accrual.user_id,
-        LeaveBalanceLedger.leave_type_id == co_type.id,
-    )))).scalar_one_or_none()
-    if bal is None:
-        db.add(LeaveBalanceLedger(
-            user_id=accrual.user_id, leave_type_id=co_type.id,
-            balance=accrual.days_credited, used=0.0,
-        ))
-    else:
-        bal.balance += accrual.days_credited
+    await _bump_ledger(db, accrual.user_id, co_type.id,
+                       balance=accrual.days_credited)
 
 
 async def step_approver_ids(db, step: Optional[ApprovalStep]) -> list[int]:
@@ -141,9 +155,12 @@ async def notify_new_leave(db, *, leave: LeaveRequest, item: ApprovalItem,
 async def apply_leave_decision(
     db, item: ApprovalItem, actor: User, approve: bool,
     comment: Optional[str] = None, *, override_all: bool = False,
+    expected_step_id: Optional[int] = None,
 ) -> str:
     """Apply an approve/reject decision on `item`'s current step.
 
+    Caller has already authorized `actor` for the step `expected_step_id`; if
+    the freshly locked current step differs (someone acted meanwhile) → 409.
     Caller has already authorized `actor`. Returns "advanced", "approved" or
     "rejected". Does not commit. `override_all` (admin override) approves every
     pending step at once.
@@ -169,6 +186,8 @@ async def apply_leave_decision(
     if current is None or current.status != ApprovalStatus.PENDING:
         raise HTTPException(
             status_code=400, detail="No pending step found for this approval")
+    if expected_step_id is not None and current.id != expected_step_id:
+        raise HTTPException(status_code=409, detail=ALREADY_ACTIONED)
 
     now = datetime.now(timezone.utc)
     current.status = ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED
@@ -177,14 +196,21 @@ async def apply_leave_decision(
     current.actioned_at = now
 
     leave = accrual = None
-    if item.resource_type == LEAVE_RESOURCE:
-        leave = await _lock(
-            db, select(LeaveRequest).where(
-                LeaveRequest.id == int(item.resource_id)), ALREADY_ACTIONED)
-    elif item.resource_type == COMP_OFF_RESOURCE:
-        accrual = await _lock(
-            db, select(CompOffAccrual).where(
-                CompOffAccrual.id == int(item.resource_id)), ALREADY_ACTIONED)
+    if item.resource_type in DECISION_RESOURCES:
+        rid = str(item.resource_id or "")
+        if not rid.isdigit():
+            raise HTTPException(status_code=409, detail="Invalid resource id")
+        model = LeaveRequest if item.resource_type == LEAVE_RESOURCE \
+            else CompOffAccrual
+        row = await _lock(
+            db, select(model).where(model.id == int(rid)), ALREADY_ACTIONED)
+        if row is None:
+            raise HTTPException(
+                status_code=409, detail="Underlying request not found")
+        if item.resource_type == LEAVE_RESOURCE:
+            leave = row
+        else:
+            accrual = row
 
     if not approve:
         item.status = ApprovalStatus.REJECTED

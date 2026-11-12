@@ -147,7 +147,7 @@ export const MobileApprovals: React.FC = () => {
         });
       } else {
         await client.post(ENDPOINTS.APPROVALS.ACTION(card.refId), {
-          status: action === 'approve' ? 'APPROVED' : 'REJECTED',
+          status: action === 'approve' ? 'approved' : 'rejected',
           comment: comment || null,
         });
       }

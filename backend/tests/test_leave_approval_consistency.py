@@ -381,3 +381,65 @@ async def test_comp_off_credits_once(client, world, path):
             LeaveBalanceLedger.user_id == ids["emp"],
             LeaveBalanceLedger.leave_type_id == ids["co"]))).scalar_one()
         assert bal == 1.0
+
+
+async def test_same_approver_double_click_cannot_skip_step(client, world):
+    lid, item = await _mk_leave(world, two_step=True, days=1, day=22)
+    h = await _login(client, world, "mgr")
+    rs = await asyncio.gather(
+        client.post(_a(item, "generic"), headers=h, json={"status": "approved"}),
+        client.post(_a(item, "leave"), headers=h, json={"status": "approved"}),
+    )
+    codes = sorted(r.status_code for r in rs)
+    assert codes[0] == 200 and codes[1] in (400, 409), [r.text for r in rs]
+    async with SessionLocal() as db:
+        it = await db.get(ApprovalItem, item)
+        steps = {s.step_number: s.status for s in (await db.execute(
+            select(ApprovalStep).where(
+                ApprovalStep.approval_item_id == item))).scalars().all()}
+        assert it.status == ApprovalStatus.PENDING
+        assert it.current_step_number == 2
+        assert steps[2] == ApprovalStatus.PENDING
+    assert await _used(world) == 0.0
+    assert await _status(lid) == LeaveStatus.SUBMITTED
+
+
+async def test_concurrent_different_leaves_same_employee_both_debited(client, world):
+    l1, i1 = await _mk_leave(world, days=2, day=3)
+    l2, i2 = await _mk_leave(world, days=1, day=8)
+    h = await _login(client, world, "mgr")
+    rs = await asyncio.gather(
+        client.post(_a(i1, "generic"), headers=h, json={"status": "approved"}),
+        client.post(_a(i2, "leave"), headers=h, json={"status": "approved"}),
+    )
+    # MariaDB may answer the loser with a retryable 409 (stale snapshot);
+    # what must hold: no lost update — `used` equals exactly the approved days.
+    codes = [r.status_code for r in rs]
+    assert all(c in (200, 409) for c in codes) and 200 in codes, codes
+    days = {0: 2.0, 1: 1.0}
+    assert await _used(world) == sum(days[i] for i, c in enumerate(codes) if c == 200)
+    for i, (lid, c) in enumerate(zip((l1, l2), codes)):
+        assert await _status(lid) == (
+            LeaveStatus.APPROVED if c == 200 else LeaveStatus.SUBMITTED)
+    # the 409 loser can simply retry and succeeds
+    for i, (it, path) in enumerate(((i1, "generic"), (i2, "leave"))):
+        if codes[i] == 409:
+            r = await client.post(_a(it, path), headers=h,
+                                  json={"status": "approved"})
+            assert r.status_code == 200, r.text
+    assert await _used(world) == 3.0
+
+
+async def test_missing_leave_row_does_not_approve_item(client, world):
+    lid, item = await _mk_leave(world)
+    async with SessionLocal() as db:
+        it = await db.get(ApprovalItem, item)
+        it.resource_id = "99999999"
+        await db.commit()
+    h = await _login(client, world, "mgr")
+    r = await client.post(_a(item, "leave"), headers=h,
+                          json={"status": "approved"})
+    assert r.status_code in (404, 409, 500), r.text
+    async with SessionLocal() as db:
+        assert (await db.get(ApprovalItem, item)).status == ApprovalStatus.PENDING
+    assert await _used(world) == 0.0
