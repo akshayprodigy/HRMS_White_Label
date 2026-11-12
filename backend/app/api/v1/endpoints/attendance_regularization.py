@@ -19,26 +19,36 @@ from app.schemas.attendance_regularization import (
     RegularizationCreate, RegularizationDecision, RegularizationRead,
 )
 from app.services.attendance_lock import assert_attendance_editable
+from app.services.effective_shift import effective_shift_on
 from app.services.self_approval import guard_self_approval
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ATTENDANCE_EDIT = "attendance edit"
+_ALL_STATUSES = {
+    v for k, v in vars(RegularizationStatus).items() if not k.startswith("_")
+}
+
+
+async def _get_locked(db, reg_id: int) -> AttendanceRegularization:
+    """Load the request under a row lock so concurrent decide/cancel calls
+    serialize and the status check below cannot be raced."""
+    reg = (await db.execute(
+        select(AttendanceRegularization)
+        .where(AttendanceRegularization.id == reg_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().first()
+    if not reg:
+        raise HTTPException(404, "Regularization request not found")
+    return reg
 
 
 def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt is None:
         return None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
-def _has_permission(user: User, perm: str) -> bool:
-    if user.is_superuser:
-        return True
-    return any(
-        p.name == perm for role in user.roles for p in role.permissions
-    )
 
 
 async def _notify(
@@ -82,13 +92,23 @@ async def create_regularization(
     obj_in: RegularizationCreate,
     current_user: deps.CurrentUser,
 ) -> Any:
-    today = datetime.now(timezone.utc).date()
-    if obj_in.work_date > today:
+    # Dates are UTC end-to-end (see shift_resolver / attendance work_date).
+    # Allow work_date up to UTC today + 1 so users just past midnight local
+    # time can still pick their local "today".
+    now = datetime.now(timezone.utc)
+    if obj_in.work_date > now.date() + timedelta(days=1):
         raise HTTPException(422, "work_date cannot be in the future.")
     punch_in = _as_utc(obj_in.requested_punch_in)
     punch_out = _as_utc(obj_in.requested_punch_out)
-    if punch_out is not None and punch_out <= punch_in:
-        raise HTTPException(422, "Punch-out must be after punch-in.")
+    if punch_in > now or (punch_out is not None and punch_out > now):
+        raise HTTPException(422, "Punch times cannot be in the future.")
+    if punch_out is not None:
+        if punch_out <= punch_in:
+            raise HTTPException(422, "Punch-out must be after punch-in.")
+        if punch_out - punch_in > timedelta(hours=24):
+            raise HTTPException(422, "Punch-in to punch-out cannot exceed 24 hours.")
+    # work_date is the logical (shift-start) date; an overnight shift
+    # starting on D can be punched in on D+1 (UTC), so accept both.
     if punch_in.date() not in (
         obj_in.work_date, obj_in.work_date + timedelta(days=1)
     ):
@@ -158,8 +178,10 @@ async def my_regularizations(
 async def approver_queue(
     db: deps.DBDep,
     current_user: deps.CurrentUser,
-    status: str = Query("pending", pattern="^(pending|approved|rejected|cancelled|all)$"),
+    status: str = Query("pending"),
 ) -> Any:
+    if status != "all" and status not in _ALL_STATUSES:
+        raise HTTPException(422, "Invalid status filter.")
     q = (
         select(AttendanceRegularization, User.full_name, Employee.employee_id)
         .join(User, User.id == AttendanceRegularization.user_id)
@@ -167,7 +189,7 @@ async def approver_queue(
     )
     if status != "all":
         q = q.where(AttendanceRegularization.status == status)
-    if not _has_permission(current_user, ATTENDANCE_EDIT):
+    if not deps.user_has_permission(current_user, ATTENDANCE_EDIT):
         q = q.where(User.manager_id == current_user.id)
     q = q.order_by(AttendanceRegularization.created_at.desc(),
                    AttendanceRegularization.id.desc())
@@ -184,19 +206,18 @@ async def decide_regularization(
     request: Request,
     current_user: deps.CurrentUser,
 ) -> Any:
-    # Local import: hr.py is heavy and imports the attendance router module.
+    # Local import: hr.py is heavy.
+    # TODO(phase0-followup): move log_audit to services/audit.py (3 divergent
+    # copies: hr.py, payroll.py, projects.py)
     from app.api.v1.endpoints.hr import log_audit
-    from app.api.v1.endpoints.attendance import _effective_shift_on
 
-    reg = await db.get(AttendanceRegularization, reg_id)
-    if not reg:
-        raise HTTPException(404, "Regularization request not found")
+    reg = await _get_locked(db, reg_id)
 
     guard_self_approval(current_user.id, reg.user_id)
 
     requester = await db.get(User, reg.user_id)
     is_manager = bool(requester and requester.manager_id == current_user.id)
-    if not (is_manager or _has_permission(current_user, ATTENDANCE_EDIT)):
+    if not (is_manager or deps.user_has_permission(current_user, ATTENDANCE_EDIT)):
         raise HTTPException(403, "Not authorized to decide this request.")
 
     if reg.status != RegularizationStatus.PENDING:
@@ -228,7 +249,7 @@ async def decide_regularization(
             select(Attendance).where(
                 Attendance.user_id == reg.user_id,
                 Attendance.work_date == reg.work_date,
-            )
+            ).order_by(Attendance.captured_at)
         )).scalars().first()
         if att:
             old = {
@@ -250,7 +271,7 @@ async def decide_regularization(
             att.edited_at = now
         else:
             old = {"punch_in_time": None, "punch_out_time": None}
-            shift = await _effective_shift_on(db, reg.user_id, reg.work_date)
+            shift = (await effective_shift_on(db, reg.user_id, reg.work_date)).shift
             att = Attendance(
                 user_id=reg.user_id,
                 mode="regularized",
@@ -288,7 +309,7 @@ async def decide_regularization(
         + (f" Note: {note}" if note else ""),
         reg.id,
     )
-    # log_audit commits, persisting everything above in one transaction.
+    # log_audit commits: this is the single commit on decide, persisting everything above in one transaction.
     await log_audit(
         db, current_user.id, action, "attendance_regularization",
         str(reg.id), details, request,
@@ -300,9 +321,7 @@ async def decide_regularization(
 async def cancel_regularization(
     *, db: deps.DBDep, reg_id: int, current_user: deps.CurrentUser,
 ) -> Any:
-    reg = await db.get(AttendanceRegularization, reg_id)
-    if not reg:
-        raise HTTPException(404, "Regularization request not found")
+    reg = await _get_locked(db, reg_id)
     if reg.user_id != current_user.id:
         raise HTTPException(403, "Only the requester can cancel this request.")
     if reg.status != RegularizationStatus.PENDING:

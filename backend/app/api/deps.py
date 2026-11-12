@@ -124,22 +124,25 @@ async def verify_attendance(
     return current_user
 
 
+def user_has_permission(user: User, perm: str) -> bool:
+    """Superusers hold every permission; others need it via a role."""
+    if user.is_superuser:
+        return True
+    return any(
+        p.name == perm for role in user.roles for p in role.permissions
+    )
+
+
 def check_permissions(required_permissions: List[str]):
     async def permission_dependency(
         current_user: CurrentUser,
     ) -> User:
-        user_permissions = set()
-        for role in current_user.roles:
-            for permission in role.permissions:
-                user_permissions.add(permission.name)
-        
-        if not current_user.is_superuser:
-            for perm in required_permissions:
-                if perm not in user_permissions:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=f"Not enough permissions: {perm}"
-                    )
+        for perm in required_permissions:
+            if not user_has_permission(current_user, perm):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Not enough permissions: {perm}"
+                )
         return current_user
 
     return permission_dependency

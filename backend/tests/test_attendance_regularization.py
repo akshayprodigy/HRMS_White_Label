@@ -70,9 +70,6 @@ async def world():
                 AttendanceRegularization.user_id.in_(uids)))
             await db.execute(delete(Attendance).where(
                 Attendance.user_id.in_(uids)))
-            await db.execute(delete(PayrollRun).where(
-                PayrollRun.month == LOCKED_WD.month,
-                PayrollRun.year == LOCKED_WD.year))
             await db.execute(delete(User).where(User.id.in_(uids)))
             await db.commit()
 
@@ -233,12 +230,166 @@ async def test_cancel(client, world):
             ).status_code == 409
 
 
+async def _make_run(status=PayrollRunStatus.FINALIZED) -> int:
+    async with SessionLocal() as db:
+        run = PayrollRun(month=LOCKED_WD.month, year=LOCKED_WD.year,
+                         status=status)
+        db.add(run)
+        await db.commit()
+        return run.id
+
+
+async def _drop_run(run_id: int) -> None:
+    async with SessionLocal() as db:
+        await db.execute(delete(PayrollRun).where(PayrollRun.id == run_id))
+        await db.commit()
+
+
 async def test_locked_month_409(client, world):
     _, em = world
     he = await _login(client, em["emp"])
+    run_id = await _make_run()
+    try:
+        r = await client.post(f"{BASE}/", json=_body(LOCKED_WD), headers=he)
+        assert r.status_code == 409
+    finally:
+        await _drop_run(run_id)
+
+
+async def test_approve_after_month_locked_409(client, world):
+    ids, em = world
+    he = await _login(client, em["emp"])
+    ha = await _admin(client)
+    rid = (await client.post(f"{BASE}/", json=_body(LOCKED_WD),
+                             headers=he)).json()["id"]
+    run_id = await _make_run()
+    try:
+        r = await client.post(f"{BASE}/{rid}/decide",
+                              json={"approve": True}, headers=ha)
+        assert r.status_code == 409
+    finally:
+        await _drop_run(run_id)
     async with SessionLocal() as db:
-        db.add(PayrollRun(month=LOCKED_WD.month, year=LOCKED_WD.year,
-                          status=PayrollRunStatus.FINALIZED))
+        reg = await db.get(AttendanceRegularization, rid)
+        assert reg.status == "pending"
+        n = (await db.execute(select(Attendance).where(
+            Attendance.user_id == ids["emp"]))).scalars().all()
+        assert n == []
+
+
+async def test_unknown_id_404(client, world):
+    _, em = world
+    he = await _login(client, em["emp"])
+    assert (await client.post(f"{BASE}/99999999/decide",
+            json={"approve": True}, headers=he)).status_code == 404
+    assert (await client.post(f"{BASE}/99999999/cancel", headers=he)
+            ).status_code == 404
+
+
+async def test_second_decide_by_other_approver_409(client, world):
+    ids, em = world
+    he = await _login(client, em["emp"])
+    hm = await _login(client, em["mgr"])
+    ha = await _admin(client)
+    rid = (await client.post(f"{BASE}/", json=_body(), headers=he)).json()["id"]
+    assert (await client.post(f"{BASE}/{rid}/decide",
+            json={"approve": True}, headers=hm)).status_code == 200
+    assert (await client.post(f"{BASE}/{rid}/decide",
+            json={"approve": True}, headers=ha)).status_code == 409
+    async with SessionLocal() as db:
+        audits = (await db.execute(select(AuditLog).where(
+            AuditLog.resource_type == "attendance_regularization",
+            AuditLog.resource_id == str(rid)))).scalars().all()
+        assert len(audits) == 1
+        atts = (await db.execute(select(Attendance).where(
+            Attendance.user_id == ids["emp"]))).scalars().all()
+        assert len(atts) == 1 and atts[0].edited_by_id == ids["mgr"]
+
+
+async def test_punch_in_on_next_day_ok(client, world):
+    _, em = world
+    he = await _login(client, em["emp"])
+    b = {"work_date": WD.isoformat(),
+         "requested_punch_in": _dt(WD, 22),
+         "requested_punch_out": _dt(WD + timedelta(days=1), 6),
+         "reason": "night shift"}
+    assert (await client.post(f"{BASE}/", json=b, headers=he)
+            ).status_code == 200
+    b2 = {"work_date": (WD + timedelta(days=1)).isoformat(),
+          "requested_punch_in": _dt(WD + timedelta(days=1), 1),
+          "reason": "overnight, punched after midnight"}
+    assert (await client.post(f"{BASE}/", json=b2, headers=he)
+            ).status_code == 200
+
+
+async def test_future_punch_in_422(client, world):
+    _, em = world
+    he = await _login(client, em["emp"])
+    today = datetime.now(timezone.utc).date()
+    fut = datetime.now(timezone.utc) + timedelta(hours=3)
+    b = {"work_date": fut.date().isoformat(),
+         "requested_punch_in": fut.isoformat(), "reason": "x"}
+    if fut.date() > today + timedelta(days=1):  # pragma: no cover
+        pytest.skip("unreachable")
+    assert (await client.post(f"{BASE}/", json=b, headers=he)
+            ).status_code == 422
+
+
+async def test_span_over_24h_422(client, world):
+    _, em = world
+    he = await _login(client, em["emp"])
+    b = {"work_date": WD.isoformat(),
+         "requested_punch_in": _dt(WD, 1),
+         "requested_punch_out": _dt(WD + timedelta(days=1), 3),
+         "reason": "too long"}
+    assert (await client.post(f"{BASE}/", json=b, headers=he)
+            ).status_code == 422
+
+
+async def test_non_superuser_role_with_permission(client, world):
+    from app.models.user import Permission, Role, user_roles, role_permissions
+    ids, em = world
+    sfx = uuid.uuid4().hex[:8]
+    created_perm = False
+    async with SessionLocal() as db:
+        perm = (await db.execute(select(Permission).where(
+            Permission.name == "attendance edit"))).scalars().first()
+        if not perm:
+            perm = Permission(name="attendance edit")
+            db.add(perm)
+            await db.flush()
+            created_perm = True
+        role = Role(name=f"regrole_{sfx}")
+        db.add(role)
+        await db.flush()
+        await db.execute(role_permissions.insert().values(
+            role_id=role.id, permission_id=perm.id))
+        hr = User(email=f"reg_hr_{sfx}@t.com", full_name="Reg HR",
+                  hashed_password=get_password_hash(PW), is_active=True)
+        db.add(hr)
+        await db.flush()
+        await db.execute(user_roles.insert().values(
+            user_id=hr.id, role_id=role.id))
         await db.commit()
-    r = await client.post(f"{BASE}/", json=_body(LOCKED_WD), headers=he)
-    assert r.status_code == 409
+        hr_id, role_id, perm_id, hr_email = hr.id, role.id, perm.id, hr.email
+    try:
+        he = await _login(client, em["emp"])
+        hh = await _login(client, hr_email)
+        rid = (await client.post(f"{BASE}/", json=_body(), headers=he)
+               ).json()["id"]
+        q = await client.get(f"{BASE}/?status=all", headers=hh)
+        assert rid in [x["id"] for x in q.json()]
+        r = await client.post(f"{BASE}/{rid}/decide",
+                              json={"approve": True}, headers=hh)
+        assert r.status_code == 200, r.text
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(AuditLog).where(AuditLog.user_id == hr_id))
+            await db.execute(delete(Attendance).where(
+                Attendance.edited_by_id == hr_id))
+            await db.execute(delete(User).where(User.id == hr_id))
+            await db.execute(delete(Role).where(Role.id == role_id))
+            if created_perm:
+                await db.execute(delete(Permission).where(
+                    Permission.id == perm_id))
+            await db.commit()
