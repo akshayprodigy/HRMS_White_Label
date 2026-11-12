@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { cn } from '../ui-elements';
+import { todayIso } from '../schedule-delegations-utils';
 import type { CoverageCell, ShiftTemplateLite } from './roster-api';
 
 const STATUS_CLS: Record<string, string> = {
@@ -26,11 +27,14 @@ export const CoverageRows = React.memo(function CoverageRows({
   templates,
   coverage,
   stale = false,
+  onPostOpenShift,
 }: {
   dates: string[];
   templates: ShiftTemplateLite[];
   coverage: CoverageCell[];
   stale?: boolean;
+  /** shown on under-covered cells; opens the open-shift dialog prefilled */
+  onPostOpenShift?: (c: CoverageCell) => void;
 }) {
   const byShift = useMemo(() => {
     const out = new Map<number, Map<string, CoverageCell[]>>();
@@ -73,6 +77,16 @@ export const CoverageRows = React.memo(function CoverageRows({
                     {c.scheduled}/{c.required_min}
                     {c.required_max != null && ` ≤${c.required_max}`}
                   </span>
+                  {c.status === 'under' && onPostOpenShift && !stale && c.date >= todayIso() && (
+                    <button
+                      type="button"
+                      onClick={() => onPostOpenShift(c)}
+                      aria-label={`Post open shift for ${name(c.shift_template_id)} on ${c.date}`}
+                      className="block w-full mt-0.5 text-[10px] font-semibold text-indigo-700 hover:underline"
+                    >
+                      + Open shift
+                    </button>
+                  )}
                 </div>
               ))}
             </td>

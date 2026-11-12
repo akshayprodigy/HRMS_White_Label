@@ -4747,4 +4747,8 @@ html {
   @media (width >= 64rem) {
     .lg\:grid-cols-7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
   }
+  .left-1 { left: calc(var(--spacing, .25rem) * 1); }
+  .col-span-2 { grid-column: span 2 / span 2; }
+  .list-disc { list-style-type: disc; }
+  .list-inside { list-style-position: inside; }
 }

@@ -150,6 +150,14 @@ export const ENDPOINTS = {
     DROPS: '/roster/drops',
     DROPS_MY: '/roster/drops/my',
     DROP_CANCEL: (id: number) => `/roster/drops/${id}/cancel`,
+    DROP_DECIDE: (id: number) => `/roster/drops/${id}/decide`,
+    SWAP_CHECK: (id: number) => `/roster/swaps/${id}/check`,
+    SWAP_DECIDE: (id: number) => `/roster/swaps/${id}/decide`,
+    OPEN_SHIFTS: '/roster/open-shifts',
+    OPEN_SHIFT_CLAIM_DECIDE: (claimId: number) =>
+      `/roster/open-shifts/claims/${claimId}/decide`,
+    OPEN_SHIFT_CANCEL: (id: number) => `/roster/open-shifts/${id}/cancel`,
+    AVAILABILITY: '/roster/availability',
     CALENDAR_FEED: '/roster/my/calendar-feed',
   },
   GEO: {

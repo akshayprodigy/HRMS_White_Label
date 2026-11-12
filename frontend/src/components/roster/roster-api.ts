@@ -1,3 +1,7 @@
+import { client } from '../../api/client';
+import { ENDPOINTS } from '../../api/endpoints';
+import type { AvailabilityRule, Drop, OpenShift, Swap } from '../my-schedule/my-schedule-api';
+
 export interface ShiftTemplateLite {
   id: number;
   name: string;
@@ -128,3 +132,89 @@ export const daysBetween = (a: string, b: string) =>
   Math.round(
     (Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000
   );
+
+// ---------------------------------------------------------------------------
+// Scheduler-side requests (swaps, drops, open shifts, availability)
+// ---------------------------------------------------------------------------
+export interface SwapWarning {
+  user_id: number;
+  employee_name: string | null;
+  work_date: string;
+  rule: string;
+  message: string;
+}
+export type ApproverSwap = Swap & { warnings: SwapWarning[] };
+
+export type SchedDrop = Drop & {
+  user_id: number;
+  user_name: string | null;
+  shift_template_id: number;
+  post_open_shift: boolean;
+  open_shift_id: number | null;
+  open_shift_skipped_reason: string | null;
+};
+
+export interface OpenShiftClaim {
+  id: number;
+  open_shift_id: number;
+  user_id: number;
+  user_name: string | null;
+  status: string;
+  eligibility_reason: string | null;
+}
+export type SchedOpenShift = OpenShift & {
+  shift_template_id: number;
+  status: string;
+  auto_confirm: boolean;
+  created_by_name: string | null;
+  claims: OpenShiftClaim[];
+};
+export interface OpenShiftCreateInput {
+  work_date: string;
+  shift_template_id: number;
+  department: string | null;
+  location: string | null;
+  slots: number;
+  note: string | null;
+  auto_confirm: boolean;
+}
+export type EmployeeAvailabilityRule = AvailabilityRule & {
+  user_id: number;
+  employee_name: string | null;
+};
+
+const R = ENDPOINTS.ROSTER;
+const data = async <T,>(p: Promise<{ data: T }>): Promise<T> => (await p).data;
+
+export const schedulerApi = {
+  swapQueue: () => data<ApproverSwap[]>(client.get(R.SWAPS)),
+  swapCheck: (id: number) => data<SwapWarning[]>(client.get(R.SWAP_CHECK(id))),
+  decideSwap: (id: number, action: 'approve' | 'reject', note: string | null) =>
+    data<ApproverSwap>(client.post(R.SWAP_DECIDE(id), { action, note })),
+
+  dropQueue: () => data<SchedDrop[]>(client.get(R.DROPS)),
+  decideDrop: (
+    id: number,
+    action: 'approve' | 'reject',
+    note: string | null,
+    post_open_shift: boolean | null
+  ) => data<SchedDrop>(client.post(R.DROP_DECIDE(id), { action, note, post_open_shift })),
+
+  openShifts: (start: string, end: string, status?: string) =>
+    data<SchedOpenShift[]>(
+      client.get(R.OPEN_SHIFTS, { params: { start, end, ...(status ? { status } : {}) } })
+    ),
+  createOpenShift: (b: OpenShiftCreateInput) =>
+    data<SchedOpenShift>(client.post(R.OPEN_SHIFTS, b)),
+  decideClaim: (claimId: number, action: 'approve' | 'reject') =>
+    data<SchedOpenShift>(client.post(R.OPEN_SHIFT_CLAIM_DECIDE(claimId), { action })),
+  cancelOpenShift: (id: number) =>
+    data<SchedOpenShift>(client.post(R.OPEN_SHIFT_CANCEL(id), {})),
+
+  availability: (start: string, end: string, department: string) =>
+    data<EmployeeAvailabilityRule[]>(
+      client.get(R.AVAILABILITY, {
+        params: { start, end, ...(department ? { department } : {}) },
+      })
+    ),
+};

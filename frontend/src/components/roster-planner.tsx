@@ -37,6 +37,10 @@ import { CoverageRequirementsDialog } from './roster/coverage-requirements-dialo
 import { CoverageRows } from './roster/coverage-strip';
 import { ViolationsPanel, violationKey } from './roster/violations-panel';
 import { useInsights } from './roster/use-insights';
+import { useRequests } from './roster/use-requests';
+import { RequestsView } from './roster/requests-view';
+import { OpenShiftDialog, type OpenShiftPrefill } from './roster/open-shift-dialog';
+import { useAvailability, expandMarks, availabilityKey } from './roster/use-availability';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -70,7 +74,7 @@ export const RosterPlanner = () => {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [view, setView] = useState<'planner' | 'delegations'>('planner');
+  const [view, setView] = useState<'planner' | 'requests' | 'delegations'>('planner');
   // null until the first response; latched so a later failed fetch doesn't unmount Delegations.
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [myGrants, setMyGrants] = useState<any[]>([]);
@@ -91,6 +95,17 @@ export const RosterPlanner = () => {
   // Pattern dialog
   const [patternOpen, setPatternOpen] = useState(false);
   const [covOpen, setCovOpen] = useState(false);
+  const [osPrefill, setOsPrefill] = useState<OpenShiftPrefill | null>(null);
+  const [osOpen, setOsOpen] = useState(false);
+  const { loaded: availLoaded, load: loadAvailability } = useAvailability();
+  // The grid only loads for people with a roster scope, so a loaded grid
+  // (latched) means they can manage and may see Requests.
+  const [canManage, setCanManage] = useState(false);
+  const reqs = useRequests(canManage);
+  const openShiftDialog = (p: OpenShiftPrefill | null) => {
+    setOsPrefill(p);
+    setOsOpen(true);
+  };
 
   const range = useCallback(() => {
     if (mode === 'week') {
@@ -115,11 +130,13 @@ export const RosterPlanner = () => {
       const params = new URLSearchParams({ start, end });
       if (appliedDept) params.set('department', appliedDept);
       loadInsights(start, end, appliedDept, background); // independent; never breaks the grid
+      loadAvailability(start, end, appliedDept); // advisory overlay; independent too
       const res = await client.get<RosterGrid>(
         ENDPOINTS.ROSTER.PLAN + '?' + params.toString()
       );
       if (reqId !== gridReq.current) return;
       setGrid(res.data);
+      setCanManage(true);
       setIsAdmin((prev) => prev === true ? true : !!res.data.is_admin);
     } catch (err: any) {
       if (reqId !== gridReq.current) return;
@@ -136,7 +153,7 @@ export const RosterPlanner = () => {
         setRefreshing(false);
       }
     }
-  }, [range, appliedDept, loadInsights]);
+  }, [range, appliedDept, loadInsights, loadAvailability]);
   const refresh = useCallback(() => fetchGrid(true), [fetchGrid]);
   const commitDept = () => {
     const v = deptInput.trim();
@@ -262,6 +279,17 @@ export const RosterPlanner = () => {
     });
     return m;
   }, [ins]);
+  const availMarks = useMemo(
+    () =>
+      availLoaded &&
+      grid &&
+      availLoaded.start === grid.start &&
+      availLoaded.end === grid.end &&
+      availLoaded.department === appliedDept
+        ? expandMarks(availLoaded.rules, grid.start, grid.end, templates)
+        : null,
+    [availLoaded, grid, appliedDept, templates]
+  );
   const rangeLabel = grid ? `${grid.start} → ${grid.end}` : '';
 
   return (
@@ -279,29 +307,60 @@ export const RosterPlanner = () => {
         </div>
       </div>
 
-      {isAdmin && (
+      {(isAdmin || canManage) && (
         <div role="group" aria-label="Roster view" className="flex rounded-lg border border-gray-200 overflow-hidden w-fit">
-          {(['planner', 'delegations'] as const).map((v) => (
+          {(['planner', 'requests', ...(isAdmin ? ['delegations'] : [])] as const).map((v) => (
             <button
               key={v}
-              onClick={() => setView(v)}
+              onClick={() => setView(v as typeof view)}
               aria-pressed={view === v}
               className={cn(
-                'px-3 py-1.5 text-sm font-medium',
+                'px-3 py-1.5 text-sm font-medium inline-flex items-center gap-1.5',
                 view === v
                   ? 'bg-indigo-600 text-white'
                   : 'bg-white text-gray-600 hover:bg-gray-50'
               )}
             >
-              {v === 'planner' ? 'Planner' : 'Delegations'}
+              {v === 'planner' ? 'Planner' : v === 'requests' ? 'Requests' : 'Delegations'}
+              {v === 'requests' && reqs.count > 0 && (
+                <span
+                  aria-label={`${reqs.count} pending`}
+                  className="w-5 h-5 rounded-full bg-red-600 text-white text-[10px] inline-flex items-center justify-center"
+                >
+                  {reqs.count}
+                </span>
+              )}
             </button>
           ))}
         </div>
       )}
 
+      {view === 'requests' && canManage && (
+        <RequestsView
+          swaps={reqs.swaps}
+          drops={reqs.drops}
+          shifts={reqs.shifts}
+          loading={reqs.loading}
+          reload={reqs.reload}
+          onRosterChanged={refresh}
+          onNewOpenShift={() => openShiftDialog(null)}
+        />
+      )}
+
+      <OpenShiftDialog
+        open={osOpen}
+        templates={templates}
+        prefill={osPrefill}
+        defaultDepartment={appliedDept}
+        onClose={() => setOsOpen(false)}
+        onCreated={() => {
+          reqs.reload();
+          refresh();
+        }}
+      />
       {isAdmin && view === 'delegations' ? (
         <ScheduleDelegations />
-      ) : (
+      ) : view === 'requests' ? null : (
       <>
       {isAdmin === false && myGrants.length > 0 && (
         <div className="flex items-start gap-2 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-800">
@@ -524,6 +583,14 @@ export const RosterPlanner = () => {
                     templates={templates}
                     coverage={ins?.data.coverage || []}
                     stale={!!ins?.stale}
+                    onPostOpenShift={(c) =>
+                      openShiftDialog({
+                        date: c.date,
+                        templateId: c.shift_template_id,
+                        department: c.department,
+                        location: c.location,
+                      })
+                    }
                   />
                   {grid.rows.map((row) => (
                   <tr key={row.employee_id} className="border-b hover:bg-gray-50">
@@ -558,6 +625,7 @@ export const RosterPlanner = () => {
                       const isFallback = c.source !== 'roster';
                       const isDraft = c.status === 'draft';
                       const warns = violationsByCell.get(violationKey(row.employee_id, c.work_date));
+                      const avail = availMarks?.get(availabilityKey(row.employee_id, c.work_date));
                       const lockedPublished =
                         !canPublish && c.source === 'roster' && c.status === 'published';
                       return (
@@ -577,6 +645,17 @@ export const RosterPlanner = () => {
                             >
                               <AlertTriangle className="w-3 h-3" />
                             </div>
+                          )}
+                          {avail && (
+                            <div
+                              className={cn(
+                                'absolute top-1 left-1 w-2.5 h-2.5 rounded-full',
+                                avail.blocked ? 'bg-red-500' : 'bg-blue-500'
+                              )}
+                              title={avail.lines.join('\n')}
+                              aria-label={`Availability: ${avail.lines.join('; ')}`}
+                              role="img"
+                            />
                           )}
                           {isDraft && (
                             <div className="text-[9px] uppercase tracking-wide text-amber-600 leading-none mb-0.5">
@@ -643,6 +722,12 @@ export const RosterPlanner = () => {
               Draft
             </Badge>
             = unpublished (hidden from employees)
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" aria-hidden="true" />
+            unavailable
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block ml-2" aria-hidden="true" />
+            prefers a shift (hover the dot)
           </span>
         </div>
       )}
