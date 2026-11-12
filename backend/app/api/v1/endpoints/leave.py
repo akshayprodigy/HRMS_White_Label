@@ -324,12 +324,30 @@ async def download_leave_attachment(
     return FileResponse(path)
 
 
+# Stored attachment names are uuid4().hex + extension (see upload_leave_attachment).
+_STORED_NAME_RE = re.compile(r"^[0-9a-f]{32}\.(pdf|jpe?g|png|webp|heic)$")
+
+
+async def _check_attachment(db, name, exclude_leave_id=None) -> None:
+    """400 unless `name` is an uploaded, not-yet-used /leave/attachments file."""
+    if (not _STORED_NAME_RE.match(name)
+            or not (_leave_attachments_dir() / name).is_file()):
+        raise HTTPException(status_code=400, detail="Upload the file via /leave/attachments first")
+    q = select(LeaveRequest.id).where(LeaveRequest.attachment_url == name)
+    if exclude_leave_id is not None:
+        q = q.where(LeaveRequest.id != exclude_leave_id)
+    if (await db.execute(q.limit(1))).first():
+        raise HTTPException(status_code=400, detail="This file is already attached to another leave")
+
+
 async def _validate_leave_request(db, target_user_id: int, leave_in) -> tuple:
     """Validate a leave request against the TARGET employee — date range,
     overlap, leave-type policy, monthly limit, and paid-balance. Returns
     (leave_type, days). Raises HTTPException on failure. Shared by apply_leave
     (self) and apply_on_behalf (HR files for the target). Keyed on
     target_user_id so on-behalf validates the employee, not the HR caller."""
+    if leave_in.attachment_url:
+        await _check_attachment(db, leave_in.attachment_url)
     # 1. Date range
     if leave_in.start_date > leave_in.end_date:
         raise HTTPException(status_code=400, detail="Start date cannot be after end date")
@@ -594,10 +612,6 @@ async def apply_leave_on_behalf(
     )).scalar_one()
 
 
-# Stored attachment names are uuid4().hex + extension (see upload_leave_attachment).
-_STORED_NAME_RE = re.compile(r"^[0-9a-f]{32}\.(pdf|jpe?g|png|webp|heic)$")
-
-
 class LeaveProofIn(BaseModel):
     attachment_url: str
 
@@ -630,14 +644,7 @@ async def submit_leave_proof(
     if leave.converted_to_lop_at is not None:
         raise HTTPException(status_code=400, detail="Leave was already converted to loss of pay")
     name = body.attachment_url
-    if (not _STORED_NAME_RE.match(name)
-            or not (_leave_attachments_dir() / name).is_file()):
-        raise HTTPException(status_code=400, detail="Upload the file via /leave/attachments first")
-    reused = (await db.execute(select(LeaveRequest.id).where(
-        LeaveRequest.attachment_url == name,
-        LeaveRequest.id != leave.id).limit(1))).first()
-    if reused:
-        raise HTTPException(status_code=400, detail="This file is already attached to another leave")
+    await _check_attachment(db, name, exclude_leave_id=leave.id)
     leave.attachment_url = name
     leave.proof_submitted_at = datetime.now(timezone.utc)
     db.add(AuditLog(

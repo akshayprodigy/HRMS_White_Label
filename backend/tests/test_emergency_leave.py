@@ -716,3 +716,26 @@ async def test_proof_file_validation_and_reuse(client, world):
     reuse = await client.post(f"{API}/leave/{b}/proof", headers=hother,
                               json={"attachment_url": name})
     assert reuse.status_code == 400 and "already attached" in reuse.text
+
+
+async def test_apply_rejects_bogus_or_reused_attachment(client, world):
+    w = world
+    await _rules(backdate_days=3, proof_days=3)
+    ho = await _login(client, w, "emp")
+    hhr = await _login(client, w, "hr")
+    for bad in ("anything", "nope.pdf", f"{uuid.uuid4().hex}.pdf", "../x.pdf"):
+        r = await client.post(f"{API}/leave/apply", headers=ho, json=_body(
+            w, dn(0), leave_type_id=w["ids"]["cert"], attachment_url=bad))
+        assert r.status_code == 400, (bad, r.text)
+        r = await client.post(f"{API}/leave/apply-on-behalf", headers=hhr, json={
+            **_body(w, dn(0), leave_type_id=w["ids"]["cert"], attachment_url=bad),
+            "employee_id": w["ids"]["emp"]})
+        assert r.status_code == 400, (bad, r.text)
+    name = await _upload(client, w, ho)
+    ok = await client.post(f"{API}/leave/apply", headers=ho, json=_body(
+        w, dn(0), leave_type_id=w["ids"]["cert"], attachment_url=name))
+    assert ok.status_code == 200, ok.text
+    hother = await _login(client, w, "other")
+    reuse = await client.post(f"{API}/leave/apply", headers=hother, json=_body(
+        w, dn(0), leave_type_id=w["ids"]["cert"], attachment_url=name))
+    assert reuse.status_code == 400 and "already attached" in reuse.text
