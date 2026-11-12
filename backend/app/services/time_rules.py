@@ -68,6 +68,15 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Minutes after shift start with no punch-in before an employee is "
         "flagged a no-show and alerts are sent (0 = off)",
     ),
+    "leave.emergency_backdate_days": (
+        "3",
+        "Emergency leave may start up to this many days in the past (0-31)",
+    ),
+    "leave.emergency_proof_days": (
+        "3",
+        "Days after an emergency leave ends by which proof must be "
+        "submitted, else it converts to LOP. 0 = no proof required (0-60)",
+    ),
 }
 
 # key -> inclusive upper bound
@@ -79,6 +88,10 @@ SCHEDULE_INT_CAPS: Dict[str, int] = {
     "schedule.no_show_minutes": 240,
 }
 SCHEDULE_INT_KEYS = tuple(SCHEDULE_INT_CAPS)
+LEAVE_INT_CAPS: Dict[str, int] = {
+    "leave.emergency_backdate_days": 31,
+    "leave.emergency_proof_days": 60,
+}
 
 
 async def get_time_rules(db: AsyncSession) -> Dict[str, str]:
@@ -116,7 +129,7 @@ async def set_time_rules(
                 "attendance.weekoff_comp_off_enabled must be 0 or 1"
             )
         updates["attendance.weekoff_comp_off_enabled"] = str(wk).strip()
-    for key, cap in SCHEDULE_INT_CAPS.items():
+    for key, cap in {**SCHEDULE_INT_CAPS, **LEAVE_INT_CAPS}.items():
         v = updates.get(key)
         if v is not None:
             sv = str(v).strip()
@@ -208,3 +221,22 @@ def flags_enabled(rules: Dict[str, str]) -> bool:
     return rules.get("attendance.enable_late_flags", "1").strip() in (
         "1", "true", "yes", "on"
     )
+
+
+async def get_emergency_leave_rules(db: AsyncSession) -> Dict[str, int]:
+    """{'backdate_days', 'proof_days'} as ints; corrupt values fall back to
+    the defaults (logged)."""
+    raw = await get_time_rules(db)
+    out: Dict[str, int] = {}
+    for key, cap in LEAVE_INT_CAPS.items():
+        short = key.split(".", 1)[1].replace("emergency_", "")
+        try:
+            val = int(str(raw[key]).strip())
+            if not 0 <= val <= cap:
+                raise ValueError("out of range")
+            out[short] = val
+        except (TypeError, ValueError):
+            logger.warning("Invalid stored value %r for %s; using default",
+                           raw.get(key), key)
+            out[short] = int(TIME_RULE_DEFAULTS[key][0])
+    return out

@@ -216,6 +216,9 @@ async def apply_leave_decision(
         item.status = ApprovalStatus.REJECTED
         if leave is not None:
             leave.status = LeaveStatus.REJECTED
+            from app.services.emergency_leave import dismiss_gaps_for_leave
+            await dismiss_gaps_for_leave(
+                db, leave, actor.id, "Leave rejected/cancelled")
         if accrual is not None:
             accrual.status = "rejected"
         outcome = "rejected"

@@ -74,6 +74,8 @@ EVENT_CATEGORY_MAP = {
     "leave_submitted": EventCategory.LEAVE,
     "leave_approved": EventCategory.LEAVE,
     "leave_rejected": EventCategory.LEAVE,
+    "leave_proof_reminder": EventCategory.LEAVE,
+    "leave_converted_lop": EventCategory.LEAVE,
     "approval_pending": EventCategory.APPROVALS,
     "approval_approved": EventCategory.APPROVALS,
     "approval_rejected": EventCategory.APPROVALS,

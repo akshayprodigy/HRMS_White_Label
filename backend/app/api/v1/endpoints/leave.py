@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 from datetime import datetime, date, timedelta, timezone
 from uuid import uuid4
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select, and_, or_, func
@@ -11,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.services.leave_approval import apply_leave_decision, notify_new_leave
+from app.services import emergency_leave as emergency_svc
 from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
 from app.core.config import settings
 from app.models.leave import LeaveType, LeaveBalanceLedger, LeaveRequest, LeaveStatus, HalfDaySession
@@ -168,6 +170,10 @@ def _serialize_leave_for_history(lv: LeaveRequest) -> dict:
         "days": days,
         "reason": lv.reason,
         "attachment_url": lv.attachment_url,
+        "is_emergency": bool(lv.is_emergency),
+        "proof_due_date": lv.proof_due_date.isoformat() if lv.proof_due_date else None,
+        "proof_submitted_at": lv.proof_submitted_at.isoformat() if lv.proof_submitted_at else None,
+        "converted_to_lop_at": lv.converted_to_lop_at.isoformat() if lv.converted_to_lop_at else None,
         "status": status_val,
         "created_at": lv.created_at.isoformat() if lv.created_at else None,
     }
@@ -362,7 +368,10 @@ async def _validate_leave_request(db, target_user_id: int, leave_in) -> tuple:
         raise HTTPException(status_code=400, detail=f"{leave_type.name} does not allow half-day leaves")
     if leave_type.max_consecutive_days and days > leave_type.max_consecutive_days:
         raise HTTPException(status_code=400, detail=f"{leave_type.name} allows max {leave_type.max_consecutive_days} consecutive days")
-    if leave_type.requires_medical_cert_after and days >= leave_type.requires_medical_cert_after and not leave_in.attachment_url:
+    # Emergency leave defers proof (proof_due_date) instead of requiring it now.
+    if (not leave_in.is_emergency and leave_type.requires_medical_cert_after
+            and days >= leave_type.requires_medical_cert_after
+            and not leave_in.attachment_url):
         raise HTTPException(status_code=400, detail=f"{leave_type.name} requires a medical certificate for {leave_type.requires_medical_cert_after}+ consecutive days")
 
     if leave_type.max_per_month:
@@ -391,6 +400,16 @@ async def _validate_leave_request(db, target_user_id: int, leave_in) -> tuple:
     return leave_type, days
 
 
+async def _emergency_proof_due(db, leave_in) -> Optional[date]:
+    """Back-date window check + proof due date for emergency requests
+    (None for ordinary leave)."""
+    if not leave_in.is_emergency:
+        return None
+    return await emergency_svc.emergency_terms(
+        db, start_date=leave_in.start_date, end_date=leave_in.end_date,
+        has_attachment=bool(leave_in.attachment_url))
+
+
 @router.post("/apply", response_model=LeaveRequestRead)
 async def apply_leave(
     *,
@@ -402,11 +421,16 @@ async def apply_leave(
     request: Request
 ) -> Any:
     """Apply for a new leave."""
+    proof_due = await _emergency_proof_due(db, leave_in)
     leave_type, days = await _validate_leave_request(db, current_user.id, leave_in)
 
     # 4. Create Leave Request
     db_obj = LeaveRequest(
         **leave_in.model_dump(),
+        proof_due_date=proof_due,
+        proof_submitted_at=(datetime.now(timezone.utc)
+                            if leave_in.is_emergency and leave_in.attachment_url
+                            else None),
         employee_id=current_user.id,
         created_by_user_id=current_user.id,
         status=LeaveStatus.SUBMITTED
@@ -464,6 +488,8 @@ async def apply_leave(
     await notify_new_leave(
         db, leave=db_obj, item=approval_item,
         requester_name=current_user.full_name or current_user.email)
+    if db_obj.is_emergency:
+        await emergency_svc.open_gaps_for_leave(db, db_obj)
 
     await db.commit()
     await db.refresh(db_obj)
@@ -490,11 +516,16 @@ async def apply_leave_on_behalf(
     if not target:
         raise HTTPException(status_code=404, detail="Target employee not found")
 
+    proof_due = await _emergency_proof_due(db, leave_in)
     leave_type, days = await _validate_leave_request(db, leave_in.employee_id, leave_in)
 
     base_fields = leave_in.model_dump(exclude={"employee_id", "auto_approve"})
     db_obj = LeaveRequest(
         **base_fields,
+        proof_due_date=proof_due,
+        proof_submitted_at=(datetime.now(timezone.utc)
+                            if leave_in.is_emergency and leave_in.attachment_url
+                            else None),
         employee_id=leave_in.employee_id,
         created_by_user_id=current_user.id,
         status=LeaveStatus.SUBMITTED,
@@ -553,11 +584,61 @@ async def apply_leave_on_behalf(
         await notify_new_leave(
             db, leave=db_obj, item=approval_item,
             requester_name=target.full_name or target.email)
+    if db_obj.is_emergency:
+        await emergency_svc.open_gaps_for_leave(db, db_obj)
 
     await db.commit()
     await db.refresh(db_obj)
     return (await db.execute(
         select(LeaveRequest).where(LeaveRequest.id == db_obj.id)
+        .options(selectinload(LeaveRequest.leave_type))
+    )).scalar_one()
+
+
+class LeaveProofIn(BaseModel):
+    attachment_url: str
+
+
+@router.post("/{id}/proof", response_model=LeaveRequestRead)
+async def submit_leave_proof(
+    *,
+    db: deps.DBDep,
+    id: int,
+    body: LeaveProofIn,
+    current_user: User = Depends(deps.get_current_user),
+    request: Request,
+) -> Any:
+    """Attach proof (an uploaded /leave/attachments filename) to an emergency
+    leave. Allowed for the leave's owner and HR. Rejected once the leave was
+    converted to LOP."""
+    from app.api.v1.endpoints.roster_common import lock_row
+
+    leave = await lock_row(db, select(LeaveRequest).where(LeaveRequest.id == id))
+    if leave is None:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    perm_names = {p.name for r in (current_user.roles or []) for p in (r.permissions or [])}
+    is_hr = bool(current_user.is_superuser or "hr employee write" in perm_names)
+    if leave.employee_id != current_user.id and not is_hr:
+        raise HTTPException(status_code=403, detail="Not allowed to submit proof for this leave")
+    if not leave.is_emergency:
+        raise HTTPException(status_code=400, detail="Proof applies to emergency leave only")
+    if leave.status not in (LeaveStatus.SUBMITTED, LeaveStatus.APPROVED):
+        raise HTTPException(status_code=400, detail=f"Cannot add proof to a {leave.status.value} leave")
+    if leave.converted_to_lop_at is not None:
+        raise HTTPException(status_code=400, detail="Leave was already converted to loss of pay")
+    name = body.attachment_url
+    if ("/" in name or "\\" in name or name.startswith(".")
+            or not (_leave_attachments_dir() / name).is_file()):
+        raise HTTPException(status_code=400, detail="Upload the file via /leave/attachments first")
+    leave.attachment_url = name
+    leave.proof_submitted_at = datetime.now(timezone.utc)
+    db.add(AuditLog(
+        user_id=current_user.id, action="LEAVE_PROOF_SUBMIT",
+        resource_type="leave_request", resource_id=str(id),
+        ip_address=request.client.host if request.client else None))
+    await db.commit()
+    return (await db.execute(
+        select(LeaveRequest).where(LeaveRequest.id == id)
         .options(selectinload(LeaveRequest.leave_type))
     )).scalar_one()
 
@@ -595,7 +676,7 @@ async def cancel_leave(
     approval_query = select(ApprovalItem).where(
         ApprovalItem.resource_type == "leave_request",
         ApprovalItem.resource_id == str(id)
-    )
+    ).options(selectinload(ApprovalItem.steps))
     app_result = await db.execute(approval_query)
     approval_item = app_result.scalar_one_or_none()
     if approval_item:
@@ -606,6 +687,9 @@ async def cancel_leave(
                 step.comment = "Cancelled by requester"
                 step.actioned_at = datetime.now(timezone.utc)
 
+    await emergency_svc.dismiss_gaps_for_leave(
+        db, leave, current_user.id, "Leave rejected/cancelled")
+
     db.add(AuditLog(
         user_id=current_user.id,
         action="LEAVE_CANCEL",
@@ -615,8 +699,11 @@ async def cancel_leave(
     ))
     
     await db.commit()
-    await db.refresh(leave)
-    return leave
+    return (await db.execute(
+        select(LeaveRequest).where(LeaveRequest.id == id)
+        .options(selectinload(LeaveRequest.leave_type))
+        .execution_options(populate_existing=True)
+    )).scalar_one()
 
 
 def _parse_leave_resource_id(raw: Any) -> Optional[int]:
@@ -665,6 +752,8 @@ def _serialize_leave_for_approval(lr: LeaveRequest) -> dict:
         "reason": lr.reason,
         "emergency_contact": lr.emergency_contact,
         "attachment_url": lr.attachment_url,
+        "is_emergency": bool(lr.is_emergency),
+        "proof_due_date": lr.proof_due_date.isoformat() if lr.proof_due_date else None,
     }
 
 

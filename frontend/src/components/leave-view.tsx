@@ -46,6 +46,8 @@ export const LeaveView = () => {
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [attachmentName, setAttachmentName] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isEmergency, setIsEmergency] = useState(false);
+  const [proofBusyId, setProofBusyId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -82,8 +84,9 @@ export const LeaveView = () => {
     return Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
   })();
   const medicalCertThreshold: number | null = selectedLeaveType?.requires_medical_cert_after ?? null;
-  const showAttachmentField = medicalCertThreshold != null;
-  const attachmentRequired = medicalCertThreshold != null && computedDays >= medicalCertThreshold;
+  const showAttachmentField = medicalCertThreshold != null || isEmergency;
+  // Emergency leave defers the certificate: it can be uploaded later (proof due date).
+  const attachmentRequired = !isEmergency && medicalCertThreshold != null && computedDays >= medicalCertThreshold;
 
   const resetForm = () => {
     setLeaveTypeId('');
@@ -92,6 +95,7 @@ export const LeaveView = () => {
     setReason('');
     setEmergencyContact('');
     setIsHalfDay(false);
+    setIsEmergency(false);
     setHalfDaySession('');
     setAttachmentFile(null);
     setAttachmentName('');
@@ -130,6 +134,27 @@ export const LeaveView = () => {
       setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60000);
     } catch {
       toast.error('Failed to open attachment');
+    }
+  };
+
+  const uploadProof = async (leaveId: number, f: File | undefined) => {
+    if (!f) return;
+    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+    if (!allowed.includes(f.type)) { toast.error('Only PDF, JPEG, PNG, WebP, or HEIC files are allowed'); return; }
+    if (f.size > 10 * 1024 * 1024) { toast.error('File must be under 10 MB'); return; }
+    setProofBusyId(leaveId);
+    try {
+      const form = new FormData();
+      form.append('file', f);
+      const up = await client.post(ENDPOINTS.LEAVE.ATTACHMENT_UPLOAD, form);
+      await client.post(ENDPOINTS.LEAVE.PROOF(leaveId), { attachment_url: (up.data as any)?.attachment_url });
+      toast.success('Proof submitted');
+      fetchData();
+    } catch (error: any) {
+      const msg = error.response?.data?.detail || error.response?.data?.error?.message || 'Failed to submit proof';
+      toast.error(typeof msg === 'string' ? msg : 'Failed to submit proof');
+    } finally {
+      setProofBusyId(null);
     }
   };
 
@@ -172,6 +197,7 @@ export const LeaveView = () => {
         is_half_day: isHalfDay,
         half_day_session: isHalfDay ? halfDaySession : null,
         attachment_url: attachmentUrl,
+        is_emergency: isEmergency,
       });
       toast.success("Leave request submitted successfully");
       setIsRequestingLeave(false);
@@ -373,6 +399,34 @@ export const LeaveView = () => {
                               <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-slate-400 uppercase font-black tracking-tight">
                                 <AlertCircle size={10} />
                                 Emergency: {request.emergency_contact}
+                              </div>
+                            )}
+                            {request.is_emergency && (
+                              <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                                <Badge variant="neutral" className="bg-rose-50 text-rose-700 font-bold px-2 py-0.5 border-none text-[10px] uppercase">Emergency</Badge>
+                                {request.converted_to_lop_at ? (
+                                  <Badge variant="neutral" className="bg-slate-800 text-white font-bold px-2 py-0.5 border-none text-[10px] uppercase">Converted to LOP</Badge>
+                                ) : request.proof_due_date && !request.proof_submitted_at && (request.status === 'submitted' || request.status === 'approved') ? (
+                                  <>
+                                    <span className="text-[10px] font-black uppercase tracking-tight text-amber-700">
+                                      Proof due by {new Date(request.proof_due_date + 'T00:00:00').toLocaleDateString()}
+                                    </span>
+                                    <label className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-tight text-indigo-600 hover:text-indigo-800 cursor-pointer">
+                                      <Paperclip size={10} />
+                                      {proofBusyId === request.id ? 'Uploading...' : 'Upload proof'}
+                                      <input
+                                        type="file"
+                                        className="hidden"
+                                        accept="application/pdf,image/jpeg,image/png,image/webp,image/heic"
+                                        aria-label="Upload proof"
+                                        disabled={proofBusyId === request.id}
+                                        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; uploadProof(request.id, f); }}
+                                      />
+                                    </label>
+                                  </>
+                                ) : request.proof_submitted_at ? (
+                                  <span className="text-[10px] font-black uppercase tracking-tight text-emerald-700">Proof submitted</span>
+                                ) : null}
                               </div>
                             )}
                             {(request as any).attachment_url && (
@@ -663,6 +717,26 @@ export const LeaveView = () => {
                 </div>
               );
             })()}
+
+            <div className="space-y-1">
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  aria-label="Emergency leave (same-day or back-dated)"
+                  checked={isEmergency}
+                  onChange={(e) => setIsEmergency(e.target.checked)}
+                  className="w-4 h-4 accent-rose-600"
+                />
+                <span className="text-sm font-black text-slate-800">Emergency (same-day / back-dated)</span>
+              </label>
+              {isEmergency && (
+                <p className="text-[11px] font-bold text-slate-500">
+                  Emergency leave can start today or in the recent past. Your scheduler is alerted to arrange cover.
+                  Proof (e.g. medical certificate) can be uploaded later from Leave History, by the due date shown
+                  after you submit; otherwise the leave converts to loss of pay.
+                </p>
+              )}
+            </div>
 
             <div className="space-y-2">
               <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Separation Justification</label>

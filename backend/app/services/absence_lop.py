@@ -18,13 +18,13 @@ import logging
 from datetime import date, timedelta
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.models.attendance import Attendance
 from app.models.employee import Employee
 from app.models.exit_management import Resignation, ResignationStatus
 from app.models.hr import HolidayCalendar
-from app.models.leave import LeaveRequest, LeaveStatus
+from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
 from app.services.effective_shift import effective_shifts_for_range
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,27 @@ def unpaid_leave_lop_days(
     if overlap <= 0:
         return 0.0
     return overlap * (0.5 if is_half_day else 1.0)
+
+
+async def leave_lop_days(
+    db, user_id: int, month_start: date, month_end: date,
+) -> float:
+    """LOP days from approved leave in [month_start, month_end]: unpaid leave
+    types plus emergency leaves converted to LOP (proof overdue). Each leave
+    row counts once; the absence LOP excuses every approved-leave day, so it
+    never double counts these."""
+    rows = (await db.execute(
+        select(LeaveRequest).join(LeaveType).where(and_(
+            LeaveRequest.employee_id == user_id,
+            LeaveRequest.status == LeaveStatus.APPROVED,
+            or_(LeaveType.unpaid_allowed.is_(True),
+                LeaveRequest.converted_to_lop_at.is_not(None)),
+            LeaveRequest.start_date <= month_end,
+            LeaveRequest.end_date >= month_start,
+        )))).scalars().all()
+    return sum(
+        unpaid_leave_lop_days(lv.start_date, lv.end_date, bool(lv.is_half_day),
+                              month_start, month_end) for lv in rows)
 
 
 def parse_weekdays(raw: str | None) -> set[int]:

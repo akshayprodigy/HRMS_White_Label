@@ -19,7 +19,7 @@ export const FileLeaveOnBehalfPanel: React.FC = () => {
   const [leaveTypes, setLeaveTypes] = useState<any[]>([]);
   const [form, setForm] = useState({
     employee_id: '', leave_type_id: '', start_date: '', end_date: '',
-    is_half_day: false, reason: '', auto_approve: true,
+    is_half_day: false, reason: '', auto_approve: true, is_emergency: false,
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -46,7 +46,7 @@ export const FileLeaveOnBehalfPanel: React.FC = () => {
         leave_type_id: Number(form.leave_type_id),
         start_date: form.start_date, end_date: form.end_date,
         is_half_day: form.is_half_day, reason: form.reason,
-        auto_approve: form.auto_approve,
+        auto_approve: form.auto_approve, is_emergency: form.is_emergency,
       });
       toast.success(`Leave filed (${res.data.status}) for the employee`);
       setForm({ ...form, start_date: '', end_date: '', reason: '' });
@@ -100,6 +100,17 @@ export const FileLeaveOnBehalfPanel: React.FC = () => {
           <label className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-[#0F172A] cursor-pointer">
             <input type="checkbox" checked={form.auto_approve} onChange={e => setForm({ ...form, auto_approve: e.target.checked })} className="w-3.5 h-3.5 accent-blue-600" /> Auto-approve (debit balance now)
           </label>
+        </div>
+        <div>
+          <label className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-[#0F172A] cursor-pointer">
+            <input type="checkbox" aria-label="Emergency leave" checked={form.is_emergency} onChange={e => setForm({ ...form, is_emergency: e.target.checked })} className="w-3.5 h-3.5 accent-rose-600" /> Emergency (same-day / back-dated)
+          </label>
+          {form.is_emergency && (
+            <p className="text-[10px] font-bold text-slate-500 mt-1.5">
+              May start up to the configured back-date window in the past. Proof can follow later; if it is not
+              submitted by the due date the leave converts to loss of pay. Schedulers are alerted to cover the shifts.
+            </p>
+          )}
         </div>
         <Button onClick={submit} isLoading={submitting} className="bg-blue-600 hover:bg-blue-700 text-white font-black uppercase text-[10px] tracking-widest h-11">
           <Send size={14} className="mr-1.5" /> File Leave

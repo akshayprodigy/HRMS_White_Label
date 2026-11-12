@@ -770,3 +770,23 @@ register_job(JobSpec(
     default_cadence_cron="30 1 * * *",     # daily 01:30 UTC
     fn=_job_overtime_recompute_yesterday,
 ))
+
+
+async def _job_emergency_leave_proof_check(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.emergency_leave import proof_check_job
+    return await proof_check_job(session)
+
+
+register_job(JobSpec(
+    name="emergency_leave_proof_check",
+    display_name="Emergency leave proof follow-up",
+    description=(
+        "Daily: remind employees a day before emergency-leave proof is due, "
+        "and convert approved emergency leaves still without proof after "
+        "`leave.emergency_proof_days` past the leave end to loss of pay "
+        "(paid-type ledger refunded; payroll counts them as LOP; employee "
+        "and HR notified). 0 days disables."
+    ),
+    default_cadence_cron="15 2 * * *",     # daily 02:15 UTC
+    fn=_job_emergency_leave_proof_check,
+))

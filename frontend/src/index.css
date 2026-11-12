@@ -4752,4 +4752,7 @@ html {
   .list-disc { list-style-type: disc; }
   .list-inside { list-style-position: inside; }
   .ml-\[280px\] { margin-left: 280px; }
+  .accent-rose-600 { accent-color: #e11d48; }
+  .bg-slate-800 { background-color: var(--color-slate-800, oklch(.279 .041 260.031)); }
+  .hover\:text-indigo-800:hover { color: var(--color-indigo-800, oklch(.398 .195 277.366)); }
 }

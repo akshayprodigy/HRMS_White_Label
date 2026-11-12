@@ -77,6 +77,10 @@ export interface LeaveRequest {
   status: 'submitted' | 'approved' | 'rejected' | 'cancelled';
   total_days: number;
   created_at: string;
+  is_emergency?: boolean;
+  proof_due_date?: string | null;
+  proof_submitted_at?: string | null;
+  converted_to_lop_at?: string | null;
 }
 
 // Backend enum values are lowercase strings (see backend PayrollRunStatus).

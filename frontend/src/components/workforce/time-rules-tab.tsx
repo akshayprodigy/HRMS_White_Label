@@ -51,6 +51,11 @@ const SCHEDULE_FIELDS: { key: string; label: string; hint: string; max: number }
   { key: 'schedule.no_show_minutes', label: 'No-show After (minutes)', hint: 'Minutes after shift start with no punch-in before a no-show alert. 0 = no automatic alerts; the board still shows missed shifts after they end (range 0–240)', max: 240 },
 ];
 
+const LEAVE_FIELDS: { key: string; label: string; hint: string; max: number }[] = [
+  { key: 'leave.emergency_backdate_days', label: 'Emergency Leave Back-date (days)', hint: 'Emergency leave may start this many days in the past (range 0–31)', max: 31 },
+  { key: 'leave.emergency_proof_days', label: 'Emergency Proof Deadline (days)', hint: 'Days after the leave ends to submit proof, else it becomes LOP. 0 = no proof required (range 0–60)', max: 60 },
+];
+
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-slate-200 text-sm text-[#0F172A] ' +
   'focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-500 bg-white';
@@ -83,7 +88,7 @@ export const TimeRulesTab: React.FC = () => {
   );
 
   const save = async () => {
-    for (const f of SCHEDULE_FIELDS) {
+    for (const f of [...SCHEDULE_FIELDS, ...LEAVE_FIELDS]) {
       const raw = (rules[f.key] ?? '').toString().trim();
       if (raw === '') {
         toast.error(`${f.label} is required (enter 0 to turn it off)`);
@@ -260,6 +265,41 @@ export const TimeRulesTab: React.FC = () => {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {SCHEDULE_FIELDS.map((f) => (
+            <div key={f.key} className="space-y-1">
+              <label
+                htmlFor={f.key}
+                className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+              >
+                {f.label}
+              </label>
+              <input
+                id={f.key}
+                type="number"
+                min={0}
+                max={f.max}
+                step={1}
+                className={inputCls}
+                value={rules[f.key] ?? ''}
+                onChange={(e) => setRules({ ...rules, [f.key]: e.target.value })}
+              />
+              <p className="text-[9px] font-bold text-slate-400">{f.hint}</p>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
+        <div>
+          <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+            <Clock3 size={15} className="text-blue-600" /> Emergency leave
+          </h3>
+          <p className="text-[10px] font-bold text-slate-500 mt-1">
+            Same-day / back-dated leave with proof submitted afterwards.
+            Overdue proof converts the leave to loss of pay. Whole numbers.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {LEAVE_FIELDS.map((f) => (
             <div key={f.key} className="space-y-1">
               <label
                 htmlFor={f.key}

@@ -361,6 +361,7 @@ export const ENDPOINTS = {
     ATTACHMENT_UPLOAD: '/leave/attachments',
     ATTACHMENT_DOWNLOAD: (filename: string) => `/leave/attachments/${filename}`,
     CANCEL: (id: number) => `/leave/${id}/cancel`,
+    PROOF: (id: number) => `/leave/${id}/proof`,
     APPROVALS: '/leave/approvals/inbox',
     APPROVAL_ACTION: (id: number) => `/leave/approvals/${id}/action`,
     BALANCE_TEMPLATE: '/leave/balances/template',

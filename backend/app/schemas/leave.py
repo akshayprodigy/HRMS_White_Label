@@ -63,6 +63,7 @@ class LeaveRequestBase(BaseModel):
     reason: str
     emergency_contact: Optional[str] = None
     attachment_url: Optional[str] = None
+    is_emergency: bool = False
 
 class LeaveRequestCreate(LeaveRequestBase):
     pass
@@ -80,6 +81,9 @@ class LeaveRequestRead(LeaveRequestBase):
     created_at: datetime
     created_by_user_id: int
     leave_type: LeaveTypeRead
+    proof_due_date: Optional[date] = None
+    proof_submitted_at: Optional[datetime] = None
+    converted_to_lop_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
     @computed_field

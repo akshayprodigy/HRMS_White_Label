@@ -84,6 +84,14 @@ class LeaveRequest(Base):
     status: Mapped[LeaveStatus] = mapped_column(
         Enum(LeaveStatus), default=LeaveStatus.DRAFT, index=True
     )
+    # Emergency leave (Roadmap v2 Phase 2, Task 1)
+    is_emergency: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False)
+    proof_due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    proof_submitted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    converted_to_lop_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

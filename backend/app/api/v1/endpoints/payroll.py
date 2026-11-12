@@ -3,7 +3,7 @@ from datetime import datetime, date, timezone
 from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from sqlalchemy import select, and_, func, delete
+from sqlalchemy import select, and_, or_, func, delete
 from app.api import deps
 from app.models.payroll import (
     PayrollRun, PayrollLine, Payslip, PayrollRunStatus, SalaryDisbursement
@@ -20,7 +20,7 @@ from app.services import employment_type as employment_type_service
 from app.services import salary_structure as salary_structure_service
 from app.services import late_mark as late_mark_service
 from app.services.absence_lop import (
-    absence_days_for_period, absence_lop_applies, default_offs_from_rules,
+    absence_days_for_period, absence_lop_applies, leave_lop_days, default_offs_from_rules,
     unpaid_leave_lop_days,
 )
 from app.services.time_rules import get_time_rules
@@ -450,25 +450,8 @@ async def generate_draft(
         # Calculate LOP days from unpaid leaves
         # Find approved leave requests in this month
         
-        leaves_res = await db.execute(
-            select(LeaveRequest).join(LeaveType).where(
-                and_(
-                    LeaveRequest.employee_id == emp.user_id,
-                    LeaveRequest.status == LeaveStatus.APPROVED,
-                    LeaveType.unpaid_allowed.is_(True),
-                    LeaveRequest.start_date <= end_of_month,
-                    LeaveRequest.end_date >= start_of_month
-                )
-            )
-        )
-        unpaid_leaves = leaves_res.scalars().all()
-        
-        lop_days = 0.0
-        for lv in unpaid_leaves:
-            lop_days += unpaid_leave_lop_days(
-                lv.start_date, lv.end_date, bool(lv.is_half_day),
-                start_of_month, end_of_month,
-            )
+        lop_days = await leave_lop_days(
+            db, emp.user_id, start_of_month, end_of_month)
 
         # W9: late-mark cascade residual LOP for this employee/month.
         lop_days += float(late_lop_map.get(emp.user_id, 0.0))

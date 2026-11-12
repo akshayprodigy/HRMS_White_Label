@@ -99,6 +99,20 @@ STARTER_TEMPLATES: List[Dict[str, Any]] = [
         ),
         body_text="Your leave request was rejected.\n{message}",
     ),
+    _t(
+        event_type="leave_proof_reminder", channel=Channel.EMAIL,
+        category=EventCategory.LEAVE,
+        subject="{title}",
+        body_html="<p>{message}</p><p>Open the ERP -> Leave to upload it.</p>",
+        body_text="{message}\nOpen the ERP -> Leave to upload it.",
+    ),
+    _t(
+        event_type="leave_converted_lop", channel=Channel.EMAIL,
+        category=EventCategory.LEAVE,
+        subject="{title}",
+        body_html="<p>{message}</p>",
+        body_text="{message}",
+    ),
 
     # ---- Payroll (SENSITIVE — link only, no figures) ----
     _t(

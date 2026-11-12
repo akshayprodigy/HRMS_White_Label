@@ -218,6 +218,9 @@ export const LeaveHR = () => {
                           <span className="text-xs font-black uppercase tracking-widest">Resource ID: {item.resource_id}</span>
                         </div>
                         <Badge variant="warning" className="text-[8px] px-2 h-5 font-black uppercase tracking-widest">Action Required</Badge>
+                        {(item as any).leave_detail?.is_emergency && (
+                          <Badge variant="error" className="text-[8px] px-2 h-5 font-black uppercase tracking-widest">Emergency</Badge>
+                        )}
                       </div>
                     </div>
 
@@ -594,6 +597,24 @@ const LeaveHistoryPanel = () => {
                   <td className="px-5 py-3 font-bold text-slate-700">{r.leave_type || '—'}</td>
                   <td className="px-5 py-3 font-bold text-slate-600">
                     {r.start_date}{r.start_date !== r.end_date ? ` → ${r.end_date}` : ''}
+                    {r.is_emergency && (
+                      <span className="ml-2 text-[9px] font-black text-rose-700 uppercase tracking-widest px-1.5 py-0.5 rounded bg-rose-50 border border-rose-100">
+                        Emergency
+                      </span>
+                    )}
+                    {r.is_emergency && (
+                      <p className="text-[10px] font-black uppercase tracking-tight mt-1">
+                        {r.converted_to_lop_at ? (
+                          <span className="text-slate-800">Converted to LOP</span>
+                        ) : r.proof_submitted_at ? (
+                          <span className="text-emerald-700">Proof submitted</span>
+                        ) : r.proof_due_date ? (
+                          <span className="text-amber-700">Proof due by {r.proof_due_date}</span>
+                        ) : (
+                          <span className="text-slate-400">No proof required</span>
+                        )}
+                      </p>
+                    )}
                     {r.is_half_day && (
                       <span className="ml-2 text-[9px] font-black text-indigo-700 uppercase tracking-widest px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-100">
                         {r.half_day_session === 'morning' ? 'HD1' : 'HD2'}
