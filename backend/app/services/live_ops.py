@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.attendance import Attendance
 from app.models.leave import LeaveRequest, LeaveStatus
 from app.models.employee import Employee, EmployeeStatus
+from app.models.late_notice import LateNotice
 from app.models.no_show import NoShowAlert
 from app.models.schedule_delegation import ScheduleDelegation
 from app.models.user import Permission, Role, User
@@ -44,6 +45,7 @@ class LiveStatus(str, enum.Enum):
     UPCOMING = "upcoming"
     NOT_ARRIVED = "not_arrived"
     NO_SHOW = "no_show"
+    RUNNING_LATE = "running_late"
     ON_SHIFT = "on_shift"
     COMPLETED = "completed"
 
@@ -62,6 +64,7 @@ def classify(
     *, now: datetime, start: Optional[datetime], end: Optional[datetime],
     grace_in: int, punch_in: Optional[datetime], punch_out: Optional[datetime],
     on_leave: bool, no_show_minutes: int,
+    late_eta: Optional[datetime] = None,
 ) -> Tuple[LiveStatus, int]:
     """(status, late_minutes). All datetimes are UTC-aware."""
     if start is None or end is None:
@@ -81,6 +84,10 @@ def classify(
         return status, late
     if now < start:
         return LiveStatus.UPCOMING, 0
+    if (late_eta is not None and now < end
+            and now < late_eta + timedelta(minutes=max(no_show_minutes, 0))):
+        # Employee announced a late arrival: not a no-show until ETA + threshold.
+        return LiveStatus.RUNNING_LATE, 0
     if no_show_minutes > 0 and now >= start + timedelta(
             minutes=max(no_show_minutes, grace_in)):
         return LiveStatus.NO_SHOW, 0
@@ -108,6 +115,8 @@ class LiveRow:
     punch_out: Optional[datetime]
     alerted: bool = False
     half_day_leave: bool = False
+    late_notice_eta: Optional[datetime] = None
+    late_notice_reason: Optional[str] = None
 
 
 def _chunks(ids, n=ID_CHUNK):
@@ -150,6 +159,7 @@ async def live_board(
     people: Dict[int, Tuple[str, Optional[str], Optional[str]]] = {}
     att_rows: List[Attendance] = []
     alerts: set = set()
+    notices: Dict[Tuple[int, date], LateNotice] = {}
     for ch in _chunks(ids):
         for emp, full_name, email in (await db.execute(
             select(Employee, User.full_name, User.email)
@@ -177,6 +187,11 @@ async def live_board(
             select(NoShowAlert.user_id, NoShowAlert.work_date).where(
                 NoShowAlert.user_id.in_(ch),
                 NoShowAlert.work_date.in_([yday, today])))).all()}
+        for ln in (await db.execute(
+            select(LateNotice).where(
+                LateNotice.user_id.in_(ch),
+                LateNotice.work_date.in_([yday, today])))).scalars().all():
+            notices[(ln.user_id, ln.work_date)] = ln
     leave = await roster_svc.approved_leave_days(db, ids, yday, today)
     half_leave: set = set()
     for ch in _chunks(ids):
@@ -230,10 +245,12 @@ async def live_board(
         if chosen is not None:
             wd, shift, s, e = chosen
             pin, pout = _punches(by_key.get((uid, wd), []))
+            ln = notices.get((uid, wd))
+            eta = _aware(ln.expected_at) if ln else None
             status, late = classify(
                 now=now, start=s, end=e, grace_in=shift.grace_in_minutes,
                 punch_in=pin, punch_out=pout, on_leave=(uid, wd) in leave,
-                no_show_minutes=no_show_minutes)
+                no_show_minutes=no_show_minutes, late_eta=eta)
             half = (uid, wd) in half_leave
             if half and status == LiveStatus.NO_SHOW and now < e:
                 status = LiveStatus.NOT_ARRIVED  # other half is worked later
@@ -241,7 +258,9 @@ async def live_board(
                 uid, name, dept, loc, wd, shift.id, shift.name, s, e,
                 shift.start_time.strftime("%H:%M"),
                 shift.end_time.strftime("%H:%M"),
-                status, late, pin, pout, (uid, wd) in alerts, half))
+                status, late, pin, pout, (uid, wd) in alerts, half,
+                eta if pin is None else None,
+                ln.reason if ln and pin is None else None))
         else:
             pin, pout = _punches(by_key.get((uid, today), []))
             status, late = classify(

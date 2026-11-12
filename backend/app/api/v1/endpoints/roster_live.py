@@ -67,6 +67,9 @@ async def live_board(
             "status": r.status.value, "late_minutes": r.late_minutes,
             "punch_in": r.punch_in.isoformat() if r.punch_in else None,
             "punch_out": r.punch_out.isoformat() if r.punch_out else None,
+            "late_notice_eta": r.late_notice_eta.isoformat()
+            if r.late_notice_eta else None,
+            "late_notice_reason": r.late_notice_reason,
             "alerted": r.alerted, "half_day_leave": r.half_day_leave,
             "gap_id": gaps[(r.user_id, r.work_date)].id
             if (r.user_id, r.work_date) in gaps else None,

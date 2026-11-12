@@ -1,3 +1,4 @@
+import { RunningLateCard } from './my-schedule/running-late-card';
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -177,6 +178,7 @@ export const AttendanceModal = ({ onSuccess }: AttendanceModalProps) => {
           </div>
 
           <div className="p-10 space-y-8 overflow-y-auto flex-1 min-h-0">
+            <RunningLateCard inline />
             <div className={cn(
               "p-5 rounded-xl border transition-all duration-500 flex items-center justify-between",
               locationStatus === 'detecting' ? "bg-slate-50 border-slate-200" : "bg-blue-50/50 border-blue-200"

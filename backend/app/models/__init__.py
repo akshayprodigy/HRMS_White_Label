@@ -59,6 +59,7 @@ from .open_shift import OpenShift, OpenShiftClaim, OpenShiftStatus, ClaimStatus
 from .open_shift import ShiftDropRequest, DropStatus
 from .calendar_feed import CalendarFeedToken
 from .no_show import NoShowAlert
+from .late_notice import LateNotice
 from .coverage_requirement import CoverageRequirement
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,

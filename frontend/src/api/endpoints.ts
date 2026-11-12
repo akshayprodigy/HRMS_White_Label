@@ -115,6 +115,7 @@ export const ENDPOINTS = {
     ENTRY_DETAIL: (id: number) => `/roster/entries/${id}`,
     MY: '/roster/my',
     MY_WEEK: '/roster/my/week',
+    RUNNING_LATE: '/roster/my/running-late',
     CHANGE_REQUESTS: '/roster/change-requests',
     CHANGE_REQUESTS_MY: '/roster/change-requests/my',
     CHANGE_REQUEST_DECIDE: (id: number) => `/roster/change-requests/${id}/decide`,

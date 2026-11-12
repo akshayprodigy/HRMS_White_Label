@@ -11,6 +11,7 @@ type Status =
   | 'upcoming'
   | 'not_arrived'
   | 'no_show'
+  | 'running_late'
   | 'on_shift'
   | 'completed';
 
@@ -29,6 +30,8 @@ interface LiveRow {
   punch_out: string | null;
   alerted: boolean;
   half_day_leave: boolean;
+  late_notice_eta: string | null;
+  late_notice_reason: string | null;
   gap_id: number | null;
   gap_status: 'open' | 'filled' | 'dismissed' | null;
 };
@@ -41,6 +44,7 @@ interface LiveResponse {
 
 const STATUS_ORDER: Status[] = [
   'no_show',
+  'running_late',
   'not_arrived',
   'on_shift',
   'upcoming',
@@ -54,6 +58,7 @@ const STATUS_META: Record<
   { label: string; variant: 'success' | 'warning' | 'error' | 'info' | 'neutral' }
 > = {
   no_show: { label: 'No-show', variant: 'error' },
+  running_late: { label: 'Running late', variant: 'info' },
   not_arrived: { label: 'Not arrived', variant: 'warning' },
   on_shift: { label: 'On shift', variant: 'success' },
   upcoming: { label: 'Upcoming', variant: 'info' },
@@ -333,6 +338,15 @@ export const LiveBoard: React.FC = () => {
                       <Badge variant={STATUS_META[r.status].variant}>
                         {STATUS_META[r.status].label}
                       </Badge>
+                      {r.late_notice_eta && r.punch_in == null && (
+                        <span
+                          className="text-xs text-blue-700"
+                          title={r.late_notice_reason ?? undefined}
+                        >
+                          Running late · ETA {hhmm(r.late_notice_eta)} UTC
+                          {r.late_notice_reason ? ` · ${r.late_notice_reason}` : ''}
+                        </span>
+                      )}
                       {r.half_day_leave && (
                         <span className="text-xs text-gray-500">Half-day leave</span>
                       )}
