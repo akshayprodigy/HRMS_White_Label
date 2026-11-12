@@ -249,6 +249,51 @@ async def approvable_user_ids(db: AsyncSession, user: User) -> set:
     return ids
 
 
+async def schedule_approver_ids(db: AsyncSession, employee_user_ids: set) -> set:
+    """Users who may approve changes for ALL given employees: active
+    delegations with can_approve_changes whose scope covers all of them, plus
+    the head/deputy of their department when they all share one. If there are
+    none, the roster admins (superusers + holders of `roster manage`). The
+    employees themselves are never returned unless they are the only
+    candidates (admin fallback)."""
+    from app.models.user import Permission, Role
+
+    ids = set(employee_user_ids)
+    out: set = set()
+    today = datetime.now(timezone.utc).date()
+    for d in (await db.execute(
+        select(ScheduleDelegation).where(
+            ScheduleDelegation.can_approve_changes.is_(True),
+            ScheduleDelegation.revoked_at.is_(None),
+            ScheduleDelegation.valid_from <= today,
+            or_(ScheduleDelegation.valid_to.is_(None),
+                ScheduleDelegation.valid_to >= today),
+        )
+    )).scalars().all():
+        if ids <= await delegation_user_ids(db, d):
+            out.add(d.grantee_id)
+    depts = set((await db.execute(
+        select(Employee.department).where(Employee.user_id.in_(ids))
+    )).scalars().all()) if ids else set()
+    if len(depts) == 1 and None not in depts:
+        for h in (await db.execute(
+            select(Department.head_user_id, Department.deputy_head_user_id)
+            .where(Department.name.in_(depts))
+        )).all():
+            out |= {x for x in h if x}
+    out -= ids
+    if out:
+        return out
+    admins = set((await db.execute(
+        select(User.id).where(User.is_active.is_(True), User.is_superuser.is_(True))
+    )).scalars().all())
+    admins |= set((await db.execute(
+        select(User.id).join(User.roles).join(Role.permissions)
+        .where(User.is_active.is_(True), Permission.name == PERM_ROSTER)
+    )).scalars().all())
+    return admins - ids
+
+
 def expand_pattern(
     pattern: Dict[int, Optional[int]], start: pydate, end: pydate
 ) -> List[Tuple[pydate, Optional[int], bool]]:
