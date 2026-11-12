@@ -308,7 +308,8 @@ async def test_entry_enforcement(client, world):
                                json={"status": "weird"})).status_code == 422
     assert (await client.delete(f"{ROSTER}/entries/{draft_id}", headers=hd)
             ).status_code == 200
-    assert (await client.delete(f"{ROSTER}/entries/{pub_id}", headers=ha)
+    assert (await client.delete(f"{ROSTER}/entries/{pub_id}", headers=ha,
+                                params={"reason": "cleanup"})
             ).status_code == 200
 
 
@@ -386,7 +387,7 @@ async def test_validation_fixes(client, world):
         "pattern": {"0": 99999999}})).status_code == 422
     # week-off clears the template
     r = await client.patch(f"{ROSTER}/entries/{eid}", headers=ha,
-                           json={"is_week_off": True})
+                           json={"is_week_off": True, "reason": "make week off"})
     assert r.status_code == 200 and r.json()["shift_template_id"] is None
     # bool in cycle rejected
     r = await client.post(f"{ROSTER}/rotations", headers=ha, json={

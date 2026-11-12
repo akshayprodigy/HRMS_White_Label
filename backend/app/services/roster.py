@@ -9,6 +9,7 @@ EmployeeShiftAssignment.
 from __future__ import annotations
 
 from datetime import date as pydate, datetime, timedelta, timezone
+import logging
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, or_, select
@@ -18,13 +19,17 @@ from sqlalchemy.orm import selectinload
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.leave import LeaveRequest, LeaveStatus
-from app.models.roster import RosterEntry, RosterStatus
+from sqlalchemy import update
+
+from app.models.notification import Notification
+from app.models.roster import RosterEntry, RosterEntryHistory, RosterStatus
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import User
 from app.services import functional_head as fh
 
 PERM_ROSTER = "roster manage"
+logger = logging.getLogger(__name__)
 
 
 def is_roster_admin(user: User) -> bool:
@@ -557,3 +562,139 @@ async def build_grid(
         rows=grid_rows,
         is_admin=admin,
     )
+
+
+# ---------------- change history / notifications / publish ----------------
+
+def record_change(
+    db: AsyncSession, entry: Optional[RosterEntry], *,
+    employee_id: int, work_date: pydate,
+    old_tpl: Optional[int], old_off: bool,
+    new_tpl: Optional[int], new_off: bool,
+    action: str, reason: Optional[str], actor_id: Optional[int],
+) -> RosterEntryHistory:
+    """Add one history row (caller commits). For deletes pass entry=None."""
+    row = RosterEntryHistory(
+        employee_id=employee_id, work_date=work_date,
+        roster_entry_id=entry.id if entry is not None else None,
+        old_shift_template_id=old_tpl, old_is_week_off=bool(old_off),
+        new_shift_template_id=new_tpl, new_is_week_off=bool(new_off),
+        action=action, reason=(reason or None) and reason[:500],
+        changed_by_id=actor_id,
+    )
+    db.add(row)
+    return row
+
+
+def clean_reason(reason: Optional[str]) -> Optional[str]:
+    r = (reason or "").strip()
+    return r if len(r) >= 3 else None
+
+
+def format_dates(dates) -> str:
+    """Compact list: consecutive days collapse to 'a to b'; after 10 dates
+    shown, '+N more'."""
+    ds = sorted(set(dates))
+    runs: List[List[pydate]] = []
+    for d in ds:
+        if runs and (d - runs[-1][-1]).days == 1:
+            runs[-1].append(d)
+        else:
+            runs.append([d])
+    parts: List[str] = []
+    shown = 0
+    for r in runs:
+        if shown >= 10:
+            break
+        take = r[: 10 - shown]
+        shown += len(take)
+        parts.append(
+            take[0].isoformat() if len(take) == 1
+            else f"{take[0].isoformat()} to {take[-1].isoformat()}"
+        )
+    out = ", ".join(parts)
+    if len(ds) > shown:
+        out += f" +{len(ds) - shown} more"
+    return out
+
+
+async def notify(
+    db: AsyncSession, user_id: Optional[int], title: str, message: str,
+    resource_type: str = "roster", resource_id: Optional[str] = None,
+) -> None:
+    """Best-effort in-app notification; never breaks the request."""
+    if not user_id:
+        return
+    try:
+        async with db.begin_nested():
+            db.add(Notification(
+                user_id=user_id, title=title[:200], message=message[:1000],
+                type="info", resource_type=resource_type,
+                resource_id=resource_id,
+            ))
+    except Exception:  # pragma: no cover
+        logger.warning("roster notification failed", exc_info=True)
+
+
+async def notify_schedule_changed(
+    db: AsyncSession, changed: Dict[int, set]
+) -> None:
+    """One notification per affected employee."""
+    for uid in sorted(changed):
+        await notify(
+            db, uid, "Schedule changed",
+            f"Your schedule changed for {format_dates(changed[uid])}",
+        )
+
+
+async def publish_drafts(
+    db: AsyncSession, actor: User, user_ids, start: pydate, end: pydate,
+) -> dict:
+    """Flip DRAFT -> PUBLISHED in [start, end] for the employees in
+    `user_ids` that `actor` may publish for. Writes history rows and one
+    notification per employee. Caller commits."""
+    ids = set(user_ids)
+    drafts: List[RosterEntry] = []
+    sorted_ids = sorted(ids)
+    for i in range(0, len(sorted_ids), 500):
+        drafts.extend((await db.execute(
+            select(RosterEntry).where(
+                RosterEntry.employee_id.in_(sorted_ids[i:i + 500]),
+                RosterEntry.work_date >= start,
+                RosterEntry.work_date <= end,
+                RosterEntry.status == RosterStatus.DRAFT,
+            )
+        )).scalars().all())
+    with_drafts = {d.employee_id for d in drafts}
+    pub = await publishable_subset(db, actor, with_drafts)
+    todo = [d for d in drafts if d.employee_id in pub]
+    now = datetime.now(timezone.utc)
+    for i in range(0, len(todo), 500):
+        await db.execute(
+            update(RosterEntry)
+            .where(RosterEntry.id.in_([d.id for d in todo[i:i + 500]]))
+            .values(status=RosterStatus.PUBLISHED, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+    db.add_all([
+        RosterEntryHistory(
+            employee_id=d.employee_id, work_date=d.work_date,
+            roster_entry_id=d.id,
+            old_shift_template_id=None, old_is_week_off=False,
+            new_shift_template_id=d.shift_template_id,
+            new_is_week_off=d.is_week_off,
+            action="publish", reason=None, changed_by_id=actor.id,
+        ) for d in todo
+    ])
+    employees = {d.employee_id for d in todo}
+    for uid in sorted(employees):
+        await notify(
+            db, uid, "Schedule published",
+            f"Your schedule for {start.isoformat()}\u2013{end.isoformat()} "
+            "is published",
+        )
+    return {
+        "published": len(todo),
+        "employees": len(employees),
+        "not_permitted": sorted(with_drafts - pub),
+    }

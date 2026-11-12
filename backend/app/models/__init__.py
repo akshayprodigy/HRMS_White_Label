@@ -49,6 +49,7 @@ from .shift import (
 )
 from .roster import (
     RosterEntry, RosterChangeRequest, RosterStatus, RosterChangeStatus,
+    RosterEntryHistory, RosterPublishRequest,
 )
 from .schedule_delegation import ScheduleDelegation, DelegationScope
 from .rotation_pattern import RotationPattern

@@ -12,10 +12,11 @@ Payroll / overtime are not otherwise changed by the roster.
 not the Employee PK.
 """
 from datetime import datetime, date as pydate, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint,
+    JSON, Boolean, Date, DateTime, ForeignKey, Integer, String,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -143,4 +144,79 @@ class RosterChangeRequest(Base):
     )
     decided_by: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[decided_by_id]
+    )
+
+
+class RosterEntryHistory(Base):
+    """Audit trail of edits to PUBLISHED schedule cells (and publish events).
+    Template ids carry no FK so history survives template removal."""
+    __tablename__ = "roster_entry_history"  # type: ignore[assignment]
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    employee_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    work_date: Mapped[pydate] = mapped_column(Date, index=True, nullable=False)
+    roster_entry_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("roster_entry.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    old_shift_template_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    old_is_week_off: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    new_shift_template_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    new_is_week_off: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    changed_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc), nullable=False,
+    )
+
+
+class RosterPublishRequest(Base):
+    __tablename__ = "roster_publish_request"  # type: ignore[assignment]
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    requested_by_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    start: Mapped[pydate] = mapped_column(Date, nullable=False)
+    end: Mapped[pydate] = mapped_column(Date, nullable=False)
+    department: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    employee_ids: Mapped[List[int]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", index=True, nullable=False
+    )
+    decided_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decision_note: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc), nullable=False,
+    )
+
+    requester: Mapped["User"] = relationship(
+        "User", foreign_keys=[requested_by_id]
     )

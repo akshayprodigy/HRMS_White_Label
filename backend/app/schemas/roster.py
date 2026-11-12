@@ -1,5 +1,5 @@
 """Roster planner DTOs (W7)."""
-from datetime import date as pydate
+from datetime import date as pydate, datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
@@ -51,6 +51,7 @@ class RosterEntryInput(BaseModel):
     shift_template_id: Optional[int] = None
     is_week_off: bool = False
     status: str = "published"  # back-compat default; may be downgraded
+    reason: Optional[str] = Field(default=None, max_length=500)
 
     @field_validator("status")
     @classmethod
@@ -123,6 +124,7 @@ class RosterEntryUpdate(BaseModel):
     is_week_off: Optional[bool] = None
     status: Optional[str] = None
     note: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class RosterChangeRequestCreate(BaseModel):
@@ -278,3 +280,72 @@ class CoverageRequirementRead(CoverageRequirementBase):
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------- publish lifecycle / history / copy ----------------
+
+class RosterPublishBody(BaseModel):
+    start: pydate
+    end: pydate
+    department: Optional[str] = Field(default=None, max_length=100)
+    employee_ids: Optional[List[int]] = None
+
+
+class RosterPublishResult(BaseModel):
+    published: int = 0
+    employees: int = 0
+    not_permitted: List[int] = Field(default_factory=list)
+
+
+class PublishRequestCreate(RosterPublishBody):
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class PublishRequestDecision(BaseModel):
+    approve: bool
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class PublishRequestRead(BaseModel):
+    id: int
+    requested_by_id: int
+    requester_name: Optional[str] = None
+    start: pydate
+    end: pydate
+    department: Optional[str] = None
+    employee_ids: List[int] = Field(default_factory=list)
+    note: Optional[str] = None
+    status: str
+    decided_by_id: Optional[int] = None
+    decided_at: Optional[datetime] = None
+    decision_note: Optional[str] = None
+    created_at: datetime
+    draft_count: Optional[int] = None
+    publish_result: Optional[RosterPublishResult] = None
+
+
+class RosterCopyRequest(BaseModel):
+    source_start: pydate
+    source_end: pydate
+    target_start: pydate
+    department: Optional[str] = Field(default=None, max_length=100)
+    employee_ids: Optional[List[int]] = None
+    overwrite: bool = False
+
+
+class RosterHistoryRead(BaseModel):
+    id: int
+    employee_id: int
+    employee_name: Optional[str] = None
+    work_date: pydate
+    old_shift_template_id: Optional[int] = None
+    old_shift_name: Optional[str] = None
+    old_is_week_off: bool = False
+    new_shift_template_id: Optional[int] = None
+    new_shift_name: Optional[str] = None
+    new_is_week_off: bool = False
+    action: str
+    reason: Optional[str] = None
+    changed_by_id: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    changed_at: datetime
