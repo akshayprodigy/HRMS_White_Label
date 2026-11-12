@@ -19,12 +19,11 @@ from app.models.broadcast import (
     SafetyStatus,
 )
 from app.models.employee import Employee
-from app.models.user import Role, User, user_roles
+from app.models.user import Permission, User, role_permissions, user_roles
 from app.services import broadcast as svc
 from app.services.notifications_delivery import notify
 
 router = APIRouter()
-HR_ROLE_NAME = "HR"  # patched in tests
 SENDER = Depends(deps.check_permissions(["broadcast send"]))
 PAGE_MAX = 200
 
@@ -199,15 +198,16 @@ async def my_broadcasts(db: deps.DBDep, me: deps.CurrentUser):
 
 
 async def _own(db, broadcast_id: int, me: User):
-    row = (await db.execute(
-        select(Broadcast, BroadcastRecipient)
-        .join(BroadcastRecipient, BroadcastRecipient.broadcast_id == Broadcast.id)
-        .where(Broadcast.id == broadcast_id, BroadcastRecipient.user_id == me.id)
-        .with_for_update()
-    )).first()
-    if row is None:
+    b = await db.get(Broadcast, broadcast_id)
+    r = (await db.execute(
+        select(BroadcastRecipient)
+        .where(BroadcastRecipient.broadcast_id == broadcast_id,
+               BroadcastRecipient.user_id == me.id)
+        .with_for_update()  # lock only the caller's own recipient row
+    )).scalar_one_or_none()
+    if b is None or r is None:
         raise HTTPException(404, "Broadcast not found")
-    return row
+    return b, r
 
 
 @router.post("/{broadcast_id}/read")
@@ -234,12 +234,16 @@ async def acknowledge(broadcast_id: int, db: deps.DBDep, me: deps.CurrentUser):
 
 
 async def _alert_recipients(db, b: Broadcast, exclude: int) -> List[int]:
-    hr = (await db.execute(
-        select(User.id).join(user_roles, user_roles.c.user_id == User.id)
-        .join(Role, Role.id == user_roles.c.role_id)
-        .where(Role.name == HR_ROLE_NAME, User.is_active.is_(True))
+    """Who is alerted on need_help: the broadcast's creator plus every active
+    holder of 'broadcast send' via a role (superusers need not be listed)."""
+    holders = (await db.execute(
+        select(User.id).distinct()
+        .join(user_roles, user_roles.c.user_id == User.id)
+        .join(role_permissions, role_permissions.c.role_id == user_roles.c.role_id)
+        .join(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(Permission.name == "broadcast send", User.is_active.is_(True))
     )).scalars().all()
-    return sorted(({b.created_by_id, *hr}) - {exclude})
+    return sorted(({b.created_by_id, *holders}) - {exclude})
 
 
 @router.post("/{broadcast_id}/safety")
@@ -248,7 +252,7 @@ async def mark_safety(broadcast_id: int, body: SafetyIn, db: deps.DBDep,
     b, r = await _own(db, broadcast_id, me)
     if not b.safety_check:
         raise HTTPException(400, "This broadcast has no safety check")
-    if b.closed_at is not None and r.safety_status is None:
+    if b.closed_at is not None:
         raise HTTPException(400, "Broadcast is closed")
     note = (body.note or "").strip() or None
     unchanged = (r.safety_status == body.status

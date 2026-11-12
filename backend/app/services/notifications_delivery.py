@@ -343,6 +343,13 @@ def configure_providers_from_env() -> Dict[str, str]:
             ))
         except Exception as e:
             log.warning("MSG91 config failed: %s — staying on log provider", e)
+        from app.core.config import settings as _s
+        if not (_s.EMERGENCY_BROADCAST_DLT_TEMPLATE_ID
+                and _s.EMERGENCY_NEED_HELP_DLT_TEMPLATE_ID):
+            log.warning(
+                "MSG91 is configured but EMERGENCY_BROADCAST_DLT_TEMPLATE_ID / "
+                "EMERGENCY_NEED_HELP_DLT_TEMPLATE_ID are not both set: "
+                "emergency SMS will fail (DLT registration is a go-live requirement)")
     active["sms"] = get_sms_provider().name
 
     return active
@@ -507,6 +514,15 @@ def should_dead_letter(attempts: int) -> bool:
 
 
 EMERGENCY_CATEGORY = "emergency"
+SMS_MAX_CHARS = 300
+
+
+def _settings_dlt(event_type: str) -> Optional[str]:
+    from app.core.config import settings
+    return {
+        "emergency_broadcast": settings.EMERGENCY_BROADCAST_DLT_TEMPLATE_ID,
+        "emergency_need_help": settings.EMERGENCY_NEED_HELP_DLT_TEMPLATE_ID,
+    }.get(event_type)
 _BULK_CHUNK = 500
 
 
@@ -534,6 +550,7 @@ async def notify_emergency_bulk(
     from app.models.user import User
 
     ids = sorted(set(user_ids))
+    sent: List[int] = []
     ctx = context or {"title": title, "message": message}
     for i in range(0, len(ids), _BULK_CHUNK):
         chunk = ids[i:i + _BULK_CHUNK]
@@ -552,6 +569,7 @@ async def notify_emergency_bulk(
         ]
         session.add_all(notifs)
         await session.flush()
+        sent.extend(n.user_id for n in notifs)
         rows = []
         for n in notifs:
             email, phone = contacts[n.user_id]
@@ -564,7 +582,7 @@ async def notify_emergency_bulk(
                         status=DeliveryStatus.QUEUED, context_json=ctx))
         session.add_all(rows)
         await session.flush()
-    return len(ids)
+    return len(sent)
 
 
 async def notify(
@@ -627,6 +645,7 @@ async def dispatch_notification(
         NotificationDelivery, UserNotificationPreference,
         UserQuietHours,
     )
+    from app.models.user import User
 
     context = context or {}
     category = EVENT_CATEGORY_MAP.get(event_type, "other")
@@ -661,8 +680,13 @@ async def dispatch_notification(
     if category == EMERGENCY_CATEGORY:
         # Safety communications: ignore preferences, hard opt-out and quiet
         # hours. Deliberately limited to this one category.
+        contact = (await session.execute(
+            select(User.email, User.phone).where(User.id == recipient_user_id)
+        )).first()
+        has = {Channel.EMAIL: bool(contact and contact[0]),
+               Channel.SMS: bool(contact and contact[1])}
         for channel in (Channel.EMAIL, Channel.SMS):
-            if channel in existing_channels:
+            if channel in existing_channels or not has[channel]:
                 continue
             row = NotificationDelivery(
                 notification_id=notification_id, event_type=event_type,
@@ -817,6 +841,11 @@ async def send_one_delivery(
             channel=row.channel,
         )
 
+    if row.channel == Channel.SMS:
+        rendered.body_text = rendered.body_text[:SMS_MAX_CHARS]
+        if not rendered.dlt_template_id:
+            rendered.dlt_template_id = _settings_dlt(row.event_type)
+
     # Provider dispatch
     result: SendResult
     if row.channel == Channel.EMAIL:
@@ -832,6 +861,14 @@ async def send_one_delivery(
         phone = getattr(recipient, "phone", None)
         if not phone:
             result = SendResult(ok=False, error="recipient phone missing")
+        elif (get_sms_provider().name == "msg91"
+              and not rendered.dlt_template_id):
+            # Permanent misconfiguration: retrying can never succeed.
+            row.attempts = (row.attempts or 0) + 1
+            row.status = DeliveryStatus.FAILED
+            row.error = "DLT template id not configured"
+            await session.commit()
+            return SendResult(ok=False, error=row.error)
         else:
             result = await get_sms_provider().send(
                 to=phone, body_text=rendered.body_text,

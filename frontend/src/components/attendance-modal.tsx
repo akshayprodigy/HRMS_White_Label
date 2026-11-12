@@ -19,9 +19,11 @@ import { ENDPOINTS } from '../api/endpoints';
 
 interface AttendanceModalProps {
   onSuccess: () => void;
+  /** Shown to roles allowed to send emergency broadcasts (HR). */
+  onSendBroadcast?: () => void;
 }
 
-export const AttendanceModal = ({ onSuccess }: AttendanceModalProps) => {
+export const AttendanceModal = ({ onSuccess, onSendBroadcast }: AttendanceModalProps) => {
   const [type, setType] = useState<'office' | 'wfh' | 'onsite' | 'others' | null>(null);
   const [remarks, setRemarks] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -276,6 +278,15 @@ export const AttendanceModal = ({ onSuccess }: AttendanceModalProps) => {
               Sign In Work Mode
               <ArrowRight className="w-5 h-5 ml-3 transition-transform group-hover:translate-x-1" />
             </Button>
+            {onSendBroadcast && (
+              <button
+                type="button"
+                onClick={onSendBroadcast}
+                className="w-full mt-3 text-sm font-bold text-red-600 hover:text-red-700 underline"
+              >
+                Send emergency broadcast
+              </button>
+            )}
           </div>
         </div>
         </motion.div>

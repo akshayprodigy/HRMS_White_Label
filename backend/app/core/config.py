@@ -39,6 +39,11 @@ class Settings(BaseSettings):
             return v
         raise ValueError(v)
 
+    # India SMS (MSG91) requires a DLT-registered template id per SMS template.
+    # Emergency broadcast SMS cannot be sent in production without these.
+    EMERGENCY_BROADCAST_DLT_TEMPLATE_ID: Optional[str] = None
+    EMERGENCY_NEED_HELP_DLT_TEMPLATE_ID: Optional[str] = None
+
     MARIADB_SERVER: str = "db"
     MARIADB_USER: str = "erp_user"
     MARIADB_PASSWORD: str = "erp_password"

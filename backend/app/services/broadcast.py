@@ -14,6 +14,10 @@ from app.models.user import User
 from app.services import live_ops
 from app.services.notifications_delivery import notify_emergency_bulk
 
+# "On shift" audience = people whose live-board status right now is one of
+# these: on_shift (punched in), not_arrived (shift started, not yet punched in)
+# and running_late (late notice filed). Excluded on purpose: no_show (already
+# escalated elsewhere), upcoming, completed, on_leave, off.
 ON_SHIFT_STATUSES = (
     live_ops.LiveStatus.ON_SHIFT,
     live_ops.LiveStatus.NOT_ARRIVED,

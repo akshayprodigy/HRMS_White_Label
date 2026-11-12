@@ -42,7 +42,12 @@ async def world(monkeypatch):
     dx, dy = f"BX{sfx}", f"BY{sfx}"
     locx = f"LX{sfx}"
     role_name, hr_name = f"BCS{sfx}", f"BHR{sfx}"
-    monkeypatch.setattr(bc_ep, "HR_ROLE_NAME", hr_name)
+    orig_alerts = bc_ep._alert_recipients
+    test_ids = set()
+
+    async def only_test_users(db, b, exclude):  # never alert real permission holders
+        return [u for u in await orig_alerts(db, b, exclude) if u in test_ids]
+    monkeypatch.setattr(bc_ep, "_alert_recipients", only_test_users)
     try:
         async with SessionLocal() as db:
             def mk(tag, **kw):
@@ -62,6 +67,8 @@ async def world(monkeypatch):
             await db.commit()
             await db.execute(insert(role_permissions).values(
                 role_id=r1.id, permission_id=perm.id))
+            await db.execute(insert(role_permissions).values(
+                role_id=r2.id, permission_id=perm.id))
             await db.execute(insert(user_roles).values(
                 user_id=us["sender"].id, role_id=r1.id))
             await db.execute(insert(user_roles).values(
@@ -79,6 +86,7 @@ async def world(monkeypatch):
                                 date_of_joining=date(2020, 1, 1), status=st))
             await db.commit()
             ids = {t: u.id for t, u in us.items()}
+            test_ids.update(ids.values())
             rids = (r1.id, r2.id)
         yield {"ids": ids, "sfx": sfx, "dx": dx, "dy": dy, "loc": locx,
                "all": list(ids.values()),
@@ -370,3 +378,73 @@ async def test_audience_options(client, world):
     d = {x["value"]: x["count"] for x in r.json()["departments"]}
     assert d[world["dx"]] == 4          # sender, hr, e1, e2 (inactive excluded)
     assert {x["value"]: x["count"] for x in r.json()["locations"]}[world["loc"]] == 3
+
+
+async def test_close_blocks_safety_changes(client, world):
+    b = await send(client, world)
+    h = await login(client, world, "e1")
+    await client.post(f"{API}/{b['id']}/safety", json={"status": "safe"}, headers=h)
+    hs = await login(client, world, "sender")
+    await client.post(f"{API}/{b['id']}/close", headers=hs)
+    r = await client.post(f"{API}/{b['id']}/safety", json={"status": "need_help"}, headers=h)
+    assert r.status_code == 400
+
+
+async def test_emergency_rows_only_for_available_contacts(world):
+    ids = world["ids"]
+    async with SessionLocal() as db:
+        await db.execute(User.__table__.update().where(User.id == ids["e1"]).values(phone=None))
+        await db.commit()
+        await nd.notify(db, user_id=ids["e1"], event_type="emergency_need_help",
+                        title="t", message="m")
+        n = await nd.notify_emergency_bulk(
+            db, user_ids=[ids["e1"], ids["e2"], 999999999],
+            event_type="emergency_broadcast", title="t", message="m")
+        await db.commit()
+        rows = (await db.execute(select(NotificationDelivery).where(
+            NotificationDelivery.recipient_user_id.in_([ids["e1"], ids["e2"]])))).scalars().all()
+    assert n == 2  # unknown user id skipped, count == notified
+    by = {(d.recipient_user_id, d.event_type, d.channel) for d in rows}
+    assert (ids["e1"], "emergency_need_help", "email") in by
+    assert (ids["e1"], "emergency_need_help", "sms") not in by
+    assert (ids["e1"], "emergency_broadcast", "sms") not in by
+    assert (ids["e2"], "emergency_broadcast", "sms") in by
+
+
+async def test_sms_dlt_and_truncation(world, monkeypatch):
+    from app.core.config import settings
+    ids = world["ids"]
+    sent = []
+
+    class Fake(nd.SMSProvider):
+        name = "msg91"
+
+        async def send(self, *, to, body_text, dlt_template_id=None, sender_id=None):
+            sent.append((body_text, dlt_template_id))
+            return nd.SendResult(ok=True, provider_message_id="x")
+    prev = nd.get_sms_provider()
+    nd.set_sms_provider(Fake())
+    try:
+        monkeypatch.setattr(settings, "EMERGENCY_BROADCAST_DLT_TEMPLATE_ID", None)
+        async with SessionLocal() as db:
+            await nd.notify_emergency_bulk(
+                db, user_ids=[ids["e1"]], event_type="emergency_broadcast",
+                title="t", message="m" * 600,
+                context={"title": "t", "message": "m" * 600, "severity": "INFO"})
+            await db.commit()
+            d = (await db.execute(select(NotificationDelivery).where(
+                NotificationDelivery.recipient_user_id == ids["e1"],
+                NotificationDelivery.channel == "sms"))).scalars().one()
+            # no DLT id configured -> FAILED immediately, provider never called
+            res = await nd.send_one_delivery(db, d.id)
+            await db.refresh(d)
+            assert not res.ok and d.status == "failed" and d.attempts == 1
+            assert d.error == "DLT template id not configured" and not sent
+            # configured -> sent with id, body truncated to 300
+            d.status = "queued"
+            await db.commit()
+            monkeypatch.setattr(settings, "EMERGENCY_BROADCAST_DLT_TEMPLATE_ID", "DLT123")
+            res = await nd.send_one_delivery(db, d.id)
+            assert res.ok and sent[0][1] == "DLT123" and len(sent[0][0]) <= 300
+    finally:
+        nd.set_sms_provider(prev)

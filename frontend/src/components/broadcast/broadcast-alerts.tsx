@@ -1,4 +1,5 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertOctagon, AlertTriangle, Info } from 'lucide-react';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
@@ -21,6 +22,7 @@ export interface MyBroadcast {
 }
 
 const POLL_MS = 60_000;
+const POLL_CRITICAL_MS = 20_000; // faster while a critical alert is pending
 
 const TONE = {
   info: { box: 'bg-blue-50 border-blue-200 text-blue-900', Icon: Info },
@@ -46,7 +48,6 @@ export const BroadcastAlerts: React.FC = () => {
       /* silent: transient / logged-out */
     }
   }, []);
-  useVisiblePoll(load, POLL_MS);
 
   const act = async (id: number, path: string, body?: object) => {
     setBusy(id);
@@ -66,6 +67,42 @@ export const BroadcastAlerts: React.FC = () => {
   const pending = items.filter((b) => b.pending);
   const critical = pending.find((b) => b.severity === 'critical');
   const banners = pending.filter((b) => b !== critical);
+  useVisiblePoll(load, critical ? POLL_CRITICAL_MS : POLL_MS);
+
+  // Critical modal a11y: focus first action, trap Tab, make the rest of the
+  // app inert / aria-hidden while open, restore focus afterwards.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const criticalId = critical?.id;
+  useEffect(() => {
+    if (criticalId === undefined) return;
+    const prev = document.activeElement as HTMLElement | null;
+    const root = document.getElementById('root');
+    root?.setAttribute('inert', '');
+    root?.setAttribute('aria-hidden', 'true');
+    const focusFirst = () =>
+      dialogRef.current?.querySelector<HTMLElement>('button, textarea')?.focus();
+    focusFirst();
+    return () => {
+      root?.removeAttribute('inert');
+      root?.removeAttribute('aria-hidden');
+      prev?.focus?.();
+    };
+  }, [criticalId]);
+  // keep focus inside when the action area changes (e.g. help-note form opens)
+  useEffect(() => {
+    if (criticalId !== undefined && !dialogRef.current?.contains(document.activeElement)) {
+      dialogRef.current?.querySelector<HTMLElement>('button, textarea')?.focus();
+    }
+  }, [criticalId, helpFor, busy]);
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab') return;
+    const f = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), textarea:not([disabled])') ?? []);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
 
   const renderActions = (b: MyBroadcast) => {
     const disabled = busy === b.id;
@@ -152,26 +189,29 @@ export const BroadcastAlerts: React.FC = () => {
               </div>
             );
           })}
-          {error && <p className="text-xs text-red-700 text-center">{error}</p>}
+          {error && <p role="alert" className="text-xs text-red-700 text-center">{error}</p>}
         </div>
       )}
-      {critical && (
+      {critical && createPortal(
         <div className="fixed inset-0 z-[200] bg-slate-900/80 flex items-center justify-center p-4"
-          role="alertdialog" aria-modal="true" aria-label={critical.title}>
+          role="alertdialog" aria-modal="true"
+          aria-labelledby={`bc-title-${critical.id}`} aria-describedby={`bc-msg-${critical.id}`}
+          ref={dialogRef} onKeyDown={trapTab}>
           <div className="w-full max-w-md max-h-full overflow-y-auto rounded-2xl bg-white border-4 border-red-500 p-5 shadow-2xl">
             <div className="flex items-center gap-2 text-red-700">
-              <AlertOctagon className="w-6 h-6" />
+              <AlertOctagon className="w-6 h-6" aria-hidden="true" />
               <span className="text-xs font-black uppercase tracking-widest">Emergency broadcast</span>
             </div>
-            <h2 className="mt-2 text-xl font-black text-slate-900">{critical.title}</h2>
-            <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{critical.message}</p>
+            <h2 id={`bc-title-${critical.id}`} className="mt-2 text-xl font-black text-slate-900">{critical.title}</h2>
+            <p id={`bc-msg-${critical.id}`} className="mt-2 text-sm text-slate-700 whitespace-pre-wrap break-words">{critical.message}</p>
             {renderActions(critical)}
-            {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
+            {error && <p role="alert" className="mt-2 text-xs text-red-700">{error}</p>}
             {pending.length > 1 && (
               <p className="mt-3 text-xs text-slate-500">{pending.length - 1} more alert(s) waiting</p>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );

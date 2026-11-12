@@ -4783,4 +4783,5 @@ html {
   .whitespace-pre-wrap { white-space: pre-wrap; }
   .z-\[150\] { z-index: 150; }
   .z-\[200\] { z-index: 200; }
+  .underline { text-decoration-line: underline; }
 }

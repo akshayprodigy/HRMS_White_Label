@@ -12,7 +12,8 @@ down_revision = "013b7dbef090"
 branch_labels = None
 depends_on = None
 
-_ROLES = "('HR', 'Super Admin')"
+_ROLES = "('HR', 'Super Admin', 'Admin')"
+_PERM_DESC = "Send and manage emergency broadcasts"
 
 _TEMPLATES = [
     ("emergency_broadcast", "email", "[{severity}] {title}",
@@ -67,7 +68,7 @@ def upgrade():
 
     op.execute(
         "INSERT INTO permission (name, description) "
-        "SELECT 'broadcast send', 'Send and manage emergency broadcasts' "
+        f"SELECT 'broadcast send', '{_PERM_DESC}' "
         "FROM DUAL WHERE NOT EXISTS "
         "(SELECT 1 FROM permission WHERE name = 'broadcast send')"
     )
@@ -76,24 +77,39 @@ def upgrade():
         "SELECT r.id, p.id FROM role r, permission p "
         f"WHERE r.name IN {_ROLES} AND p.name = 'broadcast send'"
     )
+    from app.core.config import settings
+    dlt = {"emergency_broadcast": settings.EMERGENCY_BROADCAST_DLT_TEMPLATE_ID,
+           "emergency_need_help": settings.EMERGENCY_NEED_HELP_DLT_TEMPLATE_ID}
     conn = op.get_bind()
     for ev, ch, subj, html, text in _TEMPLATES:
         conn.execute(sa.text(
             "INSERT INTO notification_template (event_type, channel, category, "
-            "subject, body_html, body_text, is_sensitive, is_active, created_at, updated_at) "
-            "SELECT :ev, :ch, 'emergency', :subj, :html, :text, 0, 1, NOW(), NOW() "
+            "subject, body_html, body_text, dlt_template_id, is_sensitive, is_active, created_at, updated_at) "
+            "SELECT :ev, :ch, 'emergency', :subj, :html, :text, :dlt, 0, 1, NOW(), NOW() "
             "FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM notification_template "
             "WHERE event_type = :ev AND channel = :ch)"),
-            {"ev": ev, "ch": ch, "subj": subj, "html": html, "text": text})
+            {"ev": ev, "ch": ch, "subj": subj, "html": html, "text": text,
+             "dlt": dlt[ev] if ch == "sms" else None})
 
 
 def downgrade():
-    op.execute("DELETE FROM notification_template WHERE category = 'emergency'")
+    # Remove only what this migration inserted: templates whose body still
+    # matches the shipped text (admin-edited rows are kept), and - only if
+    # the permission row is ours (marker description) - its grants + row.
+    conn = op.get_bind()
+    for ev, ch, _subj, _html, text in _TEMPLATES:
+        conn.execute(sa.text(
+            "DELETE FROM notification_template WHERE event_type = :ev "
+            "AND channel = :ch AND body_text = :text"),
+            {"ev": ev, "ch": ch, "text": text})
     op.execute(
         "DELETE rp FROM role_permissions rp "
-        "JOIN role r ON r.id = rp.role_id "
         "JOIN permission p ON p.id = rp.permission_id "
-        f"WHERE r.name IN {_ROLES} AND p.name = 'broadcast send'"
+        f"WHERE p.name = 'broadcast send' AND p.description = '{_PERM_DESC}'"
+    )
+    op.execute(
+        "DELETE FROM permission WHERE name = 'broadcast send' "
+        f"AND description = '{_PERM_DESC}'"
     )
     op.drop_table("broadcast_recipient")
     op.drop_table("broadcast")

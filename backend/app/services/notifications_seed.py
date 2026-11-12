@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from app.core.config import settings
 from app.models.notification_channel import Channel, EventCategory
 
 
@@ -224,6 +225,7 @@ STARTER_TEMPLATES: List[Dict[str, Any]] = [
         event_type="emergency_broadcast", channel=Channel.SMS,
         category=EventCategory.EMERGENCY,
         body_text="EMERGENCY: {title} - {message}",
+        dlt_template_id=settings.EMERGENCY_BROADCAST_DLT_TEMPLATE_ID,
     ),
     _t(
         event_type="emergency_need_help", channel=Channel.EMAIL,
@@ -239,6 +241,7 @@ STARTER_TEMPLATES: List[Dict[str, Any]] = [
         event_type="emergency_need_help", channel=Channel.SMS,
         category=EventCategory.EMERGENCY,
         body_text="NEEDS HELP: {title} - {message}",
+        dlt_template_id=settings.EMERGENCY_NEED_HELP_DLT_TEMPLATE_ID,
     ),
 ]
 

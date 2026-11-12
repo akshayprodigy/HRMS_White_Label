@@ -117,6 +117,9 @@ const App = () => {
   const [loginError, setLoginError] = useState('');
   const [hasMarkedAttendance, setHasMarkedAttendance] = useState(false);
   const [hasPunchedOut, setHasPunchedOut] = useState(false);
+  // HR may open the Emergency Broadcast page from the attendance gate
+  // (sending an alert must not wait for check-in).
+  const [gateBypass, setGateBypass] = useState(false);
   const [isImpersonated, setIsImpersonated] = useState(false);
   const [sidebarBadges, setSidebarBadges] = useState<Record<string, number>>({});
 
@@ -687,8 +690,11 @@ const App = () => {
       <div className="min-h-screen bg-[#F8FAFC] flex">
         <BroadcastAlerts />
         {/* Attendance Modal is now mandatory for ALL roles (including HR) after login */}
-        {!hasMarkedAttendance && userRole !== 'super admin' && userRole !== 'admin' && (
-          <AttendanceModal onSuccess={handleAttendanceSuccess} />
+        {!hasMarkedAttendance && userRole !== 'super admin' && userRole !== 'admin' && !(gateBypass && activeTab === 'emergency-broadcast') && (
+          <AttendanceModal
+            onSuccess={handleAttendanceSuccess}
+            onSendBroadcast={userRole === 'hr' ? () => { setGateBypass(true); setActiveTab('emergency-broadcast'); } : undefined}
+          />
         )}
 
         <Sidebar
@@ -716,7 +722,7 @@ const App = () => {
           />
 
           <div className="flex-1 overflow-y-auto scrollbar-none">
-            {(hasMarkedAttendance || userRole === 'super admin' || userRole === 'admin') ? renderContent() : (
+            {(hasMarkedAttendance || userRole === 'super admin' || userRole === 'admin' || (gateBypass && activeTab === 'emergency-broadcast')) ? renderContent() : (
               <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-8">
                 <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4 transition-all animate-pulse">
                   <span className="text-2xl">🕒</span>
