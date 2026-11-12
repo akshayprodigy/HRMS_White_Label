@@ -5,6 +5,7 @@ import { Button } from '../ui-elements';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -12,7 +13,7 @@ import {
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
-import { daysBetween, type BulkResult } from './roster-api';
+import { addDays, daysBetween, type BulkResult } from './roster-api';
 
 interface Props {
   open: boolean;
@@ -36,6 +37,9 @@ export const CopyDialog = ({ open, source, target, department, mode, onClose, on
         source_start: source.start,
         source_end: source.end,
         target_start: target.start,
+        // never write past the displayed window; the server also caps the
+        // target window at the source length
+        target_end: tgtLen > srcLen ? addDays(target.start, srcLen - 1) : target.end,
         department: department || null,
         overwrite: false,
       });
@@ -60,6 +64,7 @@ export const CopyDialog = ({ open, source, target, department, mode, onClose, on
             <Copy className="w-5 h-5 text-indigo-600" />
             Copy previous period
           </DialogTitle>
+          <DialogDescription className="sr-only">Copy the previous period's roster into this one as drafts.</DialogDescription>
         </DialogHeader>
         <div className="py-2 text-sm text-gray-700 space-y-2">
           <p>

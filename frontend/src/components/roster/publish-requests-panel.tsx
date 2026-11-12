@@ -39,6 +39,14 @@ export const PublishRequestsPanel = ({ isAdmin, refreshKey, onChanged }: Props) 
     load();
   }, [load, refreshKey]);
 
+  // Auto-expand when pending items appear (initial load or 0 -> >0); after
+  // that the user's manual toggle is respected.
+  const prevCount = useRef(0);
+  useEffect(() => {
+    if (prevCount.current === 0 && items.length > 0) setOpen(true);
+    prevCount.current = items.length;
+  }, [items.length]);
+
   const decide = async (r: PublishRequest, approve: boolean, note?: string) => {
     setBusyId(r.id);
     try {

@@ -9,6 +9,7 @@ import {
   Dialog,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
   DialogFooter,
 } from '../ui/dialog';
@@ -114,6 +115,7 @@ export const PublishBar = ({
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Publish drafts</DialogTitle>
+            <DialogDescription className="sr-only">Confirm publishing the draft cells in this period.</DialogDescription>
           </DialogHeader>
           <p className="py-2 text-sm text-gray-700">
             Publish <b>{draftCount}</b> draft cell{draftCount === 1 ? '' : 's'} for{' '}

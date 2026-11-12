@@ -5,6 +5,7 @@ import {
   Dialog,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
   DialogFooter,
 } from '../ui/dialog';
@@ -45,6 +46,7 @@ export const ReasonDialog = ({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
+          <DialogDescription className="sr-only">{description || 'Provide a reason for this change.'}</DialogDescription>
         </DialogHeader>
         <div className="space-y-2 py-1">
           {description && (

@@ -5,6 +5,7 @@ import {
   Dialog,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
 } from '../ui/dialog';
 import { client } from '../../api/client';
@@ -49,6 +50,7 @@ export const HistoryDialog = ({ employee, onClose }: Props) => {
             <History className="w-5 h-5 text-indigo-600" />
             Change history — {shown?.name}
           </DialogTitle>
+          <DialogDescription className="sr-only">Past changes to this employee's published roster.</DialogDescription>
         </DialogHeader>
         <p className="text-xs text-gray-500">Changes in the last 30 days.</p>
         <div className="max-h-96 overflow-y-auto overflow-x-auto">

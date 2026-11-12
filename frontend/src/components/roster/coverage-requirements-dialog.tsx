@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Users, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '../ui-elements';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogDescription, DialogTitle } from '../ui/dialog';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
@@ -148,6 +148,7 @@ export const CoverageRequirementsDialog = ({ open, templates, onClose, onChanged
             <Users className="w-5 h-5 text-indigo-600" />
             Coverage requirements
           </DialogTitle>
+          <DialogDescription className="sr-only">Set the minimum and maximum headcount required per shift.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2 max-h-[70vh] overflow-y-auto">
           {loadErr && (

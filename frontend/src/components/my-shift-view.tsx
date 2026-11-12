@@ -10,7 +10,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
-import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { MyRegularizations, TeamRegularizations } from './regularization-requests';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
@@ -255,7 +255,13 @@ export const MyShiftView: React.FC = () => {
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-            {rosterWeek.days.map((d: any) => (
+            {rosterWeek.days.map((d: any) => {
+              // Weekly-off day with only an assigned/default shift behaves
+              // like the My Workspace widget; a published roster shift wins.
+              const weekOff =
+                d.shift?.name === 'Week off' ||
+                (!!d.is_weekend && d.shift?.source !== 'roster');
+              return (
               <button
                 key={d.date}
                 type="button"
@@ -269,9 +275,9 @@ export const MyShiftView: React.FC = () => {
                   {new Date(d.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit' })}
                 </p>
                 <p className="text-[11px] font-black text-[#0F172A] mt-1 truncate">
-                  {d.on_leave ? 'On leave' : d.shift?.name}
+                  {d.on_leave ? 'On leave' : weekOff ? 'Week off' : d.shift?.name}
                 </p>
-                {d.shift?.start_time && !d.on_leave && (
+                {d.shift?.start_time && !d.on_leave && !weekOff && (
                   <p className="text-[9px] font-bold text-slate-500 tabular-nums">
                     {d.shift.start_time}–{d.shift.end_time}
                   </p>
@@ -282,7 +288,8 @@ export const MyShiftView: React.FC = () => {
                   </p>
                 )}
               </button>
-            ))}
+              );
+            })}
           </div>
 
           {rosterReqs.length > 0 && (
@@ -398,14 +405,14 @@ export const MyShiftView: React.FC = () => {
 
       {/* Request dialog */}
       {reqOpen && (
-        <Dialog open onOpenChange={(o) => !o && setReqOpen(false)}>
+        <Dialog open onOpenChange={(o: boolean) => !o && setReqOpen(false)}>
           <DialogContent className="max-w-md">
             <DialogTitle className="flex items-center gap-2 text-base font-black uppercase tracking-tight text-[#0F172A]">
               <Send size={15} className="text-blue-600" /> Request Shift Change
             </DialogTitle>
-            <p className="text-[10px] font-bold text-slate-500 -mt-1">
+            <DialogDescription className="text-[10px] font-bold text-slate-500 -mt-1">
               Approved by your manager, then HR
-            </p>
+            </DialogDescription>
             <div className="space-y-3 pt-1">
               <div className="space-y-1">
                 <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">
@@ -466,14 +473,14 @@ export const MyShiftView: React.FC = () => {
 
       {/* Roster change dialog (W7) */}
       {rosterReqOpen && (
-        <Dialog open onOpenChange={(o) => !o && setRosterReqOpen(false)}>
+        <Dialog open onOpenChange={(o: boolean) => !o && setRosterReqOpen(false)}>
           <DialogContent className="max-w-md">
             <DialogTitle className="flex items-center gap-2 text-base font-black uppercase tracking-tight text-[#0F172A]">
               <CalendarDays size={15} className="text-indigo-600" /> Request Roster Change
             </DialogTitle>
-            <p className="text-[10px] font-bold text-slate-500 -mt-1">
+            <DialogDescription className="text-[10px] font-bold text-slate-500 -mt-1">
               For {rosterForm.work_date} · approved by your team head
-            </p>
+            </DialogDescription>
             <div className="space-y-3 pt-1">
               <label className="flex items-center gap-2 text-[11px] font-bold text-slate-700">
                 <input

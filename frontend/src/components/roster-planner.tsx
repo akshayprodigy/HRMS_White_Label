@@ -265,7 +265,7 @@ export const RosterPlanner = () => {
   const rangeLabel = grid ? `${grid.start} → ${grid.end}` : '';
 
   return (
-    <div className="space-y-5">
+    <div className="p-8 space-y-5">
       {/* Header */}
       <div className="flex items-center gap-2">
         <CalendarDays className="w-5 h-5 text-indigo-600" />
@@ -351,14 +351,14 @@ export const RosterPlanner = () => {
           </div>
 
           <div className="flex items-center gap-1">
-            <Button variant="outline" size="sm" onClick={() => navigate(-1)}>
+            <Button variant="outline" size="sm" onClick={() => navigate(-1)} aria-label="Previous period">
               <ChevronLeft className="w-4 h-4" />
             </Button>
             <span className="text-sm text-gray-700 min-w-[180px] text-center font-medium">
               {rangeLabel}
               {refreshing && <RefreshCw className="w-3 h-3 animate-spin inline ml-1.5 text-gray-400" aria-label="Refreshing" />}
             </span>
-            <Button variant="outline" size="sm" onClick={() => navigate(1)}>
+            <Button variant="outline" size="sm" onClick={() => navigate(1)} aria-label="Next period">
               <ChevronRight className="w-4 h-4" />
             </Button>
           </div>

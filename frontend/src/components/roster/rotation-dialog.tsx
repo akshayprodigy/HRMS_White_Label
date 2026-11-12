@@ -6,6 +6,7 @@ import {
   Dialog,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
 } from '../ui/dialog';
 import { client } from '../../api/client';
@@ -213,6 +214,7 @@ export const RotationDialog = ({
             <Repeat className="w-5 h-5 text-indigo-600" />
             Rotations
           </DialogTitle>
+          <DialogDescription className="sr-only">Manage rotation patterns and apply them to employees.</DialogDescription>
         </DialogHeader>
 
         <section className="space-y-2">

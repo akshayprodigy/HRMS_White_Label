@@ -5,6 +5,7 @@ import {
   Dialog,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
   DialogFooter,
 } from './ui/dialog';
@@ -202,6 +203,7 @@ export const ScheduleDelegationDialog = ({
           <DialogTitle>
             {editing ? `Edit access for ${granteeName}` : 'Grant scheduling access'}
           </DialogTitle>
+          <DialogDescription className="sr-only">Choose who can schedule or approve changes for which employees.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 text-sm">

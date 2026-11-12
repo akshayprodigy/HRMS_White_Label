@@ -6,6 +6,7 @@ import {
   Dialog,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
   DialogFooter,
 } from '../ui/dialog';
@@ -93,6 +94,7 @@ export const PatternDialog = ({
             <Wand2 className="w-5 h-5 text-indigo-600" />
             Apply weekday pattern
           </DialogTitle>
+          <DialogDescription className="sr-only">Apply a weekly shift pattern across the selected period.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
           <p className="text-sm text-gray-500">
