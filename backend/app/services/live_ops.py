@@ -1,5 +1,10 @@
 """Live operations board + no-show detection (Roadmap v2 Phase 1B, Task 9).
 
+Known edge: a punch within the 2h early-in buffer BEFORE midnight for a shift
+starting just after midnight is attributed (work_date) to the next day, which
+the board does not read until that day begins, so such an employee can show
+as upcoming/not_arrived/no_show until midnight passes. Rare; accepted.
+
 Shift start/end are wall-clock times compared as UTC, exactly like
 shift_resolver / attendance (no org timezone yet). `classify` is pure; the
 loader batches every query (no per-employee DB access).
@@ -15,14 +20,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance import Attendance
+from app.models.leave import LeaveRequest, LeaveStatus
 from app.models.employee import Employee, EmployeeStatus
 from app.models.no_show import NoShowAlert
 from app.models.schedule_delegation import ScheduleDelegation
 from app.models.user import Permission, Role, User
 from app.services import roster as roster_svc
+from app.services.absence_lop import (
+    default_offs_from_rules, is_non_working_day, load_holidays,
+)
 from app.services.effective_shift import effective_shifts_for_range
 from app.services.shift_resolver import _combine
-from app.services.time_rules import get_schedule_rules
+from app.services.time_rules import get_schedule_rules, get_time_rules
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +81,8 @@ def classify(
         return status, late
     if now < start:
         return LiveStatus.UPCOMING, 0
-    if no_show_minutes > 0 and now >= start + timedelta(minutes=no_show_minutes):
+    if no_show_minutes > 0 and now >= start + timedelta(
+            minutes=max(no_show_minutes, grace_in)):
         return LiveStatus.NO_SHOW, 0
     if now >= end:
         return LiveStatus.NO_SHOW, 0
@@ -97,6 +107,7 @@ class LiveRow:
     punch_in: Optional[datetime]
     punch_out: Optional[datetime]
     alerted: bool = False
+    half_day_leave: bool = False
 
 
 def _chunks(ids, n=ID_CHUNK):
@@ -167,6 +178,23 @@ async def live_board(
                 NoShowAlert.user_id.in_(ch),
                 NoShowAlert.work_date.in_([yday, today])))).all()}
     leave = await roster_svc.approved_leave_days(db, ids, yday, today)
+    half_leave: set = set()
+    for ch in _chunks(ids):
+        for lv in (await db.execute(
+            select(LeaveRequest.employee_id, LeaveRequest.start_date,
+                   LeaveRequest.end_date).where(
+                LeaveRequest.employee_id.in_(ch),
+                LeaveRequest.status == LeaveStatus.APPROVED,
+                LeaveRequest.is_half_day.is_(True),
+                LeaveRequest.start_date <= today,
+                LeaveRequest.end_date >= yday)
+        )).all():
+            d = max(lv.start_date, yday)
+            while d <= min(lv.end_date, today):
+                half_leave.add((lv.employee_id, d))
+                d += timedelta(days=1)
+    holidays = await load_holidays(db, yday, today)
+    default_offs = default_offs_from_rules(await get_time_rules(db))
 
     by_key: Dict[Tuple[int, date], List[Attendance]] = {}
     for a in att_rows:
@@ -176,9 +204,18 @@ async def live_board(
     for uid in ids:
         name, dept, loc = people[uid]
         chosen = None  # (work_date, shift, start, end)
+        loc_key = loc or "HQ"
+
+        def working(e, d):
+            # Same skip rules as absence-LOP (holiday / week-off / default
+            # off day); a published roster shift beats a holiday.
+            return (e is not None and e.shift is not None
+                    and not is_non_working_day(
+                        e, d, loc_key, holidays, default_offs,
+                        roster_beats_holiday=True))
+
         ye = eff.get((uid, yday))
-        if ye is not None and ye.shift is not None and not ye.is_week_off \
-                and ye.shift.is_overnight:
+        if working(ye, yday) and ye.shift.is_overnight:
             s, e = shift_bounds(ye.shift, yday)
             _, pout = _punches(by_key.get((uid, yday), []))
             # Yesterday's overnight shift is still running (and the person
@@ -187,7 +224,7 @@ async def live_board(
                 chosen = (yday, ye.shift, s, e)
         if chosen is None:
             te = eff.get((uid, today))
-            if te is not None and te.shift is not None and not te.is_week_off:
+            if working(te, today):
                 s, e = shift_bounds(te.shift, today)
                 chosen = (today, te.shift, s, e)
         if chosen is not None:
@@ -197,11 +234,14 @@ async def live_board(
                 now=now, start=s, end=e, grace_in=shift.grace_in_minutes,
                 punch_in=pin, punch_out=pout, on_leave=(uid, wd) in leave,
                 no_show_minutes=no_show_minutes)
+            half = (uid, wd) in half_leave
+            if half and status == LiveStatus.NO_SHOW and now < e:
+                status = LiveStatus.NOT_ARRIVED  # other half is worked later
             out.append(LiveRow(
                 uid, name, dept, loc, wd, shift.id, shift.name, s, e,
                 shift.start_time.strftime("%H:%M"),
                 shift.end_time.strftime("%H:%M"),
-                status, late, pin, pout, (uid, wd) in alerts))
+                status, late, pin, pout, (uid, wd) in alerts, half))
         else:
             pin, pout = _punches(by_key.get((uid, today), []))
             status, late = classify(
@@ -279,7 +319,9 @@ async def no_show_job(
         q = q.where(Employee.user_id.in_(list(user_ids)))
     ids = list((await session.execute(q)).scalars().all())
     rows = await live_board(session, ids, now, no_show_minutes=minutes)
-    cands = [r for r in rows if r.status == LiveStatus.NO_SHOW and not r.alerted]
+    cands = [r for r in rows
+             if r.status == LiveStatus.NO_SHOW and not r.alerted
+             and not r.half_day_leave and r.end is not None and now < r.end]
     created: List[LiveRow] = []
     for r in cands:
         try:

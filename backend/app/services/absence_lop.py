@@ -81,6 +81,47 @@ def absence_lop_applies(rules: dict, run_type: str) -> bool:
     return on and run_type != "off_cycle"
 
 
+def is_non_working_day(
+    eff, d: date, location: str, holidays: set[tuple[str, date]],
+    default_offs: set[int], *, roster_beats_holiday: bool = False,
+) -> bool:
+    """Shared skip rules: holiday, week-off, no-shift default off day, or an
+    assigned template with no weekly offs on a default off day. Roster
+    shifts are explicit working days for the template rule. With
+    `roster_beats_holiday` a published roster working shift stays a working
+    day even on a holiday (used by the live board)."""
+    if ("All", d) in holidays or (location, d) in holidays:
+        if not (
+            roster_beats_holiday and eff is not None
+            and eff.source == "roster" and not eff.is_week_off
+        ):
+            return True
+    if eff is not None and eff.is_week_off:
+        return True
+    if (eff is None or eff.source == "none") and d.weekday() in default_offs:
+        return True
+    if (
+        eff is not None
+        and eff.source == "assignment"
+        and not (eff.shift.weekly_offs if eff.shift is not None else None)
+        and d.weekday() in default_offs
+    ):
+        return True
+    return False
+
+
+async def load_holidays(db, start: date, end: date) -> set[tuple[str, date]]:
+    """Non-optional holidays as (location, date) in [start, end]."""
+    rows = (await db.execute(
+        select(HolidayCalendar.date, HolidayCalendar.location).where(
+            HolidayCalendar.date >= start,
+            HolidayCalendar.date <= end,
+            HolidayCalendar.is_optional.is_(False),
+        )
+    )).all()
+    return {(loc, d) for d, loc in rows}
+
+
 def count_absent_days(
     *,
     first: date,
@@ -101,20 +142,7 @@ def count_absent_days(
     while d <= last:
         key = (user_id, d)
         eff = shifts.get(key)
-        if ("All", d) in holidays or (location, d) in holidays:
-            pass
-        elif eff is not None and eff.is_week_off:
-            pass
-        elif (eff is None or eff.source == "none") and d.weekday() in default_offs:
-            pass
-        elif (
-            eff is not None
-            and eff.source == "assignment"
-            and not (eff.shift.weekly_offs if eff.shift is not None else None)
-            and d.weekday() in default_offs
-        ):
-            # Assigned template defines no weekly offs: use the org default.
-            # (Roster shifts are explicit working days; not applied there.)
+        if is_non_working_day(eff, d, location, holidays, default_offs):
             pass
         elif key in punched or key in full_leave:
             pass
@@ -167,14 +195,7 @@ async def absence_days_for_period(
             target.add((lv.employee_id, d))
             d += timedelta(days=1)
 
-    hol_rows = (await db.execute(
-        select(HolidayCalendar.date, HolidayCalendar.location).where(
-            HolidayCalendar.date >= start,
-            HolidayCalendar.date <= last_day,
-            HolidayCalendar.is_optional.is_(False),
-        )
-    )).all()
-    holidays: set[tuple[str, date]] = {(loc, d) for d, loc in hol_rows}
+    holidays = await load_holidays(db, start, last_day)
 
     res_rows = (await db.execute(
         select(Resignation.employee_id, Resignation.last_working_day).where(

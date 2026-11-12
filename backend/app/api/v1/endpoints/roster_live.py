@@ -56,6 +56,6 @@ async def live_board(
             "status": r.status.value, "late_minutes": r.late_minutes,
             "punch_in": r.punch_in.isoformat() if r.punch_in else None,
             "punch_out": r.punch_out.isoformat() if r.punch_out else None,
-            "alerted": r.alerted,
+            "alerted": r.alerted, "half_day_leave": r.half_day_leave,
         } for r in rows],
     }

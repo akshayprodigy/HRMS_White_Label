@@ -28,6 +28,7 @@ interface LiveRow {
   punch_in: string | null;
   punch_out: string | null;
   alerted: boolean;
+  half_day_leave: boolean;
 };
 
 interface LiveResponse {
@@ -67,6 +68,7 @@ const hhmm = (iso: string | null) =>
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
+        timeZone: 'UTC',
       })
     : '—';
 
@@ -171,7 +173,7 @@ export const LiveBoard: React.FC = () => {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Live Board</h2>
             <p className="text-sm text-gray-500 mt-0.5">
-              Who is on shift, late or missing right now
+              Who is on shift, late or missing right now. Times shown in UTC (same as shift schedule).
             </p>
           </div>
         </div>
@@ -318,6 +320,9 @@ export const LiveBoard: React.FC = () => {
                       <Badge variant={STATUS_META[r.status].variant}>
                         {STATUS_META[r.status].label}
                       </Badge>
+                      {r.half_day_leave && (
+                        <span className="text-xs text-gray-500">Half-day leave</span>
+                      )}
                       {r.alerted && (
                         <span
                           className="inline-flex items-center text-red-600"

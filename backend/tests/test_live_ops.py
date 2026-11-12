@@ -15,18 +15,22 @@ from app.db.session import SessionLocal
 from app.main import create_app
 from app.models.attendance import Attendance
 from app.models.department import Department
+from app.models.hr import HolidayCalendar
+from app.models.leave import HalfDaySession, LeaveRequest, LeaveStatus, LeaveType
 from app.models.employee import Employee, EmployeeStatus
 from app.models.no_show import NoShowAlert
 from app.models.notification import Notification
 from app.models.roster import RosterEntry, RosterEntryHistory, RosterStatus
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
-from app.models.shift import ShiftTemplate
+from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.system import SystemSetting
 from app.models.user import User
 from app.services import live_ops
+from app.services.time_rules import TIME_RULE_DEFAULTS
 from app.services.live_ops import LiveStatus as S, classify, no_show_job
 
 PW = "test@12345"
+RULE_KEY = "schedule.no_show_minutes"
 UTC = timezone.utc
 D = date(2030, 6, 10)
 
@@ -104,6 +108,9 @@ async def client():
 async def world():
     sfx = uuid.uuid4().hex[:8]
     dx, dy = f"LX{sfx}", f"LY{sfx}"
+    async with SessionLocal() as db:
+        prior = await db.get(SystemSetting, RULE_KEY)
+        prior_val = (prior.value, prior.description) if prior else None
     try:
         async with SessionLocal() as db:
             def mk(tag, **kw):
@@ -161,9 +168,29 @@ async def world():
                 ShiftTemplate.name.in_([f"LD{sfx}", f"LN{sfx}"])))).scalars().all()
             await purge_shift_templates(db, tids)
             await db.execute(delete(User).where(User.id.in_(uids)))
+            await db.execute(delete(HolidayCalendar).where(
+                HolidayCalendar.name == f"LOH{sfx}"))
+            await db.execute(delete(LeaveRequest).where(
+                LeaveRequest.employee_id.in_(uids)))
+            await db.execute(delete(LeaveType).where(LeaveType.name == f"LOL{sfx}"))
+            await db.execute(delete(EmployeeShiftAssignment).where(
+                EmployeeShiftAssignment.employee_id.in_(uids)))
+            # restore any pre-existing setting; delete only if we created it
             await db.execute(delete(SystemSetting).where(
-                SystemSetting.key == "schedule.no_show_minutes"))
+                SystemSetting.key == RULE_KEY))
+            if prior_val is not None:
+                db.add(SystemSetting(key=RULE_KEY, value=prior_val[0],
+                                     description=prior_val[1]))
             await db.commit()
+
+
+async def _set_rule(db, value):
+    row = await db.get(SystemSetting, RULE_KEY)
+    if row:
+        row.value = value
+    else:
+        db.add(SystemSetting(key=RULE_KEY, value=value, description="t"))
+    await db.commit()
 
 
 async def _roster(db, uid, d, tpl):
@@ -309,9 +336,7 @@ async def test_job_delegate_and_fallback_and_inactive(world):
 async def test_job_disabled_when_zero(world):
     await _seed(world, NOW)
     async with SessionLocal() as db:
-        db.add(SystemSetting(key="schedule.no_show_minutes", value="0",
-                             description="t"))
-        await db.commit()
+        await _set_rule(db, "0")
         assert await no_show_job(db, now=NOW) == {"skipped": "disabled"}
     assert await _alerts(world) == []
 
@@ -325,7 +350,9 @@ def test_job_registered():
 async def test_time_rule_validation():
     from app.services.time_rules import get_schedule_rules, set_time_rules
     async with SessionLocal() as db:
-        assert (await get_schedule_rules(db))["no_show_minutes"] == 30
+        if await db.get(SystemSetting, RULE_KEY) is None:
+            assert (await get_schedule_rules(db))["no_show_minutes"] == int(
+                TIME_RULE_DEFAULTS[RULE_KEY][0])
         with pytest.raises(ValueError):
             await set_time_rules(db, {"schedule.no_show_minutes": "241"})
 
@@ -365,3 +392,124 @@ async def test_endpoint_scope_and_filters(client, world):
     e = await _login(client, f"lo_day_{sfx}@t.com")
     assert (await client.get(url, headers=e)).status_code == 403
     assert (await client.get(url)).status_code in (401, 403)
+
+
+# ---------------- review follow-ups ----------------
+
+SUN = date(2030, 6, 9)  # Sunday; D (06-10) is Monday
+
+
+async def _assign(uid, tpl, effective_from=date(2030, 1, 1)):
+    async with SessionLocal() as db:
+        db.add(EmployeeShiftAssignment(
+            employee_id=uid, shift_template_id=tpl,
+            effective_from=effective_from))
+        await db.commit()
+
+
+async def _holiday(w, d):
+    async with SessionLocal() as db:
+        db.add(HolidayCalendar(name=f"LOH{w['sfx']}", date=d, location="All",
+                               is_optional=False))
+        await db.commit()
+
+
+async def _only(w, uid, now):
+    async with SessionLocal() as db:
+        return (await live_ops.live_board(db, [uid], now))[0]
+
+
+async def test_holiday_assignment_is_off(world):
+    i = world["ids"]
+    await _assign(i["leave"], i["t_day"])
+    await _holiday(world, D)
+    r = await _only(world, i["leave"], NOW)
+    assert r.status == S.OFF and r.shift_name is None
+
+
+async def test_holiday_with_roster_shift_still_expected(world):
+    i = world["ids"]
+    await _holiday(world, D)
+    async with SessionLocal() as db:
+        await _roster(db, i["leave"], D, i["t_day"])
+        await db.commit()
+    r = await _only(world, i["leave"], NOW)
+    assert r.status == S.NO_SHOW  # roster is explicit
+
+
+async def test_assignment_without_weekly_offs_on_default_off_day(world):
+    i = world["ids"]
+    async with SessionLocal() as db:
+        t = await db.get(ShiftTemplate, i["t_day"])
+        assert not t.weekly_offs
+    await _assign(i["leave"], i["t_day"])
+    # Sunday 10:00: default off day -> OFF; Monday 10:00 -> expected.
+    assert (await _only(world, i["leave"], dt(10, day=SUN))).status == S.OFF
+    assert (await _only(world, i["leave"], NOW)).status == S.NO_SHOW
+
+
+async def _leave(w, uid, d, half):
+    async with SessionLocal() as db:
+        lt = (await db.execute(select(LeaveType).where(
+            LeaveType.name == f"LOL{w['sfx']}"))).scalars().first()
+        if lt is None:
+            lt = LeaveType(name=f"LOL{w['sfx']}")
+            db.add(lt)
+            await db.flush()
+        db.add(LeaveRequest(
+            employee_id=uid, leave_type_id=lt.id, start_date=d, end_date=d,
+            is_half_day=half, half_day_session=HalfDaySession.MORNING if half else None,
+            reason="t", status=LeaveStatus.APPROVED, created_by_user_id=uid))
+        await db.commit()
+
+
+async def test_half_day_leave_not_alerted(world):
+    await _seed(world, NOW)
+    i = world["ids"]
+    await _leave(world, i["noshow"], D, True)
+    rows = await _board(world)
+    r = rows[i["noshow"]]
+    assert r.status == S.NOT_ARRIVED and r.half_day_leave is True
+    async with SessionLocal() as db:
+        await no_show_job(db, now=NOW, user_ids=_emp_ids(world))
+    assert i["noshow"] not in [a.user_id for a in await _alerts(world)]
+
+
+async def test_full_day_leave_not_alerted(world):
+    await _seed(world, NOW)
+    i = world["ids"]
+    await _leave(world, i["noshow"], D, False)
+    assert (await _board(world))[i["noshow"]].status == S.ON_LEAVE
+    async with SessionLocal() as db:
+        await no_show_job(db, now=NOW, user_ids=_emp_ids(world))
+    assert i["noshow"] not in [a.user_id for a in await _alerts(world)]
+
+
+async def test_job_skips_ended_shifts(world):
+    await _seed(world, NOW)
+    late = dt(18)  # day shift ended 17:00, nobody punched
+    async with SessionLocal() as db:
+        res = await no_show_job(db, now=late, user_ids=_emp_ids(world))
+    assert res["alerts_created"] == 0
+    rows = await _board(world, late)
+    assert rows[world["ids"]["noshow"]].status == S.NO_SHOW  # board still shows it
+
+
+async def test_job_alerts_overnight_from_yesterday(world):
+    i = world["ids"]
+    now = dt(2, day=D)  # 02:00; night shift 22:00 (06-09) -> 06:00 still running
+    async with SessionLocal() as db:
+        await _roster(db, i["night"], SUN, i["t_night"])
+        await db.commit()
+        res = await no_show_job(db, now=now, user_ids=[i["night"]])
+    assert res["alerts_created"] == 1
+    a = (await _alerts(world))[0]
+    assert a.user_id == i["night"] and a.work_date == SUN
+
+
+def test_threshold_uses_max_of_grace():
+    # no_show_minutes=5 but grace_in=10 -> not a no-show at 9:05..9:09
+    kw = dict(start=START, end=END, grace_in=10, punch_in=None, punch_out=None,
+              on_leave=False, no_show_minutes=5)
+    assert classify(now=dt(9, 9), **kw)[0] == S.NOT_ARRIVED
+    assert classify(now=dt(9, 10), **kw)[0] == S.NO_SHOW
