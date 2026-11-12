@@ -12,61 +12,28 @@ from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
-from app.models.notification import Notification
 from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.user import User
 from app.schemas.schedule_delegation import (
     DelegationCreate, DelegationPreviewRow, DelegationRead, DelegationUpdate,
 )
+from app.api.v1.endpoints.roster_common import names, require_admin
 from app.services import roster as roster_svc
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _require_admin(user: User) -> None:
-    if not roster_svc.is_roster_admin(user):
-        raise HTTPException(
-            status_code=403, detail="Only HR / roster admins can manage delegations.",
-        )
-
-
-async def _notify(db, user_id: Optional[int], title: str, message: str,
-                  deleg_id: int) -> None:
-    """Best-effort in-app notification; never breaks the request."""
-    if not user_id:
-        return
-    try:
-        async with db.begin_nested():
-            db.add(Notification(
-                user_id=user_id, title=title, message=message,
-                type="info", resource_type="schedule_delegation",
-                resource_id=str(deleg_id),
-            ))
-    except Exception:  # pragma: no cover
-        logger.warning("delegation notification failed", exc_info=True)
-
-
-async def _names(db, ids) -> dict:
-    ids = {i for i in ids if i}
-    if not ids:
-        return {}
-    rows = (await db.execute(
-        select(User.id, User.full_name, User.email).where(User.id.in_(ids))
-    )).all()
-    return {r[0]: (r[1] or r[2]) for r in rows}
-
-
 async def _to_reads(db, rows: List[ScheduleDelegation]) -> List[DelegationRead]:
-    names = await _names(
+    nm = await names(
         db, [d.grantee_id for d in rows] + [d.granted_by_id for d in rows]
     )
     out = []
     for d in rows:
         r = DelegationRead.model_validate(d)
         r.employee_ids = list(d.employee_ids or [])
-        r.grantee_name = names.get(d.grantee_id)
-        r.granted_by_name = names.get(d.granted_by_id)
+        r.grantee_name = nm.get(d.grantee_id)
+        r.granted_by_name = nm.get(d.granted_by_id)
         r.covered_count = len(await roster_svc.delegation_user_ids(db, d))
         out.append(r)
     return out
@@ -124,7 +91,7 @@ async def list_delegations(
     include_inactive: bool = Query(False),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    _require_admin(current_user)
+    require_admin(current_user)
     q = select(ScheduleDelegation).order_by(ScheduleDelegation.id.desc())
     if not include_inactive:
         today = datetime.now(timezone.utc).date()
@@ -146,7 +113,7 @@ async def create_delegation(
     body: DelegationCreate,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    _require_admin(current_user)
+    require_admin(current_user)
     grantee = await db.get(User, body.grantee_id)
     if grantee is None or not grantee.is_active:
         raise HTTPException(status_code=422, detail="Grantee must be an active user.")
@@ -170,12 +137,12 @@ async def create_delegation(
     )
     db.add(d)
     await db.flush()
-    await _notify(
+    await roster_svc.notify(
         db, d.grantee_id, "Scheduling rights granted",
         f"You have been given scheduling rights ({d.scope_type}"
         f"{': ' + d.scope_value if d.scope_value else ''}) from "
         f"{d.valid_from.isoformat()}.",
-        d.id,
+        "schedule_delegation", str(d.id),
     )
     await db.commit()
     await db.refresh(d)
@@ -206,7 +173,7 @@ async def preview_scope(
     grantee_id: Optional[int] = Query(None),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    _require_admin(current_user)
+    require_admin(current_user)
     if scope_type not in DelegationScope.ALL:
         raise HTTPException(status_code=422, detail="Invalid scope_type.")
     ids = await roster_svc.resolve_scope_user_ids(
@@ -238,7 +205,7 @@ async def update_delegation(
     body: DelegationUpdate,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    _require_admin(current_user)
+    require_admin(current_user)
     d = await db.get(ScheduleDelegation, deleg_id)
     if d is None:
         raise HTTPException(status_code=404, detail="Delegation not found")
@@ -270,16 +237,17 @@ async def revoke_delegation(
     deleg_id: int,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    _require_admin(current_user)
+    require_admin(current_user)
     d = await db.get(ScheduleDelegation, deleg_id)
     if d is None:
         raise HTTPException(status_code=404, detail="Delegation not found")
     if d.revoked_at is not None:
         raise HTTPException(status_code=409, detail="Delegation already revoked.")
     d.revoked_at = datetime.now(timezone.utc)
-    await _notify(
+    await roster_svc.notify(
         db, d.grantee_id, "Scheduling rights revoked",
-        "Your delegated scheduling rights have been revoked.", d.id,
+        "Your delegated scheduling rights have been revoked.",
+        "schedule_delegation", str(d.id),
     )
     await db.commit()
     await db.refresh(d)

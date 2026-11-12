@@ -74,6 +74,18 @@ async def resolve_scope_user_ids(
     return ids
 
 
+async def _active_employee_user_ids(db: AsyncSession, ids: set) -> set:
+    """Subset of `ids` that are User ids of ACTIVE Employees."""
+    if not ids:
+        return set()
+    return set((await db.execute(
+        select(Employee.user_id).where(
+            Employee.user_id.in_(ids),
+            Employee.status == EmployeeStatus.ACTIVE,
+        )
+    )).scalars().all())
+
+
 async def _resolve_scope(
     db: AsyncSession,
     scope_type: str,
@@ -82,16 +94,17 @@ async def _resolve_scope(
     grantee_id: Optional[int],
 ) -> set:
     if scope_type == DelegationScope.EMPLOYEES:
-        return {int(i) for i in (employee_ids or [])}
+        want = {int(i) for i in (employee_ids or [])}
+        return await _active_employee_user_ids(db, want)
     if scope_type == DelegationScope.DEPARTMENT and scope_value:
         col = Employee.department
     elif scope_type == DelegationScope.LOCATION and scope_value:
         col = Employee.location
     elif scope_type == DelegationScope.TEAM and grantee_id is not None:
-        rows = (await db.execute(
+        rows = set((await db.execute(
             select(User.id).where(User.manager_id == grantee_id)
-        )).scalars().all()
-        return set(rows)
+        )).scalars().all())
+        return await _active_employee_user_ids(db, rows)
     else:
         return set()
     rows = (await db.execute(
@@ -163,32 +176,39 @@ async def scoped_employees(
     return list((await db.execute(q)).scalars().all())
 
 
-async def _subset(
-    db: AsyncSession, user: User, user_ids, flag: Optional[str]
+async def _scope_user_ids(
+    db: AsyncSession, user: User, flag: Optional[str], within: Optional[set] = None,
 ) -> set:
-    """Subset of `user_ids` (User ids) that `user` may act on. Admin: all.
-    Department heads: employees of departments they head. Delegates: those
-    covered by an active delegation (with `flag` set when given). Scope is
-    resolved once, then membership is checked in memory."""
-    ids = set(user_ids)
-    if not ids or is_roster_admin(user):
-        return ids
+    """User ids a non-admin `user` may act on: ACTIVE employees of the
+    departments they head, plus those covered by an active delegation (with
+    `flag` set when given). `within` optionally restricts the lookup."""
     ok: set = set()
     dept_names = await scope_department_names(db, user)
     if dept_names:
-        rows = (await db.execute(
-            select(Employee.user_id).where(
-                Employee.user_id.in_(ids),
-                Employee.department.in_(dept_names),
-            )
-        )).scalars().all()
-        ok |= set(rows)
+        q = select(Employee.user_id).where(
+            Employee.department.in_(dept_names),
+            Employee.status == EmployeeStatus.ACTIVE,
+            Employee.user_id.is_not(None),
+        )
+        if within is not None:
+            q = q.where(Employee.user_id.in_(within))
+        ok |= set((await db.execute(q)).scalars().all())
     for d in await active_delegations(db, user):
-        if ids <= ok:
+        if within is not None and within <= ok:
             break
         if flag is None or getattr(d, flag):
-            ok |= ids & await delegation_user_ids(db, d)
-    return ok & ids
+            ok |= await delegation_user_ids(db, d)
+    return ok if within is None else ok & within
+
+
+async def _subset(
+    db: AsyncSession, user: User, user_ids, flag: Optional[str]
+) -> set:
+    """Subset of `user_ids` (User ids) that `user` may act on. Admin: all."""
+    ids = set(user_ids)
+    if not ids or is_roster_admin(user):
+        return ids
+    return await _scope_user_ids(db, user, flag, ids)
 
 
 async def manageable_subset(db: AsyncSession, user: User, user_ids) -> set:
@@ -224,19 +244,7 @@ async def can_approve_changes_for(
 
 async def approvable_user_ids(db: AsyncSession, user: User) -> set:
     """All user ids whose change requests `user` may decide (non-admin)."""
-    ids: set = set()
-    dept_names = await scope_department_names(db, user)
-    if dept_names:
-        ids |= set((await db.execute(
-            select(Employee.user_id).where(
-                Employee.status == EmployeeStatus.ACTIVE,
-                Employee.department.in_(dept_names),
-                Employee.user_id.is_not(None),
-            )
-        )).scalars().all())
-    for d in await active_delegations(db, user):
-        if d.can_approve_changes:
-            ids |= await delegation_user_ids(db, d)
+    ids = await _scope_user_ids(db, user, "can_approve_changes")
     ids.discard(user.id)
     return ids
 
@@ -477,6 +485,7 @@ async def build_grid(
     start: pydate,
     end: pydate,
     department: Optional[str] = None,
+    employees: Optional[List[Employee]] = None,
 ):
     """Employees x dates grid. Cells prefer a RosterEntry; empty cells fall
     back to the effective EmployeeShiftAssignment (DISPLAY ONLY) so planners
@@ -485,7 +494,8 @@ async def build_grid(
         RosterGridResponse, RosterGridRow, RosterCell, ShiftTemplateLite,
     )
 
-    employees = await scoped_employees(db, user, department)
+    if employees is None:
+        employees = await scoped_employees(db, user, department)
     admin = is_roster_admin(user)
     user_ids = [e.user_id for e in employees]
 

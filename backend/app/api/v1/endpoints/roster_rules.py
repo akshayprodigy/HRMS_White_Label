@@ -21,7 +21,7 @@ from app.services.time_rules import get_schedule_rules
 from app.services import roster as roster_svc
 
 from app.api.v1.endpoints.roster_common import (
-    require_admin, commit_or_409,
+    require_admin, commit_or_409, check_window,
     validate_templates,
 )
 
@@ -39,10 +39,7 @@ async def get_insights(
     """Work-rule violations (scoped/filtered employees only) + coverage
     (counts ALL active employees matching each requirement; headcounts
     only, no names). DRAFT and PUBLISHED entries both count."""
-    if start > end:
-        raise HTTPException(status_code=400, detail="start must be <= end")
-    if (end - start).days > 62:
-        raise HTTPException(status_code=400, detail="range too large (max 62 days)")
+    check_window(start, end)
     admin = roster_svc.is_roster_admin(current_user)
     scoped = await roster_svc.scoped_employees(db, current_user)
     if not admin and not scoped:

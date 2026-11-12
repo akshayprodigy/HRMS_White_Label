@@ -23,7 +23,7 @@ from app.services import roster as roster_svc
 
 from app.api.v1.endpoints.roster_common import (
     require_manage, require_admin, commit_or_409,
-    write_cells, check_window,
+    write_cells, check_window, names,
 )
 
 router = APIRouter()
@@ -73,17 +73,6 @@ async def publish_roster(
     return RosterPublishResult(**res)
 
 
-async def _names(db, ids) -> dict:
-    ids = {i for i in ids if i is not None}
-    if not ids:
-        return {}
-    return {
-        u.id: (u.full_name or u.email) for u in (await db.execute(
-            select(User).where(User.id.in_(ids))
-        )).scalars().all()
-    }
-
-
 async def _draft_counts(db, reqs) -> dict:
     """req.id -> number of DRAFT entries for its ids in its window. One
     query for the whole list; counted in memory."""
@@ -109,9 +98,9 @@ async def _draft_counts(db, reqs) -> dict:
     return out
 
 
-def _pr_read(r: RosterPublishRequest, names: dict, counts: dict) -> PublishRequestRead:
+def _pr_read(r: RosterPublishRequest, nm: dict, counts: dict) -> PublishRequestRead:
     out = PublishRequestRead.model_validate(r, from_attributes=True)
-    out.requester_name = names.get(r.requested_by_id)
+    out.requester_name = nm.get(r.requested_by_id)
     out.draft_count = counts.get(r.id)
     return out
 
@@ -201,9 +190,9 @@ async def list_publish_requests(
     if status != "all":
         q = q.where(RosterPublishRequest.status == status)
     rows = list((await db.execute(q.limit(500))).scalars().all())
-    names = await _names(db, {r.requested_by_id for r in rows})
+    nm = await names(db, {r.requested_by_id for r in rows})
     counts = await _draft_counts(db, rows)
-    return [_pr_read(r, names, counts) for r in rows]
+    return [_pr_read(r, nm, counts) for r in rows]
 
 
 @router.post(
@@ -262,8 +251,8 @@ async def decide_publish_request(
         "roster_publish_request", str(pr.id),
         {"approve": body.approve, **(res or {})}, request,
     )
-    names = await _names(db, {pr.requested_by_id})
-    out = _pr_read(pr, names, {})
+    nm = await names(db, {pr.requested_by_id})
+    out = _pr_read(pr, nm, {})
     if res is not None:
         out.publish_result = RosterPublishResult(**res)
         if res["published"] == 0:
@@ -301,7 +290,7 @@ async def cancel_publish_request(
         db, current_user.id, "roster.publish_request.cancel",
         "roster_publish_request", str(pr.id), {}, request,
     )
-    return _pr_read(pr, await _names(db, {pr.requested_by_id}), {})
+    return _pr_read(pr, await names(db, {pr.requested_by_id}), {})
 
 
 @router.post("/copy", response_model=RosterBulkResult)
@@ -364,7 +353,7 @@ async def _history_rows(db, q) -> List[RosterHistoryRead]:
             RosterEntryHistory.changed_at.desc(), RosterEntryHistory.id.desc()
         ).limit(500)
     )).scalars().all())
-    names = await _names(
+    nm = await names(
         db, {r.employee_id for r in rows} | {r.changed_by_id for r in rows}
     )
     tids = {
@@ -382,7 +371,7 @@ async def _history_rows(db, q) -> List[RosterHistoryRead]:
     return [
         RosterHistoryRead(
             id=r.id, employee_id=r.employee_id,
-            employee_name=names.get(r.employee_id), work_date=r.work_date,
+            employee_name=nm.get(r.employee_id), work_date=r.work_date,
             old_shift_template_id=r.old_shift_template_id,
             old_shift_name=tpl.get(r.old_shift_template_id),
             old_is_week_off=r.old_is_week_off,
@@ -390,7 +379,7 @@ async def _history_rows(db, q) -> List[RosterHistoryRead]:
             new_shift_name=tpl.get(r.new_shift_template_id),
             new_is_week_off=r.new_is_week_off, action=r.action,
             reason=r.reason, changed_by_id=r.changed_by_id,
-            changed_by_name=names.get(r.changed_by_id),
+            changed_by_name=nm.get(r.changed_by_id),
             changed_at=r.changed_at,
         ) for r in rows
     ]

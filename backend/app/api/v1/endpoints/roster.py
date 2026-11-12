@@ -4,8 +4,10 @@ Write access is scoped through services/roster.py: superusers / `roster
 manage` holders touch everyone, functional heads only their team. Plain
 employees use the /my* + /change-requests* self-service paths.
 
-PRECEDENCE: this is a planning layer. Published roster entries do NOT feed
-attendance / overtime / payroll (those still read EmployeeShiftAssignment).
+PRECEDENCE: PUBLISHED roster entries drive attendance via
+services/effective_shift.py (a published cell overrides the standing
+EmployeeShiftAssignment for that day). DRAFT entries are planning-only and
+never affect attendance.
 """
 from datetime import date as pydate, datetime, timedelta, timezone
 from typing import Any, List, Optional
@@ -30,7 +32,7 @@ from app.schemas.roster import (
 )
 from app.services import roster as roster_svc
 from app.api.v1.endpoints.roster_common import (
-    entry_read, require_manage, commit_or_409,
+    entry_read, require_manage, commit_or_409, check_window,
     validate_templates, write_cells, NO_PUBLISH_MSG, REASON_MSG, DRAFT_NOTICE,
 )
 
@@ -47,16 +49,16 @@ async def get_plan(
     department: Optional[str] = None,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    if start > end:
-        raise HTTPException(status_code=400, detail="start must be <= end")
-    if (end - start).days > 62:
-        raise HTTPException(status_code=400, detail="range too large (max 62 days)")
-    if not roster_svc.is_roster_admin(current_user):
-        if not await roster_svc.scoped_employees(db, current_user):
-            raise HTTPException(
-                status_code=403, detail="You have no roster scope.",
-            )
-    return await roster_svc.build_grid(db, current_user, start, end, department)
+    check_window(start, end)
+    scoped = await roster_svc.scoped_employees(db, current_user)
+    if not scoped and not roster_svc.is_roster_admin(current_user):
+        raise HTTPException(
+            status_code=403, detail="You have no roster scope.",
+        )
+    emps = [e for e in scoped if not department or e.department == department]
+    return await roster_svc.build_grid(
+        db, current_user, start, end, department, employees=emps
+    )
 
 
 
@@ -523,6 +525,8 @@ async def create_change_request(
     body: RosterChangeRequestCreate,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
+    if not body.requested_week_off:
+        await validate_templates(db, [body.requested_shift_template_id])
     # One pending request per (employee, date)
     dup = (await db.execute(
         select(RosterChangeRequest).where(
@@ -639,6 +643,8 @@ async def decide_change_request(
         )
 
     if body.action == "approve":
+        if not cr.requested_week_off:
+            await validate_templates(db, [cr.requested_shift_template_id])
         emp = (await db.execute(
             select(Employee).where(Employee.user_id == cr.employee_id)
         )).scalars().first()
@@ -669,9 +675,12 @@ async def decide_change_request(
             department=emp.department if emp else None,
             overwrite=True,
         )
-        if prior_snap is not None and prior_snap[2] == RosterStatus.PUBLISHED \
-                and (prior_snap[0], prior_snap[1]) != (
-                    new_tpl, cr.requested_week_off):
+        was_live = (
+            prior_snap is not None and prior_snap[2] == RosterStatus.PUBLISHED
+        )
+        live_changed = was_live and (prior_snap[0], prior_snap[1]) != (
+            new_tpl, cr.requested_week_off)
+        if live_changed:
             roster_svc.record_change(
                 db, _e, employee_id=cr.employee_id, work_date=cr.work_date,
                 old_tpl=prior_snap[0], old_off=prior_snap[1],
@@ -681,6 +690,7 @@ async def decide_change_request(
                         or f"approved change request #{cr.id}"),
                 actor_id=current_user.id,
             )
+        if live_changed or not was_live:
             await roster_svc.notify_schedule_changed(
                 db, {cr.employee_id: {cr.work_date}}
             )

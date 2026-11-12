@@ -102,6 +102,7 @@ async def write_cells(
         )).scalars().all()
     }
     downgraded: set = set()
+    skipped_pub: set = set()
     cells = list(cells)
     existing_map = (
         await roster_svc.prefetch_entries(
@@ -144,6 +145,12 @@ async def write_cells(
                     reason=reason, actor_id=user.id,
                 )
                 changed.setdefault(uid, set()).add(wd)
+        if (
+            outcome == "skipped" and overwrite and not can_pub
+            and prior_snap is not None
+            and prior_snap[2] == RosterStatus.PUBLISHED
+        ):
+            skipped_pub.add(uid)
         if outcome != "skipped" and eff == RosterStatus.DRAFT and (
             status == RosterStatus.PUBLISHED and not can_pub
         ):
@@ -155,18 +162,30 @@ async def write_cells(
         else:
             result.skipped += 1
     await roster_svc.notify_schedule_changed(db, changed)
-    if downgraded:
-        names = {
-            u.id: u.full_name for u in (await db.execute(
-                select(User).where(User.id.in_(downgraded))
-            )).scalars().all()
-        }
-        for uid in sorted(downgraded):
+    if downgraded or skipped_pub:
+        nm = await names(db, downgraded | skipped_pub)
+        for uid in sorted(downgraded | skipped_pub):
+            who = nm.get(uid) or uid
+            if uid in downgraded and uid in skipped_pub:
+                what = "Saved as draft and skipped published cells"
+            elif uid in skipped_pub:
+                what = "Skipped published cells"
+            else:
+                what = "Saved as draft"
             result.errors.append(
-                f"Saved as draft for {names.get(uid) or uid}: "
-                "publishing requires HR approval"
+                f"{what} for {who}: publishing requires HR approval"
             )
 
+
+async def names(db, ids) -> dict:
+    """User id -> display name (full name, else email)."""
+    ids = {i for i in ids if i is not None}
+    if not ids:
+        return {}
+    rows = (await db.execute(
+        select(User.id, User.full_name, User.email).where(User.id.in_(ids))
+    )).all()
+    return {r[0]: (r[1] or r[2]) for r in rows}
 
 
 def require_admin(user: User) -> None:

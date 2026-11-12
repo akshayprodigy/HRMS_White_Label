@@ -92,6 +92,11 @@ class RosterBulkRequest(BaseModel):
         has_entries = self.entries is not None
         if has_pattern == has_entries:
             raise ValueError("provide exactly one of 'pattern' or 'entries'")
+        for e in self.entries or []:
+            if not (self.start <= e.work_date <= self.end):
+                raise ValueError(
+                    f"entry work_date {e.work_date} must be within start..end"
+                )
         return self
 
 

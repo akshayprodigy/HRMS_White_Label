@@ -71,7 +71,8 @@ async def world():
         yield {"ids": ids, "dx": dept_x, "dy": dept_y, "loc": loc,
                "email": f"sd_deleg_{sfx}@t.com",
                "admin_email": f"sd_admin_{sfx}@t.com",
-               "str_email": f"sd_str_{sfx}@t.com"}
+               "str_email": f"sd_str_{sfx}@t.com",
+               "e1_email": f"sd_e1_{sfx}@t.com"}
     finally:
         async with SessionLocal() as db:
             uids = list((await db.execute(select(User.id).where(
@@ -137,8 +138,8 @@ async def test_employees_list_delegation(world):
                  employee_ids=[world["ids"]["e2"], world["ids"]["str"]])
     async with SessionLocal() as db:
         u = await db.get(User, world["ids"]["deleg"])
-        assert await svc.delegated_user_ids(db, u) == {
-            world["ids"]["e2"], world["ids"]["str"]}
+        # "str" has no Employee row => dropped from the resolved scope.
+        assert await svc.delegated_user_ids(db, u) == {world["ids"]["e2"]}
 
 
 async def test_location_delegation(world):
@@ -377,3 +378,70 @@ async def test_subsets_and_self_exclusion(world):
             e1, e2, world["ids"]["rep"]}
         assert await svc.manageable_subset(db, u, {me, e1, e2, 0}) == {e1, e2}
         assert await svc.publishable_subset(db, u, {me, e1, e2}) == {e1}
+
+
+async def _set_status(uid, status):
+    async with SessionLocal() as db:
+        e = (await db.execute(select(Employee).where(
+            Employee.user_id == uid))).scalars().one()
+        e.status = status
+        await db.commit()
+
+
+async def test_inactive_employee_not_manageable(world):
+    e1, e2 = world["ids"]["e1"], world["ids"]["e2"]
+    # Delegate over dept X / employees list / team.
+    await _grant(world, scope_type=DelegationScope.DEPARTMENT,
+                 scope_value=world["dx"], can_approve_changes=True)
+    await _grant(world, scope_type=DelegationScope.EMPLOYEES, employee_ids=[e2])
+    await _grant(world, scope_type=DelegationScope.TEAM)
+    async with SessionLocal() as db:
+        u = await db.get(User, world["ids"]["deleg"])
+        assert await svc.manageable_subset(db, u, {e1, e2}) == {e1, e2}
+    await _set_status(e1, EmployeeStatus.INACTIVE)
+    await _set_status(e2, EmployeeStatus.INACTIVE)
+    await _set_status(world["ids"]["rep"], EmployeeStatus.INACTIVE)
+    async with SessionLocal() as db:
+        u = await db.get(User, world["ids"]["deleg"])
+        assert await svc.manageable_subset(
+            db, u, {e1, e2, world["ids"]["rep"]}) == set()
+        assert await svc.delegated_user_ids(db, u) == set()
+        assert await svc.approvable_user_ids(db, u) == set()
+
+
+async def test_inactive_employee_not_manageable_by_head(world):
+    e1 = world["ids"]["e1"]
+    async with SessionLocal() as db:
+        d = (await db.execute(select(Department).where(
+            Department.name == world["dx"]))).scalars().one()
+        d.head_user_id = world["ids"]["deleg"]
+        await db.commit()
+    async with SessionLocal() as db:
+        u = await db.get(User, world["ids"]["deleg"])
+        assert await svc.manageable_subset(db, u, {e1}) == {e1}
+        assert await svc.approvable_user_ids(db, u) == {e1}
+    await _set_status(e1, EmployeeStatus.INACTIVE)
+    async with SessionLocal() as db:
+        u = await db.get(User, world["ids"]["deleg"])
+        assert await svc.manageable_subset(db, u, {e1}) == set()
+        assert await svc.approvable_user_ids(db, u) == set()
+
+
+async def test_bulk_entry_date_outside_window_422(client, world):
+    ha = await _login(client, world["admin_email"])
+    r = await client.post(f"{ROSTER}/bulk", headers=ha, json={
+        "start": TODAY.isoformat(), "end": (TODAY + timedelta(days=2)).isoformat(),
+        "entries": [{"employee_id": world["ids"]["e1"],
+                     "work_date": (TODAY + timedelta(days=5)).isoformat(),
+                     "is_week_off": True}],
+    })
+    assert r.status_code == 422, r.text
+
+
+async def test_change_request_unknown_template_422(client, world):
+    he = await _login(client, world["e1_email"])
+    r = await client.post(f"{ROSTER}/change-requests", headers=he, json={
+        "work_date": (TODAY + timedelta(days=3)).isoformat(),
+        "requested_shift_template_id": 99999999,
+        "reason": "swap please"})
+    assert r.status_code == 422, r.text

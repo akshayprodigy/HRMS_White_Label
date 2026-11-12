@@ -25,11 +25,6 @@ router = APIRouter()
 
 # ----------------------------- rotation patterns -----------------------------
 
-async def _validate_cycle(db, cycle) -> None:
-    await validate_templates(db, cycle)
-
-
-
 async def _check_name(db, name: str, exclude_id: Optional[int] = None) -> None:
     q = select(RotationPattern).where(RotationPattern.name == name)
     if exclude_id is not None:
@@ -66,7 +61,7 @@ async def create_rotation(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     require_admin(current_user)
-    await _validate_cycle(db, body.cycle)
+    await validate_templates(db, body.cycle)
     await _check_name(db, body.name)
     p = RotationPattern(
         name=body.name, description=body.description,
@@ -103,11 +98,11 @@ async def update_rotation(
     if changes.get("is_active") is None:
         changes.pop("is_active", None)
     if "cycle" in changes:
-        await _validate_cycle(db, changes["cycle"])
+        await validate_templates(db, changes["cycle"])
     if "name" in changes:
         await _check_name(db, changes["name"], p.id)
     if changes.get("is_active") is True and "cycle" not in changes:
-        await _validate_cycle(db, p.cycle)
+        await validate_templates(db, p.cycle)
     for k, v in changes.items():
         setattr(p, k, v)
     await commit_or_409(db, "Rotation name already exists")
@@ -159,7 +154,7 @@ async def apply_rotation(
         await roster_svc.scoped_employees(db, current_user)
     ):
         raise HTTPException(status_code=403, detail="You have no roster scope.")
-    await _validate_cycle(db, p.cycle)
+    await validate_templates(db, p.cycle)
     result = RosterBulkResult()
     if body.employee_ids is not None:
         target_ids = set(body.employee_ids)

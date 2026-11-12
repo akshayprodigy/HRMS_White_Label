@@ -439,7 +439,10 @@ async def test_downgrade_notice_and_message_only_when_written(client, world):
         "employee_ids": [e1], "start": (D + timedelta(days=9)).isoformat(),
         "end": (D + timedelta(days=9)).isoformat(),
         "pattern": {str((D + timedelta(days=9)).weekday()): t1}})
-    assert r.json()["skipped"] == 1 and r.json()["errors"] == []
+    assert r.json()["skipped"] == 1
+    errs = r.json()["errors"]
+    assert len(errs) == 1 and errs[0].startswith("Skipped published cells for ")
+    assert errs[0].endswith(": publishing requires HR approval")
 
 
 async def test_commit_or_409_helper():
