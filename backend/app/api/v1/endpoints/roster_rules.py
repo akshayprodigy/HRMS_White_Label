@@ -54,20 +54,7 @@ async def get_insights(
     )
 
     # Everyone counted toward coverage, independent of the viewer's scope.
-    meta = {e.user_id: (e.department, e.location) for e in scoped}
-    if reqs:
-        conds = [
-            and_(
-                *([Employee.department == r.department] if r.department else []),
-                *([Employee.location == r.location] if r.location else []),
-            ) for r in reqs
-        ]
-        q = select(Employee.user_id, Employee.department, Employee.location)\
-            .where(Employee.status == EmployeeStatus.ACTIVE)
-        if not any(r.department is None and r.location is None for r in reqs):
-            q = q.where(or_(*conds))
-        for r in (await db.execute(q)).all():
-            meta[r.user_id] = (r.department, r.location)
+    meta = await roster_svc.coverage_meta(db, scoped, reqs)
 
     rules = await get_schedule_rules(db)
     lookback = max(7, rules["max_consecutive_days"] + 1,
@@ -79,17 +66,7 @@ async def get_insights(
         select(ShiftTemplate))).scalars().all()}
     entries, asgs = await roster_svc.load_planner_cells(
         db, meta.keys(), w_start, w_end)
-    cells, d = [], w_start
-    all_days = []
-    while d <= w_end:
-        all_days.append(d)
-        d += timedelta(days=1)
-    for uid in meta:
-        for d in all_days:
-            tid = roster_svc.resolve_working_template(
-                entries.get((uid, d)), asgs.get(uid), templates, d)
-            if tid is not None:
-                cells.append((uid, d, tid))
+    cells = roster_svc.working_cells(entries, asgs, templates, meta, w_start, w_end)
     spans = schedule_rules.build_spans(cells, templates)
 
     viol_ids = {e.user_id for e in viol_emps}

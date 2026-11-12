@@ -17,7 +17,7 @@ import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { ScheduleDelegations } from './schedule-delegations';
-import { scopeLabel, errMsg } from './schedule-delegations-utils';
+import { scopeLabel, errMsg, todayIso } from './schedule-delegations-utils';
 import {
   RosterCell,
   RosterGrid,
@@ -31,6 +31,7 @@ import { PublishBar } from './roster/publish-bar';
 import { PublishRequestsPanel } from './roster/publish-requests-panel';
 import { RotationDialog } from './roster/rotation-dialog';
 import { CopyDialog } from './roster/copy-dialog';
+import { AutofillDialog } from './roster/autofill-dialog';
 import { HistoryDialog } from './roster/history-dialog';
 import { PatternDialog } from './roster/pattern-dialog';
 import { CoverageRequirementsDialog } from './roster/coverage-requirements-dialog';
@@ -88,6 +89,7 @@ export const RosterPlanner = () => {
   } | null>(null);
   const [rotOpen, setRotOpen] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
+  const [autofillOpen, setAutofillOpen] = useState(false);
   const [historyEmp, setHistoryEmp] = useState<{ id: number; name: string } | null>(null);
   const [prKey, setPrKey] = useState(0);
   const gridReq = useRef(0);
@@ -458,6 +460,12 @@ export const RosterPlanner = () => {
             <Copy className="w-4 h-4" />
             Copy previous
           </Button>
+          {canManage && !!grid && grid.end >= todayIso() && (
+            <Button variant="outline" size="sm" onClick={() => setAutofillOpen(true)} disabled={loading} className="gap-1.5">
+              <Wand2 className="w-4 h-4" />
+              Auto-fill
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => setRotOpen(true)} disabled={!grid || loading} className="gap-1.5">
             <Repeat className="w-4 h-4" />
             Rotations
@@ -755,6 +763,14 @@ export const RosterPlanner = () => {
         department={appliedDept}
         mode={mode}
         onClose={() => setCopyOpen(false)}
+        onDone={refresh}
+      />
+      <AutofillDialog
+        open={autofillOpen}
+        start={grid?.start || ''}
+        end={grid?.end || ''}
+        department={appliedDept}
+        onClose={() => setAutofillOpen(false)}
         onDone={refresh}
       />
       <HistoryDialog employee={historyEmp} onClose={() => setHistoryEmp(null)} />

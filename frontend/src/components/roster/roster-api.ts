@@ -220,3 +220,25 @@ export const schedulerApi = {
       })
     ),
 };
+
+export interface AutofillSuggestion {
+  employee_id: number;
+  employee_name: string | null;
+  work_date: string;
+  shift_template_id: number;
+  shift_name: string | null;
+  department: string | null;
+  reasons: string[];
+}
+export interface AutofillUnfilled {
+  work_date: string;
+  shift_template_id: number;
+  shift_name: string | null;
+  department: string | null;
+  location: string | null;
+  missing: number;
+}
+export interface AutofillPreview {
+  suggestions: AutofillSuggestion[];
+  unfilled: AutofillUnfilled[];
+}

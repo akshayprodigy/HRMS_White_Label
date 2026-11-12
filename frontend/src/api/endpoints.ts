@@ -134,6 +134,7 @@ export const ENDPOINTS = {
     ROTATION_DETAIL: (id: number) => `/roster/rotations/${id}`,
     ROTATION_APPLY: (id: number) => `/roster/rotations/${id}/apply`,
     INSIGHTS: '/roster/insights',
+    AUTOFILL_PREVIEW: '/roster/autofill/preview',
     COVERAGE_REQUIREMENTS: '/roster/coverage-requirements',
     COVERAGE_REQUIREMENT: (id: number) => `/roster/coverage-requirements/${id}`,
     AVAILABILITY_MY: '/roster/availability/my',

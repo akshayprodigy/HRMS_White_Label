@@ -419,3 +419,33 @@ class RosterHistoryRead(BaseModel):
     @classmethod
     def _utc(cls, v):
         return as_utc(v)
+
+
+class AutofillPreviewRequest(BaseModel):
+    start: pydate
+    end: pydate
+    department: Optional[str] = Field(default=None, max_length=100)
+
+
+class AutofillSuggestionRead(BaseModel):
+    employee_id: int
+    employee_name: Optional[str] = None
+    work_date: pydate
+    shift_template_id: int
+    shift_name: Optional[str] = None
+    department: Optional[str] = None
+    reasons: List[str] = Field(default_factory=list)
+
+
+class AutofillUnfilledRead(BaseModel):
+    work_date: pydate
+    shift_template_id: int
+    shift_name: Optional[str] = None
+    department: Optional[str] = None
+    location: Optional[str] = None
+    missing: int
+
+
+class AutofillPreviewResponse(BaseModel):
+    suggestions: List[AutofillSuggestionRead] = Field(default_factory=list)
+    unfilled: List[AutofillUnfilledRead] = Field(default_factory=list)

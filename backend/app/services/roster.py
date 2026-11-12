@@ -831,3 +831,44 @@ async def publish_drafts(
         "employees": len(employees),
         "not_permitted": sorted(not_permitted),
     }
+
+
+async def coverage_meta(db: AsyncSession, scoped, reqs) -> Dict[int, Tuple[Optional[str], Optional[str]]]:
+    """user_id -> (department, location) for everyone counted toward `reqs`
+    (ALL active employees matching any requirement, independent of the
+    viewer's scope) plus the viewer's `scoped` employees."""
+    from sqlalchemy import and_
+
+    meta = {e.user_id: (e.department, e.location) for e in scoped}
+    if reqs:
+        conds = [
+            and_(
+                *([Employee.department == r.department] if r.department else []),
+                *([Employee.location == r.location] if r.location else []),
+            ) for r in reqs
+        ]
+        q = select(Employee.user_id, Employee.department, Employee.location)\
+            .where(Employee.status == EmployeeStatus.ACTIVE)
+        if not any(r.department is None and r.location is None for r in reqs):
+            q = q.where(or_(*conds))
+        for r in (await db.execute(q)).all():
+            meta[r.user_id] = (r.department, r.location)
+    return meta
+
+
+def working_cells(entries, asgs, templates, user_ids, start: pydate, end: pydate):
+    """[(user_id, day, template_id)] for every working day in [start, end]
+    (planner semantics: drafts count, assignments are the fallback)."""
+    cells = []
+    d = start
+    days = []
+    while d <= end:
+        days.append(d)
+        d += timedelta(days=1)
+    for uid in user_ids:
+        for d in days:
+            tid = resolve_working_template(
+                entries.get((uid, d)), asgs.get(uid), templates, d)
+            if tid is not None:
+                cells.append((uid, d, tid))
+    return cells
