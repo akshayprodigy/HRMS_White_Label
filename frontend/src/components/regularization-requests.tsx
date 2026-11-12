@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { CheckCircle, XCircle, RefreshCw, Wrench, Send } from 'lucide-react';
 import { Card, Button, Badge } from './ui-elements';
@@ -25,7 +25,8 @@ const STATUS_TONE: Record<string, 'success' | 'error' | 'warning' | 'neutral'> =
   cancelled: 'neutral',
 };
 
-// List endpoints return naive UTC datetimes (no offset); treat them as UTC.
+// Accepts naive strings (list endpoints return UTC with no offset; treated as
+// UTC) as well as strings that already carry Z or an explicit offset.
 const parseServerDate = (iso: string) =>
   new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);
 
@@ -51,7 +52,8 @@ const RequestRow: React.FC<{
   showRequester: boolean;
   onDecided?: () => void;
   onCancel?: (id: number) => void;
-}> = ({ r, showRequester, onDecided, onCancel }) => {
+  cancelling?: boolean;
+}> = ({ r, showRequester, onDecided, onCancel, cancelling }) => {
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -76,7 +78,10 @@ const RequestRow: React.FC<{
   };
 
   return (
-    <div className="p-3 rounded-xl border border-slate-200 bg-white space-y-2">
+    <div
+      data-testid="regularization-row"
+      className="p-3 rounded-xl border border-slate-200 bg-white space-y-2"
+    >
       <div className="flex items-center justify-between gap-2">
         <div>
           <p className="text-[11px] font-black text-[#0F172A] tabular-nums">{r.work_date}</p>
@@ -102,7 +107,8 @@ const RequestRow: React.FC<{
         <button
           type="button"
           onClick={() => onCancel(r.id)}
-          className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-rose-500 hover:text-rose-700"
+          disabled={cancelling}
+          className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-rose-500 hover:text-rose-700 disabled:opacity-50"
         >
           <XCircle size={10} /> Cancel request
         </button>
@@ -171,8 +177,9 @@ export const RegularizationList: React.FC<{
   onDecided?: () => void;
   /** Provide to show Cancel on pending rows (requester view). */
   onCancel?: (id: number) => void;
+  cancellingId?: number | null;
   emptyText?: string;
-}> = ({ items, showRequester = false, onDecided, onCancel, emptyText = 'No correction requests' }) => {
+}> = ({ items, showRequester = false, onDecided, onCancel, cancellingId, emptyText = 'No correction requests' }) => {
   if (items.length === 0) {
     return (
       <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 py-6 text-center">
@@ -189,6 +196,7 @@ export const RegularizationList: React.FC<{
           showRequester={showRequester}
           onDecided={onDecided}
           onCancel={onCancel}
+          cancelling={cancellingId === r.id}
         />
       ))}
     </div>
@@ -204,17 +212,20 @@ export const RegularizationQueue: React.FC<{ title?: string }> = ({
 }) => {
   const [status, setStatus] = useState<RegularizationStatus | 'all'>('pending');
   const [items, setItems] = useState<Regularization[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const reqId = useRef(0);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const id = ++reqId.current; // drop responses from superseded requests
     try {
       const res = await regularizationApi.listQueue(status);
-      setItems(res.data || []);
+      if (id === reqId.current) setItems(res.data || []);
     } catch (e) {
-      toast.error(regularizationErrMsg(e, 'Failed to load correction requests'));
+      if (id === reqId.current) {
+        toast.error(regularizationErrMsg(e, 'Failed to load correction requests'));
+      }
     } finally {
-      setLoading(false);
+      if (id === reqId.current) setInitialLoading(false);
     }
   }, [status]);
 
@@ -246,7 +257,7 @@ export const RegularizationQueue: React.FC<{ title?: string }> = ({
           </Button>
         </div>
       </div>
-      {loading ? (
+      {initialLoading ? (
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 py-6 text-center">
           Loading…
         </p>
@@ -294,6 +305,8 @@ export const RegularizationRequestDialog: React.FC<{
       setError(null);
     }
   }, [open]);
+
+  const outBeforeIn = !!punchIn && !!punchOut && !nextDay && punchOut <= punchIn;
 
   const submit = async () => {
     if (!date || !punchIn) {
@@ -347,6 +360,7 @@ export const RegularizationRequestDialog: React.FC<{
             </label>
             <input
               type="date"
+              max={localIsoDate(new Date())}
               className={inputCls}
               value={date}
               onChange={(e) => setDate(e.target.value)}
@@ -386,6 +400,11 @@ export const RegularizationRequestDialog: React.FC<{
             />
             Punch-out is on the next day (overnight shift)
           </label>
+          {outBeforeIn && (
+            <p className="text-[10px] font-bold text-rose-600">
+              Punch-out is not after punch-in. Tick "next day" for an overnight shift.
+            </p>
+          )}
           <div className="space-y-1">
             <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">
               Reason (required)
@@ -407,7 +426,7 @@ export const RegularizationRequestDialog: React.FC<{
           <Button variant="outline" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={submit} isLoading={busy}>
+          <Button onClick={submit} isLoading={busy} disabled={outBeforeIn}>
             Submit Request
           </Button>
         </DialogFooter>
@@ -434,13 +453,17 @@ export const MyRegularizations: React.FC = () => {
     void load();
   }, [load]);
 
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
   const cancel = async (id: number) => {
+    setCancellingId(id);
     try {
       await regularizationApi.cancel(id);
       toast.success('Request cancelled');
       void load();
     } catch (e) {
       toast.error(regularizationErrMsg(e, 'Failed to cancel request'));
+    } finally {
+      setCancellingId(null);
     }
   };
 
@@ -454,19 +477,20 @@ export const MyRegularizations: React.FC = () => {
           <Send size={12} className="mr-1" /> Request correction
         </Button>
       </div>
-      <RegularizationList items={items} onCancel={cancel} emptyText="No correction requests yet" />
+      <RegularizationList items={items} onCancel={cancel} cancellingId={cancellingId} emptyText="No correction requests yet" />
       <RegularizationRequestDialog open={open} onClose={() => setOpen(false)} onCreated={load} />
     </Card>
   );
 };
 
-/** Shown only to users who have something to approve (direct reports / HR). */
+/** Shown only to users with pending requests to approve (direct reports / HR). */
 export const TeamRegularizations: React.FC = () => {
   const [show, setShow] = useState(false);
   useEffect(() => {
     let cancelled = false;
+    // Show the section only when something is pending (nothing to act on otherwise).
     regularizationApi
-      .listQueue('all')
+      .listQueue('pending')
       .then((res) => {
         if (!cancelled) setShow((res.data || []).length > 0);
       })
