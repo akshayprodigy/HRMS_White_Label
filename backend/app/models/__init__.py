@@ -57,6 +57,7 @@ from .availability import EmployeeAvailability, AvailabilityKind
 from .shift_swap import ShiftSwapRequest, SwapStatus
 from .open_shift import OpenShift, OpenShiftClaim, OpenShiftStatus, ClaimStatus
 from .open_shift import ShiftDropRequest, DropStatus
+from .calendar_feed import CalendarFeedToken
 from .coverage_requirement import CoverageRequirement
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
