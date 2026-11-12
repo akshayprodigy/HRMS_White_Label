@@ -83,8 +83,9 @@ class ApprovalStep(Base):
 # --- SLA: stamp due_date centrally on every new ApprovalItem -------------
 # Covers every creator (leave, comp-off, overtime, estimates, requisitions,
 # revisions...) without editing each one. Runs inside the flush using the
-# flush's own connection; a missing/invalid setting falls back to 48h and 0
-# disables (due_date stays NULL).
+# flush's own connection. NOTE: only ORM inserts fire this hook; a Core
+# `insert(ApprovalItem)` bypasses it and leaves due_date NULL (no SLA).
+# A missing/invalid setting falls back to 48h; 0 disables (due_date NULL).
 from sqlalchemy import event as _event  # noqa: E402
 
 

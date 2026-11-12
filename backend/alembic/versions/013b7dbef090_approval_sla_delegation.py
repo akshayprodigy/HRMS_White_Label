@@ -52,6 +52,31 @@ def upgrade():
                     "approver_delegation", ["delegate_id", "revoked_at"])
 
 
+    # Backfill: already-pending work gets a fresh grace period (NOW + SLA,
+    # NOT created_at + SLA) so deploying never mass-escalates old items.
+    # Skipped when the org turned the SLA off (approvals.sla_hours = 0).
+    bind = op.get_bind()
+    raw = bind.execute(sa.text(
+        "SELECT value FROM systemsetting WHERE `key` = 'approvals.sla_hours'"
+    )).scalar()
+    try:
+        hours = 48 if raw is None else int(str(raw).strip())
+    except ValueError:
+        hours = 48
+    if hours > 0:
+        bind.execute(sa.text(
+            "UPDATE approvalitem SET due_date = "
+            "DATE_ADD(UTC_TIMESTAMP(), INTERVAL :h HOUR) "
+            "WHERE status = 'PENDING' AND due_date IS NULL"), {"h": hours})
+        bind.execute(sa.text(
+            "UPDATE chained_approval_step_instance si "
+            "JOIN chained_approval_instance i ON i.id = si.instance_id "
+            "SET si.due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL :h HOUR) "
+            "WHERE si.status = 'pending' AND si.due_at IS NULL "
+            "AND i.status = 'pending' "
+            "AND i.current_step_order = si.step_order"), {"h": hours})
+
+
 def downgrade():
     op.drop_table("approver_delegation")
     op.drop_constraint("fk_chainstep_escalated_from",

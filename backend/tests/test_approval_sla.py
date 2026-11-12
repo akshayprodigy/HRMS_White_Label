@@ -179,3 +179,135 @@ async def test_inbox_payloads_carry_overdue(client, world):
     row = next(x for x in r.json() if x["instance"]["id"] == inst)
     assert row["is_overdue"] is True and row["due_at"]
     assert row["step_instance"]["is_overdue"] is True
+
+
+# ---------------------------------------------------------------- review fixes
+from sqlalchemy import insert, update  # noqa: E402
+
+from app.core.security import get_password_hash  # noqa: E402
+from app.models.approval_chain import ChainedApprovalInstance  # noqa: E402
+from app.models.leave import LeaveRequest, LeaveStatus  # noqa: E402
+from app.models.user import User, user_roles  # noqa: E402
+
+
+async def _mk_hr2(world):
+    async with SessionLocal() as db:
+        u = User(email=f"aw_hr2_{world['sfx']}@t.com", full_name="AW hr2",
+                 hashed_password=get_password_hash("x"), is_active=True)
+        db.add(u)
+        await db.flush()
+        await db.execute(insert(user_roles).values(
+            user_id=u.id, role_id=world["ids"]["hr_role"]))
+        await db.commit()
+        return u.id
+
+
+async def test_chain_hr_pick_excludes_overdue_original(world):
+    ids = world["ids"]
+    now = _now()
+    hr2 = await _mk_hr2(world)
+    assert ids["hr"] < hr2   # original is the lowest-id HR user
+    inst, sid = await mk_chain(world, "hr", due_at=now - timedelta(hours=2))
+    async with SessionLocal() as db:
+        r = await escalate_overdue(db, now, instance_ids=[inst],
+                                   hr_role_id=ids["hr_role"])
+    assert r["chain"] == 1
+    async with SessionLocal() as db:
+        si = await db.get(ChainedApprovalStepInstance, sid)
+    assert si.approver_user_id == hr2 and si.escalated_from_id == ids["hr"]
+
+
+async def test_chain_manager_already_at_step_falls_to_hr(world):
+    ids = world["ids"]
+    now = _now()
+    inst, sid = await mk_chain(world, "apr", due_at=now - timedelta(hours=2))
+    async with SessionLocal() as db:  # parallel/all: mgr also holds a row
+        si = await db.get(ChainedApprovalStepInstance, sid)
+        si.mode, si.parallel_rule = "parallel", "all"
+        db.add(ChainedApprovalStepInstance(
+            instance_id=inst, step_order=1, approver_type="specific_user",
+            approver_user_id=ids["mgr"], mode="parallel", parallel_rule="all",
+            status="approved"))
+        await db.commit()
+    async with SessionLocal() as db:
+        await escalate_overdue(db, now, instance_ids=[inst],
+                               hr_role_id=ids["hr_role"])
+    async with SessionLocal() as db:
+        rows = (await db.execute(select(ChainedApprovalStepInstance).where(
+            ChainedApprovalStepInstance.instance_id == inst))).scalars().all()
+    held = sorted(r.approver_user_id for r in rows)
+    assert held == sorted([ids["mgr"], ids["hr"]])   # no duplicate holder
+    assert len(rows) == 2
+    from app.services.approval_engine import advance_state
+    mine = next(r for r in rows if r.approver_user_id == ids["hr"])
+    d = [{"step_order": r.step_order, "status": r.status if r is not mine
+          else "approved", "mode": r.mode, "parallel_rule": r.parallel_rule,
+          "approver_user_id": r.approver_user_id} for r in rows]
+    out = advance_state(all_step_instances=d, acted_step_order=1,
+                        action="approve")
+    assert out.finalize and out.next_status == "approved"
+
+
+async def test_legacy_sod_uses_real_owner_not_null_requester(world):
+    ids = world["ids"]
+    now = _now()
+    # requested_by_id NULL; the leave's employee is apr's manager (mgr)
+    async with SessionLocal() as db:
+        lv = LeaveRequest(
+            employee_id=ids["mgr"], leave_type_id=ids["lt"],
+            start_date=now.date(), end_date=now.date(), reason="t",
+            status=LeaveStatus.SUBMITTED, created_by_user_id=ids["mgr"])
+        db.add(lv)
+        await db.flush()
+        item = ApprovalItem(resource_type="leave_request",
+                            resource_id=str(lv.id), status="pending",
+                            current_step_number=1, requested_by_id=None,
+                            due_date=now - timedelta(hours=1))
+        db.add(item)
+        await db.flush()
+        db.add(ApprovalStep(approval_item_id=item.id, step_number=1,
+                            approver_id=ids["apr"], status="pending"))
+        await db.commit()
+        iid = item.id
+    async with SessionLocal() as db:
+        await escalate_overdue(db, now, item_ids=[iid],
+                               hr_role_id=ids["hr_role"])
+    _it, st = await _item(iid)
+    assert st.approver_id is None and st.role_id == ids["hr_role"]
+
+
+async def test_no_ping_pong_legacy_and_chain(world):
+    ids = world["ids"]
+    now = _now()
+    async with SessionLocal() as db:   # apr <-> mgr are each other's manager
+        await db.execute(update(User).where(User.id == ids["mgr"]).values(
+            manager_id=ids["apr"]))
+        await db.commit()
+    iid, _ = await mk_item(world, "apr", due=now - timedelta(hours=1))
+    inst, sid = await mk_chain(world, "apr", due_at=now - timedelta(hours=1))
+    async with SessionLocal() as db:
+        await escalate_overdue(db, now, item_ids=[iid], instance_ids=[inst],
+                               hr_role_id=ids["hr_role"])
+    _it, st = await _item(iid)
+    assert st.approver_id == ids["mgr"]
+    later = now + timedelta(hours=50)
+    async with SessionLocal() as db:
+        await escalate_overdue(db, later, item_ids=[iid], instance_ids=[inst],
+                               hr_role_id=ids["hr_role"])
+    _it, st = await _item(iid)
+    assert st.approver_id is None and st.role_id == ids["hr_role"]
+    async with SessionLocal() as db:
+        si = await db.get(ChainedApprovalStepInstance, sid)
+    assert si.approver_user_id == ids["hr"]     # not bounced back to apr
+    assert si.escalated_from_id == ids["mgr"]
+
+
+async def test_sla_zero_leaves_due_date_null_and_hook_note(world):
+    prev = await get_sla()
+    try:
+        await set_sla(0)
+        iid, _ = await mk_item(world, "apr")
+        it, _s = await _item(iid)
+        assert it.due_date is None
+    finally:
+        await set_sla(prev)

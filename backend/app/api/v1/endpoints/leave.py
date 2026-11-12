@@ -938,7 +938,7 @@ async def action_approval(
 
     db.add(AuditLog(
         user_id=current_user.id,
-        action=f"APPROVAL_{action.status}",
+        action=f"APPROVAL_{action.status.value}",
         resource_type=approval_item.resource_type,
         resource_id=approval_item.resource_id,
         details=({"acting_for_user_id": acting_for}

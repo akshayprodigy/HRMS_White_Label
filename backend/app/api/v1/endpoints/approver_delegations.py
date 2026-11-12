@@ -113,6 +113,16 @@ async def create_delegation(
     starts = payload.starts_on or today_utc()
     if payload.ends_on and payload.ends_on < starts:
         raise HTTPException(400, "End date is before the start date")
+    far = date.max
+    for ex in (await db.execute(select(ApproverDelegation).where(
+            ApproverDelegation.user_id == current_user.id,
+            ApproverDelegation.delegate_id == delegate.id,
+            ApproverDelegation.revoked_at.is_(None)))).scalars().all():
+        if ex.starts_on <= (payload.ends_on or far) and \
+                starts <= (ex.ends_on or far):
+            raise HTTPException(
+                409, "You already have a delegation to this person that "
+                     "overlaps these dates")
     d = ApproverDelegation(
         user_id=current_user.id, delegate_id=delegate.id, starts_on=starts,
         ends_on=payload.ends_on,

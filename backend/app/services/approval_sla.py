@@ -84,12 +84,17 @@ async def _hr_role_id(db, hr_role_id: Optional[int]) -> Optional[int]:
     )).scalar_one_or_none()
 
 
-async def _escalation_target(db, approver_id: int, requester_id: Optional[int]):
-    """Active manager of `approver_id` that isn't the requester, else None."""
+async def _escalation_target(db, approver_id: int, owner_id: Optional[int],
+                             exclude: Iterable[Optional[int]] = ()):
+    """Active manager of `approver_id` to escalate to, or None. Never the
+    request's real owner (SoD), the approver themself, nor anyone in
+    `exclude` (users already holding the step, and the previous approver
+    this step was escalated from, which prevents A<->B ping-pong)."""
     from app.models.user import User
     approver = await db.get(User, approver_id)
     mid = getattr(approver, "manager_id", None)
-    if not mid or mid == requester_id or mid == approver_id:
+    barred = {owner_id, approver_id, *exclude}
+    if not mid or mid in barred:
         return None
     mgr = await db.get(User, mid)
     return mgr if mgr is not None and mgr.is_active else None
@@ -122,6 +127,7 @@ async def escalate_overdue(
         ChainedApprovalStepInstance, StepInstanceStatus,
     )
     from app.services.leave_approval import step_approver_ids
+    from app.services.self_approval import resolve_approval_owner_id
     from app.models.user import User, user_roles
 
     now = as_utc(now) if now else datetime.now(timezone.utc)
@@ -158,7 +164,9 @@ async def escalate_overdue(
                 await db.rollback()
                 continue
             original = step.approver_id
-            mgr = await _escalation_target(db, original, item.requested_by_id)
+            owner_id = await resolve_approval_owner_id(db, item)
+            mgr = await _escalation_target(
+                db, original, owner_id, [step.escalated_from_id])
             if mgr is not None:
                 step.approver_id = mgr.id
             elif hr_rid is not None:
@@ -226,21 +234,22 @@ async def escalate_overdue(
                 continue
             inst = await db.get(ChainedApprovalInstance, si.instance_id)
             original = si.approver_user_id
-            target = await _escalation_target(db, original, inst.submitter_id)
+            taken = {r.approver_user_id for r in (await db.execute(
+                select(ChainedApprovalStepInstance).where(
+                    ChainedApprovalStepInstance.instance_id == inst.id,
+                    ChainedApprovalStepInstance.step_order
+                    == si.step_order))).scalars().all()} - {None}
+            barred = taken | {original, si.escalated_from_id, inst.submitter_id}
+            target = await _escalation_target(
+                db, original, inst.submitter_id, barred)
             target_id = target.id if target is not None else None
             if target_id is None and hr_rid is not None:
-                taken = {r.approver_user_id for r in (await db.execute(
-                    select(ChainedApprovalStepInstance).where(
-                        ChainedApprovalStepInstance.instance_id == inst.id,
-                        ChainedApprovalStepInstance.step_order
-                        == si.step_order))).scalars().all()}
                 target_id = (await db.execute(
                     select(User.id).join(
                         user_roles, user_roles.c.user_id == User.id)
                     .where(user_roles.c.role_id == hr_rid,
                            User.is_active.is_(True),
-                           User.id != inst.submitter_id,
-                           User.id.not_in(taken - {original, None}))
+                           User.id.not_in(barred - {None}))
                     .order_by(User.id).limit(1)
                 )).scalar_one_or_none()
             if target_id is None:

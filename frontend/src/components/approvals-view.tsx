@@ -59,6 +59,8 @@ export const ApprovalsView = () => {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkConfirm, setBulkConfirm] = useState<'approve' | 'reject' | null>(null);
+  const [bulkComment, setBulkComment] = useState('');
   const [bulkResult, setBulkResult] = useState<
     { id: number; ok: boolean; error?: string | null }[] | null
   >(null);
@@ -229,11 +231,12 @@ export const ApprovalsView = () => {
     if (selected.size === 0) return;
     setBulkBusy(true);
     setBulkResult(null);
+    setBulkConfirm(null);
     try {
       const ids = Array.from(selected);
       const res = await client.post(ENDPOINTS.APPROVALS.BULK, {
         action,
-        comment: 'Bulk action via approvals center',
+        comment: bulkComment.trim() || 'Bulk action via approvals center',
         items: ids.map((id) => ({ kind: 'legacy', id })),
       });
       const results = (res.data?.results ?? []) as { id: number; ok: boolean; error?: string | null }[];
@@ -248,6 +251,7 @@ export const ApprovalsView = () => {
       toast.error(error.message || 'Bulk action failed');
     } finally {
       setBulkBusy(false);
+      setBulkComment('');
     }
   };
 
@@ -362,14 +366,14 @@ export const ApprovalsView = () => {
                   {selected.size} selected
                 </span>
                 <Button
-                  onClick={() => runBulk('approve')}
+                  onClick={() => setBulkConfirm('approve')}
                   disabled={bulkBusy || selected.size === 0}
                   className="h-9 px-4 rounded-xl bg-green-600 hover:bg-green-700 font-black text-[10px] uppercase tracking-widest"
                 >
                   {bulkBusy ? <Loader2 size={14} className="animate-spin" /> : 'Bulk approve'}
                 </Button>
                 <Button
-                  onClick={() => runBulk('reject')}
+                  onClick={() => setBulkConfirm('reject')}
                   disabled={bulkBusy || selected.size === 0}
                   variant="outline"
                   className="h-9 px-4 rounded-xl border-red-200 text-red-600 hover:bg-red-50 font-black text-[10px] uppercase tracking-widest"
@@ -538,6 +542,38 @@ export const ApprovalsView = () => {
         </div>
       )}
 
+      <Dialog open={bulkConfirm !== null} onOpenChange={(o: boolean) => { if (!o) setBulkConfirm(null); }}>
+        <DialogContent className="max-w-md rounded-3xl" data-testid="bulk-confirm">
+          <DialogHeader>
+            <DialogTitle>
+              {bulkConfirm === 'approve' ? 'Approve' : 'Reject'} {selected.size} request(s)?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs font-bold text-slate-600">
+              This applies to every selected request. Each is checked on its own; any that cannot be actioned are reported afterwards.
+            </p>
+            <Input
+              value={bulkComment}
+              onChange={(e) => setBulkComment(e.target.value)}
+              placeholder="Comment (optional)"
+              className="h-10 rounded-xl text-xs font-semibold"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setBulkConfirm(null)} className="h-10 rounded-xl font-black text-[10px] uppercase tracking-widest">
+                Cancel
+              </Button>
+              <Button
+                data-testid="bulk-confirm-go"
+                onClick={() => bulkConfirm && runBulk(bulkConfirm)}
+                className="h-10 rounded-xl font-black text-[10px] uppercase tracking-widest"
+              >
+                Confirm {bulkConfirm === 'approve' ? 'approve' : 'reject'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="max-w-3xl p-0 overflow-hidden rounded-3xl border-none max-h-[90vh] flex flex-col">
           <DialogHeader className="p-6 bg-[#0F172A] text-white">

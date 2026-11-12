@@ -150,8 +150,12 @@ def _user_can_view_approval(
 async def _can_view(db, item, user) -> bool:
     if _user_can_view_approval(item, user):
         return True
+    # Delegates see only the step that is actionable now, not later steps.
     delegators = await delegator_ids(db, user.id)
-    return any(st.approver_id in delegators for st in item.steps or [])
+    return any(
+        st.approver_id in delegators and st.status == ApprovalStatus.PENDING
+        and st.step_number == item.current_step_number
+        for st in item.steps or [])
 
 
 async def create_notification(
@@ -546,7 +550,7 @@ async def action_approval(
     if acting_for is not None:
         db.add(AuditLog(
             user_id=current_user.id,
-            action=f"APPROVAL_{action.status}",
+            action=f"APPROVAL_{action.status.value}",
             resource_type=item.resource_type,
             resource_id=item.resource_id,
             details={"acting_for_user_id": acting_for,

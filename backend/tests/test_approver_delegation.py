@@ -216,3 +216,39 @@ async def test_delegate_candidates_search(client, world):
         f"{API}/me/approval-delegations/candidates?q=aw_apr_{world['sfx']}",
         headers=ha)
     assert r.json() == []   # never offers yourself
+
+
+async def test_overlapping_delegation_409_and_view_scope(client, world):
+    ids = world["ids"]
+    ha = await login(client, world, "apr")
+    url = f"{API}/me/approval-delegations"
+    r = await client.post(url, headers=ha, json={
+        "delegate_id": ids["dlg"], "starts_on": str(TODAY),
+        "ends_on": str(TODAY + timedelta(days=10))})
+    assert r.status_code == 201
+    r = await client.post(url, headers=ha, json={
+        "delegate_id": ids["dlg"],
+        "starts_on": str(TODAY + timedelta(days=5))})   # open-ended overlap
+    assert r.status_code == 409
+    # non-overlapping later window is fine; other delegate is fine
+    r = await client.post(url, headers=ha, json={
+        "delegate_id": ids["dlg"],
+        "starts_on": str(TODAY + timedelta(days=11))})
+    assert r.status_code == 201
+    r = await client.post(url, headers=ha, json={
+        "delegate_id": ids["oth"], "starts_on": str(TODAY)})
+    assert r.status_code == 201
+    # delegate may view only items whose CURRENT pending step is the delegator's
+    hd = await login(client, world, "dlg")
+    cur, _ = await mk_item(world, "apr")
+    later, _ = await mk_item(world, "oth", steps=2)
+    async with SessionLocal() as db:   # step 2 of `later` belongs to apr
+        st = (await db.execute(select(ApprovalStep).where(
+            ApprovalStep.approval_item_id == later,
+            ApprovalStep.step_number == 2))).scalar_one()
+        st.approver_id = ids["apr"]
+        await db.commit()
+    assert (await client.get(f"{API}/approvals/{cur}",
+                             headers=hd)).status_code == 200
+    assert (await client.get(f"{API}/approvals/{later}",
+                             headers=hd)).status_code == 403
