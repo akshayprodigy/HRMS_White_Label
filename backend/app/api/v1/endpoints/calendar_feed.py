@@ -31,6 +31,7 @@ public_router = APIRouter()
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
 PAST_DAYS = 30
 FUTURE_DAYS = 90
+LAST_USED_THROTTLE = timedelta(minutes=5)
 
 
 def _hash(token: str) -> str:
@@ -50,7 +51,7 @@ async def feed_status(
 @router.post("/my/calendar-feed")
 @guard_conflicts
 async def rotate_feed(
-    request: Request, *, db: deps.DBDep,
+    request: Request, response: Response, *, db: deps.DBDep,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     token = secrets.token_urlsafe(32)
@@ -58,7 +59,8 @@ async def rotate_feed(
         CalendarFeedToken.user_id == current_user.id))
     db.add(CalendarFeedToken(user_id=current_user.id, token_hash=_hash(token)))
     await commit_or_409(db)
-    base = str(request.base_url).rstrip("/")
+    response.headers["Cache-Control"] = "no-store"
+    base = (settings.PUBLIC_BASE_URL or str(request.base_url)).rstrip("/")
     return {"url": f"{base}{settings.API_V1_STR}/calendar/{token}.ics"}
 
 
@@ -114,14 +116,19 @@ async def public_feed(token: str, db: deps.DBDep) -> Response:
             summary=tpl.name, description=desc))
     body = render_ics(events, cal_name="My shifts", now=now)
 
-    try:  # best-effort; never fail the feed
-        await db.execute(update(CalendarFeedToken)
-                         .where(CalendarFeedToken.id == feed.id)
-                         .values(last_used_at=now))
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        logger.warning("calendar feed last_used_at update failed", exc_info=True)
+    last = feed.last_used_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is None or now - last >= LAST_USED_THROTTLE:
+        try:  # best-effort; never fail the feed
+            await db.execute(update(CalendarFeedToken)
+                             .where(CalendarFeedToken.id == feed.id)
+                             .values(last_used_at=now))
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.warning("calendar feed last_used_at update failed",
+                           exc_info=True)
 
     return Response(
         content=body.encode("utf-8"),

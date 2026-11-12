@@ -3,6 +3,7 @@
 Event times are NAIVE wall-clock datetimes emitted as floating local times
 (no Z, no TZID) so calendar apps show the shift's wall-clock time.
 """
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -16,7 +17,11 @@ class IcsEvent:
     description: str = ""
 
 
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def escape_text(s: str) -> str:
+    s = _CTRL.sub("", s)
     s = s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
     return s.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
 
@@ -48,7 +53,8 @@ def render_ics(events, *, cal_name: str, now: datetime) -> str:
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     lines = [
         "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//HRMS//Roster//EN",
-        "CALSCALE:GREGORIAN", f"X-WR-CALNAME:{escape_text(cal_name)}",
+        "CALSCALE:GREGORIAN", "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
+        "X-PUBLISHED-TTL:PT1H", f"X-WR-CALNAME:{escape_text(cal_name)}",
     ]
     for e in events:
         lines += [

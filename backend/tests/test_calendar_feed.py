@@ -29,6 +29,10 @@ def test_escape():
     assert escape_text("a\\b;c,d\ne\r\nf") == "a\\\\b\\;c\\,d\\ne\\nf"
 
 
+def test_escape_strips_control_chars():
+    assert escape_text("a\x00b\x07c\x1fd\x7fe\tf") == "abcde\tf"
+
+
 def test_fold_75_octets_and_multibyte():
     line = "SUMMARY:" + "x" * 200
     parts = fold_line(line).split("\r\n")
@@ -61,6 +65,8 @@ def test_render_structure():
     assert lines[0] == "BEGIN:VCALENDAR" and lines[1] == "VERSION:2.0"
     assert "PRODID:-//HRMS//Roster//EN" in lines
     assert "CALSCALE:GREGORIAN" in lines
+    assert "REFRESH-INTERVAL;VALUE=DURATION:PT1H" in lines
+    assert "X-PUBLISHED-TTL:PT1H" in lines
     assert "X-WR-CALNAME:My shifts" in lines
     assert "UID:roster-1@hrms" in lines
     assert "DTSTAMP:20300101T123005Z" in lines
@@ -165,6 +171,7 @@ async def test_lifecycle(client, world):
     assert r.status_code == 200 and r.json() == {"active": False, "created_at": None}
     r = await client.post(f"{ROSTER}/my/calendar-feed", headers=h)
     assert r.status_code == 200, r.text
+    assert r.headers["cache-control"] == "no-store"
     url1 = r.json()["url"]
     r = await client.get(f"{ROSTER}/my/calendar-feed", headers=h)
     assert r.json()["active"] is True and r.json()["created_at"]
@@ -198,6 +205,21 @@ async def test_lifecycle(client, world):
         row = (await db.execute(select(CalendarFeedToken).where(
             CalendarFeedToken.user_id == ids["u"]))).scalar_one()
         assert row.last_used_at is not None
+        first_used = row.last_used_at
+    # throttled: an immediate second fetch does not rewrite last_used_at
+    assert (await client.get(_path(url1))).status_code == 200
+    async with SessionLocal() as db:
+        row = (await db.execute(select(CalendarFeedToken).where(
+            CalendarFeedToken.user_id == ids["u"]))).scalar_one()
+        assert row.last_used_at == first_used
+        row.last_used_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        stale = row.last_used_at
+        await db.commit()
+    assert (await client.get(_path(url1))).status_code == 200
+    async with SessionLocal() as db:
+        row = (await db.execute(select(CalendarFeedToken).where(
+            CalendarFeedToken.user_id == ids["u"]))).scalar_one()
+        assert row.last_used_at != stale
 
     # rotate invalidates old
     r = await client.post(f"{ROSTER}/my/calendar-feed", headers=h)
@@ -232,3 +254,11 @@ async def test_unknown_and_malformed_and_inactive(client, world):
 
 async def test_requires_auth_for_management(client, world):
     assert (await client.get(f"{ROSTER}/my/calendar-feed")).status_code in (401, 403)
+
+
+async def test_public_base_url_override(client, world, monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "https://hr.example.com/")
+    h = await _login(client, world["email"])
+    r = await client.post(f"{ROSTER}/my/calendar-feed", headers=h)
+    assert r.json()["url"].startswith("https://hr.example.com/api/v1/calendar/")
+    assert "//api" not in r.json()["url"].replace("https://", "")

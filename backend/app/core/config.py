@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Optional, Union
 from pydantic import AnyHttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -7,6 +7,11 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Veliora"
     LOG_LEVEL: str = "INFO"
+
+    # Externally visible origin (e.g. https://hr.example.com), used to build
+    # absolute links such as the ICS feed URL when the app sits behind a
+    # reverse proxy. Falls back to the incoming request's base URL.
+    PUBLIC_BASE_URL: Optional[str] = None
 
     # Boot the in-process APScheduler loop on app startup. Keep this on
     # exactly ONE worker (gunicorn -w 1) — N workers means N scheduler
