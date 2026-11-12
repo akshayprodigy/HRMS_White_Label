@@ -4708,4 +4708,8 @@ html {
   }
   .min-h-\[1rem\] { min-height: 1rem; }
   .ml-1\.5 { margin-left: 0.375rem; }
+  .inline { display: inline; }
+  .-mt-1 { margin-top: -0.25rem; }
+  .text-red-700 { color: #b91c1c; }
+  .tracking-wide { letter-spacing: 0.025em; }
 }

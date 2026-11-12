@@ -124,8 +124,10 @@ export const RosterPlanner = () => {
       if (reqId !== gridReq.current) return;
       const msg = errMsg(err, 'Failed to load roster');
       toast.error(msg);
-      setLoadError(msg);
-      setGrid(null);
+      if (!background) {
+        setLoadError(msg);
+        setGrid(null);
+      }
       setIsAdmin((prev) => (prev === null ? false : prev));
     } finally {
       if (reqId === gridReq.current) {
