@@ -78,12 +78,11 @@ async def get_plan(
         raise HTTPException(status_code=400, detail="start must be <= end")
     if (end - start).days > 62:
         raise HTTPException(status_code=400, detail="range too large (max 62 days)")
-    dept_names = await roster_svc.scope_department_names(db, current_user)
-    if dept_names is not None and not dept_names:
-        raise HTTPException(
-            status_code=403,
-            detail="You do not head any department — no roster to plan.",
-        )
+    if not roster_svc.is_roster_admin(current_user):
+        if not await roster_svc.scoped_employees(db, current_user):
+            raise HTTPException(
+                status_code=403, detail="You have no roster scope.",
+            )
     return await roster_svc.build_grid(db, current_user, start, end, department)
 
 
@@ -512,9 +511,11 @@ async def scoped_change_requests(
 ) -> Any:
     """Change requests for the current user's scoped team (heads see their
     team; admins see all)."""
-    emps = await roster_svc.scoped_employees(db, current_user)
-    team_ids = {e.user_id for e in emps}
     admin = roster_svc.is_roster_admin(current_user)
+    team_ids = (
+        set() if admin
+        else await roster_svc.approvable_user_ids(db, current_user)
+    )
     q = select(RosterChangeRequest).order_by(
         RosterChangeRequest.created_at.desc()
     )
@@ -545,7 +546,13 @@ async def decide_change_request(
         raise HTTPException(status_code=404, detail="Request not found")
     if cr.status != RosterChangeStatus.PENDING:
         raise HTTPException(status_code=400, detail="Request already decided")
-    await _require_manage(db, current_user, cr.employee_id)
+    if not await roster_svc.can_approve_changes_for(
+        db, current_user, cr.employee_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="This employee is outside your roster scope.",
+        )
 
     if body.action == "approve":
         emp = (await db.execute(

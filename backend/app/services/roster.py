@@ -8,7 +8,7 @@ EmployeeShiftAssignment.
 """
 from __future__ import annotations
 
-from datetime import date as pydate, timedelta
+from datetime import date as pydate, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, or_, select
@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.roster import RosterEntry, RosterStatus
+from app.models.schedule_delegation import DelegationScope, ScheduleDelegation
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
 from app.models.user import User
 from app.services import functional_head as fh
@@ -53,10 +54,74 @@ async def scope_department_names(
     return list(names)
 
 
+async def resolve_scope_user_ids(
+    db: AsyncSession,
+    scope_type: str,
+    scope_value: Optional[str] = None,
+    employee_ids: Optional[List[int]] = None,
+    grantee_id: Optional[int] = None,
+) -> set:
+    """User ids covered by a delegation scope. One query at most."""
+    if scope_type == DelegationScope.EMPLOYEES:
+        return {int(i) for i in (employee_ids or [])}
+    if scope_type == DelegationScope.DEPARTMENT and scope_value:
+        col = Employee.department
+    elif scope_type == DelegationScope.LOCATION and scope_value:
+        col = Employee.location
+    elif scope_type == DelegationScope.TEAM and grantee_id is not None:
+        rows = (await db.execute(
+            select(User.id).where(User.manager_id == grantee_id)
+        )).scalars().all()
+        return set(rows)
+    else:
+        return set()
+    rows = (await db.execute(
+        select(Employee.user_id).where(
+            col == scope_value,
+            Employee.status == EmployeeStatus.ACTIVE,
+            Employee.user_id.is_not(None),
+        )
+    )).scalars().all()
+    return set(rows)
+
+
+async def active_delegations(
+    db: AsyncSession, user: User, on: Optional[pydate] = None
+) -> List[ScheduleDelegation]:
+    on = on or datetime.now(timezone.utc).date()
+    return list((await db.execute(
+        select(ScheduleDelegation).where(
+            ScheduleDelegation.grantee_id == user.id,
+            ScheduleDelegation.revoked_at.is_(None),
+            ScheduleDelegation.valid_from <= on,
+            or_(
+                ScheduleDelegation.valid_to.is_(None),
+                ScheduleDelegation.valid_to >= on,
+            ),
+        )
+    )).scalars().all())
+
+
+async def delegation_user_ids(
+    db: AsyncSession, d: ScheduleDelegation
+) -> set:
+    return await resolve_scope_user_ids(
+        db, d.scope_type, d.scope_value, d.employee_ids, d.grantee_id
+    )
+
+
+async def delegated_user_ids(db: AsyncSession, user: User) -> set:
+    ids: set = set()
+    for d in await active_delegations(db, user):
+        ids |= await delegation_user_ids(db, d)
+    return ids
+
+
 async def scoped_employees(
     db: AsyncSession, user: User, department: Optional[str] = None
 ) -> List[Employee]:
-    """Active Employee rows (user eager-loaded) the user may plan for."""
+    """Active Employee rows (user eager-loaded) the user may plan for:
+    admin => all; else heads' departments plus delegated employees."""
     dept_names = await scope_department_names(db, user)
     q = (
         select(Employee)
@@ -64,12 +129,26 @@ async def scoped_employees(
         .where(Employee.status == EmployeeStatus.ACTIVE)
     )
     if dept_names is not None:
-        if not dept_names:
+        delegated = await delegated_user_ids(db, user)
+        conds = []
+        if dept_names:
+            conds.append(Employee.department.in_(dept_names))
+        if delegated:
+            conds.append(Employee.user_id.in_(delegated))
+        if not conds:
             return []
-        q = q.where(Employee.department.in_(dept_names))
+        q = q.where(or_(*conds))
     if department:
         q = q.where(Employee.department == department)
     return list((await db.execute(q)).scalars().all())
+
+
+async def _employee_for_user(
+    db: AsyncSession, employee_user_id: int
+) -> Optional[Employee]:
+    return (await db.execute(
+        select(Employee).where(Employee.user_id == employee_user_id)
+    )).scalars().first()
 
 
 async def can_manage_employee(
@@ -77,12 +156,66 @@ async def can_manage_employee(
 ) -> bool:
     if is_roster_admin(user):
         return True
-    emp = (await db.execute(
-        select(Employee).where(Employee.user_id == employee_user_id)
-    )).scalars().first()
-    if emp is None:
-        return False
-    return await fh.is_head_of(db, user, emp)
+    emp = await _employee_for_user(db, employee_user_id)
+    if emp is not None and await fh.is_head_of(db, user, emp):
+        return True
+    return employee_user_id in await delegated_user_ids(db, user)
+
+
+async def _delegated_flag_for(
+    db: AsyncSession, user: User, employee_user_id: int, flag: str
+) -> bool:
+    for d in await active_delegations(db, user):
+        if getattr(d, flag) and employee_user_id in await delegation_user_ids(db, d):
+            return True
+    return False
+
+
+async def approvable_user_ids(db: AsyncSession, user: User) -> set:
+    """User ids whose change requests `user` may decide (non-admin): the
+    employees of departments they head plus delegations with
+    `can_approve_changes`."""
+    ids: set = set()
+    dept_names = await scope_department_names(db, user)
+    if dept_names:
+        ids |= set((await db.execute(
+            select(Employee.user_id).where(
+                Employee.status == EmployeeStatus.ACTIVE,
+                Employee.department.in_(dept_names),
+                Employee.user_id.is_not(None),
+            )
+        )).scalars().all())
+    for d in await active_delegations(db, user):
+        if d.can_approve_changes:
+            ids |= await delegation_user_ids(db, d)
+    return ids
+
+
+async def can_publish_for(
+    db: AsyncSession, user: User, employee_user_id: int
+) -> bool:
+    """Admin / department head: yes. Delegates only with `can_publish`."""
+    if is_roster_admin(user):
+        return True
+    emp = await _employee_for_user(db, employee_user_id)
+    if emp is not None and await fh.is_head_of(db, user, emp):
+        return True
+    return await _delegated_flag_for(db, user, employee_user_id, "can_publish")
+
+
+async def can_approve_changes_for(
+    db: AsyncSession, user: User, employee_user_id: int
+) -> bool:
+    """Admin / department head: yes. Delegates only with
+    `can_approve_changes`."""
+    if is_roster_admin(user):
+        return True
+    emp = await _employee_for_user(db, employee_user_id)
+    if emp is not None and await fh.is_head_of(db, user, emp):
+        return True
+    return await _delegated_flag_for(
+        db, user, employee_user_id, "can_approve_changes"
+    )
 
 
 def expand_pattern(

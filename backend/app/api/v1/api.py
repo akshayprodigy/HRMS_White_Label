@@ -10,7 +10,7 @@ from app.api.v1.endpoints import (
     performance, approval_chains, expenses, dashboard, plumbing,
     notifications_admin, functional_head, employment_types,
     salary_structure, late_mark, leave_policies, roster,
-    attendance_regularization,
+    attendance_regularization, schedule_delegations,
 )
 
 api_router = APIRouter()
@@ -152,6 +152,11 @@ api_router.include_router(
     prefix="/shifts",
     tags=["shifts"],
     dependencies=[Depends(deps.verify_attendance)],
+)
+api_router.include_router(
+    schedule_delegations.router,
+    prefix="/roster/delegations",
+    tags=["roster-delegations"],
 )
 api_router.include_router(
     roster.router,

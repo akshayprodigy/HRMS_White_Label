@@ -50,6 +50,7 @@ from .shift import (
 from .roster import (
     RosterEntry, RosterChangeRequest, RosterStatus, RosterChangeStatus,
 )
+from .schedule_delegation import ScheduleDelegation, DelegationScope
 from .geofence import (
     GeoFenceLocation, EmployeeGeoConfig, EmployeeGeoFenceLink,
 )
@@ -167,6 +168,8 @@ __all__ = [
     "EmployeeShiftAssignment",
     "RosterEntry",
     "RosterChangeRequest",
+    "ScheduleDelegation",
+    "DelegationScope",
     "GeoFenceLocation",
     "EmployeeGeoConfig",
     "EmployeeGeoFenceLink",
