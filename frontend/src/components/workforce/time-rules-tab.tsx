@@ -131,7 +131,10 @@ export const TimeRulesTab: React.FC = () => {
     }
     setBusy(true);
     try {
-      const res = await client.put(ENDPOINTS.HR.TIME_RULES, { rules });
+      // tracking.retention_days is edited only in TrackingSettings (separate
+      // save); never write it from here with a possibly stale value.
+      const { 'tracking.retention_days': _omit, ...payload } = rules;
+      const res = await client.put(ENDPOINTS.HR.TIME_RULES, { rules: payload });
       setRules(res.data?.rules ?? rules);
       toast.success('Time rules saved');
     } catch (e: any) {

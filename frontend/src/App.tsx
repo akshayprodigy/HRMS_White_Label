@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { Toaster, toast } from 'sonner';
 import { Sidebar } from './components/sidebar';
 import { Header } from './components/header';
@@ -33,7 +33,10 @@ import { LetterTemplatesHR } from './components/letter-templates';
 import { CelebrationsReport } from './components/celebrations-report';
 import { RosterPlanner } from './components/roster-planner';
 import { LiveBoard } from './components/live-board';
-import { FieldTeam } from './components/field-team';
+// Lazy: pulls in leaflet, which should not weigh down the main bundle.
+const FieldTeam = React.lazy(() =>
+  import('./components/field-team').then((m) => ({ default: m.FieldTeam }))
+);
 import { EmergencyBroadcastPage } from './components/broadcast/emergency-broadcast-page';
 import { BroadcastAlerts } from './components/broadcast/broadcast-alerts';
 import { ExecutiveReports } from './components/executive-reports';
@@ -437,7 +440,11 @@ const App = () => {
       case 'live-board':
         return <LiveBoard />;
       case 'field-team':
-        return <FieldTeam />;
+        return (
+          <Suspense fallback={<p className="p-8 text-sm text-gray-500">Loading…</p>}>
+            <FieldTeam />
+          </Suspense>
+        );
       case 'geo-workspace':
         return <GeoWorkspace role={userRole} />;
       case 'overtime-admin':

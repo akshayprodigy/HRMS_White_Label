@@ -31,6 +31,24 @@ HR_READ = "hr employee read"
 HR_WRITE = "hr employee write"
 MAX_EMPLOYEES = 2000
 MAX_TRAIL = 2000
+VIEW_AUDIT_THROTTLE = timedelta(minutes=10)
+
+
+async def _audit_view_throttled(db, viewer_id: int, action: str,
+                                resource_type: str,
+                                resource_id: Optional[str], details: dict):
+    """Audit a scheduler view of location data, at most once per viewer (and
+    target) per VIEW_AUDIT_THROTTLE: the web page polls every 60 s, which
+    would otherwise flood the audit log."""
+    q = select(AuditLog.id).where(
+        AuditLog.user_id == viewer_id, AuditLog.action == action,
+        AuditLog.created_at >= datetime.now(timezone.utc) - VIEW_AUDIT_THROTTLE)
+    if resource_id is not None:
+        q = q.where(AuditLog.resource_id == resource_id)
+    if (await db.execute(q.limit(1))).first() is None:
+        db.add(AuditLog(
+            user_id=viewer_id, action=action, resource_type=resource_type,
+            resource_id=resource_id, details=details))
 
 
 def _iso(x):
@@ -224,10 +242,9 @@ async def field_now(
             "ping": lt.ping_row(p) if p else None,
         })
     me_id = me.id
-    db.add(AuditLog(
-        user_id=me_id, action="TRACKING_FIELD_NOW_VIEWED",
-        resource_type="location_field_now", resource_id=None,
-        details={"department": department, "count": len(rows)}))
+    await _audit_view_throttled(
+        db, me_id, "TRACKING_FIELD_NOW_VIEWED", "location_field_now", None,
+        {"department": department, "count": len(rows)})
     await db.commit()
     return {"now": now.isoformat(), "tracked": len(rows),
             "with_location": sum(1 for r in rows if r["ping"]), "rows": rows}
@@ -253,10 +270,9 @@ async def trail(
             detail="Location tracking is not active for this employee.")
     out = await _trail(db, user_id, d, since=lt.consent_floor(consent))
     me_id = me.id
-    db.add(AuditLog(
-        user_id=me_id, action="TRACKING_TRAIL_VIEWED",
-        resource_type="location_trail", resource_id=str(user_id),
-        details={"date": d.isoformat(), "points": len(out["points"])}))
+    await _audit_view_throttled(
+        db, me_id, "TRACKING_TRAIL_VIEWED", "location_trail", str(user_id),
+        {"date": d.isoformat(), "points": len(out["points"])})
     await db.commit()
     return out
 

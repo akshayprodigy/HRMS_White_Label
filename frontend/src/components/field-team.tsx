@@ -63,6 +63,15 @@ const STATUS_META: Record<
 };
 
 const REFRESH_MS = 60_000;
+// OpenStreetMap's public tile servers are for light use only
+// (https://operations.osmfoundation.org/policies/tiles/). Production should
+// point VITE_MAP_TILE_URL (and VITE_MAP_ATTRIBUTION) at a tile provider with an
+// API key / suitable usage policy, e.g. https://tiles.example.com/{z}/{x}/{y}.png?key=...
+const TILE_URL: string =
+  (import.meta as any).env?.VITE_MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TILE_ATTRIBUTION: string =
+  (import.meta as any).env?.VITE_MAP_ATTRIBUTION ||
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const DEFAULT_CENTER: [number, number] = [20.5937, 78.9629];
 
 export const lastSeen = (iso: string, now: Date = new Date()): string => {
@@ -152,14 +161,26 @@ export const FieldTeam: React.FC = () => {
   }, [load]);
   useVisiblePoll(poll, REFRESH_MS);
 
+  // Trail: fetched once per (employee, date) and re-polled only for today.
+  const trailKey = useRef<string | null>(null);
   const loadTrail = useCallback(async () => {
+    const id = ++trailReq.current; // also invalidates any in-flight response
     if (selected == null) {
+      trailKey.current = null;
       setTrail(null);
       setTrailErr(null);
+      setTrailLoading(false);
       return;
     }
-    const id = ++trailReq.current;
-    setTrailLoading(true);
+    const key = `${selected}|${date}`;
+    const changed = trailKey.current !== key;
+    if (!changed && date !== todayIso()) return; // a past day will not change
+    if (changed) {
+      trailKey.current = key;
+      setTrail(null);
+      setTrailErr(null);
+      setTrailLoading(true);
+    }
     try {
       const res = await client.get<Trail>(
         `${ENDPOINTS.TRACKING.TRAIL}?user_id=${selected}&date=${date}`
@@ -169,13 +190,12 @@ export const FieldTeam: React.FC = () => {
       setTrailErr(null);
     } catch (err: any) {
       if (id !== trailReq.current) return;
-      setTrail(null);
+      if (changed) setTrail(null);
       setTrailErr(errMsg(err, 'Could not load the trail'));
     } finally {
       if (id === trailReq.current) setTrailLoading(false);
     }
   }, [selected, date]);
-  // Trail refreshes with the board so a live trail keeps extending.
   useVisiblePoll(loadTrail, REFRESH_MS);
 
   const rows = useMemo(
@@ -187,7 +207,9 @@ export const FieldTeam: React.FC = () => {
   );
   const located = rows.filter((r) => r.ping);
   const selectedRow = rows.find((r) => r.user_id === selected) ?? null;
-  const trailPts: [number, number][] = (trail?.points ?? []).map((p) => [p.lat, p.lng]);
+  // Only ever draw a trail that belongs to the current selection + date.
+  const trailOk = !!trail && selected != null && trail.user_id === selected && trail.date === date;
+  const trailPts: [number, number][] = trailOk ? trail!.points.map((p) => [p.lat, p.lng]) : [];
 
   const bounds: LatLngBoundsExpression | null = useMemo(() => {
     const pts: [number, number][] = trailPts.length
@@ -195,13 +217,14 @@ export const FieldTeam: React.FC = () => {
       : located.map((r) => [r.ping!.lat, r.ping!.lng] as [number, number]);
     return pts.length ? pts : null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trail, data]);
+  }, [trail, trailOk, data]);
   // Re-fit only when the set of things shown changes, not on every poll.
-  const fitToken = `${selected ?? ''}|${date}|${department}|${trail?.points.length ? 'T' : ''}|${
-    selected == null ? located.length : ''
-  }`;
+  const fitToken = `${selected ?? ''}|${date}|${department}|${trailOk ? trail!.user_id : ''}|${
+    trailOk ? trail!.points.length : ''
+  }|${selected == null ? located.length : ''}`;
 
   const pick = (id: number) => setSelected((cur) => (cur === id ? null : id));
+  const mapShown = !!data && (data.tracked > 0 || !!department);
 
   const selectCls =
     'h-9 px-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500';
@@ -255,16 +278,16 @@ export const FieldTeam: React.FC = () => {
 
       <p className="flex items-center gap-2 text-xs text-gray-500">
         <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
-        Location is shared only during rostered shifts by employees who consented.
+        Location is shared only during rostered shifts by employees who consented. Views of locations are audit-logged.
       </p>
 
       {error && (
         <div role="alert" className="p-3 rounded-lg bg-red-50 text-sm text-red-700">{error}</div>
       )}
 
-      {loading ? (
+      {loading && !data ? (
         <p className="py-12 text-center text-sm text-gray-500">Loading field team…</p>
-      ) : data && data.tracked === 0 ? (
+      ) : data && !mapShown ? (
         <Card className="p-10 text-center">
           <p className="text-sm font-medium text-gray-800">No one is being tracked</p>
           <p className="text-sm text-gray-500 mt-1">
@@ -275,6 +298,11 @@ export const FieldTeam: React.FC = () => {
       ) : data ? (
         <>
           <div className="flex gap-3 flex-wrap">
+            {data.tracked === 0 && (
+              <Card className="px-4 py-2 text-sm text-gray-600">
+                No tracked employees in this department.
+              </Card>
+            )}
             <Card className="px-4 py-2 text-sm">
               <span className="text-gray-500">Tracked</span>{' '}
               <span className="font-semibold text-gray-900">{data.tracked}</span>
@@ -287,7 +315,21 @@ export const FieldTeam: React.FC = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card className="lg:col-span-2 p-0">
-              <div style={{ height: 520 }} data-testid="field-map">
+              <div
+                style={{ height: 520, position: 'relative' }}
+                data-testid="field-map"
+                role="region"
+                aria-label="Map of tracked employees' latest locations"
+              >
+                {(loading || refreshing) && (
+                  <div
+                    className="absolute top-2 right-2 text-xs bg-white rounded px-2 py-1 shadow"
+                    style={{ zIndex: 1000 }}
+                    role="status"
+                  >
+                    Updating…
+                  </div>
+                )}
                 <MapContainer
                   center={DEFAULT_CENTER}
                   zoom={4}
@@ -295,12 +337,21 @@ export const FieldTeam: React.FC = () => {
                   style={{ height: '100%', width: '100%' }}
                 >
                   <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                    url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    attribution={TILE_ATTRIBUTION}
+                    url={TILE_URL}
                   />
                   <FitBounds bounds={bounds} token={fitToken} />
                   {trailPts.length > 1 && (
                     <Polyline positions={trailPts} pathOptions={{ color: '#4F46E5', weight: 4, opacity: 0.8 }} />
+                  )}
+                  {trailPts.length >= 1 && (
+                    <CircleMarker
+                      center={trailPts[0]}
+                      radius={5}
+                      pathOptions={{ color: '#FFFFFF', weight: 2, fillColor: '#4F46E5', fillOpacity: 1 }}
+                    >
+                      <Popup>Trail start {hhmmUtc(trail!.points[0].captured_at)} UTC</Popup>
+                    </CircleMarker>
                   )}
                   {located.map((r) => (
                     <CircleMarker
@@ -383,20 +434,22 @@ export const FieldTeam: React.FC = () => {
                   Clear
                 </Button>
               </div>
-              {trailLoading && !trail ? (
+              <div aria-live="polite">
+              {trailLoading && !trailOk ? (
                 <p className="text-sm text-gray-500">Loading trail…</p>
               ) : trailErr ? (
                 <p role="alert" className="text-sm text-red-700">{trailErr}</p>
-              ) : trail && trail.points.length === 0 ? (
-                <p className="text-sm text-gray-500">No location points recorded on {trail.date}.</p>
-              ) : trail ? (
+              ) : trailOk && trail!.points.length === 0 ? (
+                <p className="text-sm text-gray-500">No location points recorded on {trail!.date}.</p>
+              ) : trailOk ? (
                 <p className="text-sm text-gray-600">
-                  {trail.points.length} point{trail.points.length === 1 ? '' : 's'} from{' '}
-                  {hhmmUtc(trail.points[0].captured_at)} to{' '}
-                  {hhmmUtc(trail.points[trail.points.length - 1].captured_at)} UTC
-                  {trail.truncated ? ' (showing the first points only — trail truncated)' : ''}
+                  {trail!.points.length} point{trail!.points.length === 1 ? '' : 's'} from{' '}
+                  {hhmmUtc(trail!.points[0].captured_at)} to{' '}
+                  {hhmmUtc(trail!.points[trail!.points.length - 1].captured_at)} UTC
+                  {trail!.truncated ? ' (showing the first points only — trail truncated)' : ''}
                 </p>
               ) : null}
+              </div>
             </Card>
           )}
         </>

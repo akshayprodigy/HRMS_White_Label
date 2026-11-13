@@ -738,3 +738,36 @@ async def test_field_now_view_audited(client, world):
             AuditLog.action == "TRACKING_FIELD_NOW_VIEWED"))).scalars().all()
     assert len(rows) == 1
     assert rows[0].details == {"department": world["dx"], "count": 1}
+
+
+async def test_view_audit_throttled(client, world):
+    i = world["ids"]
+    he1 = await _ready(client, world, "e1")
+    await _post(client, he1, [_ping(8), _ping(2)])
+    head = await _login(client, world, "head")
+    today = _now().date().isoformat()
+    for _ in range(3):
+        assert (await client.get(f"{T}/field-now", headers=head)).status_code == 200
+        assert (await client.get(f"{T}/trail?user_id={i['e1']}&date={today}",
+                                 headers=head)).status_code == 200
+
+    async def count(action):
+        async with SessionLocal() as db:
+            return len((await db.execute(select(AuditLog).where(
+                AuditLog.user_id == i["head"],
+                AuditLog.action == action))).scalars().all())
+
+    assert await count("TRACKING_FIELD_NOW_VIEWED") == 1
+    assert await count("TRACKING_TRAIL_VIEWED") == 1
+    # an older audit row no longer suppresses a new one
+    async with SessionLocal() as db:
+        for a in ("TRACKING_FIELD_NOW_VIEWED", "TRACKING_TRAIL_VIEWED"):
+            for r in (await db.execute(select(AuditLog).where(
+                    AuditLog.user_id == i["head"],
+                    AuditLog.action == a))).scalars().all():
+                r.created_at = _now() - timedelta(minutes=11)
+        await db.commit()
+    await client.get(f"{T}/field-now", headers=head)
+    await client.get(f"{T}/trail?user_id={i['e1']}&date={today}", headers=head)
+    assert await count("TRACKING_FIELD_NOW_VIEWED") == 2
+    assert await count("TRACKING_TRAIL_VIEWED") == 2

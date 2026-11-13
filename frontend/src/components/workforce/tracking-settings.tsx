@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { MapPin } from 'lucide-react';
 import { Card, Button, Badge } from '../ui-elements';
@@ -28,6 +28,15 @@ interface Consent {
   app_version: string | null;
 }
 interface EmpOpt { user_id: number; name: string }
+// Numeric inputs are edited as strings and compared with Number().
+interface Draft { enabled: boolean; interval: string; distance: string }
+const toDraft = (p: Policy): Draft => ({
+  enabled: p.enabled,
+  interval: String(p.interval_seconds),
+  distance: String(p.distance_filter_m),
+});
+const SEARCH_LIMIT = 8;
+const CONSENT_MAX = 500;
 
 const RETENTION_KEY = 'tracking.retention_days';
 const inputCls =
@@ -38,107 +47,145 @@ const fmtDate = (s: string | null) => (s ? s.slice(0, 16).replace('T', ' ') + ' 
 
 export const TrackingSettings: React.FC = () => {
   const [policies, setPolicies] = useState<Policy[]>([]);
-  const [drafts, setDrafts] = useState<Record<number, Policy>>({});
+  const [drafts, setDrafts] = useState<Record<number, Draft>>({});
   const [overrides, setOverrides] = useState<Override[]>([]);
   const [consents, setConsents] = useState<Consent[]>([]);
   const [status, setStatus] = useState<'all' | 'active' | 'revoked'>('all');
   const [matches, setMatches] = useState<EmpOpt[]>([]);
   const [search, setSearch] = useState('');
   const [retention, setRetention] = useState('');
+  const [retentionAvailable, setRetentionAvailable] = useState(true);
   const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [readOnly, setReadOnly] = useState(false);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
+  // Write permission is tracked per section: policies/overrides need
+  // "hr employee write"; the retention rule needs the time-rules permission.
+  const [policyReadOnly, setPolicyReadOnly] = useState(false);
+  const [retentionReadOnly, setRetentionReadOnly] = useState(false);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const consentReq = useRef(0);
 
-  const guard = useCallback((e: any, fallback: string) => {
-    if (e?.response?.status === 403) setReadOnly(true);
+  const setBusyKey = (k: string, on: boolean) =>
+    setBusy((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(k);
+      else next.delete(k);
+      return next;
+    });
+
+  const denied = (e: any, setter: (v: boolean) => void, fallback: string) => {
+    if (e?.response?.status === 403) setter(true);
     toast.error(errMsg(e, fallback));
-  }, []);
+  };
 
-  const loadAll = useCallback(async () => {
+  const loadPolicies = useCallback(async () => {
     try {
-      const [p, o, r] = await Promise.all([
-        client.get<Policy[]>(ENDPOINTS.TRACKING.POLICIES),
-        client.get<Override[]>(ENDPOINTS.TRACKING.OVERRIDES),
-        client.get(ENDPOINTS.HR.TIME_RULES),
-      ]);
-      setPolicies(p.data);
-      setDrafts(Object.fromEntries(p.data.map((x) => [x.role_id, x])));
-      setOverrides(o.data);
-      setRetention(String(r.data?.rules?.[RETENTION_KEY] ?? '30'));
+      const r = await client.get<Policy[]>(ENDPOINTS.TRACKING.POLICIES);
+      setPolicies(r.data);
+      setDrafts(Object.fromEntries(r.data.map((x) => [x.role_id, toDraft(x)])));
       setLoadErr(null);
     } catch (err: any) {
+      if (err?.response?.status === 403) setPolicyReadOnly(true);
       setLoadErr(errMsg(err, 'Failed to load tracking settings'));
     }
   }, []);
 
-  const loadConsents = useCallback(async () => {
+  const loadOverrides = useCallback(async () => {
     try {
-      const r = await client.get<Consent[]>(`${ENDPOINTS.TRACKING.CONSENTS}?status=${status}`);
-      setConsents(r.data);
+      const r = await client.get<Override[]>(ENDPOINTS.TRACKING.OVERRIDES);
+      setOverrides(r.data);
     } catch (err: any) {
-      toast.error(errMsg(err, 'Failed to load consents'));
+      if (err?.response?.status === 403) setPolicyReadOnly(true);
+      toast.error(errMsg(err, 'Failed to load overrides'));
+    }
+  }, []);
+
+  const loadRetention = useCallback(async () => {
+    try {
+      const r = await client.get(ENDPOINTS.HR.TIME_RULES);
+      setRetention(String(r.data?.rules?.[RETENTION_KEY] ?? '30'));
+      setRetentionAvailable(true);
+    } catch (err: any) {
+      // No time-rules permission: hide only the retention card.
+      if (err?.response?.status === 403) setRetentionAvailable(false);
+      else setRetentionReadOnly(true);
+    }
+  }, []);
+
+  const loadConsents = useCallback(async () => {
+    const id = ++consentReq.current;
+    try {
+      const r = await client.get<Consent[]>(`${ENDPOINTS.TRACKING.CONSENTS}?status=${status}&limit=${CONSENT_MAX}`);
+      if (id === consentReq.current) setConsents(r.data);
+    } catch (err: any) {
+      if (id === consentReq.current) toast.error(errMsg(err, 'Failed to load consents'));
     }
   }, [status]);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => { loadPolicies(); loadOverrides(); loadRetention(); }, [loadPolicies, loadOverrides, loadRetention]);
   useEffect(() => { loadConsents(); }, [loadConsents]);
 
-  const patchDraft = (id: number, patch: Partial<Policy>) =>
+  const patchDraft = (id: number, patch: Partial<Draft>) =>
     setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
 
   const dirty = (p: Policy) => {
     const d = drafts[p.role_id];
-    return !!d && (d.enabled !== p.enabled || d.interval_seconds !== p.interval_seconds ||
-      d.distance_filter_m !== p.distance_filter_m);
+    return !!d && (d.enabled !== p.enabled || Number(d.interval) !== p.interval_seconds ||
+      Number(d.distance) !== p.distance_filter_m);
   };
 
   const savePolicy = async (p: Policy) => {
     const d = drafts[p.role_id];
-    const iv = Number(d.interval_seconds);
-    const dist = Number(d.distance_filter_m);
-    if (!Number.isInteger(iv) || iv < 60 || iv > 3600) {
+    const iv = Number(d.interval);
+    const dist = Number(d.distance);
+    if (d.interval.trim() === '' || !Number.isInteger(iv) || iv < 60 || iv > 3600) {
       toast.error('Interval must be a whole number of seconds from 60 to 3600');
       return;
     }
-    if (!Number.isInteger(dist) || dist < 10 || dist > 2000) {
+    if (d.distance.trim() === '' || !Number.isInteger(dist) || dist < 10 || dist > 2000) {
       toast.error('Distance filter must be a whole number of metres from 10 to 2000');
       return;
     }
-    setBusyKey(`p${p.role_id}`);
+    const key = `p${p.role_id}`;
+    setBusyKey(key, true);
     try {
-      await client.put(ENDPOINTS.TRACKING.POLICY(p.role_id), {
+      const r = await client.put(ENDPOINTS.TRACKING.POLICY(p.role_id), {
         enabled: d.enabled, interval_seconds: iv, distance_filter_m: dist,
       });
+      // Update only this row; other rows' unsaved edits are untouched.
+      const saved: Policy = { ...p, enabled: r.data.enabled, interval_seconds: r.data.interval_seconds,
+        distance_filter_m: r.data.distance_filter_m, configured: true };
+      setPolicies((ps) => ps.map((x) => (x.role_id === p.role_id ? saved : x)));
+      patchDraft(p.role_id, toDraft(saved));
       toast.success(`Saved tracking policy for ${p.role_name}`);
-      await loadAll();
     } catch (e: any) {
-      guard(e, 'Failed to save policy');
+      denied(e, setPolicyReadOnly, 'Failed to save policy');
     } finally {
-      setBusyKey(null);
+      setBusyKey(key, false);
     }
   };
 
   const setOverride = async (userId: number, enabled: boolean) => {
-    setBusyKey(`o${userId}`);
+    const key = `o${userId}`;
+    setBusyKey(key, true);
     try {
       await client.put(ENDPOINTS.TRACKING.OVERRIDE(userId), { enabled });
-      await loadAll();
+      await loadOverrides();
     } catch (e: any) {
-      guard(e, 'Failed to set override');
+      denied(e, setPolicyReadOnly, 'Failed to set override');
     } finally {
-      setBusyKey(null);
+      setBusyKey(key, false);
     }
   };
 
   const removeOverride = async (userId: number) => {
-    setBusyKey(`o${userId}`);
+    const key = `o${userId}`;
+    setBusyKey(key, true);
     try {
       await client.delete(ENDPOINTS.TRACKING.OVERRIDE(userId));
-      await loadAll();
+      await loadOverrides();
     } catch (e: any) {
-      guard(e, 'Failed to remove override');
+      denied(e, setPolicyReadOnly, 'Failed to remove override');
     } finally {
-      setBusyKey(null);
+      setBusyKey(key, false);
     }
   };
 
@@ -147,14 +194,14 @@ export const TrackingSettings: React.FC = () => {
       toast.error('Retention must be a whole number of days from 1 to 365');
       return;
     }
-    setBusyKey('ret');
+    setBusyKey('ret', true);
     try {
       await client.put(ENDPOINTS.HR.TIME_RULES, { rules: { [RETENTION_KEY]: retention.trim() } });
       toast.success('Retention saved');
     } catch (e: any) {
-      guard(e, 'Failed to save retention');
+      denied(e, setRetentionReadOnly, 'Failed to save retention');
     } finally {
-      setBusyKey(null);
+      setBusyKey('ret', false);
     }
   };
 
@@ -168,7 +215,7 @@ export const TrackingSettings: React.FC = () => {
     let live = true;
     const t = window.setTimeout(async () => {
       try {
-        const r = await client.get(ENDPOINTS.HR.EMPLOYEES, { params: { search: q, size: 8 } });
+        const r = await client.get(ENDPOINTS.HR.EMPLOYEES, { params: { search: q, size: SEARCH_LIMIT } });
         if (!live) return;
         setMatches(
           (r.data?.items ?? [])
@@ -185,6 +232,11 @@ export const TrackingSettings: React.FC = () => {
     };
   }, [search]);
 
+  const pickOverride = async (userId: number, enabled: boolean) => {
+    await setOverride(userId, enabled);
+    setSearch('');
+  };
+
   return (
     <div className="space-y-4 mt-4" data-testid="tracking-settings">
       <Card className="p-6 border-slate-200 bg-white space-y-5">
@@ -197,7 +249,7 @@ export const TrackingSettings: React.FC = () => {
             shift and only after they consent (revocable). Enable it per role below; a per-employee
             override beats the role setting.
           </p>
-          {readOnly && (
+          {policyReadOnly && (
             <p role="alert" className="text-[10px] font-bold text-amber-700 mt-2">
               You don't have permission to change tracking settings (read-only).
             </p>
@@ -213,30 +265,30 @@ export const TrackingSettings: React.FC = () => {
             </thead>
             <tbody>
               {policies.map((p) => {
-                const d = drafts[p.role_id] ?? p;
+                const d = drafts[p.role_id] ?? toDraft(p);
                 return (
                   <tr key={p.role_id} className="border-t border-slate-100">
                     <td className="py-2 pr-3 font-medium text-slate-800">{p.role_name}</td>
                     <td className="py-2 pr-3">
                       <input type="checkbox" className="w-4 h-4 accent-blue-600"
-                        aria-label={`Track ${p.role_name}`} disabled={readOnly}
+                        aria-label={`Track ${p.role_name}`} disabled={policyReadOnly}
                         checked={d.enabled} onChange={(e) => patchDraft(p.role_id, { enabled: e.target.checked })} />
                     </td>
                     <td className="py-2 pr-3">
                       <input type="number" min={60} max={3600} step={1} className={`${inputCls} w-24`}
-                        aria-label={`Interval seconds for ${p.role_name}`} disabled={readOnly}
-                        value={d.interval_seconds}
-                        onChange={(e) => patchDraft(p.role_id, { interval_seconds: e.target.value as any })} />
+                        aria-label={`Interval seconds for ${p.role_name}`} disabled={policyReadOnly}
+                        value={d.interval}
+                        onChange={(e) => patchDraft(p.role_id, { interval: e.target.value })} />
                     </td>
                     <td className="py-2 pr-3">
                       <input type="number" min={10} max={2000} step={1} className={`${inputCls} w-24`}
-                        aria-label={`Distance metres for ${p.role_name}`} disabled={readOnly}
-                        value={d.distance_filter_m}
-                        onChange={(e) => patchDraft(p.role_id, { distance_filter_m: e.target.value as any })} />
+                        aria-label={`Distance metres for ${p.role_name}`} disabled={policyReadOnly}
+                        value={d.distance}
+                        onChange={(e) => patchDraft(p.role_id, { distance: e.target.value })} />
                     </td>
                     <td className="py-2 text-right">
                       <Button size="sm" onClick={() => savePolicy(p)}
-                        disabled={readOnly || !dirty(p)} isLoading={busyKey === `p${p.role_id}`}>
+                        disabled={policyReadOnly || !dirty(p)} isLoading={busy.has(`p${p.role_id}`)}>
                         Save
                       </Button>
                     </td>
@@ -253,25 +305,40 @@ export const TrackingSettings: React.FC = () => {
 
       <Card className="p-6 border-slate-200 bg-white space-y-4">
         <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A]">Per-employee overrides</h3>
-        <div className="relative max-w-sm">
-          <input type="text" className={`${inputCls} w-full`} placeholder="Search employee by name"
-            aria-label="Search employee" disabled={readOnly}
+        <div
+          className="relative max-w-sm"
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSearch('');
+          }}
+          onKeyDown={(e) => { if (e.key === 'Escape') setSearch(''); }}
+        >
+          <label htmlFor="tracking-emp-search" className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+            Add an override for an employee
+          </label>
+          <input id="tracking-emp-search" type="text" className={`${inputCls} w-full block`}
+            placeholder="Search employee by name" disabled={policyReadOnly}
             value={search} onChange={(e) => setSearch(e.target.value)} />
           {matches.length > 0 && (
             <ul className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-md max-h-56 overflow-y-auto">
-              {matches.map((m) => (
-                <li key={m.user_id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
-                  <span>{m.name}</span>
-                  <span className="flex gap-1">
-                    <Button size="sm" variant="outline" onClick={() => { setOverride(m.user_id, true); setSearch(''); }}>
-                      Enable
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => { setOverride(m.user_id, false); setSearch(''); }}>
-                      Disable
-                    </Button>
-                  </span>
-                </li>
-              ))}
+              {matches.map((m) => {
+                const b = busy.has(`o${m.user_id}`);
+                return (
+                  <li key={m.user_id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+                    <span>{m.name}</span>
+                    <span className="flex gap-1">
+                      <Button size="sm" variant="outline" disabled={b} onClick={() => pickOverride(m.user_id, true)}>
+                        Enable
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={b} onClick={() => pickOverride(m.user_id, false)}>
+                        Disable
+                      </Button>
+                    </span>
+                  </li>
+                );
+              })}
+              {matches.length >= SEARCH_LIMIT && (
+                <li className="px-3 py-1 text-[10px] text-slate-400">Showing first {SEARCH_LIMIT} — refine your search</li>
+              )}
             </ul>
           )}
         </div>
@@ -287,11 +354,11 @@ export const TrackingSettings: React.FC = () => {
                   <Badge variant={o.enabled ? 'success' : 'neutral'}>{o.enabled ? 'Always tracked' : 'Never tracked'}</Badge>
                 </span>
                 <span className="flex gap-1">
-                  <Button size="sm" variant="outline" disabled={readOnly || busyKey === `o${o.user_id}`}
+                  <Button size="sm" variant="outline" disabled={policyReadOnly || busy.has(`o${o.user_id}`)}
                     onClick={() => setOverride(o.user_id, !o.enabled)}>
                     {o.enabled ? 'Disable' : 'Enable'}
                   </Button>
-                  <Button size="sm" variant="outline" disabled={readOnly || busyKey === `o${o.user_id}`}
+                  <Button size="sm" variant="outline" disabled={policyReadOnly || busy.has(`o${o.user_id}`)}
                     onClick={() => removeOverride(o.user_id)}>
                     Remove
                   </Button>
@@ -312,6 +379,11 @@ export const TrackingSettings: React.FC = () => {
             <option value="revoked">Revoked</option>
           </select>
         </div>
+        {consents.length >= CONSENT_MAX && (
+          <p className="text-[10px] font-bold text-amber-700">
+            Showing the {CONSENT_MAX} most recent consents (maximum).
+          </p>
+        )}
         {consents.length === 0 ? (
           <p className="text-sm text-slate-500">No consents recorded.</p>
         ) : (
@@ -339,17 +411,21 @@ export const TrackingSettings: React.FC = () => {
         )}
       </Card>
 
+      {retentionAvailable && (
       <Card className="p-6 border-slate-200 bg-white space-y-3">
         <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A]">Location retention</h3>
+        {retentionReadOnly && (
+          <p role="alert" className="text-[10px] font-bold text-amber-700">You don't have permission to change time rules (read-only).</p>
+        )}
         <div className="flex items-end gap-3 flex-wrap">
           <div className="space-y-1">
             <label htmlFor={RETENTION_KEY} className="text-[9px] font-black uppercase tracking-widest text-slate-400">
               Retention (days)
             </label>
             <input id={RETENTION_KEY} type="number" min={1} max={365} step={1} className={`${inputCls} w-28 block`}
-              disabled={readOnly} value={retention} onChange={(e) => setRetention(e.target.value)} />
+              disabled={retentionReadOnly} value={retention} onChange={(e) => setRetention(e.target.value)} />
           </div>
-          <Button size="sm" onClick={saveRetention} disabled={readOnly} isLoading={busyKey === 'ret'}>
+          <Button size="sm" onClick={saveRetention} disabled={retentionReadOnly} isLoading={busy.has('ret')}>
             Save retention
           </Button>
         </div>
@@ -357,6 +433,7 @@ export const TrackingSettings: React.FC = () => {
           Location pings older than this are deleted daily (range 1–365).
         </p>
       </Card>
+      )}
     </div>
   );
 };
