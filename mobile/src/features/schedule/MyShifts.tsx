@@ -10,9 +10,9 @@ import { isGateError, useAttendanceGate } from '../attendance/gate';
 import { RunningLateCard } from '../punch/RunningLateCard';
 import { AcksBanner } from './AcksBanner';
 import { CalendarFeedCard } from './CalendarFeedCard';
-import { addDays, canActOnDay, dayLabel, isWeekOffDay, monthWeekStarts, shiftMonth, utcToday, weekStartOf } from './dates';
+import { addDays, canActOnDay, dayLabel, isWeekOffDay, monthName, monthWeekStarts, shiftMonth, weekStartOf } from './dates';
 import { GiveawayDialog } from './GiveawayDialog';
-import { useMonthWeeks, useWeek } from './hooks';
+import { useMonthWeeks, useUtcToday, useWeek } from './hooks';
 import { OnCallCard } from './OnCallCard';
 import { SwapDialog } from './SwapDialog';
 import { ErrorText } from './ui';
@@ -42,7 +42,7 @@ function DayDetail({ d, today, onSwap, onGive }: { d: RosterDay; today: string; 
 
 function WeekView({ focus, onAction }: { focus?: string; onAction: (kind: 'swap' | 'give', d: RosterDay) => void }) {
   const { colors, radius } = useTheme();
-  const today = utcToday();
+  const today = useUtcToday();
   const [start, setStart] = useState(weekStartOf(focus ?? today));
   const [sel, setSel] = useState<string | null>(focus ?? null);
   const q = useWeek(start);
@@ -54,9 +54,9 @@ function WeekView({ focus, onAction }: { focus?: string; onAction: (kind: 'swap'
   return (
     <View style={{ gap: 10 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <Button testID="week-prev" variant="secondary" title="‹" onPress={() => { setStart(addDays(start, -7)); setSel(null); }} />
+        <Button testID="week-prev" accessibilityLabel="Previous week" variant="secondary" title="‹" onPress={() => { setStart(addDays(start, -7)); setSel(null); }} />
         <Text testID="week-label" weight="600">{`${fmtUtcDate(start)} – ${fmtUtcDate(addDays(start, 6))}`}</Text>
-        <Button testID="week-next" variant="secondary" title="›" onPress={() => { setStart(addDays(start, 7)); setSel(null); }} />
+        <Button testID="week-next" accessibilityLabel="Next week" variant="secondary" title="›" onPress={() => { setStart(addDays(start, 7)); setSel(null); }} />
       </View>
       {!isThisWeek ? <Button testID="week-today" variant="secondary" title="This week" onPress={() => { setStart(weekStartOf(today)); setSel(null); }} /> : null}
       {q.isPending ? <Text muted testID="week-loading">Loading…</Text> : null}
@@ -96,24 +96,25 @@ function WeekView({ focus, onAction }: { focus?: string; onAction: (kind: 'swap'
 }
 
 function MonthView({ onPick }: { onPick: (date: string) => void }) {
-  const today = utcToday();
+  const today = useUtcToday();
   const [ym, setYm] = useState(today.slice(0, 7));
   const starts = useMemo(() => monthWeekStarts(ym), [ym]);
   const results = useMonthWeeks(starts, true);
   const gate = results.find((r) => r.error && isGateError(r.error));
   if (gate) return <GateInline />;
   const days = results.flatMap((r) => r.data?.days ?? []).filter((d) => d.date.startsWith(ym)).sort((a, b) => a.date.localeCompare(b.date));
-  const err = results.find((r) => r.error)?.error;
+  const failed = results.map((r, i) => (r.error ? starts[i] : null)).filter((x): x is string => !!x);
   const loading = results.some((r) => r.isPending);
   return (
     <View style={{ gap: 8 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <Button testID="month-prev" variant="secondary" title="‹" onPress={() => setYm(shiftMonth(ym, -1))} />
-        <Text testID="month-label" weight="600">{ym}</Text>
-        <Button testID="month-next" variant="secondary" title="›" onPress={() => setYm(shiftMonth(ym, 1))} />
+        <Button testID="month-prev" accessibilityLabel="Previous month" variant="secondary" title="‹" onPress={() => setYm(shiftMonth(ym, -1))} />
+        <Text testID="month-label" weight="600">{monthName(ym)}</Text>
+        <Button testID="month-next" accessibilityLabel="Next month" variant="secondary" title="›" onPress={() => setYm(shiftMonth(ym, 1))} />
       </View>
       {loading ? <Text muted testID="month-loading">Loading…</Text> : null}
-      {err ? <ErrorText testID="month-error">{normalizeError(err).message}</ErrorText> : null}
+      {failed.map((w) => <ErrorText key={w} testID={`month-error-${w}`}>{`Could not load the week of ${fmtUtcDate(w)}.`}</ErrorText>)}
+      {failed.length ? <Button testID="month-retry" variant="secondary" title="Try again" onPress={() => results.forEach((r) => { if (r.error) void r.refetch(); })} /> : null}
       {days.map((d) => {
         const l = dayLabel(d);
         return (
@@ -135,7 +136,7 @@ function MonthView({ onPick }: { onPick: (date: string) => void }) {
 
 export type SwapDone = (what: 'swap' | 'give') => void;
 
-export function MyShifts({ onDone }: { onDone: SwapDone }) {
+export function MyShifts({ onDone, feedUrl, onFeedUrl }: { onDone: SwapDone; feedUrl: string | null; onFeedUrl: (u: string | null) => void }) {
   const { today: att } = useAttendanceGate();
   const [mode, setMode] = useState<'week' | 'month'>('week');
   const [dialog, setDialog] = useState<{ kind: 'swap' | 'give'; day: RosterDay } | null>(null);
@@ -158,8 +159,8 @@ export function MyShifts({ onDone }: { onDone: SwapDone }) {
       <AcksBanner />
       <RunningLateCard isMarked={att?.is_marked} />
       <View style={{ flexDirection: 'row', gap: 8 }}>
-        <Chip testID="mode-week" label="Week" selected={mode === 'week'} onPress={() => setMode('week')} />
-        <Chip testID="mode-month" label="Month" selected={mode === 'month'} onPress={() => setMode('month')} />
+        <Chip testID="mode-week" label="Week" selected={mode === 'week'} onPress={() => { setFocus(undefined); setMode('week'); }} />
+        <Chip testID="mode-month" label="Month" selected={mode === 'month'} onPress={() => { setFocus(undefined); setMode('month'); }} />
       </View>
       {mode === 'week' ? (
         <WeekView key={focus ?? 'now'} focus={focus} onAction={(kind, day) => setDialog({ kind, day })} />
@@ -167,7 +168,7 @@ export function MyShifts({ onDone }: { onDone: SwapDone }) {
         <MonthView onPick={(date) => { setFocus(date); setMode('week'); }} />
       )}
       <OnCallCard />
-      <CalendarFeedCard />
+      <CalendarFeedCard url={feedUrl} onUrl={onFeedUrl} />
     </View>
   );
 }

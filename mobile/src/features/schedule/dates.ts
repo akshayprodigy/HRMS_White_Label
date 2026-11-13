@@ -79,3 +79,7 @@ export function dayLabel(d: RosterDay): DayLabel {
   const times = s.start_time && s.end_time ? `${s.start_time}–${s.end_time} UTC${s.is_overnight ? ' (+1 day)' : ''}` : null;
   return { title: s.name, times, transport: !!s.transport_required, muted: false };
 }
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** "2026-11" -> "November 2026". */
+export const monthName = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;

@@ -25,5 +25,5 @@ export function ConfirmAction({ id, label, confirmLabel, prompt, busy, onConfirm
 
 export function ErrorText({ testID, children }: { testID?: string; children: React.ReactNode }) {
   const { colors } = useTheme();
-  return <Text testID={testID} accessibilityRole="alert" size={13} style={{ color: colors.danger }}>{children}</Text>;
+  return <Text testID={testID} accessibilityRole="alert" accessibilityLiveRegion="polite" size={13} style={{ color: colors.danger }}>{children}</Text>;
 }

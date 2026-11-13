@@ -1,8 +1,10 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { retryUnlessGate, useAttendanceGate } from '../attendance/gate';
+import { utcToday } from './dates';
 import {
   ackChange, cancelDrop, claimOpenShift, createAvailability, createDrop, createSwap, deleteAvailability, deleteFeed,
   fetchAcks, fetchAvailability, fetchDrops, fetchFeedStatus, fetchOnCall, fetchOpenShifts, fetchShiftOptions, fetchSwapCandidates,
@@ -41,7 +43,7 @@ function useInvalidate(...keys: (readonly string[])[]) {
 }
 
 export function useAckChange() {
-  const inv = useInvalidate(SCHEDULE_KEYS.acks, SCHEDULE_KEYS.week);
+  const inv = useInvalidate(SCHEDULE_KEYS.acks);
   return useMutation({ mutationFn: ackChange, onSettled: inv });
 }
 export function useCreateSwap() {
@@ -111,4 +113,14 @@ export function useGuardedRun() {
     }
   };
   return { run, error, clearError: () => setError(null), isBusy: (key: string) => busy.has(key), anyBusy: busy.size > 0 };
+}
+
+/** UTC "today", recomputed when the app returns to the foreground (no timer): keeps the highlight right after UTC midnight. */
+export function useUtcToday() {
+  const [today, setToday] = useState(() => utcToday());
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') setToday(utcToday()); });
+    return () => sub.remove();
+  }, []);
+  return today;
 }

@@ -90,3 +90,6 @@ describe('availability rules', () => {
     expect(ruleText({ ...r, kind: 'unavailable', shift_template_id: null }, [])).toBe('Unavailable every Mon');
   });
 });
+
+import { monthName } from '../src/features/schedule/dates';
+it('monthName', () => { expect(monthName('2026-11')).toBe('November 2026'); expect(monthName('2027-01')).toBe('January 2027'); });

@@ -206,7 +206,7 @@ describe('ScheduleScreen', () => {
   const NOW = new Date('2026-11-13T10:00:00Z'); // a Friday
   beforeEach(() => { jest.spyOn(Date, 'now').mockReturnValue(NOW.getTime()); });
   afterEach(() => jest.restoreAllMocks());
-  const mon = (() => { const d = new Date(NOW); const dow = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - dow); return d.toISOString().slice(0, 10); })();
+  const mon = '2026-11-09'; // Monday of the week containing the pinned Friday
   const week = (start: string) => ({ start, days: Array.from({ length: 7 }, (_, i) => { const d = new Date(`${start}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + i); const date = d.toISOString().slice(0, 10); return { date, is_today: date === NOW.toISOString().slice(0, 10), is_weekend: i === 6, holiday_name: null, on_leave: false, leave_type: null, shift: i === 6 ? { name: 'Week off', start_time: null, end_time: null, is_overnight: false, source: 'roster' } : { name: 'Morning', start_time: '09:00', end_time: '17:00', is_overnight: false, source: 'roster', shift_template_id: 3, transport_required: i === 0 } }; }) });
   beforeEach(() => {
     mock.onGet('/roster/my/week').reply((c) => [200, week(c.params?.start ?? mon)]);
@@ -260,6 +260,48 @@ describe('ScheduleScreen', () => {
     await fireEvent.press(screen.getByTestId('feed-create'));
     expect(await screen.findByTestId('feed-url')).toHaveTextContent('http://test/api/v1/calendar/abc.ics');
     expect(screen.getByTestId('feed-warning')).toBeTruthy();
+  });
+
+  it('keeps the once-shown feed URL across sub-tab switches', async () => {
+    mock.onPost('/roster/my/calendar-feed').reply(200, { url: 'http://test/api/v1/calendar/abc.ics' });
+    await renderWithProviders(<ScheduleScreen />);
+    await screen.findByTestId('feed-status');
+    await fireEvent.press(screen.getByTestId('feed-create'));
+    await screen.findByTestId('feed-url');
+    await fireEvent.press(screen.getByTestId('sched-tab-swaps'));
+    await fireEvent.press(await screen.findByTestId('sched-tab-shifts'));
+    expect(await screen.findByTestId('feed-url')).toHaveTextContent(/abc\.ics/);
+  });
+
+  it('explains the lost-link case when the feed is active but the URL is not in memory', async () => {
+    mock.onGet('/roster/my/calendar-feed').reply(200, { active: true, created_at: '2026-11-01T00:00:00Z' });
+    await renderWithProviders(<ScheduleScreen />);
+    expect(await screen.findByTestId('feed-lost-note')).toHaveTextContent(/old link will stop working/);
+  });
+
+  it('month label is a month name, week focus from a month pick does not stick', async () => {
+    await renderWithProviders(<ScheduleScreen />);
+    await fireEvent.press(await screen.findByTestId('mode-month'));
+    expect(await screen.findByTestId('month-label')).toHaveTextContent('November 2026');
+    await fireEvent.press(await screen.findByTestId('month-2026-11-24'));
+    expect(await screen.findByTestId('strip-2026-11-24')).toBeTruthy(); // jumped to that week
+    await fireEvent.press(screen.getByTestId('mode-month'));
+    await fireEvent.press(screen.getByTestId('mode-week'));
+    expect(await screen.findByTestId('strip-2026-11-13')).toBeTruthy(); // back on the current week
+    expect(screen.queryByTestId('strip-2026-11-24')).toBeNull();
+  });
+
+  it('month view shows an error row and retry for a failed week, not empty days', async () => {
+    let fail = true;
+    mock.onGet('/roster/my/week').reply((c) => (fail && c.params?.start === '2026-11-16' ? [500, {}] : [200, week(c.params?.start ?? mon)]));
+    await renderWithProviders(<ScheduleScreen />);
+    await fireEvent.press(await screen.findByTestId('mode-month'));
+    expect(await screen.findByTestId('month-error-2026-11-16')).toBeTruthy();
+    expect(screen.queryByTestId('month-2026-11-17')).toBeNull();
+    fail = false;
+    await fireEvent.press(screen.getByTestId('month-retry'));
+    expect(await screen.findByTestId('month-2026-11-17')).toBeTruthy();
+    expect(screen.queryByTestId('month-error-2026-11-16')).toBeNull();
   });
 });
 
