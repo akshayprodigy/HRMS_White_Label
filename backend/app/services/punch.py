@@ -394,8 +394,12 @@ async def claim_selfie(db, user, selfie_id: Optional[int]) -> Optional[str]:
     return row.filename
 
 
-def _selfie_required(rules) -> bool:
-    return str(rules.get("attendance.selfie_required", "0")).strip() == "1"
+def _selfie_required(rules, *, mobile: bool) -> bool:
+    """The selfie rule applies only to mobile-app punches (mode == 'mobile'
+    and offline sync). Web punches are exempt (a known loophole: a web
+    client can simply punch with a different mode)."""
+    return mobile and str(
+        rules.get("attendance.selfie_required", "0")).strip() == "1"
 
 
 def _review_flag(liveness_passed: Optional[bool], is_offline: bool,
@@ -416,12 +420,14 @@ async def record_punch_in(
     selfie_id: Optional[int] = None, liveness_passed: Optional[bool] = None,
     liveness_score: Optional[float] = None, is_offline: bool = False,
     client_uuid: Optional[str] = None, ip: Optional[str] = None,
-    fresh: bool = False,
+    fresh: bool = False, device_captured_at: Optional[datetime] = None,
 ) -> tuple[Attendance, bool]:
     """Punch in. Returns (row, created). Idempotent per logical work-date:
     an existing row for the resolved work_date is returned, created=False.
     Flushes only. Raises PunchRejected (policy) / HTTPException."""
     now = datetime.now(timezone.utc)
+    # Live callers pass captured_at=None: the punch time is SERVER time; any
+    # client clock is kept only in device_captured_at (diagnostics).
     captured = captured_at or now
 
     # Resolve attribution BEFORE checking duplicates, so an overnight shift
@@ -439,7 +445,8 @@ async def record_punch_in(
         return existing, False
 
     rules = await get_time_rules(db)
-    if _selfie_required(rules) and selfie_id is None:
+    if _selfie_required(rules, mobile=is_offline or mode == "mobile") \
+            and selfie_id is None:
         raise PunchRejected(
             status_code=400, detail="A selfie is required to punch in.")
 
@@ -499,7 +506,8 @@ async def record_punch_in(
         liveness_score=liveness_score,
         is_offline=is_offline,
         client_uuid=client_uuid,
-        device_captured_at=captured if is_offline else None,
+        device_captured_at=captured if is_offline else device_captured_at,
+        synced_at=now if is_offline else None,
         review_flag=_review_flag(liveness_passed, is_offline),
     )
     db.add(db_obj)
@@ -590,7 +598,9 @@ async def record_punch_out(
         )
 
     rules = await get_time_rules(db)
-    if _selfie_required(rules) and selfie_id is None:
+    if _selfie_required(
+        rules, mobile=is_offline or attendance.mode == "mobile"
+    ) and selfie_id is None:
         raise PunchRejected(
             status_code=400, detail="A selfie is required to punch out.")
 
@@ -644,6 +654,7 @@ async def record_punch_out(
         attendance.punch_out_client_uuid = client_uuid
     if is_offline:
         attendance.is_offline = True
+        attendance.synced_at = now
     attendance.review_flag = _review_flag(
         liveness_passed, is_offline, attendance.review_flag)
 

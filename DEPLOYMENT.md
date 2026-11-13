@@ -162,6 +162,8 @@ echo 'renew_hook = docker exec erp-united-exploration-frontend-1 nginx -s reload
 - **Web Server**: Gunicorn with Uvicorn workers (async/await support).
 - **Process Management**: Docker restart policies ensure services come back up after crashes or reboots.
 - **Reverse Proxy**: Nginx handles static file delivery and routes API requests to the backend.
+  - Upload size: attendance selfies are up to 3 MB and leave attachments up to 10 MB; `client_max_body_size` (50m in `frontend/nginx.conf`) must stay at or above the largest of these on any proxy in front of the backend.
+  - Selfie storage: `ATTENDANCE_SELFIE_DIR` (default `/app/uploads/attendance-selfies`) must be on a persistent volume; the daily `attendance_selfie_purge` job removes unattached uploads (48h) and selfies past `attendance.selfie_retention_days`.
 - **Database**: MariaDB with persistent volume mapped to the host.
 - **Security**: 
   - Attendance Gating: Policy-level check for workspace access.

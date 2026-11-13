@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api import deps
@@ -25,7 +25,9 @@ from app.models.user import User
 from app.schemas.attendance import (
     OfflinePunchResult, OfflineSyncRequest, OfflineSyncResponse,
 )
+from app.models.audit import AuditLog
 from app.services import punch as punch_svc
+from app.services.attendance_lock import assert_attendance_editable
 from app.services.roster import is_lock_conflict
 from app.services.time_rules import get_time_rules
 
@@ -34,6 +36,7 @@ router = APIRouter()
 
 FUTURE_SKEW = timedelta(minutes=2)
 DEFAULT_OFFLINE_MAX_HOURS = 12
+MAX_UNATTACHED_SELFIES = 20
 
 _SELFIE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 _MEDIA = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
@@ -65,6 +68,14 @@ async def upload_selfie(
     if ext is None:
         raise HTTPException(
             status_code=400, detail="Only JPEG, PNG or WebP images are allowed")
+    pending = (await db.execute(
+        select(func.count(AttendanceSelfie.id)).where(
+            AttendanceSelfie.user_id == current_user.id,
+            AttendanceSelfie.used_at.is_(None)))).scalar_one()
+    if pending >= MAX_UNATTACHED_SELFIES:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many unattached selfies; attach or wait for cleanup")
     d = _selfie_dir()
     d.mkdir(parents=True, exist_ok=True)
     stored = f"{uuid4().hex}.{ext}"
@@ -115,14 +126,21 @@ async def view_selfie(
     if att.user_id != current_user.id and not deps.user_has_permission(
         current_user, "hr employee read"
     ):
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        # 404, not 403: don't confirm that a record/selfie exists.
+        raise HTTPException(status_code=404, detail="Selfie not found")
     name = att.selfie_url if side == "in" else att.punch_out_selfie_url
     path = _selfie_dir() / name if name else None
     if path is None or "/" in name or not path.is_file():
         raise HTTPException(status_code=404, detail="Selfie not found")
+    db.add(AuditLog(
+        user_id=current_user.id, action="SELFIE_VIEW",
+        resource_type="attendance", resource_id=str(att.id),
+        details={"side": side, "owner_id": att.user_id}))
+    await db.commit()
     return FileResponse(
         path, media_type=_MEDIA.get(path.suffix.lstrip("."), "image/jpeg"),
-        headers={"Cache-Control": "private, no-store"})
+        headers={"Cache-Control": "private, no-store",
+                 "X-Content-Type-Options": "nosniff"})
 
 
 def _reason(exc: HTTPException) -> str:
@@ -145,7 +163,14 @@ async def offline_sync(
     duplicate | rejected + reason) returned in REQUEST order. Idempotent by
     client_uuid. Accepted only if captured <= now + 2 min and within
     `attendance.offline_max_hours` (default 12) of now. Rows are flagged
-    for HR review (`is_offline`, `review_flag`)."""
+    for HR review (`is_offline`, `review_flag`).
+
+    `rejected` is TERMINAL: the server will not accept that item later, so the
+    client should drop it from its queue (reasons: captured_in_future,
+    captured_too_old, payroll_locked, already_punched_in, invalid_client_uuid,
+    selfie/policy/geofence errors, no open punch). `duplicate` means the
+    server already has it (safe to drop). Only a failed request (network /
+    5xx / 409 retry) should be retried."""
     uid = current_user.id
     ip = request.client.host if request.client else None
 
@@ -184,7 +209,7 @@ async def offline_sync(
                 Attendance.punch_out_client_uuid == it.client_uuid)), True)
             if dup is not None:
                 if dup.user_id != uid:  # never reveal other users' rows
-                    out[i] = res("rejected", "client_uuid_conflict")
+                    out[i] = res("rejected", "invalid_client_uuid")
                 else:
                     out[i] = res("duplicate", att_id=dup.id)
                 continue
@@ -194,6 +219,21 @@ async def offline_sync(
             if cap < oldest:
                 out[i] = res("rejected", "captured_too_old")
                 continue
+            # Payroll lock: same rule as HR punch edits (409 -> rejected).
+            try:
+                if it.kind == "in":
+                    wd = (await punch_svc._attribute_punch(db, uid, cap))[0]
+                else:
+                    open_rec = await punch_svc._find_open_record_for_punch_out(
+                        db, uid, cap, fresh=True)
+                    wd = open_rec.work_date if open_rec is not None else None
+                if wd is not None:
+                    await assert_attendance_editable(db, wd, fresh=True)
+            except HTTPException as exc:
+                if exc.status_code == 409:
+                    out[i] = res("rejected", "payroll_locked")
+                    continue
+                raise
             try:
                 async with db.begin_nested():
                     try:

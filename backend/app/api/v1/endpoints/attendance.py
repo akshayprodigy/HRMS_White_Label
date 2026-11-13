@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 from app.api import deps
+from app.api.v1.endpoints.roster_common import lock_user_rows, retry_on_lock
 from app.models.attendance import Attendance
 from app.models.audit import AuditLog
 from app.models.hr import HolidayCalendar
@@ -100,31 +101,47 @@ async def mark_attendance(
     rather than creating a duplicate. For day-shift workers this is
     equivalent to "one punch-in per calendar day" — no regression.
 
+    The punch time is always SERVER time; a client `captured_at` is stored
+    only as `device_captured_at` (diagnostics).
+
     Optional `selfie_id` (from POST /attendance/selfie), `liveness_passed`
     and `liveness_score`. 400 when the `attendance.selfie_required` rule is
     on and no selfie is supplied; liveness_passed=false is accepted but
     flagged for HR review.
     """
-    try:
-        db_obj, _created = await record_punch_in(
-            db, current_user,
-            mode=attendance_in.mode,
-            remarks=attendance_in.remarks,
-            captured_at=attendance_in.captured_at,
-            lat=attendance_in.latitude,
-            lng=attendance_in.longitude,
-            accuracy=attendance_in.accuracy,
-            is_mock=bool(getattr(attendance_in, "is_mock_location", False)),
-            selfie_id=attendance_in.selfie_id,
-            liveness_passed=attendance_in.liveness_passed,
-            liveness_score=attendance_in.liveness_score,
-            ip=request.client.host if request.client else None,
-        )
-    except PunchRejected:
-        # Persist any audit row (STRICT geo reject) before surfacing.
-        await db.commit()
-        raise
-    await db.commit()
+    uid = current_user.id
+    ip = request.client.host if request.client else None
+
+    async def run():
+        # Serialize with other punches (live or offline) for this user, then
+        # read fresh so two requests can't both create a row for one work_date.
+        user = await db.get(UserModel, uid, populate_existing=True)
+        await lock_user_rows(db, [uid])
+        try:
+            # Punch time is SERVER time: a client captured_at is only kept
+            # (device_captured_at) for diagnostics, never trusted.
+            obj, _created = await record_punch_in(
+                db, user,
+                mode=attendance_in.mode,
+                remarks=attendance_in.remarks,
+                captured_at=None,
+                device_captured_at=attendance_in.captured_at,
+                lat=attendance_in.latitude,
+                lng=attendance_in.longitude,
+                accuracy=attendance_in.accuracy,
+                is_mock=bool(getattr(attendance_in, "is_mock_location", False)),
+                selfie_id=attendance_in.selfie_id,
+                liveness_passed=attendance_in.liveness_passed,
+                liveness_score=attendance_in.liveness_score,
+                ip=ip, fresh=True,
+            )
+        except PunchRejected:
+            # Persist any audit row (STRICT geo reject) before surfacing.
+            await db.commit()
+            raise
+        return obj
+
+    db_obj = await retry_on_lock(db, run, commit=True)
     await db.refresh(db_obj)
     return db_obj
 
@@ -151,22 +168,29 @@ async def punch_out(
     400 if a selfie is required (time rule) and none supplied.
     422 if STRICT geo policy rejects the punch-out location.
     """
-    try:
-        attendance = await record_punch_out(
-            db, current_user,
-            lat=body.latitude if body is not None else None,
-            lng=body.longitude if body is not None else None,
-            accuracy=body.accuracy if body is not None else None,
-            is_mock=bool(body.is_mock_location) if body is not None else False,
-            selfie_id=body.selfie_id if body is not None else None,
-            liveness_passed=body.liveness_passed if body is not None else None,
-            liveness_score=body.liveness_score if body is not None else None,
-            ip=request.client.host if request.client else None,
-        )
-    except PunchRejected:
-        await db.commit()
-        raise
-    await db.commit()
+    uid = current_user.id
+    ip = request.client.host if request.client else None
+
+    async def run():
+        user = await db.get(UserModel, uid, populate_existing=True)
+        await lock_user_rows(db, [uid])
+        try:
+            return await record_punch_out(
+                db, user,
+                lat=body.latitude if body is not None else None,
+                lng=body.longitude if body is not None else None,
+                accuracy=body.accuracy if body is not None else None,
+                is_mock=bool(body.is_mock_location) if body is not None else False,
+                selfie_id=body.selfie_id if body is not None else None,
+                liveness_passed=body.liveness_passed if body is not None else None,
+                liveness_score=body.liveness_score if body is not None else None,
+                ip=ip, fresh=True,
+            )
+        except PunchRejected:
+            await db.commit()
+            raise
+
+    attendance = await retry_on_lock(db, run, commit=True)
     await db.refresh(attendance)
     return attendance
 

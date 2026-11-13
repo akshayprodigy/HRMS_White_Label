@@ -49,6 +49,7 @@ interface FlaggedRecord {
   liveness_passed?: boolean | null;
   punch_out_liveness_passed?: boolean | null;
   is_offline?: boolean;
+  synced_at?: string | null;
   review_flag?: string | null;
 }
 
@@ -83,6 +84,8 @@ const SelfieThumb: React.FC<{ id: number; side: 'in' | 'out' }> = ({ id, side })
   useEffect(() => {
     let revoked: string | null = null;
     let cancelled = false;
+    setUrl(null);
+    setFailed(false);
     (async () => {
       try {
         const res = await client.get(ENDPOINTS.ATTENDANCE.SELFIE(id), {
@@ -597,6 +600,11 @@ export const AttendanceFlaggedReview: React.FC = () => {
                                   );
                                 })}
                               </div>
+                              {r.is_offline && r.synced_at && (
+                                <div className="text-[9px] font-bold text-slate-500 tabular-nums">
+                                  captured {fmtTs(r.captured_at)}, synced {fmtTs(r.synced_at)}
+                                </div>
+                              )}
                               {(r.has_selfie || r.has_punch_out_selfie) && (
                                 <div className="flex gap-2 items-center">
                                   {r.has_selfie && <SelfieThumb id={r.id} side="in" />}

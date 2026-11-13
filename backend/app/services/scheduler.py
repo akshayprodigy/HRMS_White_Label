@@ -675,6 +675,22 @@ register_job(JobSpec(
     default_cadence_cron="*/15 * * * *",
     fn=_job_push_receipts_poll,
 ))
+async def _job_attendance_selfie_purge(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.selfie_lifecycle import purge_selfies
+    return await purge_selfies(session)
+
+
+register_job(JobSpec(
+    name="attendance_selfie_purge",
+    display_name="Purge attendance selfies",
+    description=(
+        "Daily: delete selfies uploaded but never attached to a punch for "
+        "48h, and punch selfies older than attendance.selfie_retention_days "
+        "(0 = keep forever)."
+    ),
+    default_cadence_cron="30 3 * * *",
+    fn=_job_attendance_selfie_purge,
+))
 register_job(JobSpec(
     name="flush_notification_digests",
     display_name="Flush notification digests (hourly + daily)",

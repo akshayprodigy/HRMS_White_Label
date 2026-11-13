@@ -132,6 +132,9 @@ class Attendance(Base):
         String(64), nullable=True, unique=True)
     device_captured_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # Server receipt time of an offline-synced punch (captured vs synced).
+    synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     # 'liveness_failed' (takes precedence) | 'offline' | None
     review_flag: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True, index=True)

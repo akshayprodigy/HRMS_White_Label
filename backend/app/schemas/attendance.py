@@ -57,6 +57,8 @@ class AttendanceRead(AttendanceBase):
     liveness_passed: Optional[bool] = None
     punch_out_liveness_passed: Optional[bool] = None
     is_offline: bool = False
+    device_captured_at: Optional[datetime] = None
+    synced_at: Optional[datetime] = None
     review_flag: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

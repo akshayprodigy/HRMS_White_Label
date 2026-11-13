@@ -4650,6 +4650,8 @@ html {
 /* utilities used by roster planner / delegations (no Tailwind build) */
 @layer utilities {
   .align-top { vertical-align: top; }
+  .bg-rose-100 { background-color: #ffe4e6; }
+  .text-rose-800 { color: #9f1239; }
   .bg-gray-50 { background-color: #f9fafb; }
   .hover\:bg-gray-50:hover { background-color: #f9fafb; }
   .hover\:bg-indigo-700:hover { background-color: #4338ca; }

@@ -1,4 +1,5 @@
 """Selfie punch + offline punch sync (Roadmap v2 Phase 3, Task 2)."""
+import asyncio
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -11,6 +12,7 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal
 from app.main import create_app
+from app.models.payroll import PayrollRun, PayrollRunStatus
 from app.models.attendance import Attendance, AttendanceSelfie
 from app.models.audit import AuditLog
 from app.models.comp_off import CompOffAccrual
@@ -26,6 +28,7 @@ from app.models.system import SystemSetting
 from app.models.user import (
     Permission, Role, User, role_permissions, user_roles,
 )
+from app.services.selfie_lifecycle import purge_selfies
 from app.services.time_rules import get_time_rules, set_time_rules
 
 API = settings.API_V1_STR
@@ -161,7 +164,8 @@ async def world():
 @pytest.fixture
 async def rules():
     """Set time rules for a test and restore the stored values afterwards."""
-    keys = ("attendance.selfie_required", "attendance.offline_max_hours")
+    keys = ("attendance.selfie_required", "attendance.offline_max_hours",
+            "attendance.selfie_retention_days")
     async with SessionLocal() as db:
         before = {k: await db.get(SystemSetting, k) for k in keys}
         saved = {k: (v.value if v else None) for k, v in before.items()}
@@ -273,6 +277,11 @@ async def test_selfie_required_rule(client, world, rules):
     s2 = (await _selfie(client, h, JPG, "image/jpeg")).json()["selfie_id"]
     r = await client.post(f"{ATT}/punch-out", headers=h, json={"selfie_id": s2})
     assert r.status_code == 200 and r.json()["has_punch_out_selfie"] is True
+    await rules(selfie_required="1")
+    h2 = await _login(client, world["email"]("e2"))
+    # web punches are exempt from the selfie rule
+    assert (await client.post(f"{ATT}/mark", headers=h2, json={
+        "mode": "office"})).status_code == 200
     await rules(selfie_required="0")
     h2 = await _login(client, world["email"]("e2"))
     assert (await client.post(f"{ATT}/mark", headers=h2, json={
@@ -294,7 +303,9 @@ async def test_time_rule_validation(world):
         for key, bad in (("attendance.selfie_required", "2"),
                          ("attendance.offline_max_hours", "0"),
                          ("attendance.offline_max_hours", "73"),
-                         ("attendance.offline_max_hours", "abc")):
+                         ("attendance.offline_max_hours", "abc"),
+                         ("attendance.selfie_retention_days", "3651"),
+                         ("attendance.selfie_retention_days", "-1")):
             with pytest.raises(ValueError):
                 await set_time_rules(db, {key: bad})
         rules = await get_time_rules(db)
@@ -346,7 +357,14 @@ async def test_selfie_view_permissions(client, world):
         r = await client.get(f"{ATT}/{att['id']}/selfie", headers=h)
         assert r.status_code == 200 and r.content == PNG
         assert r.headers["content-type"] == "image/png"
-    assert (await client.get(f"{ATT}/{att['id']}/selfie", headers=hot)).status_code == 403
+        assert r.headers["x-content-type-options"] == "nosniff"
+    async with SessionLocal() as db:
+        n = (await db.execute(select(AuditLog).where(
+            AuditLog.action == "SELFIE_VIEW",
+            AuditLog.resource_id == str(att["id"])))).scalars().all()
+    assert sorted(x.user_id for x in n) == sorted(
+        [world["ids"]["e1"], world["ids"]["hr"]])
+    assert (await client.get(f"{ATT}/{att['id']}/selfie", headers=hot)).status_code == 404
     assert (await client.get(f"{ATT}/{att['id']}/selfie", headers=he1,
                              params={"side": "out"})).status_code == 404
     assert (await client.get(f"{ATT}/99999999/selfie", headers=he1)).status_code == 404
@@ -399,6 +417,7 @@ async def test_offline_client_uuid_cannot_collide_across_users(client, world):
     await client.post(f"{ATT}/offline-sync", headers=h1, json={"punches": [i]})
     r = await client.post(f"{ATT}/offline-sync", headers=h2, json={"punches": [i]})
     assert r.json()["results"][0]["status"] == "rejected"
+    assert r.json()["results"][0]["reason"] == "invalid_client_uuid"
     assert r.json()["results"][0]["attendance_id"] is None
     assert await _rows(world["ids"]["e2"]) == []
 
@@ -452,10 +471,9 @@ async def test_offline_punch_out_needs_open_punch(client, world):
     assert x["status"] == "rejected" and "before" in x["reason"]
     # a LIVE punch-in is a valid open punch for an offline punch-out
     h2 = await _login(client, world["email"]("e2"))
-    await client.post(f"{ATT}/mark", headers=h2, json={
-        "mode": "web", "captured_at": iso(now - timedelta(hours=2))})
+    await client.post(f"{ATT}/mark", headers=h2, json={"mode": "web"})
     r = await client.post(f"{ATT}/offline-sync", headers=h2, json={"punches": [
-        _off("out", now - timedelta(minutes=5))]})
+        _off("out", datetime.now(timezone.utc) + timedelta(seconds=60))]})
     assert r.json()["results"][0]["status"] == "created"
     (row,) = await _rows(world["ids"]["e2"])
     assert row.is_offline and row.review_flag == "offline"
@@ -465,10 +483,9 @@ async def test_offline_punch_out_needs_open_punch(client, world):
 async def test_offline_second_punch_in_same_day_rejected(client, world):
     h = await _login(client, world["email"]("e1"))
     now = datetime.now(timezone.utc)
-    await client.post(f"{ATT}/mark", headers=h, json={
-        "mode": "web", "captured_at": iso(now - timedelta(hours=2))})
+    await client.post(f"{ATT}/mark", headers=h, json={"mode": "web"})
     r = await client.post(f"{ATT}/offline-sync", headers=h, json={"punches": [
-        _off("in", now - timedelta(hours=1))]})
+        _off("in", datetime.now(timezone.utc) - timedelta(minutes=1))]})
     x = r.json()["results"][0]
     assert x["status"] == "rejected" and x["reason"] == "already_punched_in"
     assert len(await _rows(world["ids"]["e1"])) == 1
@@ -480,13 +497,13 @@ async def test_offline_attribution_parity_with_live(client, world):
     h1 = await _login(client, world["email"]("e1"))
     h2 = await _login(client, world["email"]("e2"))
     now = datetime.now(timezone.utc)
-    t_in = now - timedelta(hours=2)
     live = await client.post(f"{ATT}/mark", headers=h1, json={
         "mode": "mobile", "latitude": OUT_FENCE[0], "longitude": OUT_FENCE[1],
-        "accuracy": 12.0, "is_mock_location": True, "captured_at": iso(t_in)})
+        "accuracy": 12.0, "is_mock_location": True})
     assert live.status_code == 200
     r = await client.post(f"{ATT}/offline-sync", headers=h2, json={"punches": [
-        _off("in", t_in, pt=OUT_FENCE, accuracy=12.0, is_mock_location=True)]})
+        _off("in", datetime.now(timezone.utc) - timedelta(seconds=5),
+             pt=OUT_FENCE, accuracy=12.0, is_mock_location=True)]})
     assert r.json()["results"][0]["status"] == "created"
     lo = await client.post(f"{ATT}/punch-out", headers=h1, json={
         "latitude": IN_FENCE[0], "longitude": IN_FENCE[1], "accuracy": 8.0})
@@ -573,3 +590,123 @@ async def test_live_mark_unchanged_idempotent(client, world):
     assert out.status_code == 200 and out.json()["punch_out_time"]
     again = await client.post(f"{ATT}/punch-out", headers=h)
     assert again.status_code == 400
+
+
+async def test_live_mark_ignores_client_captured_at(client, world):
+    h = await _login(client, world["email"]("e1"))
+    before = datetime.now(timezone.utc)
+    r = await client.post(f"{ATT}/mark", headers=h, json={
+        "mode": "web", "captured_at": iso(before - timedelta(days=3))})
+    assert r.status_code == 200
+    (row,) = await _rows(world["ids"]["e1"])
+    cap = row.captured_at if row.captured_at.tzinfo else row.captured_at.replace(tzinfo=timezone.utc)
+    assert cap >= before - timedelta(seconds=2)  # server time, not -3 days
+    assert row.device_captured_at is not None  # kept for diagnostics only
+    assert row.is_offline is False
+
+
+async def test_offline_payroll_lock(client, world):
+    h = await _login(client, world["email"]("e1"))
+    now = datetime.now(timezone.utc)
+    h2 = await _login(client, world["email"]("e2"))
+    await client.post(f"{ATT}/mark", headers=h2, json={"mode": "web"})  # open punch
+    async with SessionLocal() as db:
+        run = PayrollRun(month=now.month, year=now.year,
+                         status=PayrollRunStatus.LEAVES_LOCKED)
+        db.add(run)
+        await db.commit()
+        run_id = run.id
+    try:
+        r = await client.post(f"{ATT}/offline-sync", headers=h, json={"punches": [
+            _off("in", now - timedelta(minutes=30))]})
+        assert [(x["status"], x["reason"]) for x in r.json()["results"]] == [
+            ("rejected", "payroll_locked")]
+        assert await _rows(world["ids"]["e1"]) == []
+        r = await client.post(f"{ATT}/offline-sync", headers=h2, json={"punches": [
+            _off("out", datetime.now(timezone.utc) + timedelta(seconds=30))]})
+        assert [(x["status"], x["reason"]) for x in r.json()["results"]] == [
+            ("rejected", "payroll_locked")]
+        assert (await _rows(world["ids"]["e2"]))[0].punch_out_time is None
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(PayrollRun).where(PayrollRun.id == run_id))
+            await db.commit()
+
+
+async def test_concurrent_live_and_offline_make_one_row(client, world):
+    h = await _login(client, world["email"]("e1"))
+    for _ in range(3):  # a few rounds to shake out the race
+        await asyncio.gather(
+            client.post(f"{ATT}/mark", headers=h, json={"mode": "web"}),
+            client.post(f"{ATT}/mark", headers=h, json={"mode": "web"}),
+            client.post(f"{ATT}/offline-sync", headers=h, json={"punches": [
+                _off("in", datetime.now(timezone.utc) - timedelta(seconds=3))]}),
+        )
+        assert len(await _rows(world["ids"]["e1"])) == 1
+        async with SessionLocal() as db:
+            await db.execute(delete(Attendance).where(
+                Attendance.user_id == world["ids"]["e1"]))
+            await db.commit()
+
+
+async def test_offline_row_has_synced_at(client, world):
+    h = await _login(client, world["email"]("e1"))
+    now = datetime.now(timezone.utc)
+    await client.post(f"{ATT}/offline-sync", headers=h, json={"punches": [
+        _off("in", now - timedelta(hours=1))]})
+    (row,) = await _rows(world["ids"]["e1"])
+    assert row.synced_at is not None and row.device_captured_at is not None
+
+
+async def test_upload_rate_limit(client, world):
+    h = await _login(client, world["email"]("e1"))
+    for _ in range(20):
+        assert (await _selfie(client, h)).status_code == 200
+    assert (await _selfie(client, h)).status_code == 429
+    h2 = await _login(client, world["email"]("e2"))
+    assert (await _selfie(client, h2)).status_code == 200  # per user
+
+
+async def test_selfie_purge_unattached_and_retention(client, world, rules, _selfie_dir):
+    h = await _login(client, world["email"]("e1"))
+    h2 = await _login(client, world["email"]("e2"))
+    old = (await _selfie(client, h)).json()["selfie_id"]
+    fresh = (await _selfie(client, h)).json()["selfie_id"]
+    att_sid = (await _selfie(client, h2)).json()["selfie_id"]
+    keep_sid = (await _selfie(client, h)).json()["selfie_id"]
+    a = (await client.post(f"{ATT}/mark", headers=h2, json={
+        "mode": "mobile", "selfie_id": att_sid})).json()
+    async with SessionLocal() as db:
+        row = await db.get(AttendanceSelfie, old)
+        row.created_at = datetime.now(timezone.utc) - timedelta(hours=49)
+        await db.commit()
+    async with SessionLocal() as db:
+        res = await purge_selfies(db)
+    assert res["unattached_deleted"] >= 1
+    async with SessionLocal() as db:
+        assert await db.get(AttendanceSelfie, old) is None
+        assert await db.get(AttendanceSelfie, fresh) is not None
+    assert len(list(_selfie_dir.iterdir())) == 3  # 4 uploaded - 1 purged
+    # retention: punch older than N days loses its selfie file + url
+    async with SessionLocal() as db:
+        att = await db.get(Attendance, a["id"])
+        att.captured_at = datetime.now(timezone.utc) - timedelta(days=100)
+        await db.commit()
+    async with SessionLocal() as db:
+        await purge_selfies(db)
+        att = await db.get(Attendance, a["id"])
+        assert att.selfie_url is None
+        assert await db.get(AttendanceSelfie, att_sid) is None
+    assert len(list(_selfie_dir.iterdir())) == 2
+    # retention 0 = keep forever
+    s2 = (await _selfie(client, h2, JPG, "image/jpeg")).json()["selfie_id"]
+    a2 = (await client.post(f"{ATT}/punch-out", headers=h2, json={"selfie_id": s2})).json()
+    async with SessionLocal() as db:
+        att = await db.get(Attendance, a2["id"])
+        att.captured_at = datetime.now(timezone.utc) - timedelta(days=400)
+        await db.commit()
+    await rules(selfie_retention_days="0")
+    async with SessionLocal() as db:
+        await purge_selfies(db)
+        assert (await db.get(Attendance, a2["id"])).punch_out_selfie_url
+    del keep_sid

@@ -53,7 +53,14 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
     ),
     "attendance.selfie_required": (
         "0",
-        "Require a selfie with every mobile punch-in / punch-out (1/0)",
+        "Require a selfie for mobile app punches (mode 'mobile' and offline "
+        "sync) (1/0). Web punches are exempt - a web client can bypass this "
+        "by punching with another mode",
+    ),
+    "attendance.selfie_retention_days": (
+        "90",
+        "Delete punch selfies (files) older than this many days; the punch "
+        "record is kept (0 = keep forever, 0-3650)",
     ),
     "attendance.offline_max_hours": (
         "12",
@@ -186,6 +193,14 @@ async def set_time_rules(
                 "attendance.offline_max_hours must be a whole number "
                 "between 1 and 72")
         updates["attendance.offline_max_hours"] = sv
+    rd = updates.get("attendance.selfie_retention_days")
+    if rd is not None:
+        sv = str(rd).strip()
+        if not (sv.isascii() and sv.isdigit()) or int(sv) > 3650:
+            raise ValueError(
+                "attendance.selfie_retention_days must be a whole number "
+                "between 0 and 3650")
+        updates["attendance.selfie_retention_days"] = sv
     cm = updates.get("schedule.callback_compensation")
     if cm is not None:
         cm = str(cm).strip()

@@ -63,6 +63,7 @@ const APPROVAL_FIELDS: { key: string; label: string; hint: string; max: number }
 
 const SELFIE_REQUIRED_KEY = 'attendance.selfie_required';
 const OFFLINE_HOURS_KEY = 'attendance.offline_max_hours';
+const RETENTION_KEY = 'attendance.selfie_retention_days';
 
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-slate-200 text-sm text-[#0F172A] ' +
@@ -115,6 +116,11 @@ export const TimeRulesTab: React.FC = () => {
     const offH = (rules[OFFLINE_HOURS_KEY] ?? '').toString().trim();
     if (!/^\d+$/.test(offH) || Number(offH) < 1 || Number(offH) > 72) {
       toast.error('Offline punch window must be a whole number of hours from 1 to 72');
+      return;
+    }
+    const retDays = (rules[RETENTION_KEY] ?? '').toString().trim();
+    if (!/^\d+$/.test(retDays) || Number(retDays) > 3650) {
+      toast.error('Selfie retention must be a whole number of days from 0 to 3650');
       return;
     }
     const amt = Number((rules['schedule.callback_allowance_amount'] ?? '0').toString().trim());
@@ -284,13 +290,15 @@ export const TimeRulesTab: React.FC = () => {
             <p className="text-[10px] font-bold text-slate-500 mt-1">
               Selfie capture with an on-device liveness check (failures are
               flagged for HR review) and punches captured offline in the
-              mobile app. Offline punches are always flagged for review.
+              mobile app. Offline punches are always flagged for review. The
+              selfie requirement applies to mobile app punches only; web
+              punches are exempt.
             </p>
           </div>
           <label className="inline-flex items-center gap-2 cursor-pointer select-none shrink-0">
             <input
               type="checkbox"
-              aria-label="Require a selfie with every mobile punch"
+              aria-label="Require selfie for mobile app punches"
               checked={selfieRequired}
               onChange={(e) =>
                 setRules({ ...rules, [SELFIE_REQUIRED_KEY]: e.target.checked ? '1' : '0' })
@@ -298,7 +306,7 @@ export const TimeRulesTab: React.FC = () => {
               className="w-4 h-4 accent-blue-600"
             />
             <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
-              {selfieRequired ? 'Selfie required' : 'Selfie optional'}
+              {selfieRequired ? 'Selfie required (mobile app)' : 'Selfie optional'}
             </span>
           </label>
         </div>
@@ -322,6 +330,27 @@ export const TimeRulesTab: React.FC = () => {
             />
             <p className="text-[9px] font-bold text-slate-400">
               Offline punches are accepted only if captured within this many hours of syncing (range 1–72)
+            </p>
+          </div>
+          <div className="space-y-1">
+            <label
+              htmlFor={RETENTION_KEY}
+              className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+            >
+              Selfie Retention (days)
+            </label>
+            <input
+              id={RETENTION_KEY}
+              type="number"
+              min={0}
+              max={3650}
+              step={1}
+              className={inputCls}
+              value={rules[RETENTION_KEY] ?? ''}
+              onChange={(e) => setRules({ ...rules, [RETENTION_KEY]: e.target.value })}
+            />
+            <p className="text-[9px] font-bold text-slate-400">
+              Selfie images older than this are deleted; the punch is kept. 0 = keep forever (range 0–3650)
             </p>
           </div>
         </div>
