@@ -1,0 +1,46 @@
+import fs from 'fs';
+import path from 'path';
+import type { ExpoConfig } from 'expo/config';
+import { validateTenant } from './tenants/validate';
+
+export function buildConfig(tenantName: string, root: string = __dirname): ExpoConfig {
+  const dir = path.join(root, 'tenants', tenantName);
+  const file = path.join(dir, 'tenant.json');
+  if (!fs.existsSync(file)) {
+    const tdir = path.join(root, 'tenants');
+    const available = fs.existsSync(tdir)
+      ? fs.readdirSync(tdir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name)
+      : [];
+    throw new Error(`Unknown tenant "${tenantName}": ${file} not found. Available: ${available.join(', ') || 'none'}`);
+  }
+  const tenant = validateTenant(JSON.parse(fs.readFileSync(file, 'utf8')), tenantName);
+  const icon = `./tenants/${tenantName}/icon.png`;
+  const splash = `./tenants/${tenantName}/splash.png`;
+  for (const asset of [icon, splash]) {
+    if (!fs.existsSync(path.join(root, asset))) throw new Error(`Tenant "${tenantName}" is missing ${asset}`);
+  }
+
+  return {
+    name: tenant.name,
+    slug: tenant.slug,
+    scheme: tenant.scheme,
+    version: '1.0.0',
+    orientation: 'portrait',
+    icon,
+    userInterfaceStyle: 'automatic',
+    ios: { bundleIdentifier: tenant.ios.bundleIdentifier, supportsTablet: false },
+    android: {
+      package: tenant.android.package,
+      adaptiveIcon: { foregroundImage: icon, backgroundColor: tenant.colors.primary },
+    },
+    plugins: [
+      'expo-router',
+      'expo-secure-store',
+      ['expo-splash-screen', { image: splash, imageWidth: 160, backgroundColor: tenant.colors.primary }],
+    ],
+    experiments: { typedRoutes: true },
+    extra: { tenant: { ...tenant, id: tenantName } },
+  };
+}
+
+export default (): ExpoConfig => buildConfig(process.env.TENANT || 'dev');
