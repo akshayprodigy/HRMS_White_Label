@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { AppState, RefreshControl, View } from 'react-native';
+import { useState } from 'react';
+import { RefreshControl, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { Card, Chip, Screen, Text } from '../../components/ui';
 import { AvailabilityPanel } from './AvailabilityPanel';
@@ -22,11 +22,6 @@ export function ScheduleScreen() {
   const [refreshing, setRefreshing] = useState(false);
   // Lifted here so the once-shown feed URL survives sub-tab switches and dialogs.
   const [feedUrl, setFeedUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') void qc.invalidateQueries({ queryKey: ['schedule'] }); });
-    return () => sub.remove();
-  }, [qc]);
 
   const refresh = async () => {
     setRefreshing(true);
