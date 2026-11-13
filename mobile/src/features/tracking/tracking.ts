@@ -38,7 +38,10 @@ export async function readMeta(): Promise<TrackingMeta | null> {
   }
 }
 async function writeMeta(m: TrackingMeta | null) {
-  try { await meta().write(m ? JSON.stringify(m) : ''); } catch { /* best effort */ }
+  try {
+    if (m) await meta().write(JSON.stringify(m));
+    else await meta().destroy(); // not write(''): that would leave the previous user id in .bak
+  } catch { /* best effort */ }
 }
 
 // --- permissions ---------------------------------------------------------------------------------------------------

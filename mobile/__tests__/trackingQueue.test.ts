@@ -52,7 +52,17 @@ describe('enqueue', () => {
     await q.enqueue(many(3));
     await q.clear();
     expect(await q.size()).toBe(0);
-    expect(JSON.parse(store.data!).items).toEqual([]);
+    expect(store.data).toBeNull(); // nothing left on disk
+  });
+  it('clear() destroys the store so no previous coordinates linger in .bak/.corrupt', async () => {
+    const { q, store } = mk();
+    await q.enqueue(many(3));
+    await q.enqueue([ping(50)]); // second write: the first state is now the .bak
+    expect(store.bak).not.toBeNull();
+    await q.clear();
+    expect(store).toMatchObject({ data: null, bak: null, tmp: null, quarantined: null });
+    await q.enqueue([ping(60)]); // a later write recreates the files
+    expect(await q.size()).toBe(1);
   });
 });
 

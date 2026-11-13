@@ -13,6 +13,9 @@ export interface PersistentStore {
   readRecovery?(): Promise<string[]>;
   /** Move an unreadable file aside so it is not overwritten and can be inspected. */
   quarantine?(): Promise<void>;
+  /** Delete the main file and every sibling copy (.tmp, .bak, .corrupt). Never throws. For data that must not outlive
+   * its purpose (a plain write of "empty" would push the previous contents into .bak). */
+  destroy(): Promise<void>;
 }
 /** Selfie image files that must outlive the app cache until the punch is synced. */
 export interface SelfieFiles {
@@ -65,6 +68,11 @@ export function fileStore(name = 'punch-queue.json'): PersistentStore {
       }
       tmp.move(main); // moving the file removes .tmp, so a leftover .tmp always means an interrupted write
     },
+    async destroy() {
+      for (const n of [name, `${name}.tmp`, `${name}.bak`, `${name}.corrupt`]) {
+        try { const file = f(n); if (file.exists) file.delete(); } catch { /* best effort */ }
+      }
+    },
     async quarantine() {
       const main = f(name);
       if (!main.exists) return;
@@ -105,6 +113,7 @@ export function memoryStore(initial: string | null = null): PersistentStore & { 
     async readBackup() { return s.bak; },
     async readRecovery() { return [s.tmp, s.bak].filter((x): x is string => !!x); },
     async quarantine() { s.quarantined = s.data; s.data = null; },
+    async destroy() { s.data = null; s.bak = null; s.tmp = null; s.quarantined = null; },
   };
   return s;
 }

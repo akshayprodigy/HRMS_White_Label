@@ -216,6 +216,15 @@ describe('applyStatus (start/stop wiring)', () => {
     expect(await readMeta()).toBeNull();
     expect(await queue.size()).toBe(0);
   });
+  it('stopping leaves no tracking-meta backup (the old user id must not linger in .bak)', async () => {
+    const meta = memoryStore();
+    setMetaStore(meta);
+    await applyStatus(status(), 1, NOW);
+    await applyStatus(status(), 1, NOW); // second write: first becomes .bak
+    expect(meta.bak).not.toBeNull();
+    await stopTracking({ clear: true });
+    expect(meta).toMatchObject({ data: null, bak: null, tmp: null, quarantined: null });
+  });
 });
 
 describe('window-end heartbeat and safety net', () => {

@@ -12,9 +12,11 @@ jest.mock('../src/features/push/backgroundTask', () => ({ registerBackgroundTask
 jest.mock('../src/features/push/registration', () => ({ registerForPush: () => mockRegister(), unregisterPush: () => mockUnregister(), clearNotificationState: () => mockClear() }));
 let mockUser: { id: number } | null = { id: 1 };
 const mockHooks: (() => unknown)[] = [];
+const mockCleared: (() => unknown)[] = [];
 jest.mock('../src/auth/AuthProvider', () => ({
   useAuth: () => ({ user: mockUser }),
   onBeforeLogout: (fn: () => unknown) => { mockHooks.push(fn); return () => undefined; },
+  onSessionCleared: (fn: () => unknown) => { mockCleared.push(fn); return () => undefined; },
 }));
 const mockNavigate = jest.fn();
 let mockNavKey: string | undefined = 'k';
@@ -48,6 +50,7 @@ beforeEach(() => {
   mockLast = null;
   responseCb = null;
   mockHooks.length = 0;
+  mockCleared.length = 0;
   mockN.addPushTokenListener.mockImplementation(() => ({ remove: jest.fn() }));
   mockN.addNotificationResponseReceivedListener.mockImplementation((cb: (r: unknown) => void) => { responseCb = cb; return { remove: jest.fn() }; });
   mockN.getLastNotificationResponse.mockImplementation(() => mockLast);
@@ -76,6 +79,8 @@ describe('usePushLifecycle', () => {
     expect(mockN.addPushTokenListener).toHaveBeenCalled();
     await mockHooks[0]();
     expect(mockUnregister).toHaveBeenCalled();
+    expect(mockClear).not.toHaveBeenCalled(); // local teardown is registered for every session end instead
+    await mockCleared[0]();
     expect(mockClear).toHaveBeenCalled();
   });
   it('does not register while signed out', async () => {

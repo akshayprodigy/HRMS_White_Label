@@ -27,6 +27,16 @@ export function onBeforeLogout(fn: () => Promise<void> | void) {
   };
 }
 
+/** Local, non-network teardown that must run on EVERY session end (user logout and forced logout alike). */
+const sessionClearedHooks: (() => Promise<void> | void)[] = [];
+export function onSessionCleared(fn: () => Promise<void> | void) {
+  sessionClearedHooks.push(fn);
+  return () => {
+    const i = sessionClearedHooks.indexOf(fn);
+    if (i >= 0) sessionClearedHooks.splice(i, 1);
+  };
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const [user, setUser] = useState<Me | null>(null);
@@ -36,6 +46,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /** The single teardown path for both user logout and forced (refresh-failed) logout. */
   const clearSession = useCallback(async () => {
     setTokens(null);
+    for (const fn of [...sessionClearedHooks]) {
+      try { void Promise.resolve(fn()).catch(() => undefined); } catch { /* best effort, never blocks */ }
+    }
     sweepDownloads(); // payslips / Form 16 must not survive on a shared device
     await tokenStorage.clear().catch(() => undefined);
     queryClient.clear();
@@ -44,13 +57,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [queryClient]);
 
   const logout = useCallback(async () => {
-    for (const fn of [...beforeLogoutHooks]) {
-      try {
-        await fn();
-      } catch {
-        /* best effort */
-      }
-    }
+    // In parallel: a slow network hook (push unregister, ~8s worst case) must not delay stopping location tracking.
+    // Tokens are only cleared after all settle, so unregister still has valid credentials.
+    await Promise.allSettled([...beforeLogoutHooks].map(async (fn) => fn()));
     await clearSession();
   }, [clearSession]);
 

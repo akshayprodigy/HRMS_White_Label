@@ -3,7 +3,7 @@ import { act, render, waitFor } from '@testing-library/react-native';
 import axios from 'axios';
 import MockAdapter from 'axios-mock-adapter';
 import { setAdapter, setTokens, getTokens } from '../src/api/client';
-import { AuthProvider, useAuth, type AuthState } from '../src/auth/AuthProvider';
+import { AuthProvider, onBeforeLogout, onSessionCleared, useAuth, type AuthState } from '../src/auth/AuthProvider';
 import { tokenStorage } from '../src/auth/tokenStorage';
 
 jest.mock('../src/config/tenant', () => ({ getApiBaseUrl: () => 'http://test/api/v1' }));
@@ -126,5 +126,57 @@ describe('query cache is cleared on logout', () => {
     });
     await waitFor(() => expect(auth.user).toBeNull());
     expect(qc.getQueryData(['payslips'])).toBeUndefined();
+  });
+});
+
+describe('logout teardown', () => {
+  async function loggedIn() {
+    await tokenStorage.save({ accessToken: 'a', refreshToken: 'r' });
+    mock.onGet('/auth/me').reply(200, ME);
+    await mount();
+    await waitFor(() => expect(auth.user).not.toBeNull());
+  }
+
+  it('runs session-cleared teardown on forced logout too (notifications must not stay on the lock screen)', async () => {
+    const td = jest.fn();
+    const off = onSessionCleared(td);
+    await loggedIn();
+    mock.onGet('/boom').reply(401, {});
+    mock.onPost('/auth/refresh').reply(401, {});
+    const { api } = require('../src/api/client');
+    await act(async () => {
+      await api.get('/boom').catch(() => undefined);
+    });
+    await waitFor(() => expect(auth.user).toBeNull());
+    expect(td).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it('a throwing teardown does not break the logout', async () => {
+    const off = onSessionCleared(() => { throw new Error('x'); });
+    await loggedIn();
+    await act(async () => { await auth.logout(); });
+    expect(auth.user).toBeNull();
+    off();
+  });
+
+  it('user logout runs teardown once, and unregister-style hooks still see valid tokens while tracking stops without waiting for them', async () => {
+    const td = jest.fn();
+    const offT = onSessionCleared(td);
+    const events: string[] = [];
+    let slowDone = false;
+    const off1 = onBeforeLogout(async () => {
+      events.push(`slow:start:${getTokens()?.accessToken}`);
+      await new Promise((r) => setTimeout(r, 30));
+      slowDone = true;
+      events.push(`slow:end:${getTokens()?.accessToken}`);
+    });
+    const off2 = onBeforeLogout(async () => { events.push(`fast:slowDone=${slowDone}`); });
+    await loggedIn();
+    await act(async () => { await auth.logout(); });
+    expect(events).toEqual(['slow:start:a', 'fast:slowDone=false', 'slow:end:a']);
+    expect(getTokens()).toBeNull();
+    expect(td).toHaveBeenCalledTimes(1);
+    off1(); off2(); offT();
   });
 });

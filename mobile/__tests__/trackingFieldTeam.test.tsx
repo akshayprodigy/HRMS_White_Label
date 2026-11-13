@@ -109,6 +109,7 @@ describe('useFieldTeamAccess', () => {
     await mount(client);
     await new Promise((r) => setTimeout(r, 30));
     expect(mock.history.get).toHaveLength(1);
+    await cleanup(); // unmount first: an observer leaving a cleared client re-arms a gc timer that keeps the worker alive
     client.clear();
   });
   it('granted users are allowed', async () => {
@@ -116,6 +117,7 @@ describe('useFieldTeamAccess', () => {
     const client = new QueryClient();
     await mount(client);
     await waitFor(() => expect(screen.getByTestId('probe').props.children).toBe('true'));
+    await cleanup(); // unmount first: an observer leaving a cleared client re-arms a gc timer that keeps the worker alive
     client.clear();
   });
 });

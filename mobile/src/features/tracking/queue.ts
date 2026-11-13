@@ -116,7 +116,8 @@ export class PingQueue {
   clear(): Promise<void> {
     return this.run(async () => {
       this.state = { items: [], attempts: 0, nextAttemptAt: 0 };
-      await this.save();
+      // Delete, don't write an empty state: a write would turn the previous pings into the .bak copy.
+      await this.store.destroy();
     });
   }
 

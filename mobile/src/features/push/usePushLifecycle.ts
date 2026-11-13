@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import * as Notifications from 'expo-notifications';
 import { useRootNavigationState, useRouter } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { onBeforeLogout, useAuth } from '../../auth/AuthProvider';
+import { onBeforeLogout, onSessionCleared, useAuth } from '../../auth/AuthProvider';
 import { BROADCASTS_KEY } from '../broadcast/api';
 import { performNotificationAction, refreshAfterPush } from './actions';
 import { registerBackgroundTask } from './backgroundTask';
@@ -30,10 +30,9 @@ export function usePushLifecycle() {
   }, []);
 
   // Unregister BEFORE the tokens are cleared (AuthProvider runs these hooks first).
-  useEffect(() => onBeforeLogout(async () => {
-    await unregisterPush();
-    clearNotificationState();
-  }), []);
+  useEffect(() => onBeforeLogout(async () => { await unregisterPush(); }), []);
+  // Local teardown on every session end, including forced logout (which skips the before-logout hooks).
+  useEffect(() => onSessionCleared(() => clearNotificationState()), []);
 
   useEffect(() => {
     if (userId == null) return;
