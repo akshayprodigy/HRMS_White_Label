@@ -1,9 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect } from 'react';
 import { AppState } from 'react-native';
 import { onBeforeLogout, useAuth } from '../../auth/AuthProvider';
 import { fetchMyStatus, MY_STATUS_KEY, type MyStatus } from './api';
-import { applyStatus, flushPings, getPingQueue, stopTracking, type ApplyResult } from './tracking';
+import { applyStatus, enforceWindowEnd, flushPings, getPingQueue, stopTracking, type ApplyResult } from './tracking';
 import { decideTracking, nextCheckDelay } from './window';
 
 export function useMyTrackingStatus() {
@@ -18,6 +18,7 @@ export function useRecheckTracking() {
   const uid = user?.id ?? null;
   return useCallback(async (): Promise<ApplyResult | null> => {
     if (uid == null) return null;
+    await enforceWindowEnd().catch(() => false); // local check first: nothing may keep running past the window, even offline
     let status: MyStatus | undefined;
     try {
       status = await qc.fetchQuery({ queryKey: MY_STATUS_KEY, queryFn: fetchMyStatus, staleTime: 0 });
@@ -39,7 +40,11 @@ export function useRecheckTracking() {
  * KNOWN LIMITATION: there is no OS-level background start at window start. If the app is not running when a shift window
  * opens, tracking begins only once the app is opened (or foregrounded) during or before the window. Once started, the
  * Android foreground service / iOS background location keep it going and the headless task stops it at the window end.
- * Follow-up: schedule the start with expo-background-task.
+ * Android: a timeInterval heartbeat (<= 5 min) lets the headless task wake and stop itself after the window end (the
+ * distanceInterval filter may still suppress deliveries on a stationary device).
+ * iOS: a stationary device may keep the OS location session until the next app open; the server rejects pings outside the
+ * window, so no data is stored.
+ * Follow-up: schedule the start/stop with expo-background-task.
  *
  * Mounted ONCE inside the root layout: on sign-in, on foreground, and on a timer aimed at the next window boundary
  * (capped at 10 minutes so policy/consent changes are noticed). Also tears everything down on logout. */
@@ -48,7 +53,6 @@ export function useTrackingLifecycle() {
   const qc = useQueryClient();
   const recheck = useRecheckTracking();
   const uid = user?.id ?? null;
-  const running = useRef(false);
 
   // Logout: stop and erase BEFORE the tokens go (hook order is registration order; nothing here needs the network).
   useEffect(() => onBeforeLogout(async () => { await stopTracking({ clear: true }); }), []);
@@ -61,11 +65,12 @@ export function useTrackingLifecycle() {
       return;
     }
     let alive = true;
+    let running = false; // per effect instance: a user switch gets a fresh loop and its own timer
     let timer: ReturnType<typeof setTimeout> | undefined;
     const run = async () => {
-      if (running.current) return;
-      running.current = true;
-      try { await recheck(); } catch (e) { console.warn('[tracking] recheck failed', e instanceof Error ? e.message : e); } finally { running.current = false; }
+      if (running) return;
+      running = true;
+      try { await recheck(); } catch (e) { console.warn('[tracking] recheck failed', e instanceof Error ? e.message : e); } finally { running = false; }
       if (!alive) return;
       clearTimeout(timer);
       const now = Date.now();

@@ -49,6 +49,7 @@ export class PingQueue {
   private state: State | null = null;
   private tail: Promise<unknown> = Promise.resolve();
   private syncing = false;
+  private current: Promise<unknown> | null = null;
   private userId: number | null = null;
 
   constructor(private store: PersistentStore = memoryStore(), private now: () => number = Date.now) {}
@@ -121,12 +122,18 @@ export class PingQueue {
 
   async sync(deps: SyncDeps, opts: { force?: boolean } = {}): Promise<SyncOutcome> {
     const out: SyncOutcome = { skipped: null, sent: 0, accepted: 0, dropped: {}, failed: false, stop: null };
-    if (this.syncing) return { ...out, skipped: 'busy' };
+    // A forced sync (final flush at the window end, manual retry) must not be lost to an in-flight one: wait for it, then run.
+    while (this.syncing) {
+      if (!opts.force) return { ...out, skipped: 'busy' };
+      await this.current?.catch(() => undefined);
+    }
     this.syncing = true;
+    const p = this.run(() => this.doSync(deps, !!opts.force, out));
+    this.current = p;
     try {
-      return await this.run(() => this.doSync(deps, !!opts.force, out));
+      return await p;
     } finally {
-      this.syncing = false;
+      if (this.current === p) { this.syncing = false; this.current = null; }
     }
   }
 

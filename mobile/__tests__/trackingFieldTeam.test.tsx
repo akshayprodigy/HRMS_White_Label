@@ -90,3 +90,32 @@ describe('FieldTeamScreen', () => {
     await waitFor(() => expect(screen.queryByTestId('field-row-3')).toBeNull());
   });
 });
+
+describe('useFieldTeamAccess', () => {
+  const { QueryClient, QueryClientProvider } = require('@tanstack/react-query');
+  const { render, cleanup } = require('@testing-library/react-native');
+  const { Text } = require('react-native');
+  const { useFieldTeamAccess } = require('../src/features/tracking/FieldTeamScreen');
+  function Probe() { const { allowed } = useFieldTeamAccess(); return <Text testID="probe">{String(allowed)}</Text>; }
+  const mount = async (client: unknown) => render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>);
+
+  it('remembers a 403 for the session: remounting does not ask again', async () => {
+    mock.onGet('/tracking/field-now').reply(403, { detail: 'You have no roster scope.' });
+    const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
+    await mount(client);
+    await waitFor(() => expect(mock.history.get).toHaveLength(1));
+    expect(screen.getByTestId('probe').props.children).toBe('false');
+    await cleanup();
+    await mount(client);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(mock.history.get).toHaveLength(1);
+    client.clear();
+  });
+  it('granted users are allowed', async () => {
+    mock.onGet('/tracking/field-now').reply(200, board([]));
+    const client = new QueryClient();
+    await mount(client);
+    await waitFor(() => expect(screen.getByTestId('probe').props.children).toBe('true'));
+    client.clear();
+  });
+});

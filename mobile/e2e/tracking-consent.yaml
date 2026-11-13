@@ -9,7 +9,7 @@
 # Second half (automated): needs the employee to have a rostered shift whose window contains "now" (shift +/- 30 min UTC).
 # It sets the simulator location, waits for the foreground watcher / task to upload, then runs field-now-ping.js, which
 # logs in as HR over the API and asserts the employee row has a ping. Run with:
-#   maestro test -e HR_EMAIL=<hr> -e HR_PASSWORD=<pw> [-e API_BASE=http://localhost:8005/api/v1] [-e EMPLOYEE_EMAIL=employee@gmail.com] e2e/tracking-consent.yaml
+#   maestro test -e HR_EMAIL=<hr> -e HR_PASSWORD=<pw> [-e API_BASE=http://localhost:8005/api/v1] [-e EMPLOYEE_EMAIL=employee@gmail.com] [-e EMPLOYEE_PASSWORD=test@12345] e2e/tracking-consent.yaml
 appId: com.innocore.hrms.dev
 ---
 - runFlow: _login.yaml

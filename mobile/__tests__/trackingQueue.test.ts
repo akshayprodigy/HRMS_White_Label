@@ -181,6 +181,25 @@ describe('validation-shaped statuses (400/413/422)', () => {
   });
 });
 
+describe('forced sync while another is in flight', () => {
+  it('waits for the in-flight sync and then runs, instead of skipping as busy', async () => {
+    const { q } = mk();
+    await q.enqueue(many(2));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const first = q.sync({ postPings: async (p) => { await gate; return ok(p.length); } });
+    const late = q.enqueue([ping(60)]); // a final in-window ping arrives while the first upload is running (queued behind it)
+    const forced = q.sync({ postPings: async (p) => ok(p.length) }, { force: true });
+    release();
+    expect((await first).accepted).toBe(2);
+    await late;
+    const out = await forced;
+    expect(out.skipped).toBeNull();
+    expect(out.accepted).toBe(1);
+    expect(await q.size()).toBe(0);
+  });
+});
+
 describe('guards', () => {
   it('skips when nobody is signed in, and is single-flight', async () => {
     const q = new PingQueue(memoryStore(), () => clock);

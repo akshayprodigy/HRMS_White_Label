@@ -8,7 +8,7 @@ import { useTheme } from '../../theme';
 import { deleteMyData, giveConsent, MY_STATUS_KEY, revokeConsent } from './api';
 import { MyHistory } from './MyHistory';
 import { useMyTrackingStatus, useRecheckTracking } from './hooks';
-import { getPermissionLevel, requestPermissions, stopTracking, type PermissionLevel } from './tracking';
+import { beginRevoke, endRevoke, getPermissionLevel, requestPermissions, stopTracking, type PermissionLevel } from './tracking';
 import { decideTracking, type Decision } from './window';
 
 export const CONSENT_POINTS = [
@@ -86,8 +86,16 @@ export function ConsentScreen() {
         text: 'Revoke consent',
         style: 'destructive',
         onPress: () => void act('revoke', async () => {
-          await stopTracking({ clear: true }); // local first: nothing more may leave the phone even if the call fails
-          await revokeConsent();
+          beginRevoke(); // the lifecycle must not restart tracking on the stale "consented" status meanwhile
+          try {
+            await stopTracking({ clear: true }); // local first: nothing more may leave the phone even if the call fails
+            await revokeConsent();
+          } finally {
+            endRevoke();
+            // Success: status now says not consented, so everything stays off. Failure: consent is still active, so
+            // tracking resumes legitimately. Either way the device is made to match the server.
+            await recheck().catch(() => null);
+          }
         }),
       },
     ],

@@ -14,16 +14,25 @@ const REFRESH_MS = 60_000;
 const isScopeError = (e: unknown) => e instanceof ApiError && e.status === 403;
 const shiftText = (r: FieldRow) => (r.shift_name ? `${r.shift_name} ${r.start_hhmm ?? ''}-${r.end_hhmm ?? ''}` : 'No shift today');
 
-/** Whether the signed-in user may see the field team: the backend answers 403 when they have no roster scope.
- * Shares the cache with the screen, so opening it afterwards is instant. */
+/** Whether the signed-in user may see the field team: the backend answers 403 when they have no roster scope. */
 export function useFieldTeamAccess() {
   const q = useQuery({
-    queryKey: [...FIELD_NOW_KEY, ''],
-    queryFn: () => fetchFieldNow(),
-    staleTime: REFRESH_MS,
-    retry: (n, e) => !isScopeError(e) && n < 1,
+    queryKey: [...FIELD_NOW_KEY, 'access'],
+    // A 403 is an answer, not an error: stored as {allowed:false} and never re-asked this session (queryClient.clear on
+    // logout resets it). field-now has no limit parameter, so a granted probe still reads the board; cached for 5 minutes.
+    queryFn: async () => {
+      try {
+        await fetchFieldNow();
+        return { allowed: true };
+      } catch (e) {
+        if (isScopeError(e)) return { allowed: false };
+        throw e;
+      }
+    },
+    staleTime: (query) => (query.state.data?.allowed === false ? Infinity : 5 * 60_000),
+    retry: 1,
   });
-  return { allowed: !!q.data, checking: q.isPending };
+  return { allowed: q.data?.allowed === true, checking: q.isPending };
 }
 
 export function FieldTeamScreen() {

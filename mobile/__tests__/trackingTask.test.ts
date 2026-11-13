@@ -5,12 +5,13 @@ import { tokenStorage } from '../src/auth/tokenStorage';
 import { memoryStore } from '../src/features/punch/store';
 import type { MyStatus } from '../src/features/tracking/api';
 import { PingQueue } from '../src/features/tracking/queue';
-import { applyStatus, handleLocations, LOCATION_TASK, readMeta, setMetaStore, setPingQueue, stopTracking, toWirePings } from '../src/features/tracking/tracking';
+import { applyStatus, beginRevoke, endRevoke, enforceWindowEnd, flushPings, HEARTBEAT_MS, OUTSIDE_WINDOW_COOLDOWN_MS, resetTrackingForTests, handleLocations, LOCATION_TASK, readMeta, setMetaStore, setPingQueue, stopTracking, toWirePings } from '../src/features/tracking/tracking';
 import '../src/features/tracking/task';
 
 jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ id: 'dev' }), getApiBaseUrl: () => 'http://test/api/v1' }));
 // defineTask runs at import time, before module-level consts exist: record on globalThis.
 jest.mock('expo-task-manager', () => ({ defineTask: (...a: unknown[]) => ((globalThis as { __tasks?: unknown[][] }).__tasks ??= []).push(a) }));
+jest.mock('expo-notifications', () => ({ getPermissionsAsync: async () => ({ granted: true }), requestPermissionsAsync: async () => ({ granted: true }) }));
 const mockLoc = {
   started: false,
   fg: { granted: true } as { granted: boolean },
@@ -51,6 +52,7 @@ beforeEach(async () => {
   await tokenStorage.save({ accessToken: 'stored-a', refreshToken: 'stored-r' });
   await tokenStorage.saveMe({ id: 1 });
   setMetaStore(memoryStore());
+  resetTrackingForTests();
   queue = new PingQueue(memoryStore());
   setPingQueue(queue);
   mockLoc.started = false;
@@ -156,7 +158,7 @@ describe('applyStatus (start/stop wiring)', () => {
     const r = await applyStatus(status({ interval_seconds: 600, distance_filter_m: 250 }), 1, NOW);
     expect(r).toEqual({ running: true, mode: 'background', reason: 'in_window' });
     expect(mockLoc.start).toHaveBeenCalledWith(LOCATION_TASK, expect.objectContaining({
-      accuracy: 3, distanceInterval: 250, deferredUpdatesInterval: 600_000, timeInterval: 600_000,
+      accuracy: 3, distanceInterval: 250, deferredUpdatesInterval: 600_000, timeInterval: HEARTBEAT_MS,
       foregroundService: expect.objectContaining({ notificationTitle: 'Shift location sharing on' }),
     }));
     expect(await readMeta()).toMatchObject({ user_id: 1, window_end: END, mode: 'background' });
@@ -213,5 +215,71 @@ describe('applyStatus (start/stop wiring)', () => {
     expect(mockLoc.started).toBe(false);
     expect(await readMeta()).toBeNull();
     expect(await queue.size()).toBe(0);
+  });
+});
+
+describe('window-end heartbeat and safety net', () => {
+  it('caps the Android timeInterval heartbeat at 5 minutes but honours a shorter policy interval', async () => {
+    await applyStatus(status({ interval_seconds: 3600 }), 1, NOW);
+    expect((mockLoc.start.mock.calls[0] as unknown[])[1]).toMatchObject({ timeInterval: 300_000, deferredUpdatesInterval: 3_600_000 });
+    await applyStatus(status({ interval_seconds: 60 }), 1, NOW);
+    expect((mockLoc.start.mock.calls[1] as unknown[])[1]).toMatchObject({ timeInterval: 60_000 });
+  });
+  it('enforceWindowEnd stops a session still running past the window end, before any network call', async () => {
+    await applyStatus(status(), 1, NOW);
+    expect(await enforceWindowEnd(NOW)).toBe(false);
+    expect(mockLoc.started).toBe(true);
+    expect(await enforceWindowEnd(END + 1000)).toBe(true);
+    expect(mockLoc.started).toBe(false);
+    expect(await readMeta()).toBeNull();
+    expect(mock.history).toMatchObject({ get: [], post: [] });
+  });
+  it('enforceWindowEnd also stops a native session whose meta is gone', async () => {
+    mockLoc.started = true;
+    expect(await enforceWindowEnd(NOW)).toBe(true);
+    expect(mockLoc.started).toBe(false);
+  });
+});
+
+describe('start failure, revoke race, outside_window cooldown', () => {
+  it('a failed start does not leave meta behind', async () => {
+    mockLoc.start.mockRejectedValueOnce(new Error('boom'));
+    await expect(applyStatus(status(), 1, NOW)).rejects.toThrow('boom');
+    expect(await readMeta()).toBeNull();
+  });
+  it('does not (re)start tracking while a revoke is in flight, and resumes after it ends', async () => {
+    beginRevoke();
+    expect(await applyStatus(status(), 1, NOW)).toMatchObject({ running: false, reason: 'revoking' });
+    expect(mockLoc.start).not.toHaveBeenCalled();
+    endRevoke();
+    expect((await applyStatus(status(), 1, NOW)).running).toBe(true);
+  });
+  it('revoke interleaving: stale consented status arriving mid-revoke cannot restart; the fresh one keeps it off', async () => {
+    await applyStatus(status(), 1, NOW);
+    beginRevoke();
+    await stopTracking({ clear: true });
+    await applyStatus(status(), 1, NOW + 1000); // lifecycle tick with the stale status
+    expect(mockLoc.started).toBe(false);
+    endRevoke();
+    await applyStatus(status({ consented: false }), 1, NOW + 2000);
+    expect(mockLoc.started).toBe(false);
+    expect(mockLoc.start).toHaveBeenCalledTimes(1);
+  });
+  it('after the server rejects pings as outside_window, restart is blocked for 5 minutes', async () => {
+    await applyStatus(status(), 1, NOW);
+    queue.setUser(1);
+    await queue.enqueue(toWirePings([loc(NOW)]));
+    mock.onPost('/tracking/pings').reply(200, { accepted: 0, dropped: { outside_window: 1 } });
+    setTokens({ accessToken: 't', refreshToken: 'r' });
+    const real = Date.now;
+    Date.now = () => NOW;
+    try {
+      await flushPings();
+      expect(mockLoc.started).toBe(false);
+      expect(await applyStatus(status(), 1, NOW + 60_000)).toMatchObject({ running: false, reason: 'cooling_down' });
+      expect((await applyStatus(status(), 1, NOW + OUTSIDE_WINDOW_COOLDOWN_MS + 1)).running).toBe(true);
+    } finally {
+      Date.now = real;
+    }
   });
 });

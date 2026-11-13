@@ -1,4 +1,6 @@
 import * as Location from 'expo-location';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 import { getTokens, setTokens } from '../../api/client';
 import { tokenStorage } from '../../auth/tokenStorage';
 import { fileStore, memoryStore, type PersistentStore } from '../punch/store';
@@ -7,6 +9,7 @@ import { PingQueue, type SyncOutcome } from './queue';
 import { decideTracking, type Decision } from './window';
 
 export const LOCATION_TASK = 'hrms-shift-location-task';
+export const HEARTBEAT_MS = 5 * 60_000;
 export const FOREGROUND_NOTIFICATION = {
   notificationTitle: 'Shift location sharing on',
   notificationBody: 'Your location is shared with your scheduler during your rostered shift.',
@@ -48,9 +51,21 @@ export async function getPermissionLevel(): Promise<PermissionLevel> {
   const bg = await Location.getBackgroundPermissionsAsync().catch(() => null);
   return bg?.granted ? 'background' : 'foreground';
 }
+/** Android 13+: the foreground-service notification ("Shift location sharing on") needs POST_NOTIFICATIONS, otherwise the
+ * service runs invisibly. Push registration asks too, but only on a device with a project id and after a rationale, so the
+ * consent flow makes sure. Never throws. */
+export async function ensureNotificationPermission(): Promise<void> {
+  if (Platform.OS !== 'android' || Number(Platform.Version) < 33) return;
+  try {
+    const cur = await Notifications.getPermissionsAsync();
+    if (!cur.granted && cur.canAskAgain) await Notifications.requestPermissionsAsync();
+  } catch { /* the service still works; only its notification is hidden */ }
+}
+
 /** Foreground first (the OS requires that order), then background ("Allow all the time" / "Always"). Call only after the
  * explanation screen. A denied background step is fine: tracking then runs only while the app is open. */
 export async function requestPermissions(): Promise<PermissionLevel> {
+  await ensureNotificationPermission();
   const fg = await Location.requestForegroundPermissionsAsync();
   if (!fg.granted) return 'none';
   const bg = await Location.requestBackgroundPermissionsAsync().catch(() => null);
@@ -60,6 +75,15 @@ export async function requestPermissions(): Promise<PermissionLevel> {
 // --- start / stop --------------------------------------------------------------------------------------------------
 
 let fgSub: { remove(): void } | null = null;
+/** >0 while a consent revoke is in flight: the lifecycle must not (re)start tracking on a stale "consented" status. */
+let revoking = 0;
+export function beginRevoke() { revoking += 1; }
+export function endRevoke() { revoking = Math.max(0, revoking - 1); }
+/** After the server rejects pings as outside the window, do not restart for a while (clock skew would flap). */
+export const OUTSIDE_WINDOW_COOLDOWN_MS = 5 * 60_000;
+let restartBlockedUntil = 0;
+/** Test hook. */
+export function resetTrackingForTests() { revoking = 0; restartBlockedUntil = 0; fgSub = null; starting = Promise.resolve(); }
 let starting: Promise<unknown> = Promise.resolve();
 
 async function stopNative() {
@@ -76,13 +100,25 @@ export function stopTracking(opts: { clear?: boolean } = {}): Promise<void> {
   const p = starting.then(async () => {
     await stopNative();
     await writeMeta(null);
-    if (opts.clear) await getPingQueue().clear();
+    if (opts.clear) { restartBlockedUntil = 0; await getPingQueue().clear(); }
   });
   starting = p.catch(() => undefined);
   return p;
 }
 
-export type ApplyResult = { running: boolean; mode: 'background' | 'foreground' | null; reason: Decision['reason'] | 'no_permission' };
+export type ApplyResult = { running: boolean; mode: 'background' | 'foreground' | null; reason: Decision['reason'] | 'no_permission' | 'revoking' | 'cooling_down' };
+
+/** Local-only safety net, run before any network on app start / foreground: if updates are still running (or meta is gone)
+ * after the window ended, stop them now. */
+export async function enforceWindowEnd(now: number = Date.now()): Promise<boolean> {
+  const m = await readMeta();
+  const native = fgSub != null || (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK).catch(() => false));
+  if (m ? now > m.window_end : native) {
+    await stopTracking();
+    return true;
+  }
+  return false;
+}
 
 /** Make the device match the decision for `status` at `now`. Idempotent. */
 export function applyStatus(status: MyStatus | null | undefined, userId: number, now: number = Date.now()): Promise<ApplyResult> {
@@ -100,6 +136,8 @@ async function doApply(status: MyStatus | null | undefined, userId: number, now:
     if (d.reason === 'disabled' || d.reason === 'no_consent') await getPingQueue().clear();
     return { running: false, mode: null, reason: d.reason };
   }
+  if (revoking > 0) { await stopNative(); await writeMeta(null); return { running: false, mode: null, reason: 'revoking' }; }
+  if (now < restartBlockedUntil) { await stopNative(); await writeMeta(null); return { running: false, mode: null, reason: 'cooling_down' }; }
   const level = await getPermissionLevel();
   if (level === 'none') {
     await stopNative();
@@ -115,11 +153,12 @@ async function doApply(status: MyStatus | null | undefined, userId: number, now:
   if (running && same) return { running: true, mode, reason: 'in_window' };
   await stopNative();
   const ms = next.interval_seconds * 1000;
+  try {
   if (mode === 'background') {
     await Location.startLocationUpdatesAsync(LOCATION_TASK, {
       accuracy: Location.Accuracy.Balanced, // battery-aware: no continuous GPS
       distanceInterval: next.distance_filter_m,
-      timeInterval: ms, // Android
+      timeInterval: Math.min(ms, HEARTBEAT_MS), // Android only: also a heartbeat so the task wakes (and stops itself) after the window end
       deferredUpdatesInterval: ms, // batch deliveries to the JS side
       deferredUpdatesDistance: next.distance_filter_m,
       pausesUpdatesAutomatically: true, // iOS: pause when stationary
@@ -132,6 +171,10 @@ async function doApply(status: MyStatus | null | undefined, userId: number, now:
       { accuracy: Location.Accuracy.Balanced, distanceInterval: next.distance_filter_m, timeInterval: ms },
       (loc) => void handleLocations({ locations: [loc] }).catch(() => undefined),
     );
+  }
+  } catch (e) {
+    await writeMeta(null); // meta was written first (a fix can arrive immediately); a failed start must not leave it behind
+    throw e;
   }
   return { running: true, mode, reason: 'in_window' };
 }
@@ -160,7 +203,7 @@ export async function flushPings(opts: { force?: boolean } = {}): Promise<SyncOu
   const q = getPingQueue();
   const out = await q.sync({ postPings }, opts);
   if (out.stop === 'no_consent' || out.stop === 'not_required') await stopTracking({ clear: true });
-  else if (out.stop === 'outside_window') await stopTracking();
+  else if (out.stop === 'outside_window') { restartBlockedUntil = Date.now() + OUTSIDE_WINDOW_COOLDOWN_MS; await stopTracking(); }
   return out;
 }
 

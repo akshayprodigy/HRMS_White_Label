@@ -11,6 +11,7 @@ jest.mock('../src/auth/AuthProvider', () => ({ useAuth: () => ({ user: { id: 1, 
 jest.mock('react-native-maps', () => ({ __esModule: true, default: () => null, Marker: () => null, Polyline: () => null }));
 const mockTracking: { perm: 'none' | 'foreground' | 'background'; [k: string]: any } = { // eslint-disable-line @typescript-eslint/no-explicit-any
   perm: 'foreground',
+  order: [] as string[],
   getPermissionLevel: jest.fn(async () => mockTracking.perm),
   requestPermissions: jest.fn(async () => mockTracking.perm),
   stopTracking: jest.fn(async () => undefined),
@@ -25,6 +26,9 @@ jest.mock('../src/features/tracking/tracking', () => ({
   applyStatus: () => mockTracking.applyStatus(),
   flushPings: () => mockTracking.flushPings(),
   getPingQueue: () => mockTracking.getPingQueue(),
+  enforceWindowEnd: async () => false,
+  beginRevoke: () => mockTracking.order.push('begin'),
+  endRevoke: () => mockTracking.order.push('end'),
 }));
 
 const iso = (d: Date) => d.toISOString();
@@ -38,6 +42,7 @@ let mock: MockAdapter;
 beforeEach(() => {
   mock = setupApiMock();
   mockTracking.perm = 'foreground';
+  mockTracking.order = [];
   jest.clearAllMocks();
 });
 afterEach(teardownApiMock);
@@ -132,6 +137,20 @@ describe('ConsentScreen', () => {
     await waitFor(() => expect(screen.getByTestId('tracking-agree')).toBeTruthy());
     expect(mockTracking.stopTracking).toHaveBeenCalledWith({ clear: true });
     expect(mock.history.delete.filter((r) => r.url === '/tracking/consent')).toHaveLength(1);
+    expect(mockTracking.order).toEqual(['begin', 'end']);
+    expect(mockTracking.applyStatus).toHaveBeenCalled(); // re-applied after the revoke settles
+  });
+
+  it('a failed revoke still ends the revoke window and re-applies the (still consented) status', async () => {
+    const spy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    mock.onGet('/tracking/my-status').reply(200, st({ consented: true, active: true }));
+    mock.onDelete('/tracking/consent').reply(500);
+    await renderWithProviders(<ConsentScreen />);
+    await fireEvent(await screen.findByTestId('tracking-switch'), 'valueChange', false);
+    pressAlert(spy, 'Revoke consent');
+    expect(await screen.findByTestId('tracking-msg-error')).toBeTruthy();
+    expect(mockTracking.order).toEqual(['begin', 'end']);
+    expect(mockTracking.applyStatus).toHaveBeenCalled();
   });
 
   it('cancelling the revoke prompt changes nothing', async () => {
