@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type MockAdapter from 'axios-mock-adapter';
 import { LeaveScreen } from '../src/features/leave/LeaveScreen';
 import { GATE_BODY, renderWithProviders, setupApiMock, teardownApiMock } from '../test-utils';
@@ -108,7 +108,7 @@ describe('apply form', () => {
     await fill({ type: 2, start: '2026-11-11', end: '2026-11-14', reason: 'Fever' });
     expect(screen.getByTestId('proof-deferred')).toBeTruthy();
     await fireEvent.press(screen.getByTestId('submit-leave'));
-    expect(await screen.findByTestId('leave-notice')).toHaveTextContent(/Upload your proof by 2026-11-17/);
+    expect(await screen.findByTestId('leave-notice')).toHaveTextContent(/Upload your proof by 17 Nov/);
     expect(JSON.parse(applyPosts()[0].data)).toMatchObject({ is_emergency: true, start_date: '2026-11-11', attachment_url: null });
   });
   it('shows the server back-date window rejection', async () => {
@@ -149,7 +149,7 @@ describe('proof + cancel', () => {
     mock.onPost('/leave/attachments').reply(200, { attachment_url: 'zzz.pdf' });
     mock.onPost('/leave/30/proof').reply(200, { ...owed, proof_submitted_at: '2026-11-13T00:00:00' });
     await renderWithProviders(<LeaveScreen now={NOW} />);
-    expect(await screen.findByTestId('proof-due-30')).toHaveTextContent('Proof due by 2026-11-16');
+    expect(await screen.findByTestId('proof-due-30')).toHaveTextContent('Proof due by 16 Nov');
     mock.onGet('/leave/my').reply(200, [{ ...owed, proof_submitted_at: '2026-11-13T00:00:00' }]);
     await fireEvent.press(screen.getByTestId('proof-30-file'));
     await waitFor(() => expect(mock.history.post.some((r) => r.url === '/leave/30/proof')).toBe(true));
@@ -182,5 +182,52 @@ describe('proof + cancel', () => {
     await fireEvent.press(await screen.findByTestId('cancel-40'));
     await fireEvent.press(screen.getByTestId('cancel-confirm-40'));
     expect(await screen.findByTestId('leave-error-40')).toHaveTextContent(/Cannot cancel/);
+  });
+});
+
+describe('guards', () => {
+  const uploads = () => mock.history.post.filter((r) => r.url === '/leave/attachments');
+
+  it('drops the attachment when the type changes so a hidden invalid file cannot block or leak into submit', async () => {
+    mockDoc.mockResolvedValue({ canceled: false, assets: [{ uri: 'file:///bad.doc', name: 'bad.doc', mimeType: 'application/msword', size: 10 }] });
+    mock.onPost('/leave/apply').reply(200, lr({ id: 50 }));
+    await open();
+    await fill({ type: 2, start: '2026-11-16', end: '2026-11-18', reason: 'Fever' });
+    await fireEvent.press(screen.getByTestId('attach-file'));
+    expect(await screen.findByTestId('attachment-name')).toHaveTextContent('bad.doc');
+    await fireEvent.press(screen.getByTestId('type-1')); // Casual: no certificate rule
+    expect(screen.queryByTestId('attachment-name')).toBeNull();
+    await fireEvent.press(screen.getByTestId('submit-leave'));
+    await waitFor(() => expect(applyPosts()).toHaveLength(1));
+    expect(uploads()).toHaveLength(0);
+    expect(JSON.parse(applyPosts()[0].data).attachment_url).toBeNull();
+  });
+
+  it('a double tap submits once', async () => {
+    mock.onPost('/leave/apply').reply(() => new Promise((res) => setTimeout(() => res([200, lr({ id: 51 })]), 20)));
+    await open();
+    await fill({ type: 1, start: '2026-11-16', end: '2026-11-16', reason: 'x' });
+    const btn = screen.getByTestId('submit-leave');
+    await act(async () => { void fireEvent.press(btn); void fireEvent.press(btn); }); // both taps land before any re-render can disable the button
+    await screen.findByTestId('leave-notice');
+    expect(applyPosts()).toHaveLength(1);
+  });
+
+  it('retrying after a failed apply reuses the uploaded attachment', async () => {
+    mockPerm.mockResolvedValue({ granted: true });
+    mockCamera.mockResolvedValue({ canceled: false, assets: [{ uri: 'file:///c.jpg', fileName: 'c.jpg', mimeType: 'image/jpeg', fileSize: 2000 }] });
+    mock.onPost('/leave/attachments').reply(200, { attachment_url: 'abc123.jpg' });
+    mock.onPost('/leave/apply').replyOnce(400, { detail: 'Insufficient leave balance' }).onPost('/leave/apply').reply(200, lr({ id: 52 }));
+    await open();
+    await fill({ type: 2, start: '2026-11-16', end: '2026-11-18', reason: 'Fever' });
+    await fireEvent.press(screen.getByTestId('attach-camera'));
+    await screen.findByTestId('attachment-name');
+    await fireEvent.press(screen.getByTestId('submit-leave'));
+    expect(await screen.findByTestId('apply-error')).toHaveTextContent(/Insufficient/);
+    await fireEvent.press(screen.getByTestId('submit-leave'));
+    await screen.findByTestId('leave-notice');
+    expect(uploads()).toHaveLength(1);
+    expect(applyPosts()).toHaveLength(2);
+    expect(JSON.parse(applyPosts()[1].data).attachment_url).toBe('abc123.jpg');
   });
 });

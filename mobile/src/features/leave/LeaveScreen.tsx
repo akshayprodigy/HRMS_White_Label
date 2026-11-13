@@ -59,7 +59,7 @@ function RequestCard({ r }: { r: LeaveRequest }) {
 
       {owed ? (
         <View style={{ gap: 8 }}>
-          <Badge testID={`proof-due-${r.id}`} tone="danger" label={`Proof due by ${r.proof_due_date}`} />
+          <Badge testID={`proof-due-${r.id}`} tone="danger" label={`Proof due by ${fmtUtcDate(r.proof_due_date)}`} />
           {proof.isPending ? <Text muted testID={`proof-uploading-${r.id}`}>Uploading proof…</Text> : <ProofPicker testIDPrefix={`proof-${r.id}`} onPick={(f) => void upload(f)} />}
         </View>
       ) : null}
@@ -117,8 +117,8 @@ export function LeaveScreen({ now }: { now?: () => Date } = {}) {
         {(balances.data ?? []).map((b) => (
           <Card key={b.leave_type.id} testID={`balance-${b.leave_type.id}`} style={{ minWidth: 140, flexGrow: 1 }}>
             <Text size={12} weight="600" muted numberOfLines={1}>{b.leave_type.name}</Text>
-            <Text size={24} weight="700">{b.remaining.toFixed(1)}</Text>
-            <Text size={12} muted>{`of ${b.total.toFixed(1)} days`}</Text>
+            <Text size={24} weight="700">{(b.remaining ?? 0).toFixed(1)}</Text>
+            <Text size={12} muted>{`of ${(b.total ?? 0).toFixed(1)} days`}</Text>
           </Card>
         ))}
       </View>

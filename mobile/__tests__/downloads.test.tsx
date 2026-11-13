@@ -1,9 +1,11 @@
+import { Platform } from 'react-native';
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type MockAdapter from 'axios-mock-adapter';
 import { DocumentsScreen } from '../src/features/documents/DocumentsScreen';
 import { PayslipsScreen } from '../src/features/payslips/PayslipsScreen';
 import { fmtRupees, monthLabel, payslipFileName } from '../src/features/payslips/api';
-import { downloadAndShare, downloadToCache, mimeForName, safeFileName } from '../src/lib/download';
+import { getTokens } from '../src/api/client';
+import { downloadAndShare, downloadToCache, mimeForName, safeFileName, sweepDownloads } from '../src/lib/download';
 import { GATE_BODY, renderWithProviders, setupApiMock, teardownApiMock } from '../test-utils';
 
 jest.mock('../src/config/tenant', () => ({
@@ -18,8 +20,10 @@ const mockDownload = jest.fn();
 const mockDelete = jest.fn();
 const mockShare = jest.fn();
 const mockAvailable = jest.fn();
+const mockList = jest.fn();
+const mockItemDelete = jest.fn();
 jest.mock('expo-file-system', () => {
-  class Directory { create = jest.fn(); }
+  class Directory { create = jest.fn(); exists = true; list = () => mockList(); }
   class File {
     uri: string; name: string;
     constructor(_dir: unknown, name: string) { this.name = name; this.uri = `file:///cache/downloads/${name}`; }
@@ -35,6 +39,8 @@ beforeEach(() => {
   mock = setupApiMock();
   mockDownload.mockReset(); mockDelete.mockReset(); mockShare.mockReset(); mockAvailable.mockReset();
   mockAvailable.mockResolvedValue(true);
+  mockList.mockReset(); mockItemDelete.mockReset(); mockList.mockReturnValue([]);
+  Platform.OS = 'ios';
   mockDownload.mockImplementation(async (_u: string, dest: { name: string; uri: string }) => dest);
   mockShare.mockResolvedValue(undefined);
   mock.onGet('/attendance/today').reply(200, { is_marked: true, attendance: null });
@@ -45,6 +51,9 @@ describe('helpers', () => {
   it('sanitises file names and guesses mime types', () => {
     expect(safeFileName('../../etc/pass wd.pdf', 'x')).toBe('etc_pass_wd.pdf');
     expect(safeFileName('///', 'x')).toBe('x');
+    const long = safeFileName(`${'a'.repeat(120)}.pdf`, 'x');
+    expect(long).toHaveLength(80);
+    expect(long.endsWith('.pdf')).toBe(true);
     expect(mimeForName('a.PDF')).toBe('application/pdf');
     expect(mimeForName('a.bin')).toBe('application/octet-stream');
   });
@@ -56,6 +65,47 @@ describe('helpers', () => {
 });
 
 describe('downloadToCache / downloadAndShare', () => {
+  it('sweeps leftovers before every download', async () => {
+    mockList.mockReturnValue([{ delete: mockItemDelete }, { delete: mockItemDelete }]);
+    await downloadToCache('/x', 'a.pdf');
+    expect(mockItemDelete).toHaveBeenCalledTimes(2);
+  });
+  it('removes a partial file when the download fails', async () => {
+    mockDownload.mockRejectedValueOnce(new Error('Network request failed'));
+    await expect(downloadToCache('/x', 'part.pdf')).rejects.toBeTruthy();
+    expect(mockDelete).toHaveBeenCalledWith('part.pdf');
+  });
+  it('logs out when the refresh proves the session dead', async () => {
+    mock.onPost('/auth/refresh').reply(401, { detail: 'expired' });
+    mockDownload.mockRejectedValueOnce(new Error('Unable to download file: HTTP 401'));
+    await expect(downloadToCache('/x', 'a.pdf')).rejects.toMatchObject({ status: 401 });
+    expect(getTokens()).toBeNull();
+  });
+  it('keeps the session when the refresh fails on the network', async () => {
+    mock.onPost('/auth/refresh').networkError();
+    mockDownload.mockRejectedValueOnce(new Error('Unable to download file: HTTP 401'));
+    await expect(downloadToCache('/x', 'a.pdf')).rejects.toMatchObject({ code: 'network_error' });
+    expect(getTokens()).not.toBeNull();
+  });
+  it('deletes after share on iOS but leaves the file for the sweep on Android', async () => {
+    await downloadAndShare('/x', 'ios.pdf');
+    expect(mockDelete).toHaveBeenCalledWith('ios.pdf');
+    mockDelete.mockClear();
+    Platform.OS = 'android';
+    await downloadAndShare('/x', 'and.pdf');
+    expect(mockShare).toHaveBeenCalledTimes(2);
+    expect(mockDelete).not.toHaveBeenCalled();
+    mockShare.mockRejectedValueOnce(new Error('boom'));
+    await expect(downloadAndShare('/x', 'and2.pdf')).rejects.toThrow('boom');
+    expect(mockDelete).toHaveBeenCalledWith('and2.pdf'); // failures are still cleaned up
+  });
+  it('sweepDownloads empties the directory and never throws', () => {
+    mockList.mockReturnValue([{ delete: mockItemDelete }, { delete: () => { throw new Error('x'); } }, { delete: mockItemDelete }]);
+    expect(() => sweepDownloads()).not.toThrow();
+    expect(mockItemDelete).toHaveBeenCalledTimes(2);
+    mockList.mockImplementation(() => { throw new Error('gone'); });
+    expect(() => sweepDownloads()).not.toThrow();
+  });
   it('sends the bearer token to the API base URL', async () => {
     await downloadToCache('/hr/payroll/payslips/3/download', 'Payslip_2026_03.pdf');
     expect(mockDownload).toHaveBeenCalledWith('http://test/api/v1/hr/payroll/payslips/3/download', expect.objectContaining({ name: 'Payslip_2026_03.pdf' }), expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer t' }), idempotent: true }));

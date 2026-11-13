@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { fetchMe, loginRequest, normalizeError, setLogoutHandler, setTokens, type Me } from '../api/client';
+import { sweepDownloads } from '../lib/download';
 import { tokenStorage } from './tokenStorage';
 
 export type AuthState = {
@@ -35,6 +36,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /** The single teardown path for both user logout and forced (refresh-failed) logout. */
   const clearSession = useCallback(async () => {
     setTokens(null);
+    sweepDownloads(); // payslips / Form 16 must not survive on a shared device
     await tokenStorage.clear().catch(() => undefined);
     queryClient.clear();
     setUser(null);

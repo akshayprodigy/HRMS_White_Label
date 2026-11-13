@@ -1,13 +1,18 @@
 import { Directory, File, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
 import * as Sharing from 'expo-sharing';
-import { getTokens, refreshAccessToken } from '../api/client';
-import { ApiError, MSG_NETWORK, MSG_SERVER } from '../api/errors';
+import { forceLogout, getTokens, refreshAccessToken, SESSION_DEAD } from '../api/client';
+import { ApiError, MSG_NETWORK, MSG_SERVER, normalizeError } from '../api/errors';
 import { getApiBaseUrl } from '../config/tenant';
 
 /** Strips path separators and odd characters so a server-supplied name can never escape the cache dir. */
 export function safeFileName(name: string, fallback: string): string {
-  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._]+/, '').slice(0, 80);
-  return cleaned || fallback;
+  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._]+/, '');
+  if (!cleaned) return fallback;
+  if (cleaned.length <= 80) return cleaned;
+  const dot = cleaned.lastIndexOf('.');
+  const ext = dot > 0 && cleaned.length - dot <= 10 ? cleaned.slice(dot) : '';
+  return cleaned.slice(0, 80 - ext.length) + ext;
 }
 
 export function mimeForName(name: string): string {
@@ -33,34 +38,66 @@ async function fetchOnce(url: string, dest: File, token: string | undefined): Pr
   return File.downloadFileAsync(url, dest, { headers: token ? { Authorization: `Bearer ${token}`, Accept: '*/*' } : { Accept: '*/*' }, idempotent: true });
 }
 
+const downloadsDir = () => new Directory(Paths.cache, 'downloads');
+
+/** Empties cache/downloads. Sensitive files (payslips, Form 16) must not outlive their use, e.g. after a kill mid-share. */
+export function sweepDownloads(): void {
+  try {
+    const dir = downloadsDir();
+    if (!dir.exists) return;
+    for (const item of dir.list()) {
+      try { item.delete(); } catch { /* best effort */ }
+    }
+  } catch { /* best effort */ }
+}
+
 /**
  * Downloads an authenticated API path (e.g. `/hr/payroll/payslips/3/download`) into the cache dir.
- * downloadFileAsync bypasses axios, so on a 401 we refresh the token once (same single-flight as the API client) and retry.
+ * downloadFileAsync bypasses axios, so on a 401 we refresh the token once (same single-flight as the API client) and retry;
+ * a dead session logs out exactly like the interceptor does. Partial files are removed on failure.
  */
 export async function downloadToCache(path: string, fileName: string): Promise<File> {
-  const dir = new Directory(Paths.cache, 'downloads');
+  sweepDownloads();
+  const dir = downloadsDir();
   dir.create({ idempotent: true, intermediates: true });
   const dest = new File(dir, safeFileName(fileName, 'download'));
   const url = `${getApiBaseUrl()}${path}`;
+  const discard = () => { try { dest.delete(); } catch { /* may not exist */ } };
   try {
     return await fetchOnce(url, dest, getTokens()?.accessToken);
   } catch (e) {
+    discard();
     if (downloadError(e).status !== 401) throw downloadError(e);
-    try {
-      return await fetchOnce(url, dest, await refreshAccessToken());
-    } catch (e2) {
-      throw downloadError(e2);
-    }
+  }
+  let access: string;
+  try {
+    access = await refreshAccessToken();
+  } catch (e) {
+    const err = normalizeError(e);
+    if (err.code !== 'session_changed' && SESSION_DEAD.has(err.status)) await forceLogout();
+    throw err.status === 0 || err.status >= 500 ? err : new ApiError('Your session expired. Please sign in again.', err.status);
+  }
+  try {
+    return await fetchOnce(url, dest, access);
+  } catch (e2) {
+    discard();
+    throw downloadError(e2);
   }
 }
 
-/** Download, hand to the OS share sheet (view / save / send), then delete the cached copy (payslips are sensitive). */
+/** Download, hand to the OS share sheet, then clean up. */
 export async function downloadAndShare(path: string, fileName: string): Promise<void> {
   const file = await downloadToCache(path, fileName);
   try {
     if (!(await Sharing.isAvailableAsync())) throw new ApiError("Opening files isn't supported on this device.", 0);
     await Sharing.shareAsync(file.uri, { mimeType: mimeForName(file.name || fileName), dialogTitle: fileName });
-  } finally {
+  } catch (e) {
+    try { file.delete(); } catch { /* best effort */ }
+    throw e;
+  }
+  // Android's shareAsync can resolve when the chooser launches; the target app may still be reading the file,
+  // so there it is left for sweepDownloads (next download / app launch / logout). iOS resolves after the sheet closes.
+  if (Platform.OS === 'ios') {
     try { file.delete(); } catch { /* best effort */ }
   }
 }

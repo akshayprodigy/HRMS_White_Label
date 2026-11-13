@@ -8,6 +8,7 @@ import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { AuthProvider, useAuth } from '../src/auth/AuthProvider';
 import { usePunchQueueSyncLoop } from '../src/features/punch/hooks';
 import { useAppStateFocus } from '../src/lib/appFocus';
+import { sweepDownloads } from '../src/lib/download';
 import { ThemeProvider, useTheme } from '../src/theme';
 
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
@@ -43,6 +44,7 @@ function AuthGate() {
 
 export default function RootLayout() {
   useAppStateFocus();
+  useEffect(() => sweepDownloads(), []); // drop sensitive downloads left by a killed session
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 30_000 } } }));
   return (
     <ErrorBoundary>

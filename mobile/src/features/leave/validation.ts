@@ -70,10 +70,12 @@ export function validateLeaveForm(v: LeaveFormValues, type: LeaveType | undefine
     const t = dayNumber(today);
     if (t != null && start < t - EMERGENCY_MAX_BACKDATE_DAYS) e.start = `Emergency leave can start at most ${EMERGENCY_MAX_BACKDATE_DAYS} days in the past.`;
   }
-  if (v.attachment) {
+  // The attachment field only exists for types with a certificate rule; a leftover file must never block submit.
+  const attachmentApplies = !!type?.requires_medical_cert_after;
+  if (v.attachment && attachmentApplies) {
     const bad = validateAttachment(v.attachment);
     if (bad) e.attachment = bad;
-  } else if (type && certRequired(type, leaveDays(v.start, v.end, v.halfDay), v.emergency)) {
+  } else if (type && !v.attachment && certRequired(type, leaveDays(v.start, v.end, v.halfDay), v.emergency)) {
     e.attachment = `A medical certificate is required for ${type.requires_medical_cert_after}+ days of ${type.name}.`;
   }
   return e;

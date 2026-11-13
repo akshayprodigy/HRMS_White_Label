@@ -50,6 +50,10 @@ describe('validateLeaveForm', () => {
     expect(validateLeaveForm(v({ ...long, emergency: true }), sick, TODAY).attachment).toBeUndefined();
     expect(validateLeaveForm(v({ ...long, attachment: { uri: 'file:///a.pdf', name: 'a.pdf', mimeType: 'application/pdf', size: 1000 } }), sick, TODAY)).toEqual({});
   });
+  it('ignores a leftover attachment when the type has no certificate rule', () => {
+    const stray = { uri: 'x', name: 'a.doc', mimeType: 'application/msword', size: 10 };
+    expect(validateLeaveForm(v({ typeId: 3, attachment: stray }), noHalf, TODAY)).toEqual({});
+  });
   it('rejects unsupported or oversized attachments', () => {
     const bad = validateLeaveForm(v({ attachment: { uri: 'x', name: 'a.doc', mimeType: 'application/msword', size: 10 } }), sick, TODAY);
     expect(bad.attachment).toMatch(/PDF, JPEG/);

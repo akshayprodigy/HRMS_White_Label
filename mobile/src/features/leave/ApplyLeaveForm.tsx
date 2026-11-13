@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, Switch, View } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { Button, Card, Text, TextInput } from '../../components/ui';
+import { fmtUtcDate as fmtIsoDate } from '../../lib/time';
 import { useTheme } from '../../theme';
-import type { LeaveType } from './api';
+import { uploadAttachment, type LeaveType } from './api';
 import { useApplyLeave } from './hooks';
 import { ProofPicker } from './ProofPicker';
 import { buildApplyPayload, certRequired, leaveDays, todayIso, validateLeaveForm, type LeaveFormErrors, type LeaveFormValues } from './validation';
@@ -35,6 +36,8 @@ export function ApplyLeaveForm({ types, onDone, onCancel, now }: { types: LeaveT
   const [v, setV] = useState<LeaveFormValues>(EMPTY);
   const [errors, setErrors] = useState<LeaveFormErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
+  const inFlight = useRef(false); // synchronous: two taps before a re-render must not submit twice
+  const uploaded = useRef<{ uri: string; url: string } | null>(null); // survives a failed apply so a retry does not re-upload
   const set = (p: Partial<LeaveFormValues>) => setV((cur) => ({ ...cur, ...p }));
   const type = types.find((t) => t.id === v.typeId);
   const days = leaveDays(v.start, v.halfDay ? v.start : v.end, v.halfDay);
@@ -43,19 +46,29 @@ export function ApplyLeaveForm({ types, onDone, onCancel, now }: { types: LeaveT
   const today = () => todayIso(now?.());
 
   const submit = async () => {
+    if (inFlight.current) return;
     setServerError(null);
     const e = validateLeaveForm(v, type, today());
     setErrors(e);
     if (Object.keys(e).length) return;
+    inFlight.current = true;
     try {
-      const created = await apply.mutateAsync({ payload: buildApplyPayload(v, null), file: v.attachment });
+      let attachmentUrl: string | null = null;
+      const file = type?.requires_medical_cert_after ? v.attachment : null;
+      if (file) {
+        if (uploaded.current?.uri !== file.uri) uploaded.current = { uri: file.uri, url: await uploadAttachment(file) };
+        attachmentUrl = uploaded.current.url;
+      }
+      const created = await apply.mutateAsync({ payload: buildApplyPayload(v, attachmentUrl), file: null });
       onDone(
         created.proof_due_date
-          ? `Leave submitted. Upload your proof by ${created.proof_due_date}, or it converts to loss of pay.`
+          ? `Leave submitted. Upload your proof by ${fmtIsoDate(created.proof_due_date)}, or it converts to loss of pay.`
           : 'Leave submitted for approval.',
       );
     } catch (err) {
       setServerError(normalizeError(err).message);
+    } finally {
+      inFlight.current = false;
     }
   };
 
@@ -67,7 +80,7 @@ export function ApplyLeaveForm({ types, onDone, onCancel, now }: { types: LeaveT
         <Text size={14} weight="600">Leave type</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           {types.map((t) => (
-            <Chip key={t.id} testID={`type-${t.id}`} label={t.name} selected={v.typeId === t.id} onPress={() => set({ typeId: t.id })} />
+            <Chip key={t.id} testID={`type-${t.id}`} label={t.name} selected={v.typeId === t.id} onPress={() => { if (t.id !== v.typeId) set({ typeId: t.id, attachment: null }); }} />
           ))}
         </View>
         {errors.type ? <Text testID="error-type" accessibilityRole="alert" size={13} style={{ color: colors.danger }}>{errors.type}</Text> : null}

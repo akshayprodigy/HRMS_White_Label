@@ -73,14 +73,14 @@ export function refreshAccessToken(): Promise<string> {
 }
 
 /** Clears the in-memory + stored session and tells the AuthProvider (which also clears query cache). */
-async function forceLogout() {
+export async function forceLogout() {
   tokens = null;
   await tokenStorage.clear().catch(() => undefined);
   onLogout?.();
 }
 
 /** Refresh statuses that prove the refresh token is dead (vs. transient network/5xx failures). */
-const SESSION_DEAD = new Set([400, 401, 403]);
+export const SESSION_DEAD = new Set([400, 401, 403]);
 
 api.interceptors.response.use(
   (r) => r,
