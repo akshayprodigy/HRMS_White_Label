@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     roster_open_shifts, calendar_feed, roster_live, roster_late,
     roster_on_call, roster_acks, safety_profile,
     attendance_regularization, schedule_delegations, broadcasts, attendance_bulk,
+    devices, notification_actions,
 )
 
 api_router = APIRouter()
@@ -37,6 +38,12 @@ api_router.include_router(
 api_router.include_router(
     attendance.router, prefix="/attendance", tags=["attendance"]
 )
+# Mobile push: device registration must work before the first punch-in, and
+# notification actions (e.g. mark safe) must too. Auth required, NOT gated.
+api_router.include_router(devices.router, prefix="/devices", tags=["devices"])
+api_router.include_router(
+    notification_actions.router, prefix="/notifications",
+    tags=["notifications"])
 
 # Gated routes - Attendance required
 api_router.include_router(

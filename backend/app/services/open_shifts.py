@@ -205,7 +205,7 @@ async def create_open_shift(
          f"{tpl.name} {tpl.start_time.strftime('%H:%M')}-"
          f"{tpl.end_time.strftime('%H:%M')} on {work_date.isoformat()} "
          f"is open to claim",
-         RTYPE, str(shift.id))
+         RTYPE, str(shift.id), "open_shift_available")
         for u in elig
     ])
     return shift

@@ -958,7 +958,7 @@ async def notify(
 
 async def notify_many(db: AsyncSession, rows) -> None:
     """Best-effort batch of in-app notifications. `rows` are
-    (user_id, title, message, resource_type, resource_id) tuples. One
+    (user_id, title, message, resource_type, resource_id[, event_type]) tuples. One
     savepoint for the whole batch; if it fails, fall back to per-row so one
     bad row cannot drop the rest."""
     rows = [r for r in rows if r[0]]
@@ -966,9 +966,10 @@ async def notify_many(db: AsyncSession, rows) -> None:
         return
     objs = [
         Notification(
-            user_id=uid, title=title[:200], message=msg[:1000], type="info",
-            resource_type=rtype, resource_id=rid,
-        ) for (uid, title, msg, rtype, rid) in rows
+            user_id=r[0], title=r[1][:200], message=r[2][:1000], type="info",
+            resource_type=r[3], resource_id=r[4],
+            event_type=(r[5] if len(r) > 5 else None),
+        ) for r in rows
     ]
     try:
         async with db.begin_nested():
@@ -976,7 +977,7 @@ async def notify_many(db: AsyncSession, rows) -> None:
         return
     except Exception:  # pragma: no cover
         logger.warning("roster batch notification failed", exc_info=True)
-    for (uid, title, msg, rtype, rid) in rows:
+    for (uid, title, msg, rtype, rid, *_rest) in rows:
         await notify(db, uid, title, msg, rtype, rid)
 
 

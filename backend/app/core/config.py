@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     EMERGENCY_BROADCAST_DLT_TEMPLATE_ID: Optional[str] = None
     EMERGENCY_NEED_HELP_DLT_TEMPLATE_ID: Optional[str] = None
 
+    # Mobile push gateway: "log" (dev default, sends nothing) or "expo".
+    PUSH_PROVIDER: str = "log"
+    EXPO_ACCESS_TOKEN: Optional[str] = None
+
     MARIADB_SERVER: str = "db"
     MARIADB_USER: str = "erp_user"
     MARIADB_PASSWORD: str = "erp_password"

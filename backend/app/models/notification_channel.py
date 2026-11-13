@@ -37,6 +37,7 @@ class Channel:
     IN_APP = "in_app"
     EMAIL = "email"
     SMS = "sms"
+    PUSH = "push"
 
 
 class DeliveryStatus:
@@ -96,6 +97,7 @@ EVENT_CATEGORY_MAP = {
     "report_scheduled": EventCategory.OTHER,
     "emergency_broadcast": EventCategory.EMERGENCY,
     "emergency_need_help": EventCategory.EMERGENCY,
+    "open_shift_available": EventCategory.OTHER,
 }
 
 

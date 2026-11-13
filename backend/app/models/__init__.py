@@ -239,3 +239,4 @@ from .coverage_gap import CoverageGap, GapSource, GapStatus
 from .approver_delegation import ApproverDelegation
 from .broadcast import Broadcast, BroadcastRecipient
 from .safety import EmployeeEmergencyContact, NightShiftConsent
+from .device import DeviceToken

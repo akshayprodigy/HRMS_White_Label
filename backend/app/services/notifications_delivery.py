@@ -352,6 +352,13 @@ def configure_providers_from_env() -> Dict[str, str]:
                 "emergency SMS will fail (DLT registration is a go-live requirement)")
     active["sms"] = get_sms_provider().name
 
+    from app.services import push as push_svc
+    try:
+        push_svc.set_push_provider(push_svc.provider_from_settings())
+    except Exception as e:
+        log.warning("push config failed: %s — staying on log provider", e)
+    active["push"] = push_svc.get_push_provider().name
+
     return active
 
 
@@ -444,14 +451,14 @@ def fallback_from_notification(
 
 
 DEFAULT_ENABLED_CHANNELS_BY_CATEGORY: Dict[str, Set[str]] = {
-    "approvals":   {"in_app", "email"},
-    "leave":       {"in_app", "email"},
-    "overtime":    {"in_app"},
-    "payroll":     {"in_app", "email"},
-    "performance": {"in_app", "email"},
-    "expense":     {"in_app", "email"},
-    "statutory":   {"in_app", "email"},
-    "other":       {"in_app"},  # marketing-ish: opt-in
+    "approvals":   {"in_app", "email", "push"},
+    "leave":       {"in_app", "email", "push"},
+    "overtime":    {"in_app", "push"},
+    "payroll":     {"in_app", "email", "push"},
+    "performance": {"in_app", "email", "push"},
+    "expense":     {"in_app", "email", "push"},
+    "statutory":   {"in_app", "email", "push"},
+    "other":       {"in_app", "push"},  # email/SMS opt-in; push on
 }
 
 
@@ -538,8 +545,8 @@ async def notify_emergency_bulk(
     context: Optional[Dict[str, Any]] = None,
     notif_type: str = "warning",
 ) -> int:
-    """Batched emergency fan-out: in-app Notification + EMAIL/SMS delivery
-    rows for every user, with NO per-user queries (contact lookup and inserts
+    """Batched emergency fan-out: in-app Notification + EMAIL/SMS/PUSH
+    delivery rows for every user, with NO per-user queries (contact lookup and inserts
     are chunked). Email/SMS rows are only created where the user has an
     email / phone. Like all emergency-category sends it ignores quiet hours,
     preferences and hard opt-out. Returns the number of users notified."""
@@ -548,6 +555,8 @@ async def notify_emergency_bulk(
         Channel, DeliveryStatus, NotificationDelivery,
     )
     from app.models.user import User
+
+    from app.services.push import users_with_tokens
 
     ids = sorted(set(user_ids))
     sent: List[int] = []
@@ -571,10 +580,12 @@ async def notify_emergency_bulk(
         await session.flush()
         sent.extend(n.user_id for n in notifs)
         rows = []
+        pushable = await users_with_tokens(session, chunk)
         for n in notifs:
             email, phone = contacts[n.user_id]
             for channel, has in ((Channel.EMAIL, bool(email)),
-                                 (Channel.SMS, bool(phone))):
+                                 (Channel.SMS, bool(phone)),
+                                 (Channel.PUSH, n.user_id in pushable)):
                 if has:
                     rows.append(NotificationDelivery(
                         notification_id=n.id, event_type=event_type,
@@ -675,6 +686,9 @@ async def dispatch_notification(
             )).scalars().all()
         }
 
+    from app.services.push import users_with_tokens
+    has_push = bool(await users_with_tokens(session, [recipient_user_id]))
+
     created: List[int] = []
     now = datetime.now(timezone.utc)
     if category == EMERGENCY_CATEGORY:
@@ -684,8 +698,9 @@ async def dispatch_notification(
             select(User.email, User.phone).where(User.id == recipient_user_id)
         )).first()
         has = {Channel.EMAIL: bool(contact and contact[0]),
-               Channel.SMS: bool(contact and contact[1])}
-        for channel in (Channel.EMAIL, Channel.SMS):
+               Channel.SMS: bool(contact and contact[1]),
+               Channel.PUSH: has_push}
+        for channel in (Channel.EMAIL, Channel.SMS, Channel.PUSH):
             if channel in existing_channels or not has[channel]:
                 continue
             row = NotificationDelivery(
@@ -697,9 +712,11 @@ async def dispatch_notification(
             await session.flush()
             created.append(row.id)
         return created
-    for channel in (Channel.EMAIL, Channel.SMS):
+    for channel in (Channel.EMAIL, Channel.SMS, Channel.PUSH):
         if channel in existing_channels:
             continue
+        if channel == Channel.PUSH and not has_push:
+            continue  # PUSH rows exist only for users with an active token
         if not channel_enabled(
             category=category, channel=channel,
             prefs=prefs, hard_opt_out=hard_opt_out,
@@ -732,7 +749,8 @@ async def dispatch_notification(
 
         # Digest opt-in
         digest_cadence = _resolve_digest_cadence(prefs, category, channel)
-        is_digest = digest_cadence in ("hourly", "daily")
+        is_digest = (digest_cadence in ("hourly", "daily")
+                     and channel != Channel.PUSH)  # push is never digested
 
         row = NotificationDelivery(
             notification_id=notification_id,
@@ -777,6 +795,66 @@ def _resolve_digest_cadence(prefs, category, channel) -> str:
 # ---------------------------------------------------------------------------
 
 
+async def _send_push_delivery(session: AsyncSession, row) -> SendResult:
+    """PUSH branch of send_one_delivery: resolve the recipient's active
+    tokens, build the actionable payload from the Notification row, send,
+    revoke tokens the gateway reports dead, stamp the row."""
+    from app.models.notification import Notification
+    from app.models.notification_channel import (
+        DeliveryStatus, EVENT_CATEGORY_MAP,
+    )
+    from app.services import push as push_svc
+
+    tokens = await push_svc.active_tokens(session, row.recipient_user_id)
+    if not tokens:
+        row.attempts = (row.attempts or 0) + 1
+        row.status = DeliveryStatus.FAILED  # permanent: retry can't help
+        row.error = "no active device tokens"
+        await session.commit()
+        return SendResult(ok=False, error=row.error)
+
+    n = await session.get(Notification, row.notification_id) \
+        if row.notification_id else None
+    ctx = row.context_json or {}
+    title = (n.title if n else ctx.get("title")) or row.event_type
+    body = (n.message if n else ctx.get("message")) or "Open the app for details."
+    if n is not None:
+        data = await push_svc.build_payload(session, n)
+    else:
+        data = {"notification_id": None, "event_type": row.event_type,
+                "resource_type": None, "resource_id": None,
+                "category": "none", "actions": []}
+    emergency = EVENT_CATEGORY_MAP.get(row.event_type) == EMERGENCY_CATEGORY
+    result = await push_svc.get_push_provider().send(
+        tokens=tokens, title=title[:100],
+        body=body[:push_svc.PUSH_BODY_MAX], data=data,
+        category=data["category"],
+        priority="high" if emergency else "default")
+    await push_svc.revoke_tokens(session, result.invalid_tokens)
+
+    row.attempts = (row.attempts or 0) + 1
+    if result.ok:
+        row.status = DeliveryStatus.SENT
+        row.sent_at = datetime.now(timezone.utc)
+        row.provider_message_id = result.provider_message_id
+        row.error = None
+    elif result.invalid_tokens and not (set(tokens) - set(result.invalid_tokens)):
+        row.status = DeliveryStatus.FAILED  # every token was dead
+        row.error = result.error
+    elif should_dead_letter(row.attempts):
+        row.status = DeliveryStatus.DEAD_LETTER
+        row.error = result.error
+    else:
+        row.status = DeliveryStatus.QUEUED
+        row.next_retry_at = (
+            datetime.now(timezone.utc)
+            + timedelta(minutes=next_retry_delay_minutes(row.attempts)))
+        row.error = result.error
+    await session.commit()
+    return SendResult(ok=result.ok, provider_message_id=result.provider_message_id,
+                      error=result.error)
+
+
 async def send_one_delivery(
     session: AsyncSession, delivery_id: int,
 ) -> SendResult:
@@ -808,6 +886,9 @@ async def send_one_delivery(
         row.error = "recipient user not found"
         await session.commit()
         return SendResult(ok=False, error="recipient not found")
+
+    if row.channel == Channel.PUSH:
+        return await _send_push_delivery(session, row)
 
     # Template
     template = (await session.execute(
