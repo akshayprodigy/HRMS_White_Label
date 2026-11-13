@@ -1,0 +1,50 @@
+# Apply for a leave in the far future, see it in "My requests", then cancel it so the flow is re-runnable.
+# Needs a seeded employee with a paid leave balance on at least one leave type (the first chip is used).
+appId: com.innocore.hrms.dev
+---
+- runFlow: _login.yaml
+- evalScript: ${output.leaveDate = new Date(Date.now() + (60 + Math.floor(Math.random() * 300)) * 86400000).toISOString().slice(0, 10)}
+- tapOn:
+    id: tab-leave
+- tapOn:
+    id: apply-leave
+- assertVisible:
+    id: apply-form
+# Validation: an empty submit shows field errors and creates nothing.
+- tapOn:
+    id: submit-leave
+- assertVisible: Choose a leave type.
+- assertVisible: Enter a reason.
+# Emergency toggle reveals the helper text; turn it back off.
+- tapOn:
+    id: toggle-emergency
+- assertVisible:
+    id: emergency-help
+- tapOn:
+    id: toggle-emergency
+# Fill and submit.
+- tapOn:
+    id: type-.*
+    index: 0
+- tapOn:
+    id: input-start
+- inputText: ${output.leaveDate}
+- tapOn:
+    id: input-end
+- inputText: ${output.leaveDate}
+- tapOn:
+    id: input-reason
+- inputText: Maestro e2e leave
+- hideKeyboard
+- tapOn:
+    id: submit-leave
+- assertVisible:
+    id: leave-notice
+- assertVisible: Maestro e2e leave
+# Cancel the request again (confirm step).
+- tapOn:
+    id: cancel-.*
+    index: 0
+- tapOn:
+    id: cancel-confirm-.*
+- assertVisible: Cancelled

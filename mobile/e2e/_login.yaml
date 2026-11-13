@@ -1,0 +1,19 @@
+# Shared sub-flow: sign in as the seeded employee (dev tenant, backend on :8005 -- see memory dev-stack-local).
+# Precondition for the flows that use it: the employee has already punched in today, otherwise gated tabs show
+# the "Punch in to see this" notice instead of their data.
+appId: com.innocore.hrms.dev
+---
+- launchApp:
+    clearState: true
+- tapOn:
+    id: login-email
+- inputText: employee@gmail.com
+- tapOn:
+    id: login-password
+- inputText: test@12345
+- tapOn:
+    id: login-submit
+- extendedWaitUntil:
+    visible:
+      id: tab-leave
+    timeout: 20000

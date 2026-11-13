@@ -43,7 +43,7 @@ export default function TabsLayout() {
         <Tabs.Screen
           key={t.name}
           name={t.name}
-          options={{ title: t.title, tabBarIcon: ({ color, size }) => <Ionicons name={t.icon} color={color as string} size={size} /> }}
+          options={{ title: t.title, tabBarButtonTestID: `tab-${t.name}`, tabBarIcon: ({ color, size }) => <Ionicons name={t.icon} color={color as string} size={size} /> }}
         />
       ))}
       {/* Hidden (href: null) unless the user is an approver by role/permission or has a non-empty queue. */}

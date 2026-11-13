@@ -1,0 +1,13 @@
+# Open the payslip list from More. Needs at least one published payslip for the seeded employee
+# (otherwise the empty state "No payslips yet" is shown, which this flow also accepts).
+appId: com.innocore.hrms.dev
+---
+- runFlow: _login.yaml
+- tapOn:
+    id: tab-more
+- tapOn:
+    id: open-payslips
+- extendedWaitUntil:
+    visible: .*(Download PDF|No payslips yet).*
+    timeout: 15000
+- takeScreenshot: artifacts/payslips

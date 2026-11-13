@@ -30,6 +30,8 @@ function AuthGate() {
         <Stack.Protected guard={!!user}>
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="approval/[key]" options={{ headerShown: true, title: 'Approval' }} />
+          <Stack.Screen name="payslips" options={{ headerShown: true, title: 'Payslips' }} />
+          <Stack.Screen name="documents" options={{ headerShown: true, title: 'Documents' }} />
         </Stack.Protected>
         <Stack.Protected guard={!user}>
           <Stack.Screen name="(auth)" />

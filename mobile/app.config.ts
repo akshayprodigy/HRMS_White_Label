@@ -43,6 +43,7 @@ export function buildConfig(tenantName: string, root: string = __dirname): ExpoC
       'expo-secure-store',
       ['expo-location', { locationWhenInUsePermission: 'Allow $(PRODUCT_NAME) to use your location to verify where you punch in and out.' }],
       ['expo-camera', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera for your punch selfie.', microphonePermission: false, recordAudioAndroid: false }],
+      ['expo-image-picker', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera to photograph leave proof such as a medical certificate.', microphonePermission: false, photosPermission: false }],
       ...(cleartext ? [['expo-build-properties', { android: { usesCleartextTraffic: true } }] as [string, object]] : []),
       ['expo-splash-screen', { image: splash, imageWidth: 160, backgroundColor: tenant.colors.primary }],
     ],

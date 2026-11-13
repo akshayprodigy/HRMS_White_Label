@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import { Alert } from 'react-native';
 import { useAuth } from '../../src/auth/AuthProvider';
 import { Button, Card, Screen, Text } from '../../src/components/ui';
@@ -6,6 +7,7 @@ import { t } from '../../src/i18n';
 
 export default function MoreTab() {
   const { user, logout } = useAuth();
+  const router = useRouter();
   const { items } = usePunchQueue();
   const signOut = () => {
     if (!items.length) return void logout();
@@ -21,6 +23,8 @@ export default function MoreTab() {
       <Card style={{ gap: 12 }}>
         <Text weight="600" size={18}>More</Text>
         <Text muted>{user?.email}</Text>
+        <Button testID="open-payslips" variant="secondary" title="Payslips" onPress={() => router.push('/payslips' as never)} />
+        <Button testID="open-documents" variant="secondary" title="Documents and Form 16" onPress={() => router.push('/documents' as never)} />
         <Button testID="logout" variant="secondary" title={t('common.signOut')} onPress={signOut} />
       </Card>
     </Screen>
