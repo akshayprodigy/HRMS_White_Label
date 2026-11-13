@@ -15,9 +15,9 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: 'availability', label: 'Availability' },
 ];
 
-export function ScheduleScreen() {
+export function ScheduleScreen({ initialSection }: { initialSection?: string }) {
   const qc = useQueryClient();
-  const [section, setSection] = useState<Section>('shifts');
+  const [section, setSection] = useState<Section>(SECTIONS.some((s) => s.id === initialSection) ? (initialSection as Section) : 'shifts');
   const [notice, setNotice] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   // Lifted here so the once-shown feed URL survives sub-tab switches and dialogs.

@@ -6,6 +6,8 @@ import { useEffect, useState } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { AuthProvider, useAuth } from '../src/auth/AuthProvider';
+import { BroadcastModal } from '../src/features/broadcast/BroadcastModal';
+import { usePushLifecycle } from '../src/features/push/usePushLifecycle';
 import { usePunchQueueSyncLoop } from '../src/features/punch/hooks';
 import { useAppStateFocus } from '../src/lib/appFocus';
 import { sweepDownloads } from '../src/lib/download';
@@ -17,6 +19,7 @@ function AuthGate() {
   const { user, loading } = useAuth();
   const { dark } = useTheme();
   usePunchQueueSyncLoop();
+  usePushLifecycle();
 
   useEffect(() => {
     if (!loading) void SplashScreen.hideAsync().catch(() => undefined);
@@ -38,6 +41,7 @@ function AuthGate() {
           <Stack.Screen name="(auth)" />
         </Stack.Protected>
       </Stack>
+      {user ? <BroadcastModal /> : null}
     </>
   );
 }

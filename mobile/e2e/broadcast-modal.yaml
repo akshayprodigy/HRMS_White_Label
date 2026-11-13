@@ -1,0 +1,35 @@
+# Critical broadcast -> undismissable full-screen modal -> "I'm safe". WRITTEN, NOT RUN (backend was down).
+#
+# Seed the broadcast AFTER the app is installed but the employee is logged out of nothing -- the app polls
+# /broadcasts/my every 60s and on foreground, so seed first, then run (it shows right after login):
+#
+#   TOKEN=$(curl -s -X POST http://localhost:8005/api/v1/auth/login \
+#     -H 'Content-Type: application/x-www-form-urlencoded' \
+#     -d 'username=admin@gmail.com&password=<admin password>' | jq -r .access_token)
+#   # audience "department" must match the seeded employee's department (check GET /broadcasts/audience-options)
+#   curl -s -X POST http://localhost:8005/api/v1/broadcasts \
+#     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+#     -d '{"title":"Fire drill E2E","message":"Evacuate to the assembly point","severity":"critical",
+#          "audience":"department","audience_value":"<employee department>","safety_check":true}'
+#
+# NOTE: _login.yaml waits for tab-leave; if the modal already covers it on your device, swap that wait for broadcast-modal.
+# Re-running needs a fresh broadcast (a responded one no longer shows). Needs 'broadcast send' (hr/admin).
+appId: com.innocore.hrms.dev
+---
+- runFlow: _login.yaml
+- extendedWaitUntil:
+    visible:
+      id: broadcast-modal
+    timeout: 90000
+- assertVisible: Fire drill E2E
+# Hardware back must not dismiss it (Android; no-op on iOS).
+- pressKey: back
+- assertVisible:
+    id: broadcast-modal
+- tapOn:
+    id: bc-safe-.*
+- extendedWaitUntil:
+    notVisible:
+      id: broadcast-modal
+    timeout: 15000
+- takeScreenshot: artifacts/broadcast-modal-done

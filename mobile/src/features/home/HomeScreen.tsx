@@ -3,12 +3,14 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { RefreshControl, View } from 'react-native';
 import { api, ApiError } from '../../api/client';
-import type { MyBroadcast, RosterWeek } from '../../api/types';
+import type { RosterWeek } from '../../api/types';
 import { useAuth } from '../../auth/AuthProvider';
 import { Button, Card, Screen, Text } from '../../components/ui';
 import { fmtShiftTime, fmtUtcTime } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { useApprovalsAccess } from '../approvals/hooks';
+import { BroadcastBanner } from '../broadcast/BroadcastBanner';
+import { useMyBroadcasts } from '../broadcast/hooks';
 import { GateInline } from '../attendance/GateNotice';
 import { PendingBanner } from '../punch/PendingBanner';
 import { isGateError, retryUnlessGate, useAttendanceGate } from '../attendance/gate';
@@ -16,11 +18,6 @@ import { isGateError, retryUnlessGate, useAttendanceGate } from '../attendance/g
 async function fetchRosterWeek(): Promise<RosterWeek> {
   return (await api.get<RosterWeek>('/roster/my/week')).data;
 }
-async function fetchBroadcasts(): Promise<MyBroadcast[]> {
-  const d = (await api.get<MyBroadcast[]>('/broadcasts/my')).data;
-  return Array.isArray(d) ? d : [];
-}
-
 function greeting(now = new Date()) {
   const h = now.getHours();
   return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -35,7 +32,7 @@ export function HomeScreen() {
 
   // Gated endpoints wait for the gate answer; the pending count doubles as the gate probe (see useAttendanceGate).
   const roster = useQuery({ queryKey: ['roster-week'], queryFn: fetchRosterWeek, enabled: !!user && ready && !gated, retry: retryUnlessGate });
-  const broadcasts = useQuery({ queryKey: ['broadcasts-my'], queryFn: fetchBroadcasts, enabled: !!user });
+  const broadcasts = useMyBroadcasts();
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = async () => {
@@ -50,8 +47,7 @@ export function HomeScreen() {
   const offline = [todayQ, roster, pending, broadcasts].some((q) => q.error instanceof ApiError && q.error.status === 0);
   const todayShift = roster.data?.days.find((d) => d.is_today) ?? null;
   const att = today?.attendance ?? null;
-  const activeBroadcasts = (broadcasts.data ?? []).filter((b) => b.pending);
-  const banner = activeBroadcasts[0];
+  const activeBroadcasts = (broadcasts.data ?? []).filter((b) => b.pending && b.severity !== 'critical');
   const punchState = !today ? null : !att ? 'out-none' : att.punch_out_time ? 'done' : 'in';
 
   return (
@@ -71,13 +67,7 @@ export function HomeScreen() {
 
       <PendingBanner compact />
 
-      {banner ? (
-        <Card testID="broadcast-banner" style={{ borderColor: banner.severity === 'critical' ? colors.danger : colors.primary, gap: 4 }}>
-          <Text weight="700">{banner.title}</Text>
-          <Text size={14} numberOfLines={3}>{banner.message}</Text>
-          {activeBroadcasts.length > 1 ? <Text muted size={12}>+{activeBroadcasts.length - 1} more</Text> : null}
-        </Card>
-      ) : null}
+      <BroadcastBanner broadcasts={activeBroadcasts} />
 
       <Card style={{ gap: 4 }}>
         <Text weight="600">Attendance</Text>

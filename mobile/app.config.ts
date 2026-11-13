@@ -41,6 +41,8 @@ export function buildConfig(tenantName: string, root: string = __dirname): ExpoC
     plugins: [
       'expo-router',
       'expo-secure-store',
+      // Accent colour for the Android notification small icon; the tenant's own white-on-transparent icon is not generated yet.
+      ['expo-notifications', { color: tenant.colors.primary }],
       ['expo-location', { locationWhenInUsePermission: 'Allow $(PRODUCT_NAME) to use your location to verify where you punch in and out.' }],
       ['expo-camera', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera for your punch selfie.', microphonePermission: false, recordAudioAndroid: false }],
       ['expo-image-picker', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera to photograph leave proof such as a medical certificate.', microphonePermission: false, photosPermission: false }],
