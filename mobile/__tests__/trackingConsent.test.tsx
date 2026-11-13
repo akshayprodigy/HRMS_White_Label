@@ -8,6 +8,7 @@ import { renderWithProviders, setupApiMock, teardownApiMock } from '../test-util
 jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ ...require('../tenants/dev/tenant.json'), id: 'dev' }), getApiBaseUrl: () => 'http://test/api/v1' }));
 jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 jest.mock('../src/auth/AuthProvider', () => ({ useAuth: () => ({ user: { id: 1, email: 'a@x.com' }, loading: false }), onBeforeLogout: () => () => undefined }));
+jest.mock('react-native-maps', () => ({ __esModule: true, default: () => null, Marker: () => null, Polyline: () => null }));
 const mockTracking: { perm: 'none' | 'foreground' | 'background'; [k: string]: any } = { // eslint-disable-line @typescript-eslint/no-explicit-any
   perm: 'foreground',
   getPermissionLevel: jest.fn(async () => mockTracking.perm),
@@ -49,6 +50,7 @@ function pressAlert(spy: jest.SpyInstance, label: string) {
 
 describe('ConsentScreen', () => {
   it('HR has not enabled it: says so, offers no consent and collects nothing', async () => {
+    mock.onGet('/tracking/my-trail').reply(200, { user_id: 1, date: 'x', truncated: false, points: [] });
     mock.onGet('/tracking/my-status').reply(200, st({ required: false, window: null }));
     await renderWithProviders(<ConsentScreen />);
     expect(await screen.findByText(/Not turned on for your role/)).toBeTruthy();

@@ -35,7 +35,13 @@ export function useRecheckTracking() {
   }, [qc, uid]);
 }
 
-/** Mounted ONCE inside the root layout: on sign-in, on foreground, and on a timer aimed at the next window boundary
+/**
+ * KNOWN LIMITATION: there is no OS-level background start at window start. If the app is not running when a shift window
+ * opens, tracking begins only once the app is opened (or foregrounded) during or before the window. Once started, the
+ * Android foreground service / iOS background location keep it going and the headless task stops it at the window end.
+ * Follow-up: schedule the start with expo-background-task.
+ *
+ * Mounted ONCE inside the root layout: on sign-in, on foreground, and on a timer aimed at the next window boundary
  * (capped at 10 minutes so policy/consent changes are noticed). Also tears everything down on logout. */
 export function useTrackingLifecycle() {
   const { user, loading } = useAuth();

@@ -6,9 +6,10 @@
 #     -d '{"enabled": true, "interval_seconds": 60, "distance_filter_m": 10}' localhost:8005/api/v1/tracking/policies/<role_id>
 # Without the policy this flow still passes through the "Not turned on for your role" branch (asserted below as the
 # alternative) but cannot exercise consent. Run once with a fresh state (consent not yet given).
-# Second half (manual / API check, not automatable in Maestro): with the simulator location set (Features > Location >
-# Custom Location) during a rostered shift window, the ping shows up for a scheduler:
-#   curl -s -H "Authorization: Bearer $SCHEDULER_TOKEN" localhost:8005/api/v1/tracking/field-now | jq '.rows[] | {name, ping}'
+# Second half (automated): needs the employee to have a rostered shift whose window contains "now" (shift +/- 30 min UTC).
+# It sets the simulator location, waits for the foreground watcher / task to upload, then runs field-now-ping.js, which
+# logs in as HR over the API and asserts the employee row has a ping. Run with:
+#   maestro test -e HR_EMAIL=<hr> -e HR_PASSWORD=<pw> [-e API_BASE=http://localhost:8005/api/v1] [-e EMPLOYEE_EMAIL=employee@gmail.com] e2e/tracking-consent.yaml
 appId: com.innocore.hrms.dev
 ---
 - runFlow: _login.yaml
@@ -38,3 +39,22 @@ appId: com.innocore.hrms.dev
           visible: .*Consented.*
           timeout: 15000
       - takeScreenshot: artifacts/tracking-consented
+# --- simulator location ping appears in field-now (API check) ---
+- setLocation:
+    latitude: 12.9716
+    longitude: 77.5946
+# Updates are distance/time filtered (policy); give the watcher time to deliver + upload (policy interval 60 s in the setup above).
+- waitForAnimationToEnd:
+    timeout: 5000
+- extendedWaitUntil:
+    visible: .*Consented.*
+    timeout: 90000
+- repeat:
+    times: 3
+    commands:
+      - setLocation:
+          latitude: 12.9720
+          longitude: 77.5950
+      - waitForAnimationToEnd:
+          timeout: 20000
+- runScript: field-now-ping.js

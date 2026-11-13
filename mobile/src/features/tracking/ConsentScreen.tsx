@@ -6,6 +6,7 @@ import { Button, Card, Screen, Text } from '../../components/ui';
 import { fmtUtcTime } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { deleteMyData, giveConsent, MY_STATUS_KEY, revokeConsent } from './api';
+import { MyHistory } from './MyHistory';
 import { useMyTrackingStatus, useRecheckTracking } from './hooks';
 import { getPermissionLevel, requestPermissions, stopTracking, type PermissionLevel } from './tracking';
 import { decideTracking, type Decision } from './window';
@@ -174,6 +175,8 @@ export function ConsentScreen() {
           ) : null}
         </Card>
       ) : null}
+
+      {s.required || s.consented ? <MyHistory /> : null}
 
       {s.required || s.consented ? (
         <Card style={{ gap: 8 }}>

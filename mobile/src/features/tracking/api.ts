@@ -67,3 +67,7 @@ export async function fetchFieldNow(department?: string): Promise<FieldNow> {
 export async function fetchTrail(userId: number, date: string): Promise<Trail> {
   return (await api.get<Trail>('/tracking/trail', { params: { user_id: userId, date } })).data;
 }
+/** GET /tracking/my-trail?date= : the caller's own points for a UTC work date (no consent/policy gate). */
+export async function fetchMyTrail(date: string): Promise<Trail> {
+  return (await api.get<Trail>('/tracking/my-trail', { params: { date } })).data;
+}
