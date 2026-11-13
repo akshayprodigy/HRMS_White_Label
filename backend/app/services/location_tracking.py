@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.attendance import Attendance
 from app.models.audit import AuditLog
 from app.models.employee import Employee
 from app.models.location import (
@@ -40,6 +41,9 @@ FUTURE_SKEW = timedelta(minutes=2)
 MAX_AGE = timedelta(hours=24)
 STALE_AFTER = timedelta(minutes=15)
 EXIT_BUFFER_M = 100.0
+MAX_ACCURACY_M = 5000.0
+MAX_SPEED_MS = 200.0
+PURGE_BATCH = 5000
 ALERT_GEOFENCE_EXIT = "geofence_exit"
 
 
@@ -177,7 +181,11 @@ def validate_ping(p, now: datetime) -> Optional[str]:
         return "invalid"
     if not (-90 <= p.lat <= 90 and -180 <= p.lng <= 180):
         return "invalid"
-    if p.accuracy is not None and p.accuracy < 0:
+    if p.accuracy is not None and not 0 <= p.accuracy <= MAX_ACCURACY_M:
+        return "invalid"
+    if p.speed is not None and not 0 <= p.speed <= MAX_SPEED_MS:
+        return "invalid"
+    if p.battery is not None and not 0 <= p.battery <= 100:
         return "invalid"
     cap = aware(p.captured_at)
     if cap > now + FUTURE_SKEW:
@@ -187,7 +195,7 @@ def validate_ping(p, now: datetime) -> Optional[str]:
     return None
 
 
-def _outside(ping: LocationPing, fences) -> bool:
+def _outside(ping, fences) -> bool:
     edge = min(haversine_meters(ping.lat, ping.lng, f.latitude, f.longitude)
                - f.radius_meters for f in fences)
     return edge > (ping.accuracy or 0.0) + EXIT_BUFFER_M
@@ -206,12 +214,16 @@ async def ingest_pings(
     req = (await requirements(db, [user_id]))[user_id]
     if not req.required:
         return {"accepted": 0, "dropped": {"not_required": len(pings)} if pings else {}}
-    if user_id not in await active_consents(db, [user_id]):
+    consent = (await active_consents(db, [user_id])).get(user_id)
+    if consent is None:
         return {"accepted": 0, "dropped": {"no_consent": len(pings)} if pings else {}}
 
+    since = consent_floor(consent)
     ok = []
     for p in pings:
         r = validate_ping(p, now)
+        if r is None and aware(p.captured_at) < since:
+            r = "before_consent"
         if r:
             drop(r)
         else:
@@ -246,29 +258,60 @@ async def ingest_pings(
         db.add_all(new_rows)
         await db.flush()
         await _check_geofence_exit(
-            db, user_id, {r.work_date for r in new_rows}, now)
+            db, user_id, new_rows, wins, req.interval_seconds, now)
     return {"accepted": len(new_rows), "dropped": dropped}
 
 
-async def _check_geofence_exit(db, user_id: int, work_dates, now: datetime):
+def consent_floor(consent) -> datetime:
+    """Pings older than the active consent are never stored or shown
+    (compared at whole-second precision, like stored pings)."""
+    return aware(consent.consented_at).replace(microsecond=0)
+
+
+async def _check_geofence_exit(
+    db, user_id: int, new_rows, wins, interval: int, now: datetime,
+):
+    """Alert once per (user, work_date) when two consecutive pings (at most
+    2x interval apart) are both outside the fences, counting only pings
+    inside the ACTUAL shift (no +/-30 min margin) and, if the user has
+    punched in that day, only from the punch-in on."""
     from app.services.punch import _load_geo_config_with_fences
     geo_enabled, _mode, fences = await _load_geo_config_with_fences(db, user_id)
     if not geo_enabled or not fences:
         return
-    for wd in sorted(work_dates):
+    by_wd: Dict[date, datetime] = {}
+    for r in new_rows:
+        c = aware(r.captured_at)
+        by_wd[r.work_date] = min(c, by_wd.get(r.work_date, c))
+    shifts = {w[0]: (w[1] + WINDOW_MARGIN, w[2] - WINDOW_MARGIN) for w in wins}
+    max_gap = timedelta(seconds=2 * interval)
+    for wd in sorted(by_wd):
+        if wd not in shifts:
+            continue
         already = (await db.execute(
             select(TrackingAlert.id).where(
                 TrackingAlert.user_id == user_id, TrackingAlert.work_date == wd,
                 TrackingAlert.kind == ALERT_GEOFENCE_EXIT))).first()
         if already:
             continue
+        lo, hi = shifts[wd]
+        pin = (await db.execute(
+            select(Attendance.captured_at).where(
+                Attendance.user_id == user_id, Attendance.work_date == wd)
+            .order_by(Attendance.captured_at).limit(1))).scalar()
+        if pin is not None:
+            lo = max(lo, aware(pin))
         rows = (await db.execute(
-            select(LocationPing).where(
-                LocationPing.user_id == user_id, LocationPing.work_date == wd)
-            .order_by(LocationPing.captured_at))).scalars().all()
+            select(LocationPing.captured_at, LocationPing.lat,
+                   LocationPing.lng, LocationPing.accuracy).where(
+                LocationPing.user_id == user_id, LocationPing.work_date == wd,
+                LocationPing.captured_at >= max(lo, by_wd[wd] - max_gap),
+                LocationPing.captured_at <= hi)
+            .order_by(LocationPing.captured_at))).all()
         trigger = None
         for a, b in zip(rows, rows[1:]):
-            if _outside(a, fences) and _outside(b, fences):
+            if (aware(b.captured_at) - aware(a.captured_at) <= max_gap
+                    and _outside(a, fences) and _outside(b, fences)):
                 trigger = b
                 break
         if trigger is None:
@@ -309,6 +352,21 @@ def ping_row(p: LocationPing) -> Dict[str, Any]:
             "speed": p.speed, "battery": p.battery}
 
 
+async def _purge_batched(session, model, cond) -> int:
+    """Delete matching rows PURGE_BATCH at a time, committing per batch."""
+    total = 0
+    while True:
+        ids = list((await session.execute(
+            select(model.id).where(cond).limit(PURGE_BATCH))).scalars().all())
+        if not ids:
+            return total
+        await session.execute(delete(model).where(model.id.in_(ids)))
+        await session.commit()
+        total += len(ids)
+        if len(ids) < PURGE_BATCH:
+            return total
+
+
 async def purge_pings(session, now: Optional[datetime] = None) -> Dict[str, Any]:
     now = aware(now) if now else datetime.now(timezone.utc)
     rules = await get_time_rules(session)
@@ -319,11 +377,18 @@ async def purge_pings(session, now: Optional[datetime] = None) -> Dict[str, Any]
     except ValueError:
         days = 30
     cutoff = now - timedelta(days=days)
-    pings = (await session.execute(
-        delete(LocationPing).where(LocationPing.captured_at < cutoff))).rowcount
-    alerts = (await session.execute(
-        delete(TrackingAlert).where(
-            TrackingAlert.work_date < cutoff.date()))).rowcount
-    await session.commit()
-    return {"retention_days": days, "pings_deleted": pings or 0,
-            "alerts_deleted": alerts or 0}
+    pings = await _purge_batched(
+        session, LocationPing, LocationPing.captured_at < cutoff)
+    alerts = await _purge_batched(
+        session, TrackingAlert, TrackingAlert.work_date < cutoff.date())
+    return {"retention_days": days, "pings_deleted": pings,
+            "alerts_deleted": alerts}
+
+
+async def delete_user_data(db, user_id: int) -> Dict[str, int]:
+    """Employee data control: remove own pings + alerts. Caller commits."""
+    p = (await db.execute(
+        delete(LocationPing).where(LocationPing.user_id == user_id))).rowcount or 0
+    a = (await db.execute(
+        delete(TrackingAlert).where(TrackingAlert.user_id == user_id))).rowcount or 0
+    return {"pings": p, "alerts": a}

@@ -46,11 +46,11 @@ def upgrade():
         sa.Column("id", sa.Integer, primary_key=True),
         sa.Column("user_id", sa.Integer, sa.ForeignKey("user.id", ondelete="CASCADE"), nullable=False),
         sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("lat", sa.Float, nullable=False),
-        sa.Column("lng", sa.Float, nullable=False),
-        sa.Column("accuracy", sa.Float, nullable=True),
-        sa.Column("speed", sa.Float, nullable=True),
-        sa.Column("battery", sa.Float, nullable=True),
+        sa.Column("lat", sa.Double, nullable=False),
+        sa.Column("lng", sa.Double, nullable=False),
+        sa.Column("accuracy", sa.Double, nullable=True),
+        sa.Column("speed", sa.Double, nullable=True),
+        sa.Column("battery", sa.Double, nullable=True),
         sa.Column("work_date", sa.Date, nullable=False),
         sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("user_id", "captured_at", name="uq_location_ping_user_ts"),
@@ -65,6 +65,7 @@ def upgrade():
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("user_id", "work_date", "kind", name="uq_tracking_alert"),
     )
+    op.create_index("ix_tracking_alert_work_date", "tracking_alert", ["work_date"])
 
 
 def downgrade():

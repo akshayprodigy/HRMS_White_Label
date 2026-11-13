@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String,
+    Boolean, Date, DateTime, Double, ForeignKey, Index, Integer, String,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -81,11 +81,11 @@ class LocationPing(Base):
         Integer, ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False)
-    lat: Mapped[float] = mapped_column(Float, nullable=False)
-    lng: Mapped[float] = mapped_column(Float, nullable=False)
-    accuracy: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    speed: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    battery: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    lat: Mapped[float] = mapped_column(Double, nullable=False)
+    lng: Mapped[float] = mapped_column(Double, nullable=False)
+    accuracy: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    speed: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    battery: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
     work_date: Mapped[date] = mapped_column(Date, nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False)
@@ -96,6 +96,7 @@ class TrackingAlert(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "work_date", "kind",
                          name="uq_tracking_alert"),
+        Index("ix_tracking_alert_work_date", "work_date"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

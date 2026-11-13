@@ -97,7 +97,8 @@ async def give_consent(db: deps.DBDep, me: deps.CurrentUser,
 
 
 @router.delete("/consent")
-async def revoke_consent(db: deps.DBDep, me: deps.CurrentUser):
+async def revoke_consent(db: deps.DBDep, me: deps.CurrentUser,
+                         delete_data: bool = False):
     uid = me.id
 
     async def go():
@@ -108,10 +109,37 @@ async def revoke_consent(db: deps.DBDep, me: deps.CurrentUser):
             db.add(AuditLog(
                 user_id=uid, action="TRACKING_CONSENT_REVOKED",
                 resource_type="tracking_consent", resource_id=str(uid)))
-        return cur is not None
+        deleted = None
+        if delete_data:
+            deleted = await lt.delete_user_data(db, uid)
+            db.add(AuditLog(
+                user_id=uid, action="TRACKING_DATA_DELETED",
+                resource_type="location_ping", resource_id=str(uid),
+                details={"counts": deleted, "with_consent_revoke": True}))
+        return cur is not None, deleted
 
-    changed = await retry_on_lock(db, go, commit=True)
-    return {"consented": False, "revoked": changed}
+    changed, deleted = await retry_on_lock(db, go, commit=True)
+    out = {"consented": False, "revoked": changed}
+    if deleted is not None:
+        out["deleted"] = deleted
+    return out
+
+
+@router.delete("/my-data")
+async def delete_my_data(db: deps.DBDep, me: deps.CurrentUser):
+    """Employee data control: erase own pings and tracking alerts."""
+    uid = me.id
+
+    async def go():
+        await lock_user_rows(db, [uid])
+        deleted = await lt.delete_user_data(db, uid)
+        db.add(AuditLog(
+            user_id=uid, action="TRACKING_DATA_DELETED",
+            resource_type="location_ping", resource_id=str(uid),
+            details={"counts": deleted}))
+        return deleted
+
+    return {"deleted": await retry_on_lock(db, go, commit=True)}
 
 
 @router.post("/pings")
@@ -135,13 +163,17 @@ async def my_trail(
     return await _trail(db, me.id, d)
 
 
-async def _trail(db, user_id: int, d: pydate) -> dict:
+async def _trail(db, user_id: int, d: pydate, since=None) -> dict:
+    q = select(LocationPing).where(
+        LocationPing.user_id == user_id, LocationPing.work_date == d)
+    if since is not None:
+        q = q.where(LocationPing.captured_at >= since)
     rows = (await db.execute(
-        select(LocationPing).where(
-            LocationPing.user_id == user_id, LocationPing.work_date == d)
-        .order_by(LocationPing.captured_at).limit(MAX_TRAIL))).scalars().all()
+        q.order_by(LocationPing.captured_at).limit(MAX_TRAIL + 1))
+    ).scalars().all()
     return {"user_id": user_id, "date": d.isoformat(),
-            "points": [lt.ping_row(p) for p in rows]}
+            "truncated": len(rows) > MAX_TRAIL,
+            "points": [lt.ping_row(p) for p in rows[:MAX_TRAIL]]}
 
 
 # --- schedulers ----------------------------------------------------------
@@ -175,7 +207,8 @@ async def field_now(
                 LocationPing.user_id.in_(tracked),
                 LocationPing.captured_at >= now - lt.STALE_AFTER)
             .order_by(LocationPing.captured_at))).scalars().all():
-            latest[p.user_id] = p  # ascending: last wins
+            if lt.aware(p.captured_at) >= lt.consent_floor(consents[p.user_id]):
+                latest[p.user_id] = p  # ascending: last wins
     board = {r.user_id: r for r in await live_ops.live_board(db, tracked, now)}
     rows = []
     for uid in tracked:
@@ -190,6 +223,12 @@ async def field_now(
             "start_hhmm": r.start_hhmm, "end_hhmm": r.end_hhmm,
             "ping": lt.ping_row(p) if p else None,
         })
+    me_id = me.id
+    db.add(AuditLog(
+        user_id=me_id, action="TRACKING_FIELD_NOW_VIEWED",
+        resource_type="location_field_now", resource_id=None,
+        details={"department": department, "count": len(rows)}))
+    await db.commit()
     return {"now": now.isoformat(), "tracked": len(rows),
             "with_location": sum(1 for r in rows if r["ping"]), "rows": rows}
 
@@ -207,11 +246,12 @@ async def trail(
         raise HTTPException(
             status_code=403, detail="This employee is outside your scope.")
     req = (await lt.requirements(db, [user_id]))[user_id]
-    if not req.required or user_id not in await lt.active_consents(db, [user_id]):
+    consent = (await lt.active_consents(db, [user_id])).get(user_id)
+    if not req.required or consent is None:
         raise HTTPException(
             status_code=403,
             detail="Location tracking is not active for this employee.")
-    out = await _trail(db, user_id, d)
+    out = await _trail(db, user_id, d, since=lt.consent_floor(consent))
     me_id = me.id
     db.add(AuditLog(
         user_id=me_id, action="TRACKING_TRAIL_VIEWED",

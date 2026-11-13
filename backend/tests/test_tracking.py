@@ -37,6 +37,7 @@ T = f"{API}/tracking"
 PW = "test@12345"
 IN_FENCE = (22.5726, 88.3639)
 OUT_FENCE = (22.6200, 88.4000)  # ~6 km away
+NEAR = (22.5816, 88.3639)  # ~1 km north of the fence centre
 
 
 def _now():
@@ -203,12 +204,24 @@ async def _enable(client, w, role="trk", **kw):
     return r
 
 
+async def _backdate(uid, hours=3):
+    """Move the active consent back so older test pings are not
+    'before_consent'."""
+    async with SessionLocal() as db:
+        for c in (await db.execute(select(TrackingConsent).where(
+                TrackingConsent.user_id == uid,
+                TrackingConsent.revoked_at.is_(None)))).scalars().all():
+            c.consented_at = _now() - timedelta(hours=hours)
+        await db.commit()
+
+
 async def _ready(client, w, tag="e1"):
     """Policy on + consent given; returns the employee's headers."""
     await _enable(client, w)
     h = await _login(client, w, tag)
     r = await client.post(f"{T}/consent", headers=h, json={"app_version": "1.0"})
     assert r.status_code == 200, r.text
+    await _backdate(w["ids"][tag])
     return h
 
 
@@ -365,6 +378,7 @@ async def test_ping_gating(client, world):
     assert (await _post(client, h, [_ping(5)])) == {
         "accepted": 0, "dropped": {"no_consent": 1}}
     await client.post(f"{T}/consent", headers=h)
+    await _backdate(world["ids"]["e1"])
     assert (await _post(client, h, [_ping(5)]))["accepted"] == 1
     # revoked -> dropped again
     await client.delete(f"{T}/consent", headers=h)
@@ -383,10 +397,11 @@ async def test_ping_validation_dedupe_and_reasons(client, world):
         _ping(-10),  # 10 min in the future
         _ping(60 * 25),  # older than 24h
         _ping(60 * 3),  # outside the shift window (shift is now +-1h)
+        _ping(6, battery=101), _ping(5, speed=300), _ping(4, accuracy=6000),
     ]
     out = await _post(client, h, batch)
     assert out["accepted"] == 1
-    assert out["dropped"] == {"duplicate": 1, "invalid": 3, "future": 1,
+    assert out["dropped"] == {"duplicate": 1, "invalid": 6, "future": 1,
                               "too_old": 1, "outside_window": 1}
     # re-sending the same ping across batches is a duplicate
     out = await _post(client, h, [good, _ping(6)])
@@ -434,8 +449,9 @@ async def test_field_now_and_trail_scope(client, world):
     he1 = await _ready(client, world, "e1")
     heo = await _login(client, world, "eo")
     await client.post(f"{T}/consent", headers=heo)
-    he2 = await _login(client, world, "e2")
+    await _backdate(i["eo"])
     await _post(client, he1, [_ping(8), _ping(2)])
+    he2 = await _login(client, world, "e2")
     await _post(client, heo, [_ping(3)])
     head = await _login(client, world, "head")
     now = (await client.get(f"{T}/field-now", headers=head)).json()
@@ -528,12 +544,13 @@ async def test_geofence_exit_alert_exactly_once(client, world):
 async def test_geofence_exit_respects_accuracy_and_no_fence(client, world):
     h = await _ready(client, world)
     # poor accuracy (10 km) makes the position uncertain: not "outside"
-    await _post(client, h, [_ping(9, OUT_FENCE, accuracy=10000),
-                            _ping(8, OUT_FENCE, accuracy=10000)])
+    await _post(client, h, [_ping(9, NEAR, accuracy=1000),
+                            _ping(8, NEAR, accuracy=1000)])
     assert (await _alerts_and_notes(world))[0] == []
     # a user without fences configured never alerts
     heo = await _login(client, world, "eo")
     await client.post(f"{T}/consent", headers=heo)
+    await _backdate(world["ids"]["eo"])
     await _post(client, heo, [_ping(7, OUT_FENCE), _ping(5, OUT_FENCE)])
     async with SessionLocal() as db:
         assert (await db.execute(select(TrackingAlert).where(
@@ -618,3 +635,106 @@ async def test_admin_permissions(client, world):
         assert (await db.execute(select(AuditLog).where(
             AuditLog.user_id == world["ids"]["hrw"],
             AuditLog.action == "TRACKING_POLICY_UPDATED"))).first() is not None
+
+
+# --- review fixes -------------------------------------------------------------------
+
+
+async def test_before_consent_dropped(client, world):
+    await _enable(client, world)
+    h = await _login(client, world, "e1")
+    await client.post(f"{T}/consent", headers=h)  # consented just now
+    out = await _post(client, h, [_ping(10), _ping(0)])
+    assert out == {"accepted": 1, "dropped": {"before_consent": 1}}
+
+
+async def test_geofence_exit_ignores_pre_shift_margin_and_gaps(client, world):
+    h = await _ready(client, world)
+    # shift is now +-1h; 80 and 70 min ago are in the 30 min pre-shift margin
+    out = await _post(client, h, [_ping(80, OUT_FENCE), _ping(70, OUT_FENCE)])
+    assert out["accepted"] == 2
+    a, n, _ = await _alerts_and_notes(world)
+    assert a == [] and n == []
+    # two outside pings inside the shift but 15 min apart (> 2 x 300 s)
+    await _post(client, h, [_ping(30, OUT_FENCE), _ping(15, OUT_FENCE)])
+    a, n, _ = await _alerts_and_notes(world)
+    assert a == [] and n == []
+    # ...and a pair within the gap alerts
+    await _post(client, h, [_ping(8, OUT_FENCE), _ping(4, OUT_FENCE)])
+    a, n, _ = await _alerts_and_notes(world)
+    assert len(a) == 1 and len(n) == 1
+
+
+async def test_geofence_exit_only_after_punch_in(client, world):
+    from app.models.attendance import Attendance
+    h = await _ready(client, world)
+    i = world["ids"]
+    async with SessionLocal() as db:
+        db.add(Attendance(user_id=i["e1"], mode="mobile", work_date=_now().date(),
+                          captured_at=_now() - timedelta(minutes=3)))
+        await db.commit()
+    try:
+        await _post(client, h, [_ping(10, OUT_FENCE), _ping(7, OUT_FENCE)])
+        assert (await _alerts_and_notes(world))[0] == []  # before punch-in
+        await _post(client, h, [_ping(2, OUT_FENCE), _ping(1, OUT_FENCE)])
+        assert len((await _alerts_and_notes(world))[0]) == 1
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(Attendance).where(
+                Attendance.user_id == i["e1"]))
+            await db.commit()
+
+
+async def test_scheduler_views_hide_pings_before_reconsent(client, world):
+    i = world["ids"]
+    he1 = await _ready(client, world)
+    head = await _login(client, world, "head")
+    await _post(client, he1, [_ping(8)])
+    today = _now().date().isoformat()
+    assert len((await client.get(f"{T}/trail?user_id={i['e1']}&date={today}",
+                                 headers=head)).json()["points"]) == 1
+    await client.delete(f"{T}/consent", headers=he1)
+    await client.post(f"{T}/consent", headers=he1)  # new consent, now
+    rows = (await client.get(f"{T}/field-now", headers=head)).json()["rows"]
+    assert rows[0]["ping"] is None
+    tr = (await client.get(f"{T}/trail?user_id={i['e1']}&date={today}",
+                           headers=head)).json()
+    assert tr["points"] == [] and tr["truncated"] is False
+    # the employee still sees the full own trail
+    assert len((await client.get(f"{T}/my-trail?date={today}",
+                                 headers=he1)).json()["points"]) == 1
+
+
+async def test_employee_data_control(client, world):
+    i = world["ids"]
+    h = await _ready(client, world)
+    await _post(client, h, [_ping(20, OUT_FENCE), _ping(18, OUT_FENCE)])
+    assert len((await _alerts_and_notes(world))[0]) == 1
+    r = await client.delete(f"{T}/my-data", headers=h)
+    assert r.json() == {"deleted": {"pings": 2, "alerts": 1}}
+    async with SessionLocal() as db:
+        assert (await db.execute(select(LocationPing).where(
+            LocationPing.user_id == i["e1"]))).first() is None
+        a = (await db.execute(select(AuditLog).where(
+            AuditLog.user_id == i["e1"],
+            AuditLog.action == "TRACKING_DATA_DELETED"))).scalars().all()
+    assert len(a) == 1 and a[0].details == {"counts": {"pings": 2, "alerts": 1}}
+    # consent survives my-data; delete_data=true revokes and erases
+    assert (await client.get(f"{T}/my-status", headers=h)).json()["consented"] is True
+    await _post(client, h, [_ping(5)])
+    r = await client.delete(f"{T}/consent?delete_data=true", headers=h)
+    assert r.json()["revoked"] is True and r.json()["deleted"]["pings"] == 1
+    assert (await client.get(f"{T}/my-status", headers=h)).json()["consented"] is False
+    assert (await client.get(f"{T}/my-trail", headers=h)).json()["points"] == []
+
+
+async def test_field_now_view_audited(client, world):
+    await _ready(client, world)
+    head = await _login(client, world, "head")
+    await client.get(f"{T}/field-now?department={world['dx']}", headers=head)
+    async with SessionLocal() as db:
+        rows = (await db.execute(select(AuditLog).where(
+            AuditLog.user_id == world["ids"]["head"],
+            AuditLog.action == "TRACKING_FIELD_NOW_VIEWED"))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].details == {"department": world["dx"], "count": 1}
