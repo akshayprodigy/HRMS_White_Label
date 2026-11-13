@@ -59,3 +59,17 @@ describe('routeResponse: taps (deep links)', () => {
     expect(hrefFor(parsePushData({ ...chain, resource_id: '../x' }))).toBe('/approvals');
   });
 });
+
+describe('routeResponse: per-user binding', () => {
+  const mine = { ...approval, user_id: 1 };
+  it('acts / deep-links when the recipient matches or the push has no user_id (older backend)', () => {
+    expect(routeResponse(resp(mine, 'approve'), 1)).toMatchObject({ kind: 'action' });
+    expect(routeResponse(resp(approval, 'approve'), 1)).toMatchObject({ kind: 'action' });
+    expect(routeResponse(resp(chain), 1)).toMatchObject({ href: '/approval/chain-77' });
+    expect(routeResponse(resp({ ...mine, user_id: '1' }, 'approve'), 1)).toMatchObject({ kind: 'action' });
+  });
+  it("ignores another user's buttons and sends their taps to /home", () => {
+    expect(routeResponse(resp(mine, 'approve'), 2)).toEqual({ kind: 'ignore' });
+    expect(routeResponse(resp({ ...chain, user_id: 1 }), 2)).toEqual({ kind: 'open', href: '/home', refreshBroadcasts: false });
+  });
+});

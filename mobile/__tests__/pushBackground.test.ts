@@ -32,6 +32,7 @@ beforeEach(async () => {
   setAdapter(mock.adapter());
   setTokens(null);
   await tokenStorage.save({ accessToken: 'stored-a', refreshToken: 'stored-r' });
+  await tokenStorage.saveMe({ id: 1 });
   resetActionsForTests();
   mockSchedule.mockClear();
   mockRegisterTask.mockClear();
@@ -62,6 +63,12 @@ describe('headless task', () => {
     await handleBackgroundPayload(resp(approval, 'claim'));
     await handleBackgroundPayload(null);
     expect(mock.history.post).toHaveLength(0);
+  });
+  it("skips a notification addressed to a different user than the stored session", async () => {
+    await handleBackgroundPayload(resp({ ...approval, user_id: 2 }, 'approve'));
+    expect(mock.history.post).toHaveLength(0);
+    await handleBackgroundPayload(resp({ ...approval, user_id: 1 }, 'approve'));
+    expect(mock.history.post).toHaveLength(1);
   });
   it('does nothing when signed out (no stored session)', async () => {
     await tokenStorage.clear();

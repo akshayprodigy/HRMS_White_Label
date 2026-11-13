@@ -6,7 +6,7 @@ import { onBeforeLogout, useAuth } from '../../auth/AuthProvider';
 import { BROADCASTS_KEY } from '../broadcast/api';
 import { performNotificationAction, refreshAfterPush } from './actions';
 import { registerBackgroundTask } from './backgroundTask';
-import { registerForPush, unregisterPush } from './registration';
+import { clearNotificationState, registerForPush, unregisterPush } from './registration';
 import { parsePushData, routeResponse } from './routing';
 
 /** Mounted once inside AuthProvider + QueryClientProvider: registration, token refresh, logout unregister, taps and actions. */
@@ -30,7 +30,10 @@ export function usePushLifecycle() {
   }, []);
 
   // Unregister BEFORE the tokens are cleared (AuthProvider runs these hooks first).
-  useEffect(() => onBeforeLogout(unregisterPush), []);
+  useEffect(() => onBeforeLogout(async () => {
+    await unregisterPush();
+    clearNotificationState();
+  }), []);
 
   useEffect(() => {
     if (userId == null) return;
@@ -60,7 +63,7 @@ export function usePushLifecycle() {
       const id = `${res.notification.request.identifier}:${res.actionIdentifier}:${res.notification.date}`;
       if (handled.current.has(id)) return;
       handled.current.add(id);
-      const routed = routeResponse(res);
+      const routed = routeResponse(res, userId);
       if (routed.kind === 'action') {
         void performNotificationAction(qc, routed.notification_id, routed.action);
       } else if (routed.kind === 'open') {

@@ -24,7 +24,8 @@ export function useBroadcastRespond() {
   return useMutation({
     mutationFn: (v: BroadcastResponseInput) =>
       v.kind === 'safety' ? markSafety(v.id, v.status, v.note) : v.kind === 'ack' ? acknowledge(v.id) : markRead(v.id),
-    onSuccess: (row, v) => {
+    onSuccess: async (row, v) => {
+      await qc.cancelQueries({ queryKey: BROADCASTS_KEY }); // an in-flight poll must not overwrite the resolved row
       // Resolve the row immediately so the modal closes without waiting for the refetch.
       qc.setQueryData<MyBroadcast[]>(BROADCASTS_KEY, (cur) => cur?.map((b) => (b.id === v.id ? { ...b, ...row, pending: false } : b)));
     },

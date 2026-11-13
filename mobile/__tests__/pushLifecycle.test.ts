@@ -4,7 +4,8 @@ import { QueryClient } from '@tanstack/react-query';
 import { setAdapter, setTokens } from '../src/api/client';
 import { performNotificationAction, resetActionsForTests } from '../src/features/push/actions';
 import { setupCategories, setupChannels } from '../src/features/push/categories';
-import { getRegisteredToken, registerForPush, resetRegistrationForTests, unregisterPush } from '../src/features/push/registration';
+import { clearNotificationState, getRegisteredToken, registerForPush, resetRegistrationForTests, unregisterPush } from '../src/features/push/registration';
+import * as SecureStore from 'expo-secure-store';
 import { GATE_BODY } from '../test-utils';
 
 jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ id: 'dev' }), getApiBaseUrl: () => 'http://test/api/v1' }));
@@ -21,13 +22,15 @@ const mockN = {
   setNotificationChannelAsync: jest.fn(async () => null),
   setNotificationCategoryAsync: jest.fn(async () => ({})),
   scheduleNotificationAsync: jest.fn(async () => 'id'),
+  dismissAllNotificationsAsync: jest.fn(async () => undefined),
+  clearLastNotificationResponse: jest.fn(),
   AndroidImportance: { HIGH: 4, MAX: 5 },
   AndroidNotificationVisibility: { PUBLIC: 1 },
 };
 jest.mock('expo-notifications', () => {
   // Lazy getters: the import is evaluated before `mockN` is initialised.
   const m: Record<string, unknown> = { __esModule: true };
-  for (const k of ['getPermissionsAsync', 'requestPermissionsAsync', 'getExpoPushTokenAsync', 'setNotificationChannelAsync', 'setNotificationCategoryAsync', 'scheduleNotificationAsync', 'AndroidImportance', 'AndroidNotificationVisibility']) {
+  for (const k of ['getPermissionsAsync', 'requestPermissionsAsync', 'getExpoPushTokenAsync', 'setNotificationChannelAsync', 'setNotificationCategoryAsync', 'scheduleNotificationAsync', 'dismissAllNotificationsAsync', 'clearLastNotificationResponse', 'AndroidImportance', 'AndroidNotificationVisibility']) {
     Object.defineProperty(m, k, { enumerable: true, get: () => (mockN as Record<string, unknown>)[k] });
   }
   return m;
@@ -36,12 +39,13 @@ const mockAlert = jest.spyOn(require('react-native').Alert, 'alert');
 
 const TOKEN = 'ExponentPushToken[abcdef123]';
 let mock: MockAdapter;
-beforeEach(() => {
+beforeEach(async () => {
   mock = new MockAdapter(axios);
   setAdapter(mock.adapter());
   setTokens({ accessToken: 't', refreshToken: 'r' });
   resetRegistrationForTests();
   resetActionsForTests();
+  await SecureStore.deleteItemAsync('hrms.push_declined_at');
   jest.clearAllMocks();
   mockProjectId = 'proj-1';
   mockIsDevice = true;
@@ -83,6 +87,7 @@ describe('registerForPush', () => {
     mockAlert.mockImplementationOnce((_t, _m, buttons) => (buttons as { onPress?: () => void }[])[0].onPress?.());
     expect(await registerForPush()).toBeNull();
     expect(mockN.requestPermissionsAsync).not.toHaveBeenCalled();
+    await SecureStore.deleteItemAsync('hrms.push_declined_at'); // the decline is throttled; simulate the cooldown passing
     mockAlert.mockImplementationOnce((_t, _m, buttons) => (buttons as { onPress?: () => void }[])[1].onPress?.());
     mockN.requestPermissionsAsync.mockResolvedValue({ granted: true });
     expect(await registerForPush()).toBe(TOKEN);
@@ -100,6 +105,69 @@ describe('registerForPush', () => {
   it('is single-flight', async () => {
     await Promise.all([registerForPush(), registerForPush()]);
     expect(mock.history.post.filter((r) => r.url === '/devices')).toHaveLength(1);
+  });
+});
+
+describe('rationale throttle', () => {
+  it('does not re-ask for 7 days after "Not now", then asks again', async () => {
+    mockN.getPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: true });
+    mockAlert.mockImplementation((_t, _m, buttons) => (buttons as { onPress?: () => void }[])[0].onPress?.());
+    await registerForPush();
+    expect(mockAlert).toHaveBeenCalledTimes(1);
+    await registerForPush();
+    expect(mockAlert).toHaveBeenCalledTimes(1);
+    const now = Date.now();
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(now + 8 * 24 * 3600 * 1000);
+    await registerForPush();
+    expect(mockAlert).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+    mockAlert.mockReset();
+  });
+});
+
+describe('logout races', () => {
+  const deferred = <T,>() => { let res!: (v: T) => void; const promise = new Promise<T>((r) => { res = r; }); return { promise, res }; };
+  it('logout while the token fetch is in flight: no POST, nothing recorded', async () => {
+    const d = deferred<{ data: string }>();
+    mockN.getExpoPushTokenAsync.mockReturnValue(d.promise);
+    const reg = registerForPush();
+    await new Promise((r) => setTimeout(r, 0));
+    const out = unregisterPush();
+    d.res({ data: TOKEN });
+    await out;
+    expect(await reg).toBeNull();
+    expect(mock.history.post).toHaveLength(0);
+    expect(getRegisteredToken()).toBeNull();
+  });
+  it('logout while the POST is in flight: the new row is revoked and not recorded', async () => {
+    const d = deferred<[number, object]>();
+    mock.onPost('/devices').reply(() => d.promise);
+    mock.onDelete(`/devices/${encodeURIComponent(TOKEN)}`).reply(200, { revoked: true });
+    const reg = registerForPush();
+    await new Promise((r) => setTimeout(r, 10));
+    const out = unregisterPush();
+    d.res([200, {}]);
+    await out;
+    expect(await reg).toBeNull();
+    expect(mock.history.delete).toHaveLength(1);
+    expect(getRegisteredToken()).toBeNull();
+  });
+  it('a login right after logout registers fresh instead of reusing the stale flight', async () => {
+    const d = deferred<{ data: string }>();
+    mockN.getExpoPushTokenAsync.mockReturnValueOnce(d.promise);
+    const stale = registerForPush();
+    await new Promise((r) => setTimeout(r, 0));
+    const out = unregisterPush();
+    const fresh = registerForPush();
+    d.res({ data: TOKEN });
+    await out;
+    expect(await stale).toBeNull();
+    expect(await fresh).toBe(TOKEN);
+  });
+  it('clearNotificationState dismisses the tray and clears the pending response', () => {
+    clearNotificationState();
+    expect(mockN.dismissAllNotificationsAsync).toHaveBeenCalled();
+    expect(mockN.clearLastNotificationResponse).toHaveBeenCalled();
   });
 });
 
@@ -146,6 +214,11 @@ describe('performNotificationAction', () => {
     expect(await performNotificationAction(c, 5, 'approve')).toBe(true);
     expect(JSON.parse(mock.history.post.find((r) => r.url === '/notifications/actions')!.data)).toEqual({ notification_id: 5, action: 'approve' });
     expect(spy).toHaveBeenCalled();
+  });
+  it('uses friendly copy for 404', async () => {
+    mock.onPost('/notifications/actions').reply(404, { detail: 'Notification not found' });
+    await performNotificationAction(qc(), 9, 'approve');
+    expect(mockN.scheduleNotificationAsync).toHaveBeenCalledWith(expect.objectContaining({ content: expect.objectContaining({ body: 'This notification is no longer available.' }) }));
   });
   it('de-duplicates a re-delivered response', async () => {
     mock.onPost('/notifications/actions').reply(200, {});

@@ -23,7 +23,7 @@ export async function performNotificationAction(qc: QueryClient, notificationId:
   } catch (e) {
     seen.delete(k); // allow a retry from a fresh tap
     const err = normalizeError(e);
-    const body = isGateError(err) ? 'Punch in first, then try again from the app.' : err.status === 0 ? 'No connection. Open the app to try again.' : err.message;
+    const body = isGateError(err) ? 'Punch in first, then try again from the app.' : err.status === 0 ? 'No connection. Open the app to try again.' : err.status === 404 ? 'This notification is no longer available.' : err.message;
     // Nothing visible happened in the background, so tell the user the action did not go through.
     await Notifications.scheduleNotificationAsync({ content: { title: "Couldn't complete that action", body, data: { category: 'none' } }, trigger: null }).catch(() => undefined);
     return false;

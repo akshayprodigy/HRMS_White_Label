@@ -5,10 +5,11 @@ import { usePushLifecycle } from '../src/features/push/usePushLifecycle';
 jest.mock('expo-task-manager', () => ({ defineTask: jest.fn() }));
 const mockPerform = jest.fn(async () => true);
 const mockRegister = jest.fn(async () => null);
+const mockClear = jest.fn();
 const mockUnregister = jest.fn(async () => undefined);
 jest.mock('../src/features/push/actions', () => ({ performNotificationAction: (...a: unknown[]) => (mockPerform as (...x: unknown[]) => unknown)(...a), refreshAfterPush: jest.fn() }));
 jest.mock('../src/features/push/backgroundTask', () => ({ registerBackgroundTask: jest.fn(async () => undefined) }));
-jest.mock('../src/features/push/registration', () => ({ registerForPush: () => mockRegister(), unregisterPush: () => mockUnregister() }));
+jest.mock('../src/features/push/registration', () => ({ registerForPush: () => mockRegister(), unregisterPush: () => mockUnregister(), clearNotificationState: () => mockClear() }));
 let mockUser: { id: number } | null = { id: 1 };
 const mockHooks: (() => unknown)[] = [];
 jest.mock('../src/auth/AuthProvider', () => ({
@@ -52,6 +53,22 @@ beforeEach(() => {
   mockN.getLastNotificationResponse.mockImplementation(() => mockLast);
 });
 
+describe('usePushLifecycle: cross-user', () => {
+  it("does not post or navigate for another user's notification", async () => {
+    await renderHook(() => usePushLifecycle(), { wrapper: wrap });
+    responseCb!(response({ notification_id: 5, user_id: 2, category: 'approval' }, 'approve', 'a1'));
+    expect(mockPerform).not.toHaveBeenCalled();
+    responseCb!(response({ notification_id: 6, user_id: 2, category: 'open_shift', resource_type: 'open_shift', resource_id: '3' }, DEF, 'a2'));
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('/home');
+  });
+  it('still acts when user_id matches', async () => {
+    await renderHook(() => usePushLifecycle(), { wrapper: wrap });
+    responseCb!(response({ notification_id: 5, user_id: 1, category: 'approval' }, 'approve', 'a3'));
+    expect(mockPerform).toHaveBeenCalledWith(expect.anything(), 5, 'approve');
+  });
+});
+
 describe('usePushLifecycle', () => {
   it('registers after login, subscribes to token rotation, and hooks unregister into logout', async () => {
     await renderHook(() => usePushLifecycle(), { wrapper: wrap });
@@ -59,6 +76,7 @@ describe('usePushLifecycle', () => {
     expect(mockN.addPushTokenListener).toHaveBeenCalled();
     await mockHooks[0]();
     expect(mockUnregister).toHaveBeenCalled();
+    expect(mockClear).toHaveBeenCalled();
   });
   it('does not register while signed out', async () => {
     mockUser = null;

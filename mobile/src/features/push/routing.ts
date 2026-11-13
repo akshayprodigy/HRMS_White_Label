@@ -21,6 +21,8 @@ const OPEN_APP_ACTIONS: ReadonlySet<string> = new Set(['need_help']);
 
 export type PushData = {
   notification_id: number | null;
+  /** Recipient (added by the backend later; null on older servers = no per-user check). */
+  user_id: number | null;
   event_type: string | null;
   resource_type: string | null;
   resource_id: string | null;
@@ -41,9 +43,10 @@ export function parsePushData(raw: unknown): PushData | null {
   if (!raw || typeof raw !== 'object') return null;
   const d = raw as Record<string, unknown>;
   const id = typeof d.notification_id === 'number' ? d.notification_id : typeof d.notification_id === 'string' && /^\d+$/.test(d.notification_id) ? Number(d.notification_id) : null;
+  const uid = typeof d.user_id === 'number' ? d.user_id : typeof d.user_id === 'string' && /^\d+$/.test(d.user_id) ? Number(d.user_id) : null;
   const cat = typeof d.category === 'string' && d.category in CATEGORY_ACTIONS ? (d.category as PushCategory) : 'none';
   const str = (v: unknown) => (typeof v === 'string' && v ? v : typeof v === 'number' ? String(v) : null);
-  return { notification_id: id, event_type: str(d.event_type), resource_type: str(d.resource_type), resource_id: str(d.resource_id), category: cat };
+  return { notification_id: id, user_id: uid, event_type: str(d.event_type), resource_type: str(d.resource_type), resource_id: str(d.resource_id), category: cat };
 }
 
 export function hrefFor(data: PushData | null): string {
@@ -57,9 +60,16 @@ export function hrefFor(data: PushData | null): string {
   return '/home'; // broadcasts surface as the root modal / Home banner
 }
 
-export function routeResponse(res: ResponseLike | null | undefined): RoutedResponse {
+/**
+ * `currentUserId` = who is signed in now. A notification addressed to someone else (shared device, A's tray entry tapped
+ * after B signed in) must never act as B or deep-link into A's resource: taps land on /home, buttons are ignored.
+ */
+export function routeResponse(res: ResponseLike | null | undefined, currentUserId?: number | null): RoutedResponse {
   if (!res) return { kind: 'ignore' };
   const data = parsePushData(res.notification?.request?.content?.data);
+  if (data && data.user_id != null && currentUserId != null && data.user_id !== currentUserId) {
+    return (res.actionIdentifier ?? DEFAULT_ACTION_ID) === DEFAULT_ACTION_ID ? { kind: 'open', href: '/home', refreshBroadcasts: false } : { kind: 'ignore' };
+  }
   const actionId = res.actionIdentifier ?? DEFAULT_ACTION_ID;
   const isBroadcast = data?.category === 'broadcast_safety' || data?.category === 'broadcast_ack' || data?.resource_type === 'broadcast';
 

@@ -378,7 +378,8 @@ async def test_send_builds_payload_and_marks_sent(world):
     call = rec.calls[0]
     assert call["tokens"] == [tok(world)]
     assert call["data"] == {
-        "notification_id": nid, "event_type": "approval_pending",
+        "notification_id": nid, "user_id": world["ids"]["e1"],
+        "event_type": "approval_pending",
         "resource_type": "nothing", "resource_id": "1",
         "category": "none", "actions": []}
     assert call["priority"] == "default"
@@ -518,6 +519,7 @@ async def test_action_approve_and_reject(client, world):
     async with SessionLocal() as db:
         p = await push_svc.build_payload(db, await db.get(Notification, nid))
     assert p["category"] == "approval" and p["actions"] == ["approve", "reject"]
+    assert p["user_id"] == world["ids"]["apr"]
     r = await act(client, ha, nid, "approve", comment="ok")
     assert r.status_code == 200, r.text
     assert r.json()["target"]["type"] == "approval"

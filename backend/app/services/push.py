@@ -8,6 +8,8 @@ Delivery rows for the PUSH channel are created by
 Push `data` payload contract (mobile app):
   {
     "notification_id": int,        # Notification row; the action endpoint key
+    "user_id": int,                # recipient; the app ignores the push if a
+                                   # different user is signed in on the device
     "event_type": str | null,
     "resource_type": str | null,
     "resource_id": str | null,
@@ -359,6 +361,7 @@ async def build_payload(session: AsyncSession, n) -> Dict[str, Any]:
     cat = await action_category(session, n)
     return {
         "notification_id": n.id,
+        "user_id": n.user_id,
         "event_type": n.event_type,
         "resource_type": n.resource_type,
         "resource_id": n.resource_id,

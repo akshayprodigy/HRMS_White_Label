@@ -1,4 +1,5 @@
-import { Modal, ScrollView, View } from 'react-native';
+import { useEffect } from 'react';
+import { AccessibilityInfo, Modal, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text } from '../../components/ui';
 import { useTheme } from '../../theme';
@@ -16,10 +17,15 @@ export function BroadcastModal() {
   const q = useMyBroadcasts();
   const pending = (q.data ?? []).filter((b) => b.pending && isCritical(b));
   const current = pending[0];
+  const currentId = current?.id;
+  const currentTitle = current?.title;
+  useEffect(() => {
+    if (currentId != null) AccessibilityInfo.announceForAccessibility(`Emergency alert: ${currentTitle ?? ''}`);
+  }, [currentId, currentTitle]);
   if (!current) return null;
   return (
     <Modal visible transparent={false} animationType="fade" presentationStyle="fullScreen" statusBarTranslucent onRequestClose={() => undefined}>
-      <View testID="broadcast-modal" style={{ flex: 1, backgroundColor: colors.background, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16, paddingHorizontal: 20 }}>
+      <View testID="broadcast-modal" accessibilityViewIsModal style={{ flex: 1, backgroundColor: colors.background, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16, paddingHorizontal: 20 }}>
         <ScrollView contentContainerStyle={{ gap: 14, flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <Text weight="700" size={13} style={{ color: colors.danger }} accessibilityRole="header">EMERGENCY ALERT</Text>
           <Text testID="broadcast-modal-title" weight="700" size={26}>{current.title}</Text>

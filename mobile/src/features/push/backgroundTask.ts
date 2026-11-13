@@ -17,13 +17,16 @@ export const BACKGROUND_NOTIFICATION_TASK = 'hrms-background-notification-task';
  */
 export async function handleBackgroundPayload(payload: unknown): Promise<void> {
   if (!payload || typeof payload !== 'object' || !('actionIdentifier' in payload)) return;
-  const routed = routeResponse(payload as ResponseLike);
-  if (routed.kind !== 'action') return; // taps / need_help are handled when the app opens
+  // Pure parse first (no storage); the signed-in user is only needed to reject notifications meant for someone else.
+  if (routeResponse(payload as ResponseLike).kind !== 'action') return; // taps / need_help are handled when the app opens
   if (!getTokens()) {
     const stored = await tokenStorage.load().catch(() => null);
     if (!stored) return; // signed out: nothing to act as
     setTokens(stored);
   }
+  const me = await tokenStorage.loadMe<{ id?: number }>();
+  const routed = routeResponse(payload as ResponseLike, typeof me?.id === 'number' ? me.id : null);
+  if (routed.kind !== 'action') return; // addressed to a different user
   await performNotificationAction(new QueryClient(), routed.notification_id, routed.action);
 }
 

@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { AccessibilityInfo } from 'react-native';
 import type MockAdapter from 'axios-mock-adapter';
 import { BroadcastBanner } from '../src/features/broadcast/BroadcastBanner';
 import { BroadcastModal } from '../src/features/broadcast/BroadcastModal';
@@ -49,6 +50,15 @@ describe('BroadcastModal', () => {
     expect(screen.getByTestId('broadcast-modal')).toBeTruthy(); // still up
     expect(screen.queryByText(/close|dismiss/i)).toBeNull();
     expect(screen.getByText('Fire in block B')).toBeTruthy();
+  });
+
+  it('is an accessibility modal and announces a new critical alert', async () => {
+    const spy = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined);
+    mock.onGet('/broadcasts/my').reply(200, [row()]);
+    await renderWithProviders(<BroadcastModal />);
+    const el = await screen.findByTestId('broadcast-modal');
+    expect(el.props.accessibilityViewIsModal).toBe(true);
+    expect(spy).toHaveBeenCalledWith('Emergency alert: Fire in block B');
   });
 
   it('safe: posts /safety with the note, then the modal closes', async () => {
