@@ -691,6 +691,21 @@ register_job(JobSpec(
     default_cadence_cron="30 3 * * *",
     fn=_job_attendance_selfie_purge,
 ))
+async def _job_location_ping_purge(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.location_tracking import purge_pings
+    return await purge_pings(session)
+
+
+register_job(JobSpec(
+    name="location_ping_purge",
+    display_name="Purge live-location pings",
+    description=(
+        "Daily: delete location pings and tracking alerts older than "
+        "tracking.retention_days (default 30)."
+    ),
+    default_cadence_cron="45 3 * * *",
+    fn=_job_location_ping_purge,
+))
 register_job(JobSpec(
     name="flush_notification_digests",
     display_name="Flush notification digests (hourly + daily)",

@@ -240,3 +240,7 @@ from .approver_delegation import ApproverDelegation
 from .broadcast import Broadcast, BroadcastRecipient
 from .safety import EmployeeEmergencyContact, NightShiftConsent
 from .device import DeviceToken
+from .location import (
+    TrackingPolicy, TrackingOverride, TrackingConsent, LocationPing,
+    TrackingAlert,
+)

@@ -67,6 +67,11 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Offline-captured punches are accepted only if captured within this "
         "many hours of syncing (1-72); they are flagged for HR review",
     ),
+    "tracking.retention_days": (
+        "30",
+        "Delete live-location pings (and tracking alerts) older than this "
+        "many days (1-365)",
+    ),
     "schedule.min_rest_hours": (
         "11", "Minimum rest between consecutive shifts in hours (0 = off)"
     ),
@@ -201,6 +206,14 @@ async def set_time_rules(
                 "attendance.selfie_retention_days must be a whole number "
                 "between 0 and 3650")
         updates["attendance.selfie_retention_days"] = sv
+    td = updates.get("tracking.retention_days")
+    if td is not None:
+        sv = str(td).strip()
+        if not (sv.isascii() and sv.isdigit()) or not 1 <= int(sv) <= 365:
+            raise ValueError(
+                "tracking.retention_days must be a whole number "
+                "between 1 and 365")
+        updates["tracking.retention_days"] = sv
     cm = updates.get("schedule.callback_compensation")
     if cm is not None:
         cm = str(cm).strip()

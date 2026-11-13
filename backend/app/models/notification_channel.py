@@ -99,6 +99,7 @@ EVENT_CATEGORY_MAP = {
     "emergency_broadcast": EventCategory.EMERGENCY,
     "emergency_need_help": EventCategory.EMERGENCY,
     "open_shift_available": EventCategory.SCHEDULING,
+    "tracking_geofence_exit": EventCategory.SCHEDULING,
 }
 
 
