@@ -1,3 +1,4 @@
+import { waitFor } from '@testing-library/react-native';
 import { ApiError } from '../src/api/errors';
 import { friendlyReason, BACKOFF_BASE_MS, BACKOFF_MAX_MS, PunchQueue, backoffDelay, isStale, type SyncDeps, type SyncResult } from '../src/features/punch/queue';
 import { memorySelfieFiles, memoryStore } from '../src/features/punch/store';
@@ -145,7 +146,7 @@ describe('PunchQueue', () => {
     const gate = new Promise<void>((r) => { release = r; });
     const slow = deps({ syncPunches: jest.fn(async (p) => { await gate; return p.map((x) => ({ client_uuid: x.client_uuid, kind: x.kind, status: 'created' as const })); }) });
     const first = q.sync(slow);
-    await Promise.resolve();
+    await waitFor(() => expect(slow.syncPunches).toHaveBeenCalled());
     expect((await q.sync(deps())).skipped).toBe('busy');
     const added = q.enqueue(mk('uuid-0002', '2026-11-13T09:30:00Z'));
     release();
@@ -185,11 +186,26 @@ describe('PunchQueue', () => {
     const store = memoryStore();
     const q = mkQ(store, memorySelfieFiles());
     await q.enqueue({ ...mk('uuid-0001', '2026-11-13T09:00:00Z'), selfie_uri: 'file:///c/a.jpg' });
-    const d = deps({ uploadSelfie: jest.fn(async () => { throw new ApiError('too big', 413); }), syncPunches: jest.fn(async () => { throw new ApiError('x', 0); }) });
-    const out = await q.sync(d, { force: true });
+    const failing = deps({ uploadSelfie: jest.fn(async () => { throw new ApiError('too big', 413); }), syncPunches: jest.fn(async () => { throw new ApiError('x', 0); }) });
+    const out = await q.sync(failing, { force: true });
     expect(out.selfieDropped).toBe(1);
     const saved = JSON.parse(store.data!);
     expect(saved.items[0]).toMatchObject({ selfie_path: null, selfie_dropped: true });
+    const ok = deps();
+    const out2 = await q.sync(ok, { force: true });
+    expect(out2).toMatchObject({ created: 1, failed: false });
+    expect(ok.sent[0][0]).toMatchObject({ client_uuid: 'uuid-0001', selfie_id: null });
+    expect(ok.uploadSelfie).not.toHaveBeenCalled();
+    expect(q.getSnapshot().items).toEqual([]);
+  });
+
+  it.each([404, 403, 405, 408, 409, 425, 401])('a request-level %i on the selfie upload keeps the selfie and backs off', async (status) => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue({ ...mk('uuid-0001', '2026-11-13T09:00:00Z'), selfie_uri: 'file:///c/a.jpg' });
+    const out = await q.sync(deps({ uploadSelfie: jest.fn(async () => { throw new ApiError('x', status); }) }), { force: true });
+    expect(out.failed).toBe(true);
+    expect(out.selfieDropped).toBe(0);
+    expect(q.getSnapshot().items[0].selfie_path).not.toBeNull();
   });
 
   it('is scoped per user: only the current user items are shown or sent; user switch', async () => {
@@ -238,6 +254,100 @@ describe('PunchQueue', () => {
     const q = mkQ(memoryStore(JSON.stringify({ items: [good, { client_uuid: 'x' }], rejected: [] })), memorySelfieFiles());
     await q.ready();
     expect(q.getSnapshot().items).toHaveLength(1);
+  });
+
+  it.each([404, 403, 405, 408, 409, 425])('a request-level %i on the batch and on single sends keeps all punches and backs off', async (status) => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue(mk('uuid-0001', '2026-11-13T09:00:00Z'));
+    await q.enqueue(mk('uuid-0002', '2026-11-13T09:05:00Z'));
+    const out = await q.sync(deps({ syncPunches: jest.fn(async () => { throw new ApiError('nope', status); }) }), { force: true });
+    expect(out.failed).toBe(true);
+    expect(q.getSnapshot().items).toHaveLength(2);
+    expect(q.getSnapshot().rejected).toHaveLength(0);
+    expect(q.getSnapshot().nextAttemptAt).toBeGreaterThan(0);
+  });
+
+  it('a single queued punch with a request-level 404 stays queued', async () => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue(mk('uuid-0001', '2026-11-13T09:00:00Z'));
+    await q.sync(deps({ syncPunches: jest.fn(async () => { throw new ApiError('Not found', 404); }) }), { force: true });
+    expect(q.getSnapshot().items).toHaveLength(1);
+    expect(q.getSnapshot().rejected).toHaveLength(0);
+  });
+
+  it('keeps punches when every item fails with 422 and nothing got a verdict', async () => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue(mk('uuid-0001', '2026-11-13T09:00:00Z'));
+    await q.enqueue(mk('uuid-0002', '2026-11-13T09:05:00Z'));
+    const out = await q.sync(deps({ syncPunches: jest.fn(async () => { throw new ApiError('bad', 422, 'validation_error'); }) }), { force: true });
+    expect(out.failed).toBe(true);
+    expect(q.getSnapshot().items).toHaveLength(2);
+    expect(q.getSnapshot().rejected).toHaveLength(0);
+  });
+
+  it('a user switch mid-sync stops further requests and keeps the remaining items', async () => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue({ ...mk('uuid-0001', '2026-11-13T09:00:00Z'), selfie_uri: 'file:///c/a.jpg' });
+    await q.enqueue({ ...mk('uuid-0002', '2026-11-13T09:05:00Z'), selfie_uri: 'file:///c/b.jpg' });
+    const d = deps({ uploadSelfie: jest.fn(async () => { q.setUser(2); return 5; }) });
+    const out = await q.sync(d, { force: true });
+    expect(out.skipped).toBe('user-changed');
+    expect(d.uploadSelfie).toHaveBeenCalledTimes(1);
+    expect(d.syncPunches).not.toHaveBeenCalled();
+    q.setUser(1);
+    expect(q.getSnapshot().items).toHaveLength(2);
+    expect(q.getSnapshot().nextAttemptAt).toBe(0);
+  });
+
+  it('a user switch while the sync POST is in flight does not send single-item retries', async () => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue(mk('uuid-0001', '2026-11-13T09:00:00Z'));
+    await q.enqueue(mk('uuid-0002', '2026-11-13T09:05:00Z'));
+    const sp = jest.fn(async () => { q.setUser(2); throw new ApiError('bad', 422); });
+    const out = await q.sync(deps({ syncPunches: sp }), { force: true });
+    expect(out.skipped).toBe('user-changed');
+    expect(sp).toHaveBeenCalledTimes(1);
+    q.setUser(1);
+    expect(q.getSnapshot().items).toHaveLength(2);
+  });
+
+  it('quarantines a file with legacy items lacking user_id and reports how many were set aside', async () => {
+    const good = { ...mk('uuid-0001', '2026-11-13T09:00:00Z'), user_id: 1, selfie_path: null, selfie_id: null };
+    const legacy = { ...mk('uuid-0002', '2026-11-13T09:05:00Z'), selfie_path: null, selfie_id: null };
+    const raw = JSON.stringify({ items: [good, legacy], rejected: [] });
+    const store = memoryStore(raw);
+    const q = mkQ(store, memorySelfieFiles());
+    await q.ready();
+    expect(store.quarantined).toBe(raw);
+    expect(q.getSnapshot().notice).toMatch(/1 saved punch/);
+    expect(q.getSnapshot().items.map((i) => i.client_uuid)).toEqual(['uuid-0001']);
+    expect(JSON.parse(store.data!).items).toHaveLength(1); // cleaned state is persisted
+  });
+
+  it('recovers from .tmp (then .bak) when the main file is missing after an interrupted write', async () => {
+    const mkState = (id: string) => JSON.stringify({ items: [{ ...mk(id, '2026-11-13T09:00:00Z'), user_id: 1, selfie_path: null, selfie_id: null }], rejected: [] });
+    const a = memoryStore(); a.tmp = mkState('uuid-tmp-01'); a.bak = mkState('uuid-bak-01');
+    const qa = mkQ(a, memorySelfieFiles());
+    await qa.ready();
+    expect(qa.getSnapshot().items.map((i) => i.client_uuid)).toEqual(['uuid-tmp-01']);
+    const b = memoryStore(); b.tmp = '{half'; b.bak = mkState('uuid-bak-01');
+    const qb = mkQ(b, memorySelfieFiles());
+    await qb.ready();
+    expect(qb.getSnapshot().items.map((i) => i.client_uuid)).toEqual(['uuid-bak-01']);
+    // a following save must not destroy the only good copy
+    await qb.enqueue(mk('uuid-new-01', '2026-11-13T10:00:00Z'));
+    expect(b.bak).toBe(mkState('uuid-bak-01'));
+  });
+
+  it('items missing from the results count as a failed attempt (backoff), not an immediate retry', async () => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue(mk('uuid-0001', '2026-11-13T09:00:00Z'));
+    const out = await q.sync(deps({ syncPunches: jest.fn(async () => []) }), { force: true });
+    expect(out.failed).toBe(true);
+    expect(q.getSnapshot().nextAttemptAt).toBeGreaterThan(0);
+    const d = deps();
+    expect((await q.sync(d)).skipped).toBe('backoff');
+    expect(d.syncPunches).not.toHaveBeenCalled();
   });
 
   it('flags items older than 10 hours', () => {

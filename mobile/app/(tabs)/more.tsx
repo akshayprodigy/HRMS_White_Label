@@ -12,7 +12,7 @@ export default function MoreTab() {
     const n = items.length;
     Alert.alert(
       t('common.signOut'),
-      `${n} punch${n === 1 ? '' : 'es'} not yet synced. They'll sync next time you sign in on this device.`,
+      `${n} punch${n === 1 ? '' : 'es'} not yet synced. They stay on this device and are sent the next time you sign in, but the server can't accept punches older than 12 hours, so sync them first if you can.`,
       [{ text: 'Cancel', style: 'cancel' }, { text: t('common.signOut'), style: 'destructive', onPress: () => void logout() }],
     );
   };

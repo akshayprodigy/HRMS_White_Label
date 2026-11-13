@@ -36,7 +36,7 @@ export type SyncDeps = {
 };
 
 export type SyncOutcome = {
-  skipped: 'backoff' | 'empty' | 'busy' | 'no-user' | null;
+  skipped: 'backoff' | 'empty' | 'busy' | 'no-user' | 'user-changed' | null;
   created: number;
   duplicate: number;
   rejected: number;
@@ -72,10 +72,11 @@ export function isStale(item: Pick<QueuedPunch, 'captured_at'>, now: number, hou
 export function isRetryable(e: unknown): boolean {
   return e instanceof ApiError && (e.status === 0 || e.status >= 500 || e.status === 429);
 }
-/** Request-level failures that say nothing about the punches (network, 5xx, 429, and 401 = session being refreshed). */
-function isTransient(e: unknown): boolean {
-  return !(e instanceof ApiError) || isRetryable(e) || e.status === 401;
-}
+/** Only validation-shaped statuses can mean "this payload is bad". Everything else (401, 403, 404, 405, 408, 409, 425,
+ * 5xx, network...) is about the request/route/gateway, not the punches, so items are kept and retried with backoff. */
+const PUNCH_VALIDATION = new Set([400, 413, 422]);
+const SELFIE_DROP = new Set([400, 413, 415, 422]);
+const isStatusIn = (e: unknown, set: Set<number>) => e instanceof ApiError && set.has(e.status);
 
 const REASONS: Record<string, string> = {
   captured_too_old: 'This punch was saved too long ago for the server to accept it. Ask HR to correct your attendance.',
@@ -132,15 +133,21 @@ export class PunchQueue {
     this.tail = p.catch(() => undefined);
     return p;
   }
-  private parse(raw: string): State | null {
+  private parse(raw: string): { state: State; dropped: number } | null {
     try {
       const j = JSON.parse(raw) as Partial<State>;
       if (!Array.isArray(j.items)) return null;
+      const rej = Array.isArray(j.rejected) ? j.rejected : [];
+      const items = j.items.filter(isValidItem);
+      const rejected = rej.filter((r) => isValidItem(r) && typeof (r as RejectedPunch).reason === 'string') as RejectedPunch[];
       return {
-        items: j.items.filter(isValidItem),
-        rejected: Array.isArray(j.rejected) ? j.rejected.filter((r) => isValidItem(r) && typeof (r as RejectedPunch).reason === 'string') : [],
-        attempts: typeof j.attempts === 'number' ? j.attempts : 0,
-        nextAttemptAt: typeof j.nextAttemptAt === 'number' ? j.nextAttemptAt : 0,
+        state: {
+          items,
+          rejected,
+          attempts: typeof j.attempts === 'number' ? j.attempts : 0,
+          nextAttemptAt: typeof j.nextAttemptAt === 'number' ? j.nextAttemptAt : 0,
+        },
+        dropped: j.items.length - items.length + rej.length - rejected.length,
       };
     } catch {
       return null;
@@ -154,22 +161,44 @@ export class PunchQueue {
     if (raw) {
       const parsed = this.parse(raw);
       if (parsed) {
-        s = parsed;
+        s = parsed.state;
+        if (parsed.dropped > 0) {
+          // Some entries failed validation (e.g. written by an older build): keep the original file for inspection.
+          try { await this.store.quarantine?.(); } catch { /* ignore */ }
+          try { await this.store.write(JSON.stringify(s)); } catch { /* ignore */ }
+          this.notice = `${parsed.dropped} saved punch${parsed.dropped === 1 ? '' : 'es'} couldn't be read and ${parsed.dropped === 1 ? 'was' : 'were'} set aside. Check your attendance for today.`;
+        }
       } else {
         // Unreadable: set the file aside (never overwrite evidence), fall back to the last good copy, tell the user.
         try { await this.store.quarantine?.(); } catch { /* ignore */ }
-        let bak: State | null = null;
-        try { const b = await this.store.readBackup?.(); bak = b ? this.parse(b) : null; } catch { bak = null; }
+        const bak = await this.recover();
         if (bak) s = bak;
         this.notice = bak
           ? 'Saved punches could not be read; the last good copy was restored.'
           : "Some saved punches couldn't be read and were set aside. Check your attendance for today.";
+      }
+    } else {
+      // Main file missing: a crash between "delete main" and "move tmp into place" leaves only .tmp/.bak.
+      const rec = await this.recover();
+      if (rec) {
+        s = rec;
+        this.notice = 'Saved punches were recovered after the app was interrupted.';
       }
     }
     this.state = s;
     this.refresh();
     this.emit(); // listeners (UI) that rendered before the load finished must update
     return s;
+  }
+  /** First parseable candidate among the store's recovery copies (newest first: .tmp, then .bak). */
+  private async recover(): Promise<State | null> {
+    let cands: string[] = [];
+    try { cands = (await this.store.readRecovery?.()) ?? []; } catch { cands = []; }
+    for (const c of cands) {
+      const parsed = c ? this.parse(c) : null;
+      if (parsed) return parsed.state;
+    }
+    return null;
   }
   private refresh() {
     const s = this.state!;
@@ -250,11 +279,15 @@ export class PunchQueue {
 
   private async doSync(deps: SyncDeps, force: boolean, out: SyncOutcome): Promise<SyncOutcome> {
     const s = await this.load();
-    if (this.userId == null) return { ...out, skipped: 'no-user' };
+    const uid = this.userId;
+    if (uid == null) return { ...out, skipped: 'no-user' };
     await this.purgeForeign(s);
-    const mine = () => s.items.filter((i) => i.user_id === this.userId);
+    const mine = () => s.items.filter((i) => i.user_id === uid);
     if (!mine().length) return { ...out, skipped: 'empty' };
     if (!force && this.now() < s.nextAttemptAt) return { ...out, skipped: 'backoff' };
+    /** The signed-in user changed mid-sync: stop before any further request is made with the new user's token. */
+    const switched = () => this.userId !== uid;
+    const abort = async () => { await this.save(); return { ...out, skipped: 'user-changed' as const }; };
 
     const fail = async () => {
       s.attempts += 1;
@@ -276,10 +309,11 @@ export class PunchQueue {
     const batch = mine().slice(0, BATCH);
     for (const item of batch) {
       if (item.selfie_path && item.selfie_id == null) {
+        if (switched()) return abort();
         try {
           item.selfie_id = await deps.uploadSelfie(item.selfie_path);
         } catch (e) {
-          if (isTransient(e)) return fail();
+          if (!isStatusIn(e, SELFIE_DROP)) return fail();
           // Selfie rejected for good: send the punch without it (the server rejects it if a selfie is required) and say so.
           await this.files.remove(item.selfie_path);
           item.selfie_path = null;
@@ -293,35 +327,49 @@ export class PunchQueue {
     const wire = ({ selfie_path: _p, user_id: _u, selfie_dropped: _d, ...w }: QueuedPunch): WirePunch => w;
     const toDelete: string[] = [];
     const settle = (item: QueuedPunch) => { if (item.selfie_path) toDelete.push(item.selfie_path); };
+    let unjudged = 0; // items that got no server verdict this round
 
+    if (switched()) return abort();
     let results: SyncResult[] | null = null;
     try {
       results = await deps.syncPunches(batch.map(wire));
     } catch (e) {
-      if (isTransient(e)) return fail();
-      // A non-retryable envelope error (422/413/403...) means at least one "poison" item; find it by sending one at a time.
+      // Only a validation-shaped envelope error can mean a "poison" item. Anything else is a request-level problem
+      // (wrong route, WAF, auth, outage): keep every punch and back off.
+      if (!isStatusIn(e, PUNCH_VALIDATION)) return fail();
+      const poison: { item: QueuedPunch; reason: string }[] = [];
+      let verdicts = 0;
       for (const item of batch) {
+        if (switched()) { await this.save(); return { ...out, skipped: 'user-changed' }; }
         try {
           const [r] = await deps.syncPunches([wire(item)]);
-          if (r) { await finish(item, r); settle(item); }
+          if (r && r.client_uuid === item.client_uuid) { await finish(item, r); settle(item); verdicts += 1; await this.save(); } else unjudged += 1;
         } catch (e2) {
-          if (isTransient(e2)) { await this.save(); return fail(); }
-          await finish(item, { status: 'rejected', reason: (e2 as Error).message });
-          settle(item);
+          if (!isStatusIn(e2, PUNCH_VALIDATION)) { await this.save(); return fail(); }
+          poison.push({ item, reason: (e2 as Error).message });
         }
       }
+      if (verdicts === 0) return fail(); // nothing was judged individually: not enough evidence to discard anything
+      for (const { item, reason } of poison) { await finish(item, { status: 'rejected', reason }); settle(item); }
     }
     if (results) {
       const byId = new Map(results.map((r) => [r.client_uuid, r]));
       for (const item of batch) {
         const r = byId.get(item.client_uuid);
-        if (!r) continue; // no verdict: keep
+        if (!r) { unjudged += 1; continue; } // no verdict: keep
         await finish(item, r);
         settle(item);
       }
     }
-    s.attempts = 0;
-    s.nextAttemptAt = 0;
+    // Persist the verdicts right away (no network call between applying results and saving).
+    if (unjudged > 0) {
+      s.attempts += 1;
+      s.nextAttemptAt = this.now() + backoffDelay(s.attempts);
+      out.failed = true;
+    } else {
+      s.attempts = 0;
+      s.nextAttemptAt = 0;
+    }
     await this.save();
     await Promise.all(toDelete.map((p) => this.files.remove(p)));
     return out;

@@ -36,7 +36,7 @@ beforeEach(() => {
   mock.onGet('/dashboard/pending-count').reply(200, { count: 0 });
   mock.onGet('/roster/my/running-late').reply(200, { notice: null, can_post: false });
 });
-afterEach(async () => { await teardownApiMock(); setPunchQueue(null); });
+afterEach(async () => { await teardownApiMock(); setPunchQueue(null); Object.assign(mockLoc, { granted: true, canAskAgain: true, status: 'granted' }); });
 
 describe('PunchScreen', () => {
   it('shows position, accuracy and mock warning, punches in and refreshes the gate queries', async () => {
@@ -101,7 +101,6 @@ describe('PunchScreen', () => {
     mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
     await renderWithProviders(<PunchScreen />);
     expect(await screen.findByTestId('loc-denied')).toBeTruthy();
-    Object.assign(mockLoc, { granted: true, status: 'granted' });
   });
 
   it('shows pending-sync state: a queued in makes the next action Punch out; queued out is done', async () => {
@@ -123,6 +122,5 @@ describe('PunchScreen', () => {
     mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
     await renderWithProviders(<PunchScreen />);
     expect(await screen.findByTestId('no-location-warning')).toBeTruthy();
-    Object.assign(mockLoc, { granted: true, status: 'granted' });
   });
 });

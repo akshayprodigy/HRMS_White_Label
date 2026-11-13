@@ -9,6 +9,8 @@ export interface PersistentStore {
   write(data: string): Promise<void>;
   /** The previous good copy (kept as .bak), used when the main file is unreadable. */
   readBackup?(): Promise<string | null>;
+  /** Candidates to restore from when the main file is missing or unreadable, newest first (.tmp, then .bak). */
+  readRecovery?(): Promise<string[]>;
   /** Move an unreadable file aside so it is not overwritten and can be inspected. */
   quarantine?(): Promise<void>;
 }
@@ -40,6 +42,15 @@ export function fileStore(name = 'punch-queue.json'): PersistentStore {
   return {
     read: () => readIf(name),
     readBackup: () => readIf(`${name}.bak`),
+    async readRecovery() {
+      const out: string[] = [];
+      for (const n of [`${name}.tmp`, `${name}.bak`]) {
+        try { const t = await readIf(n); if (t) out.push(t); } catch { /* skip */ }
+      }
+      return out;
+    },
+    // Order matters: the complete new data (.tmp) and the previous good copy (.bak) both exist before main is
+    // removed, so a crash at any point leaves a recoverable file (see readRecovery: .tmp first, then .bak).
     async write(data) {
       const tmp = f(`${name}.tmp`);
       if (tmp.exists) tmp.delete();
@@ -52,7 +63,7 @@ export function fileStore(name = 'punch-queue.json'): PersistentStore {
         main.copy(bak);
         main.delete();
       }
-      tmp.move(main);
+      tmp.move(main); // moving the file removes .tmp, so a leftover .tmp always means an interrupted write
     },
     async quarantine() {
       const main = f(name);
@@ -83,14 +94,16 @@ export const selfieFiles: SelfieFiles = {
   },
 };
 
-export function memoryStore(initial: string | null = null): PersistentStore & { data: string | null; bak: string | null; quarantined: string | null } {
+export function memoryStore(initial: string | null = null): PersistentStore & { data: string | null; bak: string | null; tmp: string | null; quarantined: string | null } {
   const s = {
     data: initial,
     bak: null as string | null,
+    tmp: null as string | null,
     quarantined: null as string | null,
     async read() { return s.data; },
-    async write(d: string) { s.bak = s.data; s.data = d; },
+    async write(d: string) { if (s.data !== null) s.bak = s.data; s.data = d; },
     async readBackup() { return s.bak; },
+    async readRecovery() { return [s.tmp, s.bak].filter((x): x is string => !!x); },
     async quarantine() { s.quarantined = s.data; s.data = null; },
   };
   return s;
