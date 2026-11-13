@@ -2,10 +2,12 @@ import { renderHook } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { usePushLifecycle } from '../src/features/push/usePushLifecycle';
 
+jest.mock('expo-task-manager', () => ({ defineTask: jest.fn() }));
 const mockPerform = jest.fn(async () => true);
 const mockRegister = jest.fn(async () => null);
 const mockUnregister = jest.fn(async () => undefined);
 jest.mock('../src/features/push/actions', () => ({ performNotificationAction: (...a: unknown[]) => (mockPerform as (...x: unknown[]) => unknown)(...a), refreshAfterPush: jest.fn() }));
+jest.mock('../src/features/push/backgroundTask', () => ({ registerBackgroundTask: jest.fn(async () => undefined) }));
 jest.mock('../src/features/push/registration', () => ({ registerForPush: () => mockRegister(), unregisterPush: () => mockUnregister() }));
 let mockUser: { id: number } | null = { id: 1 };
 const mockHooks: (() => unknown)[] = [];

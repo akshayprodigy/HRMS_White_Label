@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { onBeforeLogout, useAuth } from '../../auth/AuthProvider';
 import { BROADCASTS_KEY } from '../broadcast/api';
 import { performNotificationAction, refreshAfterPush } from './actions';
+import { registerBackgroundTask } from './backgroundTask';
 import { registerForPush, unregisterPush } from './registration';
 import { parsePushData, routeResponse } from './routing';
 
@@ -22,6 +23,10 @@ export function usePushLifecycle() {
     Notifications.setNotificationHandler({
       handleNotification: async () => ({ shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false }),
     });
+  }, []);
+
+  useEffect(() => {
+    void registerBackgroundTask();
   }, []);
 
   // Unregister BEFORE the tokens are cleared (AuthProvider runs these hooks first).

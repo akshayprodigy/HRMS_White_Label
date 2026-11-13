@@ -30,17 +30,26 @@ export async function setupChannels(): Promise<void> {
   });
 }
 
+/**
+ * iOS cannot deliver a background button tap to JS once the app is killed, so every iOS button opens the app and the
+ * listener / cold-start path performs the action. Android runs them headlessly (backgroundTask.ts).
+ */
+export function buttonOptions(a: PushAction, os: string = Platform.OS) {
+  const b = BUTTONS[a];
+  return {
+    opensAppToForeground: os === 'ios' ? true : b.opensAppToForeground,
+    isDestructive: b.isDestructive,
+    isAuthenticationRequired: b.isAuthenticationRequired,
+  };
+}
+
 export async function setupCategories(): Promise<void> {
   const cats = (Object.keys(CATEGORY_ACTIONS) as PushCategory[]).filter((c) => CATEGORY_ACTIONS[c].length > 0);
   await Promise.all(
     cats.map((c) =>
       Notifications.setNotificationCategoryAsync(
         c,
-        CATEGORY_ACTIONS[c].map((a) => ({ identifier: a, buttonTitle: BUTTONS[a].title, options: {
-          opensAppToForeground: BUTTONS[a].opensAppToForeground,
-          isDestructive: BUTTONS[a].isDestructive,
-          isAuthenticationRequired: BUTTONS[a].isAuthenticationRequired,
-        } })),
+        CATEGORY_ACTIONS[c].map((a) => ({ identifier: a, buttonTitle: BUTTONS[a].title, options: buttonOptions(a) })),
       ),
     ),
   );
