@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from '../src/auth/AuthProvider';
 import { BroadcastModal } from '../src/features/broadcast/BroadcastModal';
 import { usePushLifecycle } from '../src/features/push/usePushLifecycle';
 import { usePunchQueueSyncLoop } from '../src/features/punch/hooks';
+import { useTrackingLifecycle } from '../src/features/tracking/hooks';
 import { useAppStateFocus } from '../src/lib/appFocus';
 import { sweepDownloads } from '../src/lib/download';
 import { ThemeProvider, useTheme } from '../src/theme';
@@ -20,6 +21,7 @@ function AuthGate() {
   const { dark } = useTheme();
   usePunchQueueSyncLoop();
   usePushLifecycle();
+  useTrackingLifecycle();
 
   useEffect(() => {
     if (!loading) void SplashScreen.hideAsync().catch(() => undefined);
@@ -36,6 +38,8 @@ function AuthGate() {
           <Stack.Screen name="approval/[key]" options={{ headerShown: true, title: 'Approval' }} />
           <Stack.Screen name="payslips" options={{ headerShown: true, title: 'Payslips' }} />
           <Stack.Screen name="documents" options={{ headerShown: true, title: 'Documents' }} />
+          <Stack.Screen name="location-sharing" options={{ headerShown: true, title: 'Shift location sharing' }} />
+          <Stack.Screen name="field-team" options={{ headerShown: true, title: 'Field team' }} />
         </Stack.Protected>
         <Stack.Protected guard={!user}>
           <Stack.Screen name="(auth)" />

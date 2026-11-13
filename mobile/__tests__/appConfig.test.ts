@@ -92,3 +92,21 @@ describe('resolveApiBaseUrl', () => {
     expect(resolveApiBaseUrl('https://hr.acme.com/api/v1', 'android', false)).toBe('https://hr.acme.com/api/v1');
   });
 });
+
+describe('shift location tracking config', () => {
+  const loc = (c: ReturnType<typeof buildConfig>) => (c.plugins as unknown[]).find((p) => Array.isArray(p) && p[0] === 'expo-location') as [string, Record<string, unknown>];
+  it('enables background location on both platforms with permission strings', () => {
+    const [, o] = loc(buildConfig('dev'));
+    expect(o).toMatchObject({ isAndroidBackgroundLocationEnabled: true, isAndroidForegroundServiceEnabled: true, isIosBackgroundLocationEnabled: true });
+    expect(String(o.locationAlwaysAndWhenInUsePermission)).toMatch(/rostered shifts/);
+    expect(String(o.locationAlwaysPermission)).toMatch(/agreed/);
+  });
+  it('wires the Google Maps key from the build env only, and flags map availability', () => {
+    const none = buildConfig('dev', undefined, {});
+    expect(none.android?.config).toBeUndefined();
+    expect((none.extra as { mapsEnabled: boolean }).mapsEnabled).toBe(false);
+    const withKey = buildConfig('dev', undefined, { GOOGLE_MAPS_API_KEY: ' AIza-test ' });
+    expect(withKey.android?.config?.googleMaps?.apiKey).toBe('AIza-test');
+    expect((withKey.extra as { mapsEnabled: boolean }).mapsEnabled).toBe(true);
+  });
+});

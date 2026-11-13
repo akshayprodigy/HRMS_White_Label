@@ -1,0 +1,40 @@
+# Consent screen for shift location sharing (dev tenant, backend on :8005 -- see memory dev-stack-local).
+# Precondition: live location is OFF by default, so HR must enable it for the employee's role first. As an HR admin:
+#   TOKEN=$(curl -s -X POST localhost:8005/api/v1/auth/login -d 'username=<hr-admin-email>&password=<pw>' | jq -r .access_token)
+#   curl -s -H "Authorization: Bearer $TOKEN" localhost:8005/api/v1/tracking/policies          # find the employee role's role_id
+#   curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+#     -d '{"enabled": true, "interval_seconds": 60, "distance_filter_m": 10}' localhost:8005/api/v1/tracking/policies/<role_id>
+# Without the policy this flow still passes through the "Not turned on for your role" branch (asserted below as the
+# alternative) but cannot exercise consent. Run once with a fresh state (consent not yet given).
+# Second half (manual / API check, not automatable in Maestro): with the simulator location set (Features > Location >
+# Custom Location) during a rostered shift window, the ping shows up for a scheduler:
+#   curl -s -H "Authorization: Bearer $SCHEDULER_TOKEN" localhost:8005/api/v1/tracking/field-now | jq '.rows[] | {name, ping}'
+appId: com.innocore.hrms.dev
+---
+- runFlow: _login.yaml
+- tapOn:
+    id: tab-more
+- tapOn:
+    id: open-location-sharing
+- extendedWaitUntil:
+    visible: .*(I agree|Not turned on for your role|Consented).*
+    timeout: 15000
+- takeScreenshot: artifacts/tracking-consent
+# Only when the role policy is enabled and consent is not yet given:
+- runFlow:
+    when:
+      visible: I agree
+    commands:
+      - assertVisible: .*Only during your rostered shifts.*
+      - assertVisible: .*30 days.*
+      - assertVisible: .*revoke consent at any time.*
+      - tapOn:
+          id: tracking-agree
+      # The OS location prompt follows; allow while using / always as the simulator offers.
+      - tapOn:
+          text: .*(Allow While Using App|While using the app|Allow).*
+          optional: true
+      - extendedWaitUntil:
+          visible: .*Consented.*
+          timeout: 15000
+      - takeScreenshot: artifacts/tracking-consented
