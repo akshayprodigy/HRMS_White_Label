@@ -130,6 +130,15 @@ export const ENDPOINTS = {
     HR_CONSENTS: (uid: number) => `/hr/employees/${uid}/night-consents`,
     HR_CONSENT_END: (uid: number, id: number) => `/hr/employees/${uid}/night-consents/${id}/end`,
   },
+  TRACKING: {
+    FIELD_NOW: '/tracking/field-now',
+    TRAIL: '/tracking/trail',
+    POLICIES: '/tracking/policies',
+    POLICY: (roleId: number) => `/tracking/policies/${roleId}`,
+    OVERRIDES: '/tracking/overrides',
+    OVERRIDE: (userId: number) => `/tracking/overrides/${userId}`,
+    CONSENTS: '/tracking/consents',
+  },
   ROSTER: {
     PLAN: '/roster/plan',
     BULK: '/roster/bulk',

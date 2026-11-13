@@ -4824,4 +4824,5 @@ html {
   @media (width >= 80rem) {
     .xl\:block { display: block; }
   }
+  :where(.divide-gray-100 > :not(:last-child)) { border-color: var(--color-gray-100); }
 }

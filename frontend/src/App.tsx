@@ -33,6 +33,7 @@ import { LetterTemplatesHR } from './components/letter-templates';
 import { CelebrationsReport } from './components/celebrations-report';
 import { RosterPlanner } from './components/roster-planner';
 import { LiveBoard } from './components/live-board';
+import { FieldTeam } from './components/field-team';
 import { EmergencyBroadcastPage } from './components/broadcast/emergency-broadcast-page';
 import { BroadcastAlerts } from './components/broadcast/broadcast-alerts';
 import { ExecutiveReports } from './components/executive-reports';
@@ -435,6 +436,8 @@ const App = () => {
         return <EmergencyBroadcastPage />;
       case 'live-board':
         return <LiveBoard />;
+      case 'field-team':
+        return <FieldTeam />;
       case 'geo-workspace':
         return <GeoWorkspace role={userRole} />;
       case 'overtime-admin':
@@ -593,6 +596,7 @@ const App = () => {
       'shifts-workspace': 'Shift Management',
       'roster-planner': 'Roster Planner',
       'live-board': 'Live Board',
+      'field-team': 'Field Team',
       'emergency-broadcast': 'Emergency Broadcast',
       'geo-workspace': 'Geo Attendance',
       'overtime-admin': 'Overtime Administration',

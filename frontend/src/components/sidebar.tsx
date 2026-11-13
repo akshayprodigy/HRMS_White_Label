@@ -261,6 +261,13 @@ const menuItems: MenuItem[] = [
     group: "Time & Attendance",
   },
   {
+    id: "field-team",
+    label: "Field Team",
+    icon: MapPin,
+    roles: ["hr", "pm", "dept head", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
     id: "emergency-broadcast",
     label: "Emergency Broadcast",
     icon: ShieldAlert,

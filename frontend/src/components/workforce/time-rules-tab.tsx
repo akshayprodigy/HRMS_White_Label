@@ -4,6 +4,7 @@ import { Clock3, Save } from 'lucide-react';
 import { Card, Button } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
+import { TrackingSettings } from './tracking-settings';
 
 // Section Q: org-level attendance time rules (flag & report). Employees
 // WITH a shift use their shift's own grace; these are the org defaults
@@ -521,6 +522,7 @@ export const TimeRulesTab: React.FC = () => {
           <Save size={13} className="mr-2" /> Save Rules
         </Button>
       </div>
+      <TrackingSettings />
     </div>
   );
 };
