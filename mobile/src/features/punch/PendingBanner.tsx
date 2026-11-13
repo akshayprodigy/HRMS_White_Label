@@ -8,7 +8,7 @@ import { isStale } from './queue';
 /** "Pending sync (N)" with manual Sync now, stale-item warning and rejected-punch reasons. Renders nothing when empty. */
 export function PendingBanner({ compact = false }: { compact?: boolean }) {
   const { colors } = useTheme();
-  const { queue, items, rejected, notice } = usePunchQueue();
+  const { queue, items, rejected, notice, needsAttention } = usePunchQueue();
   const syncNowRun = useSyncNow();
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -33,6 +33,11 @@ export function PendingBanner({ compact = false }: { compact?: boolean }) {
         <Card testID="queue-notice" accessibilityRole="alert" style={{ borderColor: colors.danger, gap: 4 }}>
           <Text size={14}>{notice}</Text>
           <Button variant="secondary" title="OK" onPress={() => queue.dismissNotice()} />
+        </Card>
+      ) : null}
+      {needsAttention ? (
+        <Card testID="needs-attention" accessibilityRole="alert" style={{ borderColor: colors.danger, gap: 4 }}>
+          <Text size={14}>{"One punch couldn't be sent. Please contact HR to correct your attendance."}</Text>
         </Card>
       ) : null}
       {items.length ? (

@@ -20,11 +20,13 @@ export type QueuedPunch = {
   selfie_id: number | null;
   /** The selfie could not be uploaded (rejected for good) and the punch is sent without it. */
   selfie_dropped?: boolean;
+  /** Consecutive syncs where the server rejected this punch's payload as invalid (400/413/422) with nothing else judged. */
+  poison_attempts?: number;
   liveness_passed: boolean | null;
   liveness_score: number | null;
 };
 export type RejectedPunch = QueuedPunch & { reason: string; rejected_at: string };
-export type WirePunch = Omit<QueuedPunch, 'selfie_path' | 'user_id' | 'selfie_dropped'>;
+export type WirePunch = Omit<QueuedPunch, 'selfie_path' | 'user_id' | 'selfie_dropped' | 'poison_attempts'>;
 
 export type SyncResult = { client_uuid: string; kind: string; status: 'created' | 'duplicate' | 'rejected'; reason?: string | null; attendance_id?: number | null };
 
@@ -52,6 +54,8 @@ export type Snapshot = {
   nextAttemptAt: number;
   /** One-off message, e.g. an unreadable queue file was set aside. */
   notice: string | null;
+  /** A punch keeps being refused as invalid and will not fix itself: the user should contact HR. */
+  needsAttention: boolean;
 };
 type State = { items: QueuedPunch[]; rejected: RejectedPunch[]; attempts: number; nextAttemptAt: number };
 
@@ -59,6 +63,7 @@ export const BACKOFF_BASE_MS = 30_000;
 export const BACKOFF_MAX_MS = 15 * 60_000;
 export const STALE_WARN_HOURS = 10;
 export const FOREIGN_PURGE_HOURS = 72;
+export const POISON_ATTENTION_AFTER = 5;
 const BATCH = 50;
 
 export function backoffDelay(attempts: number): number {
@@ -112,7 +117,7 @@ export class PunchQueue {
   private userId: number | null = null;
   private notice: string | null = null;
   /** Immutable snapshot, replaced on every change so useSyncExternalStore sees a stable reference. */
-  private snap: Snapshot = { items: [], rejected: [], nextAttemptAt: 0, notice: null };
+  private snap: Snapshot = { items: [], rejected: [], nextAttemptAt: 0, notice: null, needsAttention: false };
 
   constructor(
     private store: PersistentStore = memoryStore(),
@@ -157,6 +162,7 @@ export class PunchQueue {
     if (this.state) return this.state;
     let s: State = { items: [], rejected: [], attempts: 0, nextAttemptAt: 0 };
     let raw: string | null = null;
+    let persist = false; // a recovered state must be written back, or it would be "recovered" again on every launch
     try { raw = await this.store.read(); } catch { raw = null; }
     if (raw) {
       const parsed = this.parse(raw);
@@ -172,7 +178,7 @@ export class PunchQueue {
         // Unreadable: set the file aside (never overwrite evidence), fall back to the last good copy, tell the user.
         try { await this.store.quarantine?.(); } catch { /* ignore */ }
         const bak = await this.recover();
-        if (bak) s = bak;
+        if (bak) { s = bak; persist = true; }
         this.notice = bak
           ? 'Saved punches could not be read; the last good copy was restored.'
           : "Some saved punches couldn't be read and were set aside. Check your attendance for today.";
@@ -182,10 +188,12 @@ export class PunchQueue {
       const rec = await this.recover();
       if (rec) {
         s = rec;
+        persist = true;
         this.notice = 'Saved punches were recovered after the app was interrupted.';
       }
     }
     this.state = s;
+    if (persist) { try { await this.store.write(JSON.stringify(s)); } catch { /* retried on the next save */ } }
     this.refresh();
     this.emit(); // listeners (UI) that rendered before the load finished must update
     return s;
@@ -208,6 +216,7 @@ export class PunchQueue {
       rejected: s.rejected.filter((r) => r.user_id === mine),
       nextAttemptAt: s.nextAttemptAt,
       notice: this.notice,
+      needsAttention: s.items.some((i) => i.user_id === mine && (i.poison_attempts ?? 0) >= POISON_ATTENTION_AFTER),
     };
   }
   private emit() { this.listeners.forEach((l) => l()); }
@@ -285,15 +294,20 @@ export class PunchQueue {
     const mine = () => s.items.filter((i) => i.user_id === uid);
     if (!mine().length) return { ...out, skipped: 'empty' };
     if (!force && this.now() < s.nextAttemptAt) return { ...out, skipped: 'backoff' };
+    const toDelete: string[] = [];
+    const settle = (item: QueuedPunch) => { if (item.selfie_path) toDelete.push(item.selfie_path); };
+    /** Selfie files of finished items are personal data: delete them on every exit path, early ones included. */
+    const flush = async () => { await Promise.all(toDelete.splice(0).map((p) => this.files.remove(p))); };
     /** The signed-in user changed mid-sync: stop before any further request is made with the new user's token. */
     const switched = () => this.userId !== uid;
-    const abort = async () => { await this.save(); return { ...out, skipped: 'user-changed' as const }; };
+    const abort = async () => { await this.save(); await flush(); return { ...out, skipped: 'user-changed' as const }; };
 
     const fail = async () => {
       s.attempts += 1;
       s.nextAttemptAt = this.now() + backoffDelay(s.attempts);
       out.failed = true;
       await this.save();
+      await flush();
       return out;
     };
     const finish = async (item: QueuedPunch, r: SyncResult | { status: 'rejected'; reason: string }) => {
@@ -324,9 +338,7 @@ export class PunchQueue {
       }
     }
 
-    const wire = ({ selfie_path: _p, user_id: _u, selfie_dropped: _d, ...w }: QueuedPunch): WirePunch => w;
-    const toDelete: string[] = [];
-    const settle = (item: QueuedPunch) => { if (item.selfie_path) toDelete.push(item.selfie_path); };
+    const wire = ({ selfie_path: _p, user_id: _u, selfie_dropped: _d, poison_attempts: _a, ...w }: QueuedPunch): WirePunch => w;
     let unjudged = 0; // items that got no server verdict this round
 
     if (switched()) return abort();
@@ -340,16 +352,20 @@ export class PunchQueue {
       const poison: { item: QueuedPunch; reason: string }[] = [];
       let verdicts = 0;
       for (const item of batch) {
-        if (switched()) { await this.save(); return { ...out, skipped: 'user-changed' }; }
+        if (switched()) return abort();
         try {
           const [r] = await deps.syncPunches([wire(item)]);
           if (r && r.client_uuid === item.client_uuid) { await finish(item, r); settle(item); verdicts += 1; await this.save(); } else unjudged += 1;
         } catch (e2) {
-          if (!isStatusIn(e2, PUNCH_VALIDATION)) { await this.save(); return fail(); }
+          if (!isStatusIn(e2, PUNCH_VALIDATION)) return fail();
           poison.push({ item, reason: (e2 as Error).message });
         }
       }
-      if (verdicts === 0) return fail(); // nothing was judged individually: not enough evidence to discard anything
+      if (verdicts === 0) {
+        // Nothing was judged individually: not enough evidence to discard anything. Count it so a lone invalid punch surfaces.
+        for (const { item } of poison) item.poison_attempts = (item.poison_attempts ?? 0) + 1;
+        return fail();
+      }
       for (const { item, reason } of poison) { await finish(item, { status: 'rejected', reason }); settle(item); }
     }
     if (results) {
@@ -371,7 +387,7 @@ export class PunchQueue {
       s.nextAttemptAt = 0;
     }
     await this.save();
-    await Promise.all(toDelete.map((p) => this.files.remove(p)));
+    await flush();
     return out;
   }
 }

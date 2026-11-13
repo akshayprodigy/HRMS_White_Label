@@ -336,7 +336,7 @@ describe('PunchQueue', () => {
     expect(qb.getSnapshot().items.map((i) => i.client_uuid)).toEqual(['uuid-bak-01']);
     // a following save must not destroy the only good copy
     await qb.enqueue(mk('uuid-new-01', '2026-11-13T10:00:00Z'));
-    expect(b.bak).toBe(mkState('uuid-bak-01'));
+    expect(JSON.parse(b.bak!).items.map((i: { client_uuid: string }) => i.client_uuid)).toEqual(['uuid-bak-01']);
   });
 
   it('items missing from the results count as a failed attempt (backoff), not an immediate retry', async () => {
@@ -348,6 +348,63 @@ describe('PunchQueue', () => {
     const d = deps();
     expect((await q.sync(d)).skipped).toBe('backoff');
     expect(d.syncPunches).not.toHaveBeenCalled();
+  });
+
+  it('deletes the selfie of an already-judged punch even when the sync then exits early on a failure', async () => {
+    const files = memorySelfieFiles();
+    const q = mkQ(memoryStore(), files);
+    await q.enqueue({ ...mk('uuid-0001', '2026-11-13T09:00:00Z'), selfie_uri: 'file:///c/a.jpg' });
+    await q.enqueue(mk('uuid-0002', '2026-11-13T09:05:00Z'));
+    expect(files.files.size).toBe(1);
+    const sp = jest.fn(async (p: { client_uuid: string; kind: string }[]) => {
+      if (p.length > 1) throw new ApiError('bad', 422);
+      if (p[0].client_uuid === 'uuid-0002') throw new ApiError('gateway', 404);
+      return p.map((x) => ({ client_uuid: x.client_uuid, kind: x.kind, status: 'created' as const }));
+    });
+    const out = await q.sync(deps({ syncPunches: sp }), { force: true });
+    expect(out.failed).toBe(true);
+    expect(q.getSnapshot().items.map((i) => i.client_uuid)).toEqual(['uuid-0002']);
+    expect(files.files.size).toBe(0);
+  });
+
+  it('deletes the selfie of a judged punch when the user switches mid-sync', async () => {
+    const files = memorySelfieFiles();
+    const q = mkQ(memoryStore(), files);
+    await q.enqueue({ ...mk('uuid-0001', '2026-11-13T09:00:00Z'), selfie_uri: 'file:///c/a.jpg' });
+    await q.enqueue(mk('uuid-0002', '2026-11-13T09:05:00Z'));
+    const sp = jest.fn(async (p: { client_uuid: string; kind: string }[]) => {
+      if (p.length > 1) throw new ApiError('bad', 422);
+      if (p[0].client_uuid === 'uuid-0001') { q.setUser(2); return p.map((x) => ({ client_uuid: x.client_uuid, kind: x.kind, status: 'created' as const })); }
+      return [];
+    });
+    const out = await q.sync(deps({ syncPunches: sp }), { force: true });
+    expect(out.skipped).toBe('user-changed');
+    expect(files.files.size).toBe(0);
+  });
+
+  it('persists a state recovered from .tmp/.bak so it is not recovered again next launch', async () => {
+    const st = JSON.stringify({ items: [{ ...mk('uuid-0001', '2026-11-13T09:00:00Z'), user_id: 1, selfie_path: null, selfie_id: null }], rejected: [] });
+    const store = memoryStore(); store.bak = st;
+    const q = mkQ(store, memorySelfieFiles());
+    await q.ready();
+    expect(q.getSnapshot().notice).toMatch(/recovered/);
+    expect(store.data).not.toBeNull();
+    const q2 = mkQ(store, memorySelfieFiles());
+    await q2.ready();
+    expect(q2.getSnapshot().notice).toBeNull();
+    expect(q2.getSnapshot().items).toHaveLength(1);
+  });
+
+  it('flags a lone invalid punch for attention after 5 consecutive failed syncs, keeping it queued', async () => {
+    const q = mkQ(memoryStore(), memorySelfieFiles());
+    await q.enqueue(mk('uuid-0001', '2026-11-13T09:00:00Z'));
+    const d = deps({ syncPunches: jest.fn(async () => { throw new ApiError('bad', 422); }) });
+    for (let n = 0; n < 4; n++) await q.sync(d, { force: true });
+    expect(q.getSnapshot().needsAttention).toBe(false);
+    await q.sync(d, { force: true });
+    expect(q.getSnapshot().needsAttention).toBe(true);
+    expect(q.getSnapshot().items).toHaveLength(1);
+    expect(d.sent).toEqual([]); // never leaked bookkeeping fields onto the wire
   });
 
   it('flags items older than 10 hours', () => {
