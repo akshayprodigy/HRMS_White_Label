@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect } from 'react';
 import { AppState } from 'react-native';
-import { onBeforeLogout, useAuth } from '../../auth/AuthProvider';
+import { onBeforeLogout, onSessionCleared, useAuth } from '../../auth/AuthProvider';
 import { fetchMyStatus, MY_STATUS_KEY, type MyStatus } from './api';
 import { applyStatus, enforceWindowEnd, flushPings, getPingQueue, stopTracking, type ApplyResult } from './tracking';
 import { decideTracking, nextCheckDelay } from './window';
@@ -54,8 +54,10 @@ export function useTrackingLifecycle() {
   const recheck = useRecheckTracking();
   const uid = user?.id ?? null;
 
-  // Logout: stop and erase BEFORE the tokens go (hook order is registration order; nothing here needs the network).
+  // Logout: stop and erase. Logout hooks run in parallel and this one is awaited before the tokens are cleared (nothing
+  // here needs the network). A forced logout skips those hooks, so the session-cleared teardown covers it (idempotent).
   useEffect(() => onBeforeLogout(async () => { await stopTracking({ clear: true }); }), []);
+  useEffect(() => onSessionCleared(() => { void stopTracking({ clear: true }).catch(() => undefined); }), []);
 
   useEffect(() => {
     if (uid == null) {

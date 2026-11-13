@@ -54,6 +54,11 @@ export class PingQueue {
 
   constructor(private store: PersistentStore = memoryStore(), private now: () => number = Date.now) {}
 
+  /** Bumped by clear(). A producer captures it before its awaits and passes it to enqueue(), so a fix that was in
+   * flight while the data was erased (logout, revoke) is refused instead of recreating the file. */
+  get generation() { return this.gen; }
+  private gen = 0;
+
   setUser(id: number | null) { this.userId = id; }
   getUser() { return this.userId; }
 
@@ -89,8 +94,9 @@ export class PingQueue {
   }
   async size(): Promise<number> { return (await this.pending()).length; }
 
-  enqueue(pings: WirePing[]): Promise<number> {
+  enqueue(pings: WirePing[], opts: { generation?: number } = {}): Promise<number> {
     return this.run(async () => {
+      if (opts.generation !== undefined && opts.generation !== this.gen) return 0;
       const s = await this.load();
       const uid = this.userId;
       if (uid == null) return 0;
@@ -114,6 +120,7 @@ export class PingQueue {
 
   /** Remove everything (logout, consent revoked, tracking disabled): location data must not outlive the permission. */
   clear(): Promise<void> {
+    this.gen += 1; // synchronously, so anything already past its checks is refused when it reaches the chain
     return this.run(async () => {
       this.state = { items: [], attempts: 0, nextAttemptAt: 0 };
       // Delete, don't write an empty state: a write would turn the previous pings into the .bak copy.

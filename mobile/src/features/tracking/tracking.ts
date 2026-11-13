@@ -229,6 +229,7 @@ async function ensureSession(): Promise<boolean> {
 export async function handleLocations(payload: unknown, now: number = Date.now()): Promise<void> {
   const locations = ((payload as { locations?: LocLike[] } | null)?.locations ?? []) as LocLike[];
   if (!locations.length) return;
+  const gen = getPingQueue().generation; // before any await: a clear() after this point must win over this fix
   const m = await readMeta();
   if (!m) { await stopTracking(); return; } // nothing is supposed to be running
   if (!(await ensureSession())) { await stopTracking({ clear: true }); return; } // signed out
@@ -238,7 +239,7 @@ export async function handleLocations(payload: unknown, now: number = Date.now()
   q.setUser(m.user_id);
   // Never record past the window end, whatever the OS delivers late.
   const inside = locations.filter((l) => l.timestamp <= m.window_end);
-  await q.enqueue(toWirePings(inside));
+  await q.enqueue(toWirePings(inside), { generation: gen });
   if (now > m.window_end) {
     await flushPings({ force: true }).catch(() => undefined); // last chance to send what was captured inside the window
     await stopTracking(); // keep any failed remainder queued for the next foreground flush

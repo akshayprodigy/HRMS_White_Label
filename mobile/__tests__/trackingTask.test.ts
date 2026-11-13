@@ -78,6 +78,18 @@ describe('toWirePings', () => {
 });
 
 describe('headless handleLocations', () => {
+  it('a fix that passed the checks before logout cannot enqueue after clear() (no file rewritten)', async () => {
+    const store = memoryStore();
+    queue = new PingQueue(store);
+    setPingQueue(queue);
+    await applyStatus(status(), 1, NOW);
+    const real = tokenStorage.loadMe.bind(tokenStorage);
+    jest.spyOn(tokenStorage, 'loadMe').mockImplementation(async () => { const r = await real(); await queue.clear(); return r; });
+    await handleLocations({ locations: [loc(NOW)] }, NOW);
+    expect(store).toMatchObject({ data: null, bak: null, tmp: null });
+    queue.setUser(1);
+    expect(await queue.size()).toBe(0);
+  });
   beforeEach(async () => {
     await applyStatus(status(), 1, NOW); // writes the meta the headless task relies on
     setTokens(null); // simulate a killed app: nothing in memory

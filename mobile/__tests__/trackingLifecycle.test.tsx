@@ -8,9 +8,11 @@ import { renderWithProviders, setupApiMock, teardownApiMock } from '../test-util
 jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ ...require('../tenants/dev/tenant.json'), id: 'dev' }), getApiBaseUrl: () => 'http://test/api/v1' }));
 const mockAuth: { user: { id: number } | null; loading: boolean } = { user: { id: 1 }, loading: false };
 const logoutHooks: (() => Promise<void> | void)[] = [];
+const clearedHooks: (() => Promise<void> | void)[] = [];
 jest.mock('../src/auth/AuthProvider', () => ({
   useAuth: () => mockAuth,
   onBeforeLogout: (fn: () => Promise<void> | void) => { logoutHooks.push(fn); return () => undefined; },
+  onSessionCleared: (fn: () => Promise<void> | void) => { clearedHooks.push(fn); return () => undefined; },
 }));
 const mockT = { enforceWindowEnd: jest.fn(async () => false), applyStatus: jest.fn(async () => ({ running: true })), stopTracking: jest.fn(async () => undefined), flushPings: jest.fn(async () => ({ stop: null })), setUser: jest.fn() };
 jest.mock('../src/features/tracking/tracking', () => ({
@@ -25,7 +27,7 @@ const status: MyStatus = { required: true, consented: true, consented_at: null, 
 let mock: MockAdapter;
 let bump: () => void = () => undefined;
 function Harness() { const [, f] = useReducer((x: number) => x + 1, 0); bump = f as () => void; useTrackingLifecycle(); return null; }
-beforeEach(() => { mock = setupApiMock(); jest.clearAllMocks(); logoutHooks.length = 0; mockAuth.user = { id: 1 }; mockAuth.loading = false; });
+beforeEach(() => { mock = setupApiMock(); jest.clearAllMocks(); logoutHooks.length = 0; clearedHooks.length = 0; mockAuth.user = { id: 1 }; mockAuth.loading = false; });
 afterEach(teardownApiMock);
 
 describe('useTrackingLifecycle', () => {
@@ -54,6 +56,14 @@ describe('useTrackingLifecycle', () => {
     await renderWithProviders(<Harness />);
     expect(logoutHooks).toHaveLength(1);
     await logoutHooks[0]();
+    expect(mockT.stopTracking).toHaveBeenCalledWith({ clear: true });
+  });
+  it('registers session-cleared teardown that stops and erases (forced logout skips the before-logout hooks)', async () => {
+    mock.onGet('/tracking/my-status').reply(200, status);
+    await renderWithProviders(<Harness />);
+    expect(clearedHooks).toHaveLength(1);
+    mockT.stopTracking.mockClear();
+    await clearedHooks[0]();
     expect(mockT.stopTracking).toHaveBeenCalledWith({ clear: true });
   });
   it('offline with no cached status: leaves tracking as it is', async () => {

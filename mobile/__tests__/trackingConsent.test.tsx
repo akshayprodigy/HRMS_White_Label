@@ -7,7 +7,7 @@ import { renderWithProviders, setupApiMock, teardownApiMock } from '../test-util
 
 jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ ...require('../tenants/dev/tenant.json'), id: 'dev' }), getApiBaseUrl: () => 'http://test/api/v1' }));
 jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
-jest.mock('../src/auth/AuthProvider', () => ({ useAuth: () => ({ user: { id: 1, email: 'a@x.com' }, loading: false }), onBeforeLogout: () => () => undefined }));
+jest.mock('../src/auth/AuthProvider', () => ({ useAuth: () => ({ user: { id: 1, email: 'a@x.com' }, loading: false }), onBeforeLogout: () => () => undefined, onSessionCleared: () => () => undefined }));
 jest.mock('react-native-maps', () => ({ __esModule: true, default: () => null, Marker: () => null, Polyline: () => null }));
 const mockTracking: { perm: 'none' | 'foreground' | 'background'; [k: string]: any } = { // eslint-disable-line @typescript-eslint/no-explicit-any
   perm: 'foreground',
