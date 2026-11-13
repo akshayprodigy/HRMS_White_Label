@@ -6,6 +6,7 @@ import {
   Text as RNText,
   TextInput as RNTextInput,
   View,
+  type RefreshControlProps,
   type StyleProp,
   type TextInputProps,
   type TextProps,
@@ -14,14 +15,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 
-export function Screen({ children, scroll = false, style }: { children: React.ReactNode; scroll?: boolean; style?: StyleProp<ViewStyle> }) {
+export function Screen({ children, scroll = false, style, refreshControl }: { children: React.ReactNode; scroll?: boolean; style?: StyleProp<ViewStyle>; refreshControl?: React.ReactElement<RefreshControlProps> }) {
   const { colors, spacing } = useTheme();
   const insets = useSafeAreaInsets();
   const base: ViewStyle = { flex: 1, backgroundColor: colors.background };
   const pad: ViewStyle = { padding: spacing.md, paddingTop: insets.top + spacing.md, paddingBottom: insets.bottom + spacing.md };
   if (scroll) {
     return (
-      <ScrollView style={base} contentContainerStyle={[pad, style]} keyboardShouldPersistTaps="handled">
+      <ScrollView style={base} contentContainerStyle={[pad, style]} keyboardShouldPersistTaps="handled" refreshControl={refreshControl}>
         {children}
       </ScrollView>
     );
@@ -34,10 +35,10 @@ export function Text({ muted, weight, size = 16, style, ...rest }: TextProps & {
   return <RNText {...rest} style={[{ color: muted ? colors.mutedText : colors.text, fontSize: size, fontWeight: weight }, style]} />;
 }
 
-export function Card({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
+export function Card({ children, style, testID }: { children: React.ReactNode; style?: StyleProp<ViewStyle>; testID?: string }) {
   const { colors, spacing, radius } = useTheme();
   return (
-    <View style={[{ backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: radius, padding: spacing.md }, style]}>
+    <View testID={testID} style={[{ backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: radius, padding: spacing.md }, style]}>
       {children}
     </View>
   );

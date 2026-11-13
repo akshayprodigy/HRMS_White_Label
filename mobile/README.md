@@ -49,3 +49,13 @@ an EAS account/project per tenant, and push credentials (FCM service account, AP
 `src/api` axios client (bearer, single-flight 401 refresh, `ApiError`) - `src/auth` secure token storage + `useAuth` -
 `src/theme` tenant-driven light/dark tokens - `src/components/ui.tsx` Screen/Text/Button/TextInput/Card -
 `src/features/*` feature code - `tenants/` - `scripts/` - `__tests__/`.
+
+## Navigation, gate and approvals (Task 6)
+- Tabs: Home, Punch, Leave, Schedule, More, plus **Approvals** (hidden via `href: null` unless the user is an approver by
+  role name (hr/pm/admin/super admin), an `*approv*`/`admin access` permission or superuser - from `/auth/me` - or the merged queue is non-empty;
+  the queue check reuses the Approvals query and runs only once the attendance gate is open). Detail route: `app/approval/[key].tsx`.
+- Attendance gate = backend `verify_attendance`: only **superusers** are exempt (an admin role is not). Gated routes: `/leave`, `/roster/*` (except
+  running-late), `/approvals`, `/approval-chains`, `/dashboard`. Not gated: `/attendance/*`, `/broadcasts/my`, `/auth/me`. The gate 403 body is
+  `{"error":{"code":"ATTENDANCE_REQUIRED",...}}`. `useAttendanceGate()` (query key `['attendance-today']`) drives the one-time redirect to Punch and the
+  "Punch in to see this" notice. **Task 7 must invalidate `['attendance-today']` after punching.**
+- Times from the API are UTC and are labelled "UTC" in the UI (`src/lib/time.ts`).
