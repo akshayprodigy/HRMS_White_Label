@@ -57,5 +57,5 @@ an EAS account/project per tenant, and push credentials (FCM service account, AP
 - Attendance gate = backend `verify_attendance`: only **superusers** are exempt (an admin role is not). Gated routes: `/leave`, `/roster/*` (except
   running-late), `/approvals`, `/approval-chains`, `/dashboard`. Not gated: `/attendance/*`, `/broadcasts/my`, `/auth/me`. The gate 403 body is
   `{"error":{"code":"ATTENDANCE_REQUIRED",...}}`. `useAttendanceGate()` (query key `['attendance-today']`) drives the one-time redirect to Punch and the
-  "Punch in to see this" notice. **Task 7 must invalidate `['attendance-today']` after punching.**
+  "Punch in to see this" notice. The hint (`/attendance/today`) is confirmed by the first gated call (`/dashboard/pending-count`); only a real `ATTENDANCE_REQUIRED` 403 sets `gated`. **Task 7 must invalidate `['attendance-today']` and `['pending-count']` after punching.** AppState drives react-query focus (`src/lib/appFocus.ts`); netinfo isn't installed, so onlineManager is not wired.
 - Times from the API are UTC and are labelled "UTC" in the UI (`src/lib/time.ts`).

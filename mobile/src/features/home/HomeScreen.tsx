@@ -10,14 +10,10 @@ import { fmtShiftTime, fmtUtcTime } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { useApprovalsAccess } from '../approvals/hooks';
 import { GateInline } from '../attendance/GateNotice';
-import { isGateError, useAttendanceGate } from '../attendance/gate';
+import { isGateError, retryUnlessGate, useAttendanceGate } from '../attendance/gate';
 
 async function fetchRosterWeek(): Promise<RosterWeek> {
   return (await api.get<RosterWeek>('/roster/my/week')).data;
-}
-async function fetchPendingCount(): Promise<number> {
-  const d = (await api.get<{ count?: number }>('/dashboard/pending-count')).data;
-  return d?.count ?? 0;
 }
 async function fetchBroadcasts(): Promise<MyBroadcast[]> {
   const d = (await api.get<MyBroadcast[]>('/broadcasts/my')).data;
@@ -29,24 +25,22 @@ function greeting(now = new Date()) {
   return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
 }
 
-
 export function HomeScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const { user, unverified } = useAuth();
-  const { gated, ready, today, query: todayQ } = useAttendanceGate();
+  const { gated, ready, today, query: todayQ, pendingQuery: pending } = useAttendanceGate();
   const approvals = useApprovalsAccess();
 
-  // Gated endpoints are skipped while we already know the user hasn't punched in.
-  const roster = useQuery({ queryKey: ['roster-week'], queryFn: fetchRosterWeek, enabled: !!user && ready && !gated });
-  const pending = useQuery({ queryKey: ['pending-count'], queryFn: fetchPendingCount, enabled: !!user && ready && !gated });
+  // Gated endpoints wait for the gate answer; the pending count doubles as the gate probe (see useAttendanceGate).
+  const roster = useQuery({ queryKey: ['roster-week'], queryFn: fetchRosterWeek, enabled: !!user && ready && !gated, retry: retryUnlessGate });
   const broadcasts = useQuery({ queryKey: ['broadcasts-my'], queryFn: fetchBroadcasts, enabled: !!user });
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await Promise.allSettled([todayQ.refetch(), broadcasts.refetch(), ...(gated ? [] : [roster.refetch(), pending.refetch()])]);
+      await Promise.allSettled([todayQ.refetch(), broadcasts.refetch(), pending.refetch(), ...(gated ? [] : [roster.refetch()])]);
     } finally {
       setRefreshing(false);
     }
@@ -95,29 +89,29 @@ export function HomeScreen() {
         )}
       </Card>
 
-        {gated || (roster.error && isGateError(roster.error)) ? (
-          <GateInline testID="gate-notice" />
-        ) : (
-          <Card style={{ gap: 4 }}>
-            <Text weight="600">{"Today's shift"}</Text>
-            {roster.isLoading ? (
-              <Text muted>Loading…</Text>
-            ) : todayShift ? (
-              <>
-                <Text testID="shift-name">{todayShift.on_leave ? `On leave${todayShift.leave_type ? ` (${todayShift.leave_type})` : ''}` : todayShift.holiday_name ? `Holiday: ${todayShift.holiday_name}` : todayShift.shift.name}</Text>
-                {todayShift.shift.start_time ? (
-                  <Text testID="shift-times" muted>
-                    {fmtShiftTime(todayShift.shift.start_time)} – {fmtShiftTime(todayShift.shift.end_time)}
-                    {todayShift.shift.is_overnight ? ' (overnight)' : ''}
-                  </Text>
-                ) : null}
-                {todayShift.shift.transport_required ? <Text size={13} muted>Transport required</Text> : null}
-              </>
-            ) : (
-              <Text muted>{roster.error ? "Couldn't load your shift" : 'No shift information'}</Text>
-            )}
-          </Card>
-        )}
+      {gated || (roster.error && isGateError(roster.error)) ? (
+        <GateInline testID="gate-notice" />
+      ) : (
+        <Card style={{ gap: 4 }}>
+          <Text weight="600">{"Today's shift"}</Text>
+          {roster.isPending ? (
+            <Text muted>Loading…</Text>
+          ) : todayShift ? (
+            <>
+              <Text testID="shift-name">{todayShift.on_leave ? `On leave${todayShift.leave_type ? ` (${todayShift.leave_type})` : ''}` : todayShift.holiday_name ? `Holiday: ${todayShift.holiday_name}` : todayShift.shift.name}</Text>
+              {todayShift.shift.start_time ? (
+                <Text testID="shift-times" muted>
+                  {fmtShiftTime(todayShift.shift.start_time)} – {fmtShiftTime(todayShift.shift.end_time)}
+                  {todayShift.shift.is_overnight ? ' (overnight)' : ''}
+                </Text>
+              ) : null}
+              {todayShift.shift.transport_required ? <Text size={13} muted>Transport required</Text> : null}
+            </>
+          ) : (
+            <Text muted>{roster.error ? "Couldn't load your shift" : 'No shift information'}</Text>
+          )}
+        </Card>
+      )}
 
       {!gated && !isGateError(pending.error) ? (
         <Card style={{ gap: 4 }}>

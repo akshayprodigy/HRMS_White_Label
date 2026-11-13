@@ -1,8 +1,8 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type MockAdapter from 'axios-mock-adapter';
 import { ApprovalDetail } from '../src/features/approvals/ApprovalDetail';
-import { ApprovalsScreen } from '../src/features/approvals/ApprovalsScreen';
-import { mergeApprovals } from '../src/features/approvals/api';
+import { ApprovalsScreen, toggleSelection } from '../src/features/approvals/ApprovalsScreen';
+import { kindLabel, mergeApprovals } from '../src/features/approvals/api';
 import { hasApproverRole } from '../src/features/approvals/hooks';
 import { GATE_BODY, renderWithProviders, setupApiMock, teardownApiMock } from '../test-utils';
 
@@ -10,6 +10,7 @@ jest.mock('../src/config/tenant', () => ({
   getTenant: () => ({ ...require('../tenants/dev/tenant.json'), id: 'dev' }),
   getApiBaseUrl: () => 'http://test/api/v1',
 }));
+jest.mock('../src/auth/AuthProvider', () => ({ useAuth: () => ({ user: { id: 1, email: 'a@x.com', roles: [] }, unverified: false }) }));
 jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 const mockPush = jest.fn();
 const mockBack = jest.fn();
@@ -35,6 +36,8 @@ beforeEach(() => {
   mock = setupApiMock();
   mockPush.mockClear();
   mockBack.mockClear();
+  mock.onGet('/attendance/today').reply(200, { is_marked: true, attendance: null });
+  mock.onGet('/dashboard/pending-count').reply(200, { count: 0 });
   mock.onGet('/approval-chains/my-queue').reply(200, chain);
   mock.onGet('/approvals/inbox').reply(200, legacy);
 });
@@ -44,14 +47,23 @@ describe('merge + access', () => {
   it('puts overdue first and maps both sources', () => {
     const cards = mergeApprovals(chain as never, legacy as never);
     expect(cards.map((c) => c.key)).toEqual(['chain-11', 'legacy-21', 'legacy-22']);
-    expect(cards[0]).toMatchObject({ overdue: true, title: 'Client dinner', kind: 'expense' });
-    expect(cards[1]).toMatchObject({ actingFor: 'Ravi', requester: 'Asha' });
+    expect(cards[0]).toMatchObject({ overdue: true, title: 'Client dinner', kind: 'Expense claim' });
+    expect(cards[1]).toMatchObject({ actingFor: 'Ravi', requester: 'Asha', kind: 'Leave request' });
+    expect(cards[2].kind).toBe('Comp-off request');
+    expect(cards[0].requester).toBeNull();
   });
   it('detects approvers by superuser, role name or approve permission', () => {
     expect(hasApproverRole({ id: 1, email: 'a', is_superuser: true })).toBe(true);
     expect(hasApproverRole({ id: 1, email: 'a', roles: [{ name: 'PM' }] })).toBe(true);
     expect(hasApproverRole({ id: 1, email: 'a', roles: [{ name: 'Dev', permissions: [{ name: 'leave approve' }] }] })).toBe(true);
     expect(hasApproverRole({ id: 1, email: 'a', roles: [{ name: 'Employee', permissions: [{ name: 'employee leave read' }] }] })).toBe(false);
+  });
+});
+
+describe('kindLabel', () => {
+  it('maps known kinds and title-cases unknown ones', () => {
+    expect(kindLabel('comp_off')).toBe('Comp-off request');
+    expect(kindLabel('some_new_thing')).toBe('Some new thing');
   });
 });
 
@@ -62,7 +74,7 @@ describe('ApprovalsScreen', () => {
     expect(screen.getByTestId('overdue-chain-11')).toBeTruthy();
     expect(screen.getByText('Acting for Ravi')).toBeTruthy();
     expect(screen.queryByTestId('overdue-legacy-21')).toBeNull();
-    expect(screen.getByText('leave 88')).toBeTruthy();
+    expect(screen.getByText('Leave request · Asha')).toBeTruthy();
     await fireEvent.press(screen.getByTestId('open-legacy-21'));
     expect(mockPush).toHaveBeenCalledWith('/approval/legacy-21');
   });
@@ -78,7 +90,7 @@ describe('ApprovalsScreen', () => {
   it('still lists one source when the other fails', async () => {
     mock.onGet('/approval-chains/my-queue').reply(500, {});
     await renderWithProviders(<ApprovalsScreen />);
-    await waitFor(() => expect(screen.getByText('leave 88')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Leave request · Asha')).toBeTruthy());
     expect(screen.getByTestId('approvals-partial-error')).toBeTruthy();
   });
 
@@ -88,7 +100,7 @@ describe('ApprovalsScreen', () => {
       ok_count: 1, failed_count: 1,
     });
     await renderWithProviders(<ApprovalsScreen />);
-    await waitFor(() => expect(screen.getByText('leave 88')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Leave request · Asha')).toBeTruthy());
     expect(screen.queryByTestId('select-chain-11')).toBeNull(); // chain items are not bulk-selectable
     await fireEvent.press(screen.getByTestId('select-legacy-21'));
     await fireEvent.press(screen.getByTestId('select-legacy-22'));
@@ -99,10 +111,18 @@ describe('ApprovalsScreen', () => {
     expect(JSON.parse(mock.history.post[0].data)).toEqual({ items: [{ kind: 'legacy', id: 21 }, { kind: 'legacy', id: 22 }], action: 'approve', comment: null });
   });
 
+  it('caps bulk selection at 100', () => {
+    let sel = new Set<number>();
+    for (let i = 0; i < 101; i++) sel = toggleSelection(sel, i);
+    expect(sel.size).toBe(100);
+    expect(sel.has(100)).toBe(false);
+    expect(toggleSelection(sel, 5).size).toBe(99); // deselecting still works at the cap
+  });
+
   it('bulk reject requires confirmation', async () => {
     mock.onPost('/approvals/bulk-action').reply(200, { results: [{ kind: 'legacy', id: 21, ok: true, error: null }], ok_count: 1, failed_count: 0 });
     await renderWithProviders(<ApprovalsScreen />);
-    await waitFor(() => expect(screen.getByText('leave 88')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Leave request · Asha')).toBeTruthy());
     await fireEvent.press(screen.getByTestId('select-legacy-21'));
     await fireEvent.press(screen.getByTestId('bulk-reject'));
     expect(mock.history.post.length).toBe(0);
@@ -149,6 +169,22 @@ describe('ApprovalDetail', () => {
     await fireEvent.press(screen.getByTestId('reject-confirm'));
     await waitFor(() => expect(mockBack).toHaveBeenCalled());
     expect(JSON.parse(mock.history.post[0].data)).toEqual({ action: 'reject', comment: null });
+  });
+
+  it('keeps showing the card during the request and restores it with the error on failure', async () => {
+    mockParams = { key: 'legacy-21' };
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    mock.onPost('/approvals/21/action').reply(async () => { await gate; return [403, { error: { code: '403', message: 'SoD: not allowed' } }]; });
+    await renderWithProviders(<ApprovalDetail />);
+    await waitFor(() => expect(screen.getByTestId('approve')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('approve'));
+    await waitFor(() => expect(mock.history.post.length).toBe(1));
+    expect(screen.queryByTestId('detail-missing')).toBeNull(); // optimistic removal must not flip the screen
+    expect(screen.getByTestId('detail-title')).toBeTruthy();
+    release();
+    await waitFor(() => expect(screen.getByTestId('detail-error').props.children).toBe('SoD: not allowed'));
+    expect(screen.getByTestId('detail-title')).toBeTruthy();
   });
 
   it('shows the SoD 403 message and keeps the item', async () => {

@@ -26,6 +26,30 @@ export type ApprovalsData = { items: ApprovalCard[]; partialError: string | null
 
 export const APPROVALS_KEY = ['approvals'] as const;
 
+const KIND_LABELS: Record<string, string> = {
+  leave: 'Leave request',
+  leave_request: 'Leave request',
+  comp_off: 'Comp-off request',
+  compoff: 'Comp-off request',
+  expense: 'Expense claim',
+  estimate: 'Estimate',
+  estimate_version: 'Estimate',
+  timesheet: 'Timesheet',
+  overtime: 'Overtime request',
+  regularization: 'Attendance regularization',
+  attendance_regularization: 'Attendance regularization',
+  salary_advance: 'Salary advance',
+  travel: 'Travel request',
+};
+
+/** "comp_off" -> "Comp-off request"; unknown kinds are title-cased ("some_thing" -> "Some thing"). */
+export function kindLabel(kind: string): string {
+  const k = kind.trim().toLowerCase();
+  if (KIND_LABELS[k]) return KIND_LABELS[k];
+  const t = k.replace(/[_-]+/g, ' ').trim();
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Request';
+}
+
 function actingName(a: { user_id: number; name: string | null } | null): string | null {
   return a ? a.name || `user #${a.user_id}` : null;
 }
@@ -36,16 +60,16 @@ export function chainToCard(q: ChainQueueItem): ApprovalCard {
     q.entity?.title ||
     q.entity?.purpose ||
     (q.entity?.from_city && q.entity?.to_city ? `${q.entity.from_city} → ${q.entity.to_city}` : null) ||
-    `${kind} #${q.instance.id}`;
+    `${kindLabel(kind)} #${q.instance.id}`;
   const lines = q.entity?.line_count ?? 0;
   return {
     key: `chain-${q.instance.id}`,
     source: 'chain',
     refId: q.instance.id,
-    kind,
+    kind: kindLabel(kind),
     title,
     subtitle: [q.step_instance.label, q.entity?.description].filter(Boolean).join(' · '),
-    requester: `user #${q.instance.submitter_id}`,
+    requester: null, // the queue carries only submitter_id, never a name: don't show "user #id"
     amountPaise: q.entity?.amount_paise ?? q.instance.amount_paise ?? null,
     createdAt: q.instance.created_at,
     dueAt: q.due_at,
@@ -60,9 +84,9 @@ export function legacyToCard(l: LegacyInboxItem): ApprovalCard {
     key: `legacy-${l.id}`,
     source: 'legacy',
     refId: l.id,
-    kind: l.resource_type,
-    title: `${l.resource_type} ${l.resource_id}`,
-    subtitle: l.requested_by_name ? `Requested by ${l.requested_by_name}` : `Step ${l.current_step_number}`,
+    kind: kindLabel(l.resource_type),
+    title: l.requested_by_name ? `${kindLabel(l.resource_type)} · ${l.requested_by_name}` : kindLabel(l.resource_type),
+    subtitle: `Step ${l.current_step_number}`,
     requester: l.requested_by_name,
     amountPaise: null,
     createdAt: l.created_at,

@@ -1,7 +1,9 @@
 /** Backend timestamps are UTC; some are serialised without a zone suffix, so assume UTC when absent. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const HAS_ZONE = /([zZ]|[+-]\d{2}:?\d{2})$/;
 
 export function parseUtc(iso: string): Date {
+  if (DATE_ONLY.test(iso)) return new Date(`${iso}T00:00:00Z`);
   return new Date(HAS_ZONE.test(iso) ? iso : `${iso}Z`);
 }
 

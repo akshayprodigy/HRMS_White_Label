@@ -7,6 +7,7 @@ import { useTheme } from '../../theme';
 import { fmtInr, fmtUtcDate, fmtUtcTime } from '../../lib/time';
 import { useApprovalAction, useApprovals } from './hooks';
 import { Badge } from './ApprovalsScreen';
+import type { ApprovalCard } from './api';
 
 export function ApprovalDetail() {
   const { key } = useLocalSearchParams<{ key: string }>();
@@ -18,7 +19,10 @@ export function ApprovalDetail() {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const card = q.data?.items.find((c) => c.key === key);
+  // Hold the first-seen card: the optimistic removal on approve/reject must not flip this screen to "no longer pending".
+  const [card, setCard] = useState<ApprovalCard | null>(null);
+  const found = q.data?.items.find((c) => c.key === key);
+  if (found && !card) setCard(found);
   if (!card) {
     return (
       <Screen>

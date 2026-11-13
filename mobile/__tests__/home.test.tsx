@@ -47,12 +47,32 @@ describe('HomeScreen', () => {
 
   it('shows the punch-in gate notice (and does not call gated endpoints) when not punched in', async () => {
     mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
+    mock.onGet('/dashboard/pending-count').reply(403, GATE_BODY);
     await renderWithProviders(<HomeScreen />);
     await waitFor(() => expect(screen.getByTestId('gate-notice')).toBeTruthy());
     expect(screen.getByText('Punch in to see this')).toBeTruthy();
     await fireEvent.press(screen.getByTestId('gate-notice-punch'));
     expect(mockNavigate).toHaveBeenCalledWith('/punch');
     expect(mock.history.get.some((r) => r.url === '/roster/my/week')).toBe(false);
+  });
+
+  it('treats an unmarked hint as a hint: if the gated call succeeds, no gate notice', async () => {
+    mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
+    mock.onGet('/dashboard/pending-count').reply(200, { count: 1 });
+    mock.onGet('/roster/my/week').reply(200, week);
+    await renderWithProviders(<HomeScreen />);
+    await waitFor(() => expect(screen.getByTestId('shift-name').props.children).toBe('Morning'));
+    expect(screen.queryByTestId('gate-notice')).toBeNull();
+  });
+
+  it('shows the awaiting-approvals count for a role approver with a non-empty queue', async () => {
+    mockAuth = { user: { id: 2, email: 'pm@x.com', roles: [{ name: 'PM' }] }, unverified: false };
+    mock.onGet('/attendance/today').reply(200, { is_marked: true, attendance: null });
+    mock.onGet('/dashboard/pending-count').reply(200, { count: 0 });
+    mock.onGet('/roster/my/week').reply(200, week);
+    mock.onGet('/approvals/inbox').reply(200, [{ id: 21, resource_type: 'leave', resource_id: '1', status: 'pending', current_step_number: 1, requested_by_id: 3, requested_by_name: 'A', created_at: '2026-11-12T08:00:00', due_date: null, due_at: null, is_overdue: false, acting_for: null }]);
+    await renderWithProviders(<HomeScreen />);
+    await waitFor(() => expect(screen.getByTestId('approvals-count').props.children.join('')).toBe('1 awaiting your approval'));
   });
 
   it('handles a 403 ATTENDANCE_REQUIRED from a gated endpoint (superuser-looking state, server disagrees)', async () => {
