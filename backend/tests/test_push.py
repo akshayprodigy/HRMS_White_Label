@@ -27,7 +27,7 @@ from app.models.device import DeviceToken
 from app.models.employee import Employee, EmployeeStatus
 from app.models.notification import Notification
 from app.models.notification_channel import (
-    Channel, DeliveryStatus, NotificationDelivery, UserNotificationPreference,
+    Channel, NotificationTemplate, DeliveryStatus, NotificationDelivery, UserNotificationPreference,
     UserQuietHours,
 )
 from app.models.open_shift import OpenShift, OpenShiftClaim
@@ -39,6 +39,7 @@ from app.services import open_shifts as os_svc
 from app.services import push as push_svc
 
 API = settings.API_V1_STR
+ORIG_VERIFY = deps.verify_attendance  # the function the routes depend on
 PW = "test@12345"
 TAGS = ("adm", "e1", "e2", "apr", "req", "oth")
 
@@ -46,7 +47,7 @@ TAGS = ("adm", "e1", "e2", "apr", "req", "oth")
 @pytest.fixture
 async def client():
     app = create_app()
-    app.dependency_overrides[deps.verify_attendance] = lambda: None
+    app.dependency_overrides[ORIG_VERIFY] = lambda: None
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://test") as c:
         yield c
@@ -147,6 +148,8 @@ async def world(monkeypatch):
             await db.execute(delete(DeviceToken).where(
                 (DeviceToken.user_id.in_(uids))
                 | (DeviceToken.token.like(f"%{sfx}%"))))
+            await db.execute(delete(NotificationTemplate).where(
+                NotificationTemplate.event_type == f"pushpriv_{sfx}"))
             await db.execute(delete(UserQuietHours).where(
                 UserQuietHours.user_id.in_(uids)))
             await db.execute(delete(UserNotificationPreference).where(
@@ -702,3 +705,220 @@ async def test_action_open_shift_claim(client, world):
         assert c.status == "pending"
     # second claim: same service -> conflict
     assert (await act(client, h1, nid, "claim")).status_code == 409
+
+
+# ------------------------------- review fixes -------------------------------
+
+async def test_token_format_validated(client, world):
+    h = await login(client, world, "e1")
+    for bad in ("not-a-token-at-all", "ExponentPushToken[]", "ExponentPushToken[a b]"):
+        r = await client.post(f"{API}/devices", headers=h,
+                              json={"token": bad, "platform": "ios"})
+        assert r.status_code == 422, bad
+    r = await client.post(f"{API}/devices", headers=h, json={
+        "token": f"ExpoPushToken[{world['sfx']}z]", "platform": "ios"})
+    assert r.status_code == 200
+
+
+async def test_token_move_is_audited(client, world):
+    h1, h2 = await login(client, world, "e1"), await login(client, world, "e2")
+    body = {"token": tok(world), "platform": "ios"}
+    await client.post(f"{API}/devices", json=body, headers=h1)
+    await client.post(f"{API}/devices", json=body, headers=h2)
+    async with SessionLocal() as db:
+        a = (await db.execute(select(AuditLog).where(
+            AuditLog.action == "DEVICE_TOKEN_MOVED",
+            AuditLog.user_id == world["ids"]["e2"]))).scalars().all()
+    assert len(a) == 1
+    assert a[0].details == {"from_user_id": world["ids"]["e1"],
+                            "to_user_id": world["ids"]["e2"]}
+
+
+async def test_sensitive_events_get_generic_push_text(world):
+    await add_token(world, "e1")
+    rec = Recorder()
+    push_svc.set_push_provider(rec)
+    async with SessionLocal() as db:
+        nid = await nd.notify(db, user_id=world["ids"]["e1"],
+                              event_type="expense_approved", title="Claim Rs 5000",
+                              message="Rs 5000 approved")
+        await db.commit()
+    # expense default push is off -> opt in so a push row exists
+    d_rows = [d for d in await deliveries(nid) if d.channel == Channel.PUSH]
+    assert d_rows[0].status == DeliveryStatus.SKIPPED_PREF
+    async with SessionLocal() as db:
+        db.add(UserNotificationPreference(
+            user_id=world["ids"]["e1"], category="expense",
+            channel=Channel.PUSH, enabled=True))
+        await db.commit()
+    nid = await notify_user(world, "e1", "expense_approved")
+    async with SessionLocal() as db:
+        n = await db.get(Notification, nid)
+        n.title, n.message = "Claim Rs 5000", "Rs 5000 approved"
+        await db.commit()
+    await send_push_for(nid)
+    assert rec.calls[0]["title"] == "New update"
+    assert rec.calls[0]["body"] == "Open the app to view details."
+    async with SessionLocal() as db:  # in-app text untouched
+        assert (await db.get(Notification, nid)).message == "Rs 5000 approved"
+
+
+async def test_sensitive_template_gets_generic_push_text(world):
+    await add_token(world, "e1")
+    ev = f"pushpriv_{world['sfx']}"
+    async with SessionLocal() as db:
+        db.add(NotificationTemplate(event_type=ev, channel="email", category="other",
+                                    subject="s", body_text="b", is_sensitive=True))
+        db.add(UserNotificationPreference(
+            user_id=world["ids"]["e1"], category="other",
+            channel=Channel.PUSH, enabled=True))
+        await db.commit()
+    rec = Recorder()
+    push_svc.set_push_provider(rec)
+    nid = await notify_user(world, "e1", ev)
+    await send_push_for(nid)
+    assert rec.calls[0]["title"] == "New update"
+    # a non-sensitive approval keeps its text
+    nid2 = await notify_user(world, "e1", "approval_pending")
+    await send_push_for(nid2)
+    assert rec.calls[1]["title"] == "Hello" and rec.calls[1]["body"] == "World"
+
+
+def test_push_defaults_limited():
+    d = nd.DEFAULT_ENABLED_CHANNELS_BY_CATEGORY
+    for c in ("approvals", "leave", "scheduling"):
+        assert "push" in d[c]
+    for c in ("overtime", "payroll", "performance", "expense", "statutory", "other"):
+        assert "push" not in d[c]
+
+
+async def test_push_default_off_for_other_categories_and_pref_api(client, world):
+    await add_token(world, "e1")
+    h = await login(client, world, "e1")
+    n1 = await notify_user(world, "e1", "payslip_published")
+    assert [d.status for d in await deliveries(n1) if d.channel == Channel.PUSH] \
+        == [DeliveryStatus.SKIPPED_PREF]
+    r = await client.put(f"{API}/me/notifications/preferences", headers=h, json=[
+        {"category": "payroll", "channel": "push", "enabled": True}])
+    assert r.status_code == 200
+    assert any(p["category"] == "payroll" and p["channel"] == "push" and p["enabled"]
+               for p in r.json())
+    n2 = await notify_user(world, "e1", "payslip_published")
+    assert [d.status for d in await deliveries(n2) if d.channel == Channel.PUSH] \
+        == [DeliveryStatus.QUEUED]
+    n3 = await notify_user(world, "e1", "open_shift_available")
+    assert [d.status for d in await deliveries(n3) if d.channel == Channel.PUSH] \
+        == [DeliveryStatus.QUEUED]
+
+
+async def test_expo_missing_tickets_are_transient():
+    p = push_svc.ExpoPushProvider(transport=expo_transport(
+        [], lambda msgs: [{"status": "ok", "id": "t0"}, {"status": "ok", "id": "t1"}]))
+    toks = [f"ExponentPushToken[{i}]" for i in range(3)]
+    res = await p.send(tokens=toks, title="a", body="b", data={})
+    assert res.transient and res.ok_tokens == toks[:2] and res.error
+
+
+async def test_partial_failure_retries_only_unsent_tokens(world):
+    await add_token(world, "e1", n="a")
+    await add_token(world, "e1", n="b")
+    bad = tok(world, "b")
+    state = {"fail": True}
+    seen = []
+
+    def responder(msgs):
+        seen.append([m["to"] for m in msgs])
+        return [{"status": "error", "message": "slow",
+                 "details": {"error": "MessageRateExceeded"}}
+                if (m["to"] == bad and state["fail"]) else {"status": "ok", "id": "id-" + m["to"][-3:]}
+                for m in msgs]
+    push_svc.set_push_provider(push_svc.ExpoPushProvider(
+        transport=expo_transport([], responder)))
+    nid = await notify_user(world, "e1", "approval_pending")
+    res, d = await send_push_for(nid)
+    assert not res.ok and d.status == DeliveryStatus.QUEUED
+    assert d.context_json["push_sent_tokens"] == [tok(world, "a")]
+    state["fail"] = False
+    res, d = await send_push_for(nid)
+    assert res.ok and d.status == DeliveryStatus.SENT
+    assert seen == [[tok(world, "a"), bad], [bad]]
+
+
+async def test_receipts_poll_revokes_device_not_registered(world):
+    await add_token(world, "e1", n="a")
+    await add_token(world, "e1", n="b")
+    a, b = tok(world, "a"), tok(world, "b")
+    push_svc.set_push_provider(push_svc.ExpoPushProvider(transport=expo_transport(
+        [], lambda msgs: [{"status": "ok", "id": "tk-" + m["to"][-3:]} for m in msgs])))
+    nid = await notify_user(world, "e1", "approval_pending")
+    _, d = await send_push_for(nid)
+    assert json.loads(d.provider_ticket_ids) == [[a, "tk-" + a[-3:]], [b, "tk-" + b[-3:]]]
+
+    calls = []
+
+    def handler(request):
+        ids = json.loads(request.content)["ids"]
+        calls.append(ids)
+        assert "getReceipts" in str(request.url)
+        return httpx.Response(200, json={"data": {
+            "tk-" + b[-3:]: {"status": "error",
+                             "details": {"error": "DeviceNotRegistered"}}}})
+    push_svc.set_push_provider(push_svc.ExpoPushProvider(
+        transport=httpx.MockTransport(handler)))
+    async with SessionLocal() as db:
+        out = await push_svc.poll_receipts(db)
+    assert out["revoked"] == 1 and calls
+    async with SessionLocal() as db:
+        assert await push_svc.active_tokens(db, world["ids"]["e1"]) == [a]
+    d = [x for x in await deliveries(nid) if x.channel == Channel.PUSH][0]
+    # token b's ticket handled; a's has no receipt yet -> kept for later
+    assert json.loads(d.provider_ticket_ids) == [[a, "tk-" + a[-3:]]]
+
+
+async def test_receipts_job_registered():
+    from app.services.scheduler import REGISTRY
+    assert REGISTRY["push_receipts_poll"].default_cadence_cron == "*/15 * * * *"
+
+
+async def test_replay_legacy_approval_after_reassignment_or_escalation(client, world):
+    ha = await login(client, world, "apr")
+    iid, rid = await mk_item(world, "apr")
+    nid = await mk_notif(world, "apr", event_type="approval_pending",
+                         rtype="push_test", rid=rid)
+    async with SessionLocal() as db:  # escalated / reassigned to someone else
+        st = (await db.execute(select(ApprovalStep).where(
+            ApprovalStep.approval_item_id == iid))).scalar_one()
+        st.approver_id = world["ids"]["oth"]
+        await db.commit()
+    r = await act(client, ha, nid, "approve")
+    assert r.status_code in (400, 403)
+    assert await item_status(iid) == ApprovalStatus.PENDING
+    async with SessionLocal() as db:  # item decided elsewhere
+        it = await db.get(ApprovalItem, iid)
+        it.status = ApprovalStatus.APPROVED
+        await db.commit()
+    assert (await act(client, ha, nid, "approve")).status_code == 400
+
+
+async def test_replay_chain_after_escalation(client, world):
+    ha = await login(client, world, "apr")
+    async with SessionLocal() as db:
+        inst = ChainedApprovalInstance(
+            chain_id=None, entity_type="expense",
+            entity_id=990000000 + int(uuid.uuid4().int % 1000000),
+            submitter_id=world["ids"]["req"], amount_paise=1000,
+            status="pending", current_step_order=1)
+        db.add(inst)
+        await db.flush()
+        db.add(ChainedApprovalStepInstance(
+            instance_id=inst.id, step_order=1, approver_type="specific_user",
+            approver_user_id=world["ids"]["oth"], mode="sequential",
+            parallel_rule="all", status="pending"))  # escalated away from apr
+        await db.commit()
+        iid = inst.id
+    nid = await mk_notif(world, "apr", rtype="chained_approval_instance", rid=str(iid))
+    r = await act(client, ha, nid, "approve")
+    assert r.status_code in (400, 403), r.text
+    async with SessionLocal() as db:
+        assert (await db.get(ChainedApprovalInstance, iid,
+                             populate_existing=True)).status == "pending"

@@ -828,6 +828,7 @@ async def instantiate_for_entity(
                 type="info",
                 resource_type=f"chained_approval_instance",
                 resource_id=str(instance.id),
+                event_type="approval_pending",
             ))
     await db.commit()
     return instance
@@ -1174,6 +1175,7 @@ async def act_on_instance(
                 type="info",
                 resource_type="chained_approval_instance",
                 resource_id=str(instance.id),
+                event_type="approval_pending",
             ))
 
     await db.commit()

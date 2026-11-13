@@ -29,10 +29,10 @@ const TABS = [
 type TabId = typeof TABS[number]['id'];
 
 const CATEGORIES = [
-  'approvals', 'leave', 'overtime', 'payroll',
+  'approvals', 'leave', 'scheduling', 'overtime', 'payroll',
   'performance', 'expense', 'statutory', 'other',
 ];
-const CHANNELS = ['email', 'sms'];
+const CHANNELS = ['email', 'sms', 'push'];
 
 // ---------------------------------------------------------------------------
 // Tab 1: My preferences
@@ -67,7 +67,8 @@ const MyPrefsTab: React.FC = () => {
     if (p) return !!p.enabled;
     // Defaults roughly match backend DEFAULT_ENABLED_CHANNELS_BY_CATEGORY.
     const defaults: Record<string, string[]> = {
-      approvals: ['email'], leave: ['email'],
+      approvals: ['email', 'push'], leave: ['email', 'push'],
+      scheduling: ['push'],
       payroll: ['email'], performance: ['email'],
       expense: ['email'], statutory: ['email'],
     };
@@ -118,7 +119,7 @@ const MyPrefsTab: React.FC = () => {
       <div>
         <h2 className="text-lg font-semibold">My notification preferences</h2>
         <p className="text-sm text-slate-500">
-          In-app notifications always fire. Email and SMS opt-in per category.
+          In-app notifications always fire. Email, SMS and push opt-in per category (push needs the mobile app; emergency alerts always go out).
         </p>
       </div>
 
@@ -131,6 +132,7 @@ const MyPrefsTab: React.FC = () => {
               <th className="text-center px-3 py-2">Email digest</th>
               <th className="text-center px-3 py-2">SMS</th>
               <th className="text-center px-3 py-2">SMS digest</th>
+              <th className="text-center px-3 py-2">Push</th>
             </tr>
           </thead>
           <tbody>
@@ -143,7 +145,7 @@ const MyPrefsTab: React.FC = () => {
                       checked={enabled(c, ch)}
                       onChange={e => setEnabled(c, ch, e.target.checked)} />
                   </td>,
-                  <td key={ch + '-dg'} className="text-center px-3 py-2">
+                  ch === 'push' ? null : <td key={ch + '-dg'} className="text-center px-3 py-2">
                     <select className="border border-slate-300 rounded px-1 py-0.5 text-xs"
                       value={getPref(c, ch)?.digest_cadence || 'immediate'}
                       onChange={e => setDigest(c, ch, e.target.value)}>

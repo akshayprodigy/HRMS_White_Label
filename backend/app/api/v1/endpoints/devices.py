@@ -4,6 +4,7 @@ Mounted WITHOUT the attendance gate (the app registers its token at login,
 before the employee can punch in). Auth is still required; every route only
 touches the caller's own tokens.
 """
+import re
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
@@ -13,10 +14,13 @@ from sqlalchemy import select
 
 from app.api import deps
 from app.api.v1.endpoints.roster_common import lock_row, retry_on_lock
+from app.models.audit import AuditLog
 from app.models.device import DeviceToken
 from app.models.user import User
 
 router = APIRouter()
+
+TOKEN_RE = re.compile(r"^Expo(nent)?PushToken\[[^\]\s]{4,200}\]$")
 
 
 class DeviceIn(BaseModel):
@@ -29,8 +33,9 @@ class DeviceIn(BaseModel):
     @classmethod
     def _strip(cls, v):
         v = v.strip()
-        if len(v) < 8:
-            raise ValueError("token too short")
+        if not TOKEN_RE.match(v):
+            raise ValueError(
+                "token must look like ExponentPushToken[...] / ExpoPushToken[...]")
         return v
 
 
@@ -60,6 +65,11 @@ async def register_device(body: DeviceIn, db: deps.DBDep,
             d = DeviceToken(token=body.token, user_id=me_id,
                             platform=body.platform, created_at=now)
             db.add(d)
+        elif d.user_id != me_id:
+            db.add(AuditLog(
+                user_id=me_id, action="DEVICE_TOKEN_MOVED",
+                resource_type="device_token", resource_id=str(d.id),
+                details={"from_user_id": d.user_id, "to_user_id": me_id}))
         d.user_id = me_id
         d.platform = body.platform
         d.app_version = body.app_version

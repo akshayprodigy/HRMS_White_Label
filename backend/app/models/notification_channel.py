@@ -68,6 +68,7 @@ class EventCategory:
     EXPENSE = "expense"
     STATUTORY = "statutory"
     EMERGENCY = "emergency"
+    SCHEDULING = "scheduling"
     OTHER = "other"
 
 
@@ -97,7 +98,7 @@ EVENT_CATEGORY_MAP = {
     "report_scheduled": EventCategory.OTHER,
     "emergency_broadcast": EventCategory.EMERGENCY,
     "emergency_need_help": EventCategory.EMERGENCY,
-    "open_shift_available": EventCategory.OTHER,
+    "open_shift_available": EventCategory.SCHEDULING,
 }
 
 
@@ -208,6 +209,9 @@ class NotificationDelivery(Base):
     digest_batch_key: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, index=True
     )
+    # PUSH: JSON list of [token, expo_ticket_id] awaiting receipt polling.
+    provider_ticket_ids: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True)
     # Frozen context at enqueue-time; the sender renders the template
     # from this so subsequent template edits don't change past sends.
     context_json: Mapped[dict] = mapped_column(JSON, default=dict)

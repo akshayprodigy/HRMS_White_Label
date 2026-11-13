@@ -451,14 +451,17 @@ def fallback_from_notification(
 
 
 DEFAULT_ENABLED_CHANNELS_BY_CATEGORY: Dict[str, Set[str]] = {
+    # Push is on by default only where it is time-critical and non-sensitive
+    # (approvals, leave, scheduling/open shifts); everything else is opt-in.
     "approvals":   {"in_app", "email", "push"},
     "leave":       {"in_app", "email", "push"},
-    "overtime":    {"in_app", "push"},
-    "payroll":     {"in_app", "email", "push"},
-    "performance": {"in_app", "email", "push"},
-    "expense":     {"in_app", "email", "push"},
-    "statutory":   {"in_app", "email", "push"},
-    "other":       {"in_app", "push"},  # email/SMS opt-in; push on
+    "scheduling":  {"in_app", "push"},
+    "overtime":    {"in_app"},
+    "payroll":     {"in_app", "email"},
+    "performance": {"in_app", "email"},
+    "expense":     {"in_app", "email"},
+    "statutory":   {"in_app", "email"},
+    "other":       {"in_app"},  # marketing-ish: opt-in
 }
 
 
@@ -795,6 +798,25 @@ def _resolve_digest_cadence(prefs, category, channel) -> str:
 # ---------------------------------------------------------------------------
 
 
+PUSH_GENERIC_TITLE = "New update"
+PUSH_GENERIC_BODY = "Open the app to view details."
+PUSH_SENSITIVE_CATEGORIES = {"payroll", "expense", "statutory", "performance"}
+
+
+async def _push_is_sensitive(session: AsyncSession, event_type: str) -> bool:
+    from app.models.notification_channel import (
+        EVENT_CATEGORY_MAP, NotificationTemplate,
+    )
+    if EVENT_CATEGORY_MAP.get(event_type) in PUSH_SENSITIVE_CATEGORIES:
+        return True
+    hit = (await session.execute(
+        select(NotificationTemplate.id).where(
+            NotificationTemplate.event_type == event_type,
+            NotificationTemplate.is_sensitive.is_(True),
+            NotificationTemplate.is_active.is_(True)).limit(1))).first()
+    return hit is not None
+
+
 async def _send_push_delivery(session: AsyncSession, row) -> SendResult:
     """PUSH branch of send_one_delivery: resolve the recipient's active
     tokens, build the actionable payload from the Notification row, send,
@@ -805,19 +827,31 @@ async def _send_push_delivery(session: AsyncSession, row) -> SendResult:
     )
     from app.services import push as push_svc
 
-    tokens = await push_svc.active_tokens(session, row.recipient_user_id)
-    if not tokens:
+    import json
+
+    active = await push_svc.active_tokens(session, row.recipient_user_id)
+    already = set((row.context_json or {}).get("push_sent_tokens") or [])
+    tokens = [t for t in active if t not in already]
+    if not active:
         row.attempts = (row.attempts or 0) + 1
         row.status = DeliveryStatus.FAILED  # permanent: retry can't help
         row.error = "no active device tokens"
         await session.commit()
         return SendResult(ok=False, error=row.error)
+    if not tokens:  # every active token already got it on an earlier attempt
+        row.status = DeliveryStatus.SENT
+        row.sent_at = row.sent_at or datetime.now(timezone.utc)
+        await session.commit()
+        return SendResult(ok=True, provider_message_id=row.provider_message_id)
 
     n = await session.get(Notification, row.notification_id) \
         if row.notification_id else None
     ctx = row.context_json or {}
     title = (n.title if n else ctx.get("title")) or row.event_type
     body = (n.message if n else ctx.get("message")) or "Open the app for details."
+    if await _push_is_sensitive(session, row.event_type):
+        # Lock-screen privacy: full text stays in-app only.
+        title, body = PUSH_GENERIC_TITLE, PUSH_GENERIC_BODY
     if n is not None:
         data = await push_svc.build_payload(session, n)
     else:
@@ -832,26 +866,43 @@ async def _send_push_delivery(session: AsyncSession, row) -> SendResult:
         priority="high" if emergency else "default")
     await push_svc.revoke_tokens(session, result.invalid_tokens)
 
+    ok_tokens = list(result.ok_tokens)
+    if result.ok and not ok_tokens:  # provider that doesn't report per token
+        ok_tokens = [t for t in tokens if t not in result.invalid_tokens]
+    transient = result.transient or (
+        not result.ok and not result.invalid_tokens)
+    sent = already | set(ok_tokens)
+    if ok_tokens:
+        row.context_json = {**(row.context_json or {}),
+                            "push_sent_tokens": sorted(sent)}
+    if result.tickets:
+        old = json.loads(row.provider_ticket_ids or "[]")
+        row.provider_ticket_ids = json.dumps(
+            old + [list(t) for t in result.tickets])
+
     row.attempts = (row.attempts or 0) + 1
-    if result.ok:
-        row.status = DeliveryStatus.SENT
-        row.sent_at = datetime.now(timezone.utc)
-        row.provider_message_id = result.provider_message_id
-        row.error = None
-    elif result.invalid_tokens and not (set(tokens) - set(result.invalid_tokens)):
-        row.status = DeliveryStatus.FAILED  # every token was dead
-        row.error = result.error
+    if not transient:
+        if sent:
+            row.status = DeliveryStatus.SENT
+            row.sent_at = datetime.now(timezone.utc)
+            row.provider_message_id = result.provider_message_id
+            row.error = None
+        else:
+            row.status = DeliveryStatus.FAILED  # every token was dead
+            row.error = result.error
     elif should_dead_letter(row.attempts):
         row.status = DeliveryStatus.DEAD_LETTER
         row.error = result.error
     else:
+        # Some token hit a retryable error: retry only tokens not yet sent.
         row.status = DeliveryStatus.QUEUED
         row.next_retry_at = (
             datetime.now(timezone.utc)
             + timedelta(minutes=next_retry_delay_minutes(row.attempts)))
         row.error = result.error
     await session.commit()
-    return SendResult(ok=result.ok, provider_message_id=result.provider_message_id,
+    return SendResult(ok=not transient and bool(sent),
+                      provider_message_id=result.provider_message_id,
                       error=result.error)
 
 

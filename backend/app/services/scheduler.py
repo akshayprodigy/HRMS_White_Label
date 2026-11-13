@@ -660,6 +660,21 @@ register_job(JobSpec(
     default_cadence_cron="* * * * *",
     fn=_job_send_queued_notifications,
 ))
+async def _job_push_receipts_poll(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.push import poll_receipts
+    return await poll_receipts(session)
+
+
+register_job(JobSpec(
+    name="push_receipts_poll",
+    display_name="Poll push receipts",
+    description=(
+        "Every 15 min: fetch Expo push receipts for recently sent tickets "
+        "and revoke device tokens reported as DeviceNotRegistered."
+    ),
+    default_cadence_cron="*/15 * * * *",
+    fn=_job_push_receipts_poll,
+))
 register_job(JobSpec(
     name="flush_notification_digests",
     display_name="Flush notification digests (hourly + daily)",
