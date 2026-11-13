@@ -10,6 +10,8 @@ import {
   MapPin,
   Smartphone,
   Crosshair,
+  WifiOff,
+  ScanFace,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
@@ -41,7 +43,72 @@ interface FlaggedRecord {
   punch_out_matched_fence_name?: string | null;
   punch_out_distance_to_fence_meters: number | null;
   punch_out_accuracy: number | null;
+  // Selfie / liveness / offline (mobile app)
+  has_selfie?: boolean;
+  has_punch_out_selfie?: boolean;
+  liveness_passed?: boolean | null;
+  punch_out_liveness_passed?: boolean | null;
+  is_offline?: boolean;
+  review_flag?: string | null;
 }
+
+// Why a mobile punch needs review. A row can be both offline and
+// liveness-failed; the label list shows every applicable reason.
+const reviewReasons = (r: FlaggedRecord): { key: string; label: string; tone: string; icon: any; description: string }[] => {
+  const out: { key: string; label: string; tone: string; icon: any; description: string }[] = [];
+  if (r.review_flag === 'liveness_failed' || r.liveness_passed === false || r.punch_out_liveness_passed === false) {
+    out.push({
+      key: 'liveness',
+      label: 'Liveness Failed',
+      tone: 'bg-red-100 text-red-800',
+      icon: ScanFace,
+      description: 'The on-device blink/turn check failed. Compare the selfie with the employee.',
+    });
+  }
+  if (r.is_offline) {
+    out.push({
+      key: 'offline',
+      label: 'Offline Punch',
+      tone: 'bg-amber-100 text-amber-800',
+      icon: WifiOff,
+      description: 'Captured on the device without a connection and synced later.',
+    });
+  }
+  return out;
+};
+
+const SelfieThumb: React.FC<{ id: number; side: 'in' | 'out' }> = ({ id, side }) => {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let revoked: string | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await client.get(ENDPOINTS.ATTENDANCE.SELFIE(id), {
+          params: { side },
+          responseType: 'blob',
+        });
+        if (cancelled) return;
+        revoked = URL.createObjectURL(res.data);
+        setUrl(revoked);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [id, side]);
+  if (failed) return <span className="text-[9px] font-bold text-slate-300">no image</span>;
+  if (!url) return <span className="w-10 h-10 rounded-lg bg-slate-100 animate-pulse inline-block" />;
+  return (
+    <a href={url} target="_blank" rel="noreferrer" title={`Selfie (${side === 'in' ? 'punch-in' : 'punch-out'})`}>
+      <img src={url} alt={`Selfie at punch-${side}`} className="w-10 h-10 rounded-lg object-cover border border-slate-200" />
+    </a>
+  );
+};
 
 const FLAG_META: Record<
   string,
@@ -129,7 +196,7 @@ export const AttendanceFlaggedReview: React.FC = () => {
   const [dateTo, setDateTo] = useState(toISODate(new Date()));
   const [flagFilter, setFlagFilter] = useState<string>('');
   const [geoFlagFilter, setGeoFlagFilter] = useState<string>('');
-  const [flagKind, setFlagKind] = useState<'all' | 'attribution' | 'geo'>(
+  const [flagKind, setFlagKind] = useState<'all' | 'attribution' | 'geo' | 'review'>(
     'all',
   );
   const [search, setSearch] = useState('');
@@ -212,7 +279,7 @@ export const AttendanceFlaggedReview: React.FC = () => {
 
       {/* Flag-kind toggle */}
       <div className="flex gap-2">
-        {(['all', 'attribution', 'geo'] as const).map((k) => (
+        {(['all', 'attribution', 'geo', 'review'] as const).map((k) => (
           <button
             key={k}
             type="button"
@@ -224,7 +291,7 @@ export const AttendanceFlaggedReview: React.FC = () => {
                 : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300',
             )}
           >
-            {k === 'all' ? 'Both Dimensions' : k === 'attribution' ? 'Shift Attribution' : 'Geo'}
+            {k === 'all' ? 'All Flags' : k === 'attribution' ? 'Shift Attribution' : k === 'geo' ? 'Geo' : 'Offline / Selfie'}
           </button>
         ))}
       </div>
@@ -384,6 +451,9 @@ export const AttendanceFlaggedReview: React.FC = () => {
                   <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">
                     Geo
                   </th>
+                  <th className="px-6 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                    Review
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -501,6 +571,41 @@ export const AttendanceFlaggedReview: React.FC = () => {
                             <span className="text-[10px] text-slate-300 font-bold">—</span>
                           )}
                         </div>
+                      </td>
+                      <td className="px-6 py-3">
+                        {(() => {
+                          const reasons = reviewReasons(r);
+                          if (reasons.length === 0 && !r.has_selfie && !r.has_punch_out_selfie) {
+                            return <span className="text-[10px] text-slate-300 font-bold">—</span>;
+                          }
+                          return (
+                            <div className="space-y-1.5">
+                              <div className="flex gap-1.5 flex-wrap">
+                                {reasons.map((x) => {
+                                  const RIcon = x.icon;
+                                  return (
+                                    <span
+                                      key={x.key}
+                                      className={cn(
+                                        'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest',
+                                        x.tone,
+                                      )}
+                                      title={x.description}
+                                    >
+                                      <RIcon size={9} /> {x.label}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                              {(r.has_selfie || r.has_punch_out_selfie) && (
+                                <div className="flex gap-2 items-center">
+                                  {r.has_selfie && <SelfieThumb id={r.id} side="in" />}
+                                  {r.has_punch_out_selfie && <SelfieThumb id={r.id} side="out" />}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                     </tr>
                   );

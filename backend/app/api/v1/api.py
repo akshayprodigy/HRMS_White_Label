@@ -15,7 +15,7 @@ from app.api.v1.endpoints import (
     roster_open_shifts, calendar_feed, roster_live, roster_late,
     roster_on_call, roster_acks, safety_profile,
     attendance_regularization, schedule_delegations, broadcasts, attendance_bulk,
-    devices, notification_actions,
+    devices, notification_actions, attendance_offline,
 )
 
 api_router = APIRouter()
@@ -35,6 +35,10 @@ api_router.include_router(
 # down, even if the supervisor has not punched in themselves.
 api_router.include_router(
     attendance_bulk.router, prefix="/attendance", tags=["attendance"])
+# Selfie upload/view + offline punch sync: NOT attendance-gated (offline-sync
+# IS the punch; the selfie is uploaded just before it).
+api_router.include_router(
+    attendance_offline.router, prefix="/attendance", tags=["attendance"])
 api_router.include_router(
     attendance.router, prefix="/attendance", tags=["attendance"]
 )

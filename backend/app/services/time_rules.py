@@ -51,6 +51,15 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Comma-separated weekdays off for employees with no shift "
         "(Mon=0..Sun=6)",
     ),
+    "attendance.selfie_required": (
+        "0",
+        "Require a selfie with every mobile punch-in / punch-out (1/0)",
+    ),
+    "attendance.offline_max_hours": (
+        "12",
+        "Offline-captured punches are accepted only if captured within this "
+        "many hours of syncing (1-72); they are flagged for HR review",
+    ),
     "schedule.min_rest_hours": (
         "11", "Minimum rest between consecutive shifts in hours (0 = off)"
     ),
@@ -164,6 +173,19 @@ async def set_time_rules(
                     f"{key} must be a whole number between 0 and {cap}"
                 )
             updates[key] = sv  # store the stripped value
+    sr = updates.get("attendance.selfie_required")
+    if sr is not None:
+        if str(sr).strip() not in ("0", "1"):
+            raise ValueError("attendance.selfie_required must be 0 or 1")
+        updates["attendance.selfie_required"] = str(sr).strip()
+    om = updates.get("attendance.offline_max_hours")
+    if om is not None:
+        sv = str(om).strip()
+        if not (sv.isascii() and sv.isdigit()) or not 1 <= int(sv) <= 72:
+            raise ValueError(
+                "attendance.offline_max_hours must be a whole number "
+                "between 1 and 72")
+        updates["attendance.offline_max_hours"] = sv
     cm = updates.get("schedule.callback_compensation")
     if cm is not None:
         cm = str(cm).strip()

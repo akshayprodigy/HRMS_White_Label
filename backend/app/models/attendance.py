@@ -112,12 +112,62 @@ class Attendance(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Phase 3 Task 2: selfie + liveness (flag only, no face match) and
+    # offline-synced punches. selfie_url holds the stored filename (never
+    # exposed raw; HR streams it via GET /attendance/{id}/selfie).
+    selfie_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    liveness_passed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    liveness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    punch_out_selfie_url: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True)
+    punch_out_liveness_passed: Mapped[Optional[bool]] = mapped_column(
+        Boolean, nullable=True)
+    punch_out_liveness_score: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
+    is_offline: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0")
+    client_uuid: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True)
+    punch_out_client_uuid: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True)
+    device_captured_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    # 'liveness_failed' (takes precedence) | 'offline' | None
+    review_flag: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True)
+
+    @property
+    def has_selfie(self) -> bool:
+        return bool(self.selfie_url)
+
+    @property
+    def has_punch_out_selfie(self) -> bool:
+        return bool(self.punch_out_selfie_url)
+
     user: Mapped["User"] = relationship(
         "User", back_populates="attendances", foreign_keys=[user_id]
     )
     edited_by: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[edited_by_id]
     )
+
+
+class AttendanceSelfie(Base):
+    """An uploaded selfie awaiting attachment to a punch. Records the
+    uploader so only they can attach it (selfie_id on mark/punch-out/offline
+    sync); `used_at` makes it single-use."""
+    __tablename__ = "attendance_selfie"  # type: ignore[assignment]
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(255), unique=True)
+    content_type: Mapped[str] = mapped_column(String(50))
+    size: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class CorrectionStatus:

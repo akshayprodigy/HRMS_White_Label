@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -16,6 +16,10 @@ class AttendanceMark(AttendanceBase):
     # Device-reported flag set by the mobile/web client. Untrusted by
     # design — only the resolver decides what to do with it.
     is_mock_location: Optional[bool] = False
+    # Selfie (POST /attendance/selfie) + on-device liveness result.
+    selfie_id: Optional[int] = None
+    liveness_passed: Optional[bool] = None
+    liveness_score: Optional[float] = None
 
 
 class AttendanceRead(AttendanceBase):
@@ -46,6 +50,15 @@ class AttendanceRead(AttendanceBase):
     punch_out_distance_to_fence_meters: Optional[float] = None
     punch_out_geo_flag: Optional[str] = None
 
+    # Selfie / liveness / offline (Phase 3). The raw filename is never
+    # exposed; fetch the image via GET /attendance/{id}/selfie?side=in|out.
+    has_selfie: bool = False
+    has_punch_out_selfie: bool = False
+    liveness_passed: Optional[bool] = None
+    punch_out_liveness_passed: Optional[bool] = None
+    is_offline: bool = False
+    review_flag: Optional[str] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -61,6 +74,36 @@ class AttendanceHRRead(AttendanceRead):
     early_exit_minutes: Optional[int] = None
     edited_at: Optional[datetime] = None
     edited_by_name: Optional[str] = None
+
+
+class OfflinePunchItem(BaseModel):
+    client_uuid: str = Field(min_length=8, max_length=64)
+    kind: Literal["in", "out"]
+    captured_at: datetime
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    accuracy: Optional[float] = None
+    is_mock_location: Optional[bool] = False
+    selfie_id: Optional[int] = None
+    liveness_passed: Optional[bool] = None
+    liveness_score: Optional[float] = None
+
+
+class OfflineSyncRequest(BaseModel):
+    punches: List[OfflinePunchItem] = Field(min_length=1, max_length=50)
+
+
+class OfflinePunchResult(BaseModel):
+    client_uuid: str
+    kind: str
+    status: str  # created | duplicate | rejected
+    reason: Optional[str] = None
+    attendance_id: Optional[int] = None
+
+
+class OfflineSyncResponse(BaseModel):
+    results: List[OfflinePunchResult]
+    counts: dict[str, int]
 
 
 class AttendanceTimesEdit(BaseModel):

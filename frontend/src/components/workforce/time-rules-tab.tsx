@@ -61,6 +61,9 @@ const APPROVAL_FIELDS: { key: string; label: string; hint: string; max: number }
   { key: 'approvals.sla_hours', label: 'Approval SLA (hours)', hint: 'An approval step still pending after this long escalates to the approver\'s manager (else HR). 0 = no SLA / no escalation (range 0–720)', max: 720 },
 ];
 
+const SELFIE_REQUIRED_KEY = 'attendance.selfie_required';
+const OFFLINE_HOURS_KEY = 'attendance.offline_max_hours';
+
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-slate-200 text-sm text-[#0F172A] ' +
   'focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-500 bg-white';
@@ -88,6 +91,10 @@ export const TimeRulesTab: React.FC = () => {
     (rules['attendance.absence_lop_enabled'] ?? '').trim().toLowerCase(),
   );
 
+  const selfieRequired = ['1', 'true', 'yes', 'on'].includes(
+    (rules[SELFIE_REQUIRED_KEY] ?? '').trim().toLowerCase(),
+  );
+
   const weekoffCompOff = ['1', 'true', 'yes', 'on'].includes(
     (rules['attendance.weekoff_comp_off_enabled'] ?? '').trim().toLowerCase(),
   );
@@ -104,6 +111,11 @@ export const TimeRulesTab: React.FC = () => {
         toast.error(`${f.label} must be a whole number from 0 to ${f.max}`);
         return;
       }
+    }
+    const offH = (rules[OFFLINE_HOURS_KEY] ?? '').toString().trim();
+    if (!/^\d+$/.test(offH) || Number(offH) < 1 || Number(offH) > 72) {
+      toast.error('Offline punch window must be a whole number of hours from 1 to 72');
+      return;
     }
     const amt = Number((rules['schedule.callback_allowance_amount'] ?? '0').toString().trim());
     if (!Number.isFinite(amt) || amt < 0) {
@@ -258,6 +270,58 @@ export const TimeRulesTab: React.FC = () => {
             />
             <p className="text-[9px] font-bold text-slate-400">
               Comma-separated weekdays off for employees with no shift (Mon=0 … Sun=6)
+            </p>
+          </div>
+        </div>
+      </Card>
+
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+              <Clock3 size={15} className="text-blue-600" /> Mobile punch
+            </h3>
+            <p className="text-[10px] font-bold text-slate-500 mt-1">
+              Selfie capture with an on-device liveness check (failures are
+              flagged for HR review) and punches captured offline in the
+              mobile app. Offline punches are always flagged for review.
+            </p>
+          </div>
+          <label className="inline-flex items-center gap-2 cursor-pointer select-none shrink-0">
+            <input
+              type="checkbox"
+              aria-label="Require a selfie with every mobile punch"
+              checked={selfieRequired}
+              onChange={(e) =>
+                setRules({ ...rules, [SELFIE_REQUIRED_KEY]: e.target.checked ? '1' : '0' })
+              }
+              className="w-4 h-4 accent-blue-600"
+            />
+            <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
+              {selfieRequired ? 'Selfie required' : 'Selfie optional'}
+            </span>
+          </label>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label
+              htmlFor={OFFLINE_HOURS_KEY}
+              className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+            >
+              Offline Punch Window (hours)
+            </label>
+            <input
+              id={OFFLINE_HOURS_KEY}
+              type="number"
+              min={1}
+              max={72}
+              step={1}
+              className={inputCls}
+              value={rules[OFFLINE_HOURS_KEY] ?? ''}
+              onChange={(e) => setRules({ ...rules, [OFFLINE_HOURS_KEY]: e.target.value })}
+            />
+            <p className="text-[9px] font-bold text-slate-400">
+              Offline punches are accepted only if captured within this many hours of syncing (range 1–72)
             </p>
           </div>
         </div>

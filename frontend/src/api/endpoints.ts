@@ -15,6 +15,7 @@ export const ENDPOINTS = {
     TODAY: '/attendance/today',
     ALL: '/attendance/all',
     FLAGGED: '/attendance/flagged',
+    SELFIE: (id: number | string) => `/attendance/${id}/selfie`,
     BULK_MARK: '/attendance/bulk-mark',
     // Punch-time regularization (employee request -> manager/HR decision)
     // Trailing slash: the backend router is mounted at "", so the bare path 307-redirects.

@@ -1,5 +1,5 @@
 from .user import User, Role, Permission
-from .attendance import Attendance, AttendanceCorrectionRequest
+from .attendance import Attendance, AttendanceCorrectionRequest, AttendanceSelfie
 from .timesheet import TimerSession, TimeEntry
 from .project import Project
 from .task import Task

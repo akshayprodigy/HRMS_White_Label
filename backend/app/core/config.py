@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     LEAVE_ATTACHMENTS_DIR: str = "/app/uploads/leave-attachments"
     LEAVE_ATTACHMENT_MAX_BYTES: int = 10 * 1024 * 1024
 
+    # File uploads (Attendance selfies — punch photos, liveness flag only)
+    ATTENDANCE_SELFIE_DIR: str = "/app/uploads/attendance-selfies"
+    ATTENDANCE_SELFIE_MAX_BYTES: int = 3 * 1024 * 1024
+
     # File uploads (Project documents — workorder, contracts, etc.)
     PROJECT_DOCUMENTS_DIR: str = "/app/uploads/project-documents"
     PROJECT_DOCUMENT_MAX_BYTES: int = 25 * 1024 * 1024
