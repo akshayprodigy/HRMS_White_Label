@@ -31,6 +31,16 @@ describe('LoginForm', () => {
     expect(screen.getByText('Enter your password')).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
   });
+  it('clears a field error as soon as that field is edited', async () => {
+    await renderForm(jest.fn());
+    await fireEvent.press(screen.getByTestId('login-submit'));
+    expect(screen.getByText('Enter your email')).toBeTruthy();
+    await fireEvent.changeText(screen.getByTestId('login-email'), 'a');
+    expect(screen.queryByText('Enter your email')).toBeNull();
+    expect(screen.getByText('Enter your password')).toBeTruthy();
+    await fireEvent.changeText(screen.getByTestId('login-password'), 'x');
+    expect(screen.queryByText('Enter your password')).toBeNull();
+  });
   it('submits trimmed email + password and shows server errors', async () => {
     const onSubmit = jest.fn().mockRejectedValue(new Error('Incorrect email or password'));
     await renderForm(onSubmit);

@@ -1,5 +1,12 @@
 import { isAxiosError } from 'axios';
 
+export const MSG_SERVER = 'The server is having trouble. Please try again in a moment.';
+export const MSG_NETWORK = "Can't reach the server. Check your connection.";
+
+function devLog(detail: unknown) {
+  if (__DEV__ && process.env.NODE_ENV !== 'test') console.warn('[api]', detail);
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -18,12 +25,17 @@ export function normalizeError(err: unknown): ApiError {
     const res = err.response;
     if (!res) {
       return new ApiError(
-        err.code === 'ECONNABORTED' ? 'The request timed out. Please try again.' : 'Cannot reach the server. Check your connection.',
+        err.code === 'ECONNABORTED' ? 'The request timed out. Please try again.' : MSG_NETWORK,
         0,
         'network_error',
       );
     }
     const data = res.data as unknown;
+    if (res.status >= 500) {
+      devLog({ status: res.status, data });
+      const code = data && typeof data === 'object' ? (data as { error?: { code?: string } }).error?.code : undefined;
+      return new ApiError(MSG_SERVER, res.status, code);
+    }
     if (data && typeof data === 'object') {
       const d = data as { error?: { code?: string; message?: string }; detail?: unknown; message?: string };
       if (d.error && typeof d.error.message === 'string') return new ApiError(d.error.message, res.status, d.error.code);

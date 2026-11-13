@@ -51,6 +51,15 @@ describe('production safety rules', () => {
   });
 });
 
+describe('cleartext traffic', () => {
+  const plugin = (c: ReturnType<typeof buildConfig>) =>
+    (c.plugins as unknown[]).find((p) => Array.isArray(p) && p[0] === 'expo-build-properties');
+  it('enables Android cleartext only for the http dev tenant', () => {
+    expect(plugin(buildConfig('dev'))).toEqual(['expo-build-properties', { android: { usesCleartextTraffic: true } }]);
+    expect(plugin(buildConfig('acme'))).toBeUndefined();
+  });
+});
+
 describe('buildConfig', () => {
   it('maps the dev tenant to expo config', () => {
     const c = buildConfig('dev');

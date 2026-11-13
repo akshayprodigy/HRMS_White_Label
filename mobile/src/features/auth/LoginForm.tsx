@@ -35,7 +35,11 @@ export function LoginForm({ onSubmit }: { onSubmit: (email: string, password: st
         testID="login-email"
         label={t('login.email')}
         value={email}
-        onChangeText={setEmail}
+        onChangeText={(v) => {
+          setEmail(v);
+          setErrors((e) => ({ ...e, email: undefined }));
+          setServerError(null);
+        }}
         autoCapitalize="none"
         autoCorrect={false}
         keyboardType="email-address"
@@ -50,7 +54,11 @@ export function LoginForm({ onSubmit }: { onSubmit: (email: string, password: st
         testID="login-password"
         label={t('login.password')}
         value={password}
-        onChangeText={setPassword}
+        onChangeText={(v) => {
+          setPassword(v);
+          setErrors((e) => ({ ...e, password: undefined }));
+          setServerError(null);
+        }}
         secureTextEntry
         ref={(r) => {
           passwordRef.current = r;

@@ -2,7 +2,7 @@ import { Tabs } from 'expo-router';
 import { useTheme } from '../../src/theme';
 
 const TABS = [
-  { name: 'index', title: 'Home' },
+  { name: 'home', title: 'Home' },
   { name: 'punch', title: 'Punch' },
   { name: 'leave', title: 'Leave' },
   { name: 'schedule', title: 'Schedule' },

@@ -1,6 +1,6 @@
 import MockAdapter from 'axios-mock-adapter';
 import axios from 'axios';
-import { api, ApiError, getTokens, setAdapter, setLogoutHandler, setTokens } from '../src/api/client';
+import { api, ApiError, loginRequest, getTokens, setAdapter, setLogoutHandler, setTokens } from '../src/api/client';
 import { tokenStorage } from '../src/auth/tokenStorage';
 
 jest.mock('../src/config/tenant', () => ({ getApiBaseUrl: () => 'http://test/api/v1' }));
@@ -111,6 +111,15 @@ describe('api client', () => {
     release();
     expect((await pending).data).toBe('ok');
     expect(mock.history.post.length).toBe(0);
+  });
+
+  it('logs in with form-urlencoded username/password (not JSON)', async () => {
+    mock.onPost('/auth/login').reply((cfg) => {
+      expect(cfg.headers?.['Content-Type']).toBe('application/x-www-form-urlencoded');
+      expect(cfg.data).toBe('username=employee%40gmail.com&password=test%4012345');
+      return [200, { access_token: 'a', refresh_token: 'r', token_type: 'bearer' }];
+    });
+    expect((await loginRequest('employee@gmail.com', 'test@12345')).access_token).toBe('a');
   });
 
   it('does not try to refresh on login failure', async () => {

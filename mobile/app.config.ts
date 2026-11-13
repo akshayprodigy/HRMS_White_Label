@@ -21,6 +21,9 @@ export function buildConfig(tenantName: string, root: string = __dirname): ExpoC
     if (!fs.existsSync(path.join(root, asset))) throw new Error(`Tenant "${tenantName}" is missing ${asset}`);
   }
 
+  // Plain-http API (dev/localhost only; validateTenant forbids it elsewhere) needs Android cleartext traffic.
+  const cleartext = /^http:\/\//i.test(tenant.apiBaseUrl);
+
   return {
     name: tenant.name,
     slug: tenant.slug,
@@ -38,6 +41,7 @@ export function buildConfig(tenantName: string, root: string = __dirname): ExpoC
     plugins: [
       'expo-router',
       'expo-secure-store',
+      ...(cleartext ? [['expo-build-properties', { android: { usesCleartextTraffic: true } }] as [string, object]] : []),
       ['expo-splash-screen', { image: splash, imageWidth: 160, backgroundColor: tenant.colors.primary }],
     ],
     experiments: { typedRoutes: true },
