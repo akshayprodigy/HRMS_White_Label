@@ -1,12 +1,12 @@
 import * as Crypto from 'expo-crypto';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking } from 'react-native';
 import { Button, Card, Screen, Text } from '../../components/ui';
 import { fmtUtcTime } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { useAttendanceGate } from '../attendance/gate';
 import { flagNotice, submitPunch, type Fix, type PunchOutcome, type SelfieInput } from './api';
-import { useInvalidateAfterPunch, usePunchQueueSync } from './hooks';
+import { useInvalidateAfterPunch, usePunchQueue, useSyncNow } from './hooks';
 import { checkPermission, getFix, requestPermission, type PermState } from './location';
 import { PendingBanner } from './PendingBanner';
 import { RunningLateCard } from './RunningLateCard';
@@ -16,7 +16,8 @@ export function PunchScreen() {
   const { colors } = useTheme();
   const { today, query } = useAttendanceGate();
   const invalidate = useInvalidateAfterPunch();
-  usePunchQueueSync();
+  const { items: pending } = usePunchQueue();
+  const syncNow = useSyncNow();
   const [perm, setPerm] = useState<PermState>('unknown');
   const [fix, setFix] = useState<Fix | null>(null);
   const [fixError, setFixError] = useState<string | null>(null);
@@ -25,9 +26,14 @@ export function PunchScreen() {
   const [selfie, setSelfie] = useState<SelfieInput | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<PunchOutcome | null>(null);
+  const tapAt = useRef<string | null>(null);
 
   const att = today?.attendance ?? null;
-  const kind = !att ? 'in' : !att.punch_out_time ? 'out' : null;
+  // Effective state = server record + not-yet-synced punches (queued punches are not on the server yet).
+  const lastPending = pending.length ? pending[pending.length - 1] : null;
+  const kind: 'in' | 'out' | null = lastPending
+    ? (lastPending.kind === 'in' ? 'out' : null)
+    : !att ? 'in' : !att.punch_out_time ? 'out' : null;
 
   const locate = useCallback(async () => {
     setLocating(true);
@@ -50,24 +56,35 @@ export function PunchScreen() {
 
   const doPunch = async (s: SelfieInput | null) => {
     if (!kind) return;
+    const capturedAt = tapAt.current ?? new Date().toISOString();
     setCapturing(false);
     setSelfie(s);
     setBusy(true);
     try {
-      // Refresh the fix right before punching so the geofence check uses current coordinates.
-      let f = fix;
-      try { if (perm === 'granted') f = await getFix(); } catch { /* fall back to the last fix */ }
+      // Always a fresh reading, never a stale one: if it fails we punch WITHOUT coordinates (the server flags it).
+      let f: Fix | null = null;
+      setFixError(null);
+      if (perm === 'granted') {
+        try { f = await getFix(); } catch { setFixError("Couldn't get your location, so this punch is sent without it and will be flagged for review."); }
+      }
       setFix(f);
-      const out = await submitPunch({ kind, fix: f, selfie: s, uuid: () => Crypto.randomUUID() });
+      const out = await submitPunch({ kind, fix: f, selfie: s, uuid: () => Crypto.randomUUID(), capturedAt });
       setResult(out);
       if (out.status === 'error' && out.needsSelfie) setCapturing(true);
-      if (out.status !== 'error') { setSelfie(null); await invalidate(); }
+      if (out.status !== 'error') {
+        setSelfie(null);
+        tapAt.current = null;
+        await invalidate();
+        if (out.status === 'queued') void syncNow(out.behind).catch(() => undefined);
+      }
     } finally {
       setBusy(false);
     }
   };
 
-  const statusText = !today
+  const statusText = lastPending
+    ? lastPending.kind === 'in' ? 'Punched in (pending sync)' : 'Punched out (pending sync)'
+    : !today
     ? query.isError ? 'Status unavailable' : 'Checking…'
     : !att ? 'Not punched in' : att.punch_out_time ? `Punched out at ${fmtUtcTime(att.punch_out_time)}` : `Punched in at ${fmtUtcTime(att.captured_at)}`;
 
@@ -84,12 +101,12 @@ export function PunchScreen() {
         <Text weight="600">Location</Text>
         {perm === 'blocked' ? (
           <>
-            <Text testID="loc-blocked">Location access is turned off. Enable it in Settings to punch.</Text>
+            <Text testID="loc-blocked">Location access is turned off. Enable it in Settings, or punch without it and the punch will be flagged for review.</Text>
             <Button variant="secondary" title="Open Settings" onPress={() => void Linking.openSettings()} />
           </>
         ) : perm === 'denied' ? (
           <>
-            <Text testID="loc-denied">We need your location to verify where you punch.</Text>
+            <Text testID="loc-denied">We need your location to verify where you punch. If you punch without it, the punch will be flagged for review.</Text>
             <Button testID="loc-allow" title="Allow location" onPress={() => void locate()} />
           </>
         ) : fix ? (
@@ -104,6 +121,7 @@ export function PunchScreen() {
         {perm === 'granted' ? <Button variant="secondary" title="Refresh location" loading={locating} onPress={() => void locate()} /> : null}
       </Card>
 
+      {perm !== 'granted' && perm !== 'unknown' && kind ? <Text size={13} testID="no-location-warning" style={{ color: colors.danger }}>No location: this punch will be flagged.</Text> : null}
       {capturing ? (
         <SelfieCapture onDone={(s) => void doPunch(s)} onCancel={() => setCapturing(false)} />
       ) : kind ? (
@@ -111,10 +129,10 @@ export function PunchScreen() {
           testID="punch-button"
           title={kind === 'in' ? 'Punch in' : 'Punch out'}
           loading={busy}
-          disabled={!today}
-          onPress={() => setCapturing(true)}
+          disabled={!today && !lastPending}
+          onPress={() => { tapAt.current = new Date().toISOString(); setCapturing(true); }}
         />
-      ) : today ? (
+      ) : today || lastPending ? (
         <Text muted testID="punch-done">You have completed your punches for today.</Text>
       ) : null}
       {selfie && !capturing ? <Text size={12} muted>Selfie attached</Text> : null}
@@ -131,22 +149,30 @@ function ResultNotice({ result }: { result: PunchOutcome }) {
   if (result.status === 'ok') {
     const flag = flagNotice(result.flag);
     return (
-      <Card testID="punch-result" style={{ gap: 4 }}>
+      <Card testID="punch-result" accessibilityRole="alert" style={{ gap: 4 }}>
         <Text weight="600">Punch recorded</Text>
         {flag ? <Text testID="punch-flag" style={{ color: colors.danger }}>{flag}</Text> : null}
       </Card>
     );
   }
+  if (result.status === 'already') {
+    return (
+      <Card testID="punch-already" accessibilityRole="alert" style={{ gap: 4 }}>
+        <Text weight="600">Already recorded</Text>
+        <Text size={14}>This punch was already on record, so nothing changed.</Text>
+      </Card>
+    );
+  }
   if (result.status === 'queued') {
     return (
-      <Card testID="punch-queued" style={{ gap: 4 }}>
+      <Card testID="punch-queued" accessibilityRole="alert" style={{ gap: 4 }}>
         <Text weight="600">Saved offline</Text>
-        <Text size={14}>{"We couldn't reach the server. Your punch is saved and will sync automatically."}</Text>
+        <Text size={14}>{result.behind ? 'Earlier punches are still waiting to sync. This one is saved behind them and will sync in order.' : "We couldn't reach the server. Your punch is saved and will sync automatically."}</Text>
       </Card>
     );
   }
   return (
-    <Card testID="punch-error" style={{ borderColor: colors.danger, gap: 4 }}>
+    <Card testID="punch-error" accessibilityRole="alert" style={{ borderColor: colors.danger, gap: 4 }}>
       <Text weight="600">Punch not accepted</Text>
       <Text testID="punch-error-message">{result.error.message}</Text>
       {result.error.code ? <Text muted size={12} testID="punch-error-code">{result.error.code}</Text> : null}

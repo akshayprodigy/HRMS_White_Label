@@ -35,10 +35,10 @@ export function Text({ muted, weight, size = 16, style, ...rest }: TextProps & {
   return <RNText {...rest} style={[{ color: muted ? colors.mutedText : colors.text, fontSize: size, fontWeight: weight }, style]} />;
 }
 
-export function Card({ children, style, testID }: { children: React.ReactNode; style?: StyleProp<ViewStyle>; testID?: string }) {
+export function Card({ children, style, testID, accessibilityRole, accessibilityLiveRegion }: { children: React.ReactNode; style?: StyleProp<ViewStyle>; testID?: string; accessibilityRole?: 'alert' | 'summary'; accessibilityLiveRegion?: 'polite' | 'assertive' }) {
   const { colors, spacing, radius } = useTheme();
   return (
-    <View testID={testID} style={[{ backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: radius, padding: spacing.md }, style]}>
+    <View testID={testID} accessibilityRole={accessibilityRole} accessibilityLiveRegion={accessibilityLiveRegion} style={[{ backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: radius, padding: spacing.md }, style]}>
       {children}
     </View>
   );

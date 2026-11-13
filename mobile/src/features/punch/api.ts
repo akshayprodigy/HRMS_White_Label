@@ -3,8 +3,10 @@ import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { api } from '../../api/client';
 import { ApiError, normalizeError } from '../../api/errors';
 import type { AttendanceRow } from '../../api/types';
-import { PunchQueue, isRetryable, type PunchKind, type QueuedPunch, type SyncDeps, type SyncResult } from './queue';
+import { PunchQueue, isAlreadyRecorded, isRetryable, type PunchKind, type QueuedPunch, type SyncDeps, type SyncResult } from './queue';
 import { fileStore, selfieFiles } from './store';
+
+export { friendlyReason } from './queue';
 
 export const MAX_SELFIE_BYTES = 3 * 1024 * 1024;
 
@@ -48,11 +50,13 @@ export const syncDeps: SyncDeps = {
 
 export type Fix = { latitude: number; longitude: number; accuracy: number | null; isMock: boolean };
 export type SelfieInput = { uri: string; liveness_passed: boolean | null; liveness_score: number | null };
-export type PunchInput = { kind: PunchKind; fix: Fix | null; selfie?: SelfieInput | null; uuid: () => string };
+/** `capturedAt` is stamped when the user taps Punch (not when the request finally goes out). */
+export type PunchInput = { kind: PunchKind; fix: Fix | null; selfie?: SelfieInput | null; uuid: () => string; capturedAt?: string };
 
 export type PunchOutcome =
   | { status: 'ok'; attendance: AttendanceRow & { geo_flag?: string | null; attribution_flag?: string | null }; flag: string | null }
-  | { status: 'queued'; item: QueuedPunch }
+  | { status: 'queued'; item: QueuedPunch; behind?: boolean }
+  | { status: 'already' }
   | { status: 'error'; error: ApiError; needsSelfie: boolean };
 
 export function selfieRequired(e: ApiError): boolean {
@@ -64,11 +68,11 @@ export function selfieRequired(e: ApiError): boolean {
  * rejections and are shown, never queued; only transport failure / 5xx / 429 queue the punch for /offline-sync.
  */
 export async function submitPunch(input: PunchInput, q: PunchQueue = getPunchQueue()): Promise<PunchOutcome> {
-  const capturedAt = new Date().toISOString();
+  const capturedAt = input.capturedAt ?? new Date().toISOString();
   const { fix, selfie } = input;
-  const queueIt = async (selfieId: number | null): Promise<PunchOutcome> => ({
-    status: 'queued',
-    item: await q.enqueue({
+  const cleanup = () => (selfie ? selfieFiles.remove(selfie.uri) : undefined);
+  const queueIt = async (selfieId: number | null, behind = false): Promise<PunchOutcome> => {
+    const item = await q.enqueue({
       client_uuid: input.uuid(),
       kind: input.kind,
       captured_at: capturedAt,
@@ -80,8 +84,14 @@ export async function submitPunch(input: PunchInput, q: PunchQueue = getPunchQue
       selfie_id: selfieId,
       liveness_passed: selfie?.liveness_passed ?? null,
       liveness_score: selfie?.liveness_score ?? null,
-    }),
-  });
+    });
+    await cleanup(); // the queue keeps its own copy
+    return { status: 'queued', item, behind };
+  };
+
+  // Order matters (in before out): while anything is pending, new punches join the queue instead of racing it.
+  await q.ready();
+  if (q.getSnapshot().items.length > 0) return queueIt(null, true);
 
   let selfieId: number | null = null;
   if (selfie) {
@@ -106,10 +116,12 @@ export async function submitPunch(input: PunchInput, q: PunchQueue = getPunchQue
   try {
     const res = await api.post(input.kind === 'in' ? '/attendance/mark' : '/attendance/punch-out', body);
     const att = res.data as AttendanceRow & { geo_flag?: string | null; attribution_flag?: string | null };
+    await cleanup();
     return { status: 'ok', attendance: att, flag: att.geo_flag ?? att.attribution_flag ?? null };
   } catch (e) {
     const err = normalizeError(e);
     if (isRetryable(err)) return queueIt(selfieId);
+    if (isAlreadyRecorded(err.message)) { await cleanup(); return { status: 'already' }; }
     return { status: 'error', error: err, needsSelfie: selfieRequired(err) };
   }
 }

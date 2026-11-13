@@ -11,7 +11,6 @@ import { useTheme } from '../../theme';
 import { useApprovalsAccess } from '../approvals/hooks';
 import { GateInline } from '../attendance/GateNotice';
 import { PendingBanner } from '../punch/PendingBanner';
-import { usePunchQueueSync } from '../punch/hooks';
 import { isGateError, retryUnlessGate, useAttendanceGate } from '../attendance/gate';
 
 async function fetchRosterWeek(): Promise<RosterWeek> {
@@ -33,7 +32,6 @@ export function HomeScreen() {
   const { user, unverified } = useAuth();
   const { gated, ready, today, query: todayQ, pendingQuery: pending } = useAttendanceGate();
   const approvals = useApprovalsAccess();
-  usePunchQueueSync();
 
   // Gated endpoints wait for the gate answer; the pending count doubles as the gate probe (see useAttendanceGate).
   const roster = useQuery({ queryKey: ['roster-week'], queryFn: fetchRosterWeek, enabled: !!user && ready && !gated, retry: retryUnlessGate });

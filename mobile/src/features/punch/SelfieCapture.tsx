@@ -4,6 +4,7 @@ import { View } from 'react-native';
 import { Button, Card, Text } from '../../components/ui';
 import { getTenant } from '../../config/tenant';
 import { compressSelfie, type SelfieInput } from './api';
+import { selfieFiles } from './store';
 import { getLivenessDetector, type CaptureSession } from './liveness';
 
 /**
@@ -16,7 +17,7 @@ export function SelfieCapture({ onDone, onCancel, allowSkip = true }: { onDone: 
   const [prompt, setPrompt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const bypass = !!getTenant().features?.devLivenessBypass;
+  const bypass = __DEV__ && !!getTenant().features?.devLivenessBypass;
 
   const start = async () => {
     setBusy(true);
@@ -33,6 +34,7 @@ export function SelfieCapture({ onDone, onCancel, allowSkip = true }: { onDone: 
       };
       const { frameUri, result } = await getLivenessDetector({ devBypass: bypass }).run(session);
       const uri = await compressSelfie(frameUri);
+      if (uri !== frameUri) await selfieFiles.remove(frameUri); // drop the uncompressed camera frame
       onDone({ uri, liveness_passed: result.passed, liveness_score: result.score });
     } catch {
       setErr("Couldn't take the photo. Try again.");

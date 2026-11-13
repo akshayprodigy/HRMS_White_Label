@@ -8,6 +8,8 @@
  *    A vision-camera/ML Kit based source is registered with registerFaceSignalSource() once a dev build has one.
  *  - FallbackLivenessDetector (default): captures 2 frames ~1s apart and reports liveness_passed = null (UNKNOWN).
  *  - Dev bypass (tenant flag devLivenessBypass): one frame, liveness_passed = null.
+ * Limits: the fallback cannot bind the submitted frame to a live person (no face check), and the score stays null
+ * unless a real detector supplies one.
  * Nothing in here ever returns `passed: true` without a face signal source actually observing the challenge.
  */
 export type LivenessChallenge = 'blink' | 'turn_left';
@@ -88,8 +90,9 @@ export class ChallengeLivenessDetector implements LivenessDetector {
     });
     clearTimeout(timer);
     unsub();
+    // The still is taken right after the challenge outcome (same moment the user's face is in view).
     const frameUri = await session.capture();
-    return { frameUri, result: { passed, score: passed ? 1 : 0, method: 'challenge' } };
+    return { frameUri, result: { passed, score: null, method: 'challenge' } };
   }
 }
 

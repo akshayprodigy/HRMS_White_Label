@@ -6,11 +6,13 @@ import { setupApiMock, teardownApiMock } from '../test-utils';
 
 jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ features: {} }), getApiBaseUrl: () => 'http://test/api/v1' }));
 jest.mock('expo-file-system', () => ({ File: class {}, Directory: class {}, Paths: {} }));
+jest.mock('../src/features/punch/store', () => ({ ...jest.requireActual('../src/features/punch/store'), selfieFiles: { persist: jest.fn(), remove: jest.fn(async () => undefined) } }));
 jest.mock('expo-image-manipulator', () => ({ manipulateAsync: jest.fn(), SaveFormat: { JPEG: 'jpeg' } }));
 
+const mkQ = (...a: ConstructorParameters<typeof PunchQueue>) => { const q = new PunchQueue(...a); q.setUser(1); return q; };
 let mock: MockAdapter;
 let q: PunchQueue;
-beforeEach(() => { mock = setupApiMock(); q = new PunchQueue(memoryStore(), memorySelfieFiles()); });
+beforeEach(() => { mock = setupApiMock(); q = mkQ(memoryStore(), memorySelfieFiles()); });
 afterEach(teardownApiMock);
 
 const fix = { latitude: 12.9, longitude: 77.6, accuracy: 12, isMock: true };
@@ -90,5 +92,35 @@ describe('submitPunch', () => {
     const out = await submitPunch(input({ selfie }), q);
     expect(out).toMatchObject({ status: 'error', error: { status: 413 } });
     expect(q.getSnapshot().items).toHaveLength(0);
+  });
+
+  it('stamps the supplied captured_at (tap time) on queued punches', async () => {
+    mock.onPost('/attendance/mark').networkError();
+    const out = await submitPunch(input({ capturedAt: '2026-11-13T08:00:00.000Z' }), q);
+    expect(out.status).toBe('queued');
+    expect(q.getSnapshot().items[0].captured_at).toBe('2026-11-13T08:00:00.000Z');
+  });
+
+  it('queued in then queued out keep order, and a live punch is blocked behind a pending in', async () => {
+    mock.onPost('/attendance/mark').networkError();
+    await submitPunch(input({ capturedAt: '2026-11-13T08:00:00.000Z', uuid: () => 'uuid-in-0001' }), q);
+    const before = mock.history.post.length;
+    const out = await submitPunch(input({ kind: 'out', capturedAt: '2026-11-13T17:00:00.000Z', uuid: () => 'uuid-out-001' }), q);
+    expect(out).toMatchObject({ status: 'queued', behind: true });
+    expect(mock.history.post.length).toBe(before); // no live call while something is pending
+    expect(q.getSnapshot().items.map((i) => [i.kind, i.client_uuid])).toEqual([['in', 'uuid-in-0001'], ['out', 'uuid-out-001']]);
+  });
+
+  it('"already punched out" is an already-recorded notice, not an error', async () => {
+    mock.onPost('/attendance/punch-out').reply(400, { detail: 'You have already punched out for the current shift.' });
+    expect((await submitPunch(input({ kind: 'out' }), q)).status).toBe('already');
+  });
+
+  it('removes the temp selfie file after a successful punch', async () => {
+    const files = jest.requireMock('../src/features/punch/store') as { selfieFiles: { remove: jest.Mock } };
+    mock.onPost('/attendance/selfie').reply(200, { selfie_id: 1 });
+    mock.onPost('/attendance/mark').reply(200, { id: 1, captured_at: 'x', punch_out_time: null });
+    await submitPunch(input({ selfie }), q);
+    expect(files.selfieFiles.remove).toHaveBeenCalledWith('file:///s.jpg');
   });
 });

@@ -46,7 +46,7 @@ describe('liveness', () => {
     const s = session();
     const p = new ChallengeLivenessDetector(source, 'blink', 50).run(s);
     for (const v of [0.9, 0.1, 0.9]) emit({ faceVisible: true, leftEyeOpen: v, rightEyeOpen: v });
-    expect((await p).result).toMatchObject({ passed: true, method: 'challenge' });
+    expect((await p).result).toMatchObject({ passed: true, score: null, method: 'challenge' });
     expect(s.setPrompt).toHaveBeenCalledWith('Blink');
     const timedOut = await new ChallengeLivenessDetector(source, 'blink', 20).run(session());
     expect(timedOut.result.passed).toBe(false);

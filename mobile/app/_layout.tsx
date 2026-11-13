@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { AuthProvider, useAuth } from '../src/auth/AuthProvider';
+import { usePunchQueueSyncLoop } from '../src/features/punch/hooks';
 import { useAppStateFocus } from '../src/lib/appFocus';
 import { ThemeProvider, useTheme } from '../src/theme';
 
@@ -14,6 +15,7 @@ void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 function AuthGate() {
   const { user, loading } = useAuth();
   const { dark } = useTheme();
+  usePunchQueueSyncLoop();
 
   useEffect(() => {
     if (!loading) void SplashScreen.hideAsync().catch(() => undefined);
