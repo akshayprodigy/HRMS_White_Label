@@ -40,6 +40,11 @@ export function normalizeError(err: unknown): ApiError {
       const d = data as { error?: { code?: string; message?: string }; detail?: unknown; message?: string };
       if (d.error && typeof d.error.message === 'string') return new ApiError(d.error.message, res.status, d.error.code);
       if (typeof d.detail === 'string') return new ApiError(d.detail, res.status);
+      // Structured detail, e.g. the STRICT geofence 422: {error: "OUTSIDE_GEOFENCE", message, nearest_fence_name, ...}
+      if (d.detail && typeof d.detail === 'object' && !Array.isArray(d.detail)) {
+        const x = d.detail as { error?: unknown; message?: unknown };
+        if (typeof x.message === 'string') return new ApiError(x.message, res.status, typeof x.error === 'string' ? x.error : undefined);
+      }
       if (Array.isArray(d.detail)) {
         const msgs = d.detail
           .map((x) => (x && typeof x === 'object' && 'msg' in x ? String((x as { msg: unknown }).msg) : ''))
