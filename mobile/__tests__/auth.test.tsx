@@ -35,6 +35,24 @@ beforeEach(async () => {
 });
 afterEach(() => setAdapter(undefined));
 
+describe('AuthProvider login', () => {
+  it('stores the profile before the tokens (the headless push task needs it whenever tokens exist)', async () => {
+    mock.onPost('/auth/login').reply(200, { access_token: 'a', refresh_token: 'r', token_type: 'bearer' });
+    mock.onGet('/auth/me').reply(200, ME);
+    const order: string[] = [];
+    const m = jest.spyOn(tokenStorage, 'saveMe').mockImplementation(async () => void order.push('me'));
+    const t = jest.spyOn(tokenStorage, 'save').mockImplementation(async () => void order.push('tokens'));
+    await mount();
+    await waitFor(() => expect(auth.loading).toBe(false));
+    await act(async () => {
+      await auth.login('employee@gmail.com', 'x');
+    });
+    expect(order).toEqual(['me', 'tokens']);
+    m.mockRestore();
+    t.mockRestore();
+  });
+});
+
 describe('AuthProvider session restore', () => {
   it('keeps tokens and the cached user ("unverified") when the server is unreachable', async () => {
     await tokenStorage.save({ accessToken: 'a', refreshToken: 'r' });

@@ -104,8 +104,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTokens(tokens);
     try {
       const me = await fetchMe();
-      await tokenStorage.save(tokens);
+      // Profile first: the headless notification task reads it to check who a push is for, so tokens must never exist without it.
       await tokenStorage.saveMe(me);
+      await tokenStorage.save(tokens);
       setUser(me);
       setUnverified(false);
     } catch (e) {

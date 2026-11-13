@@ -11,6 +11,7 @@ let registeredToken: string | null = null;
 let inflight: { promise: Promise<string | null>; epoch: number } | null = null;
 /** Bumped by unregisterPush (logout). A registration that started under an older epoch must not record or keep its token. */
 let sessionEpoch = 0;
+const INFLIGHT_WAIT_MS = 4000;
 
 export function getRegisteredToken() {
   return registeredToken;
@@ -113,7 +114,17 @@ export function registerForPush(): Promise<string | null> {
 /** Best-effort revoke; MUST run while the access token is still set. Never throws, never blocks long. */
 export async function unregisterPush(): Promise<void> {
   sessionEpoch += 1; // invalidates any registration still in flight...
-  await inflight?.promise.catch(() => undefined); // ...and lets it finish its own undo while the session is still valid
+  // ...and lets it finish its own undo while the session is still valid, but never hangs logout on a stalled token fetch.
+  if (inflight) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      inflight.promise.catch(() => undefined),
+      new Promise<void>((r) => {
+        timer = setTimeout(r, INFLIGHT_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
   const token = registeredToken;
   registeredToken = null;
   if (!token) return;

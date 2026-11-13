@@ -70,6 +70,14 @@ describe('headless task', () => {
     await handleBackgroundPayload(resp({ ...approval, user_id: 1 }, 'approve'));
     expect(mock.history.post).toHaveLength(1);
   });
+  it('ignores a user-addressed push when the stored profile is missing (no fail-open)', async () => {
+    await tokenStorage.clear();
+    await tokenStorage.save({ accessToken: 'a', refreshToken: 'r' }); // tokens without "me"
+    await handleBackgroundPayload(resp({ ...approval, user_id: 1 }, 'approve'));
+    expect(mock.history.post).toHaveLength(0);
+    await handleBackgroundPayload(resp(approval, 'approve')); // older backend, no user_id: still acts
+    expect(mock.history.post).toHaveLength(1);
+  });
   it('does nothing when signed out (no stored session)', async () => {
     await tokenStorage.clear();
     await handleBackgroundPayload(resp(approval, 'approve'));

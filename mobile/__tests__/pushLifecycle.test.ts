@@ -152,6 +152,23 @@ describe('logout races', () => {
     expect(mock.history.delete).toHaveLength(1);
     expect(getRegisteredToken()).toBeNull();
   });
+  it('logout is not blocked by a stalled token fetch', async () => {
+    jest.useFakeTimers();
+    try {
+      mockN.getExpoPushTokenAsync.mockReturnValue(new Promise(() => undefined));
+      void registerForPush();
+      await jest.advanceTimersByTimeAsync(0);
+      let done = false;
+      const out = unregisterPush().then(() => { done = true; });
+      await jest.advanceTimersByTimeAsync(3000);
+      expect(done).toBe(false);
+      await jest.advanceTimersByTimeAsync(1500);
+      await out;
+      expect(done).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
   it('a login right after logout registers fresh instead of reusing the stale flight', async () => {
     const d = deferred<{ data: string }>();
     mockN.getExpoPushTokenAsync.mockReturnValueOnce(d.promise);

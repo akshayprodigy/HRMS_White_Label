@@ -5,7 +5,7 @@ import { Platform } from 'react-native';
 import { getTokens, setTokens } from '../../api/client';
 import { tokenStorage } from '../../auth/tokenStorage';
 import { performNotificationAction } from './actions';
-import { routeResponse, type ResponseLike } from './routing';
+import { parsePushData, routeResponse, type ResponseLike } from './routing';
 
 export const BACKGROUND_NOTIFICATION_TASK = 'hrms-background-notification-task';
 
@@ -25,7 +25,10 @@ export async function handleBackgroundPayload(payload: unknown): Promise<void> {
     setTokens(stored);
   }
   const me = await tokenStorage.loadMe<{ id?: number }>();
-  const routed = routeResponse(payload as ResponseLike, typeof me?.id === 'number' ? me.id : null);
+  const myId = typeof me?.id === 'number' ? me.id : null;
+  // A user-addressed push with no stored profile cannot be verified: ignore rather than fail open.
+  if (myId == null && parsePushData((payload as ResponseLike).notification?.request?.content?.data)?.user_id != null) return;
+  const routed = routeResponse(payload as ResponseLike, myId);
   if (routed.kind !== 'action') return; // addressed to a different user
   await performNotificationAction(new QueryClient(), routed.notification_id, routed.action);
 }
