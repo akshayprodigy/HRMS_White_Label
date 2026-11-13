@@ -85,4 +85,17 @@ describe('useTrackingLifecycle', () => {
     release();
     spy.mockRestore();
   });
+
+  it('a user switch during the my-status fetch drops the stale result (never applied for the old user)', async () => {
+    let release!: () => void;
+    mock.onGet('/tracking/my-status').replyOnce(() => new Promise((r) => { release = () => r([200, status]); }));
+    mock.onGet('/tracking/my-status').reply(200, status);
+    await renderWithProviders(<Harness />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    await act(async () => { mockAuth.user = { id: 2 }; bump(); await new Promise((r) => setTimeout(r, 20)); });
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 20)); });
+    const uids = mockT.applyStatus.mock.calls.map((c) => (c as unknown[])[1]);
+    expect(uids).toContain(2);
+    expect(uids).not.toContain(1);
+  });
 });

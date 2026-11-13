@@ -9,7 +9,6 @@ import { PingQueue, type SyncOutcome } from './queue';
 import { decideTracking, type Decision } from './window';
 
 export const LOCATION_TASK = 'hrms-shift-location-task';
-export const HEARTBEAT_MS = 5 * 60_000;
 export const FOREGROUND_NOTIFICATION = {
   notificationTitle: 'Shift location sharing on',
   notificationBody: 'Your location is shared with your scheduler during your rostered shift.',
@@ -110,14 +109,18 @@ export type ApplyResult = { running: boolean; mode: 'background' | 'foreground' 
 
 /** Local-only safety net, run before any network on app start / foreground: if updates are still running (or meta is gone)
  * after the window ended, stop them now. */
-export async function enforceWindowEnd(now: number = Date.now()): Promise<boolean> {
-  const m = await readMeta();
-  const native = fgSub != null || (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK).catch(() => false));
-  if (m ? now > m.window_end : native) {
-    await stopTracking();
+export function enforceWindowEnd(now: number = Date.now()): Promise<boolean> {
+  // Same chain as applyStatus/stopTracking: it must not stop tracking that a concurrent apply is just starting.
+  const p = starting.then(async () => {
+    const m = await readMeta();
+    const native = fgSub != null || (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK).catch(() => false));
+    if (!(m ? now > m.window_end : native)) return false;
+    await stopNative();
+    await writeMeta(null);
     return true;
-  }
-  return false;
+  });
+  starting = p.catch(() => undefined);
+  return p;
 }
 
 /** Make the device match the decision for `status` at `now`. Idempotent. */
@@ -158,7 +161,7 @@ async function doApply(status: MyStatus | null | undefined, userId: number, now:
     await Location.startLocationUpdatesAsync(LOCATION_TASK, {
       accuracy: Location.Accuracy.Balanced, // battery-aware: no continuous GPS
       distanceInterval: next.distance_filter_m,
-      timeInterval: Math.min(ms, HEARTBEAT_MS), // Android only: also a heartbeat so the task wakes (and stops itself) after the window end
+      timeInterval: ms, // Android only
       deferredUpdatesInterval: ms, // batch deliveries to the JS side
       deferredUpdatesDistance: next.distance_filter_m,
       pausesUpdatesAutomatically: true, // iOS: pause when stationary

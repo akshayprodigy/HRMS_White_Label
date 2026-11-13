@@ -5,7 +5,7 @@ import { tokenStorage } from '../src/auth/tokenStorage';
 import { memoryStore } from '../src/features/punch/store';
 import type { MyStatus } from '../src/features/tracking/api';
 import { PingQueue } from '../src/features/tracking/queue';
-import { applyStatus, beginRevoke, endRevoke, enforceWindowEnd, flushPings, HEARTBEAT_MS, OUTSIDE_WINDOW_COOLDOWN_MS, resetTrackingForTests, handleLocations, LOCATION_TASK, readMeta, setMetaStore, setPingQueue, stopTracking, toWirePings } from '../src/features/tracking/tracking';
+import { applyStatus, beginRevoke, endRevoke, enforceWindowEnd, flushPings, OUTSIDE_WINDOW_COOLDOWN_MS, resetTrackingForTests, handleLocations, LOCATION_TASK, readMeta, setMetaStore, setPingQueue, stopTracking, toWirePings } from '../src/features/tracking/tracking';
 import '../src/features/tracking/task';
 
 jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ id: 'dev' }), getApiBaseUrl: () => 'http://test/api/v1' }));
@@ -158,7 +158,7 @@ describe('applyStatus (start/stop wiring)', () => {
     const r = await applyStatus(status({ interval_seconds: 600, distance_filter_m: 250 }), 1, NOW);
     expect(r).toEqual({ running: true, mode: 'background', reason: 'in_window' });
     expect(mockLoc.start).toHaveBeenCalledWith(LOCATION_TASK, expect.objectContaining({
-      accuracy: 3, distanceInterval: 250, deferredUpdatesInterval: 600_000, timeInterval: HEARTBEAT_MS,
+      accuracy: 3, distanceInterval: 250, deferredUpdatesInterval: 600_000, timeInterval: 600_000,
       foregroundService: expect.objectContaining({ notificationTitle: 'Shift location sharing on' }),
     }));
     expect(await readMeta()).toMatchObject({ user_id: 1, window_end: END, mode: 'background' });
@@ -219,11 +219,21 @@ describe('applyStatus (start/stop wiring)', () => {
 });
 
 describe('window-end heartbeat and safety net', () => {
-  it('caps the Android timeInterval heartbeat at 5 minutes but honours a shorter policy interval', async () => {
+  it('uses the policy interval for timeInterval (no separate heartbeat)', async () => {
     await applyStatus(status({ interval_seconds: 3600 }), 1, NOW);
-    expect((mockLoc.start.mock.calls[0] as unknown[])[1]).toMatchObject({ timeInterval: 300_000, deferredUpdatesInterval: 3_600_000 });
-    await applyStatus(status({ interval_seconds: 60 }), 1, NOW);
-    expect((mockLoc.start.mock.calls[1] as unknown[])[1]).toMatchObject({ timeInterval: 60_000 });
+    expect((mockLoc.start.mock.calls[0] as unknown[])[1]).toMatchObject({ timeInterval: 3_600_000, deferredUpdatesInterval: 3_600_000 });
+  });
+  it('enforceWindowEnd is serialized with applyStatus: a concurrent start is not stopped by a stale check', async () => {
+    let release!: () => void;
+    mockLoc.start.mockImplementationOnce(() => new Promise<void>((r) => { release = () => { mockLoc.started = true; r(); }; }));
+    const apply = applyStatus(status(), 1, NOW);
+    const enforce = enforceWindowEnd(NOW + 1000); // inside the window: must wait for the start, then see meta and do nothing
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    await apply;
+    expect(await enforce).toBe(false);
+    expect(mockLoc.started).toBe(true);
+    expect(await readMeta()).not.toBeNull();
   });
   it('enforceWindowEnd stops a session still running past the window end, before any network call', async () => {
     await applyStatus(status(), 1, NOW);

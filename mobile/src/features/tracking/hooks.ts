@@ -16,7 +16,8 @@ export function useRecheckTracking() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const uid = user?.id ?? null;
-  return useCallback(async (): Promise<ApplyResult | null> => {
+  /** `isAlive`: the caller's effect is still current; a user switch or unmount during the fetch must not apply a stale result. */
+  return useCallback(async (isAlive: () => boolean = () => true): Promise<ApplyResult | null> => {
     if (uid == null) return null;
     await enforceWindowEnd().catch(() => false); // local check first: nothing may keep running past the window, even offline
     let status: MyStatus | undefined;
@@ -27,6 +28,7 @@ export function useRecheckTracking() {
       status = qc.getQueryData<MyStatus>(MY_STATUS_KEY);
       if (!status) return null;
     }
+    if (!isAlive()) return null;
     const r = await applyStatus(status, uid);
     const q = getPingQueue();
     q.setUser(uid);
@@ -40,10 +42,8 @@ export function useRecheckTracking() {
  * KNOWN LIMITATION: there is no OS-level background start at window start. If the app is not running when a shift window
  * opens, tracking begins only once the app is opened (or foregrounded) during or before the window. Once started, the
  * Android foreground service / iOS background location keep it going and the headless task stops it at the window end.
- * Android: a timeInterval heartbeat (<= 5 min) lets the headless task wake and stop itself after the window end (the
- * distanceInterval filter may still suppress deliveries on a stationary device).
- * iOS: a stationary device may keep the OS location session until the next app open; the server rejects pings outside the
- * window, so no data is stored.
+ * Window end on a stationary device (iOS and Android) is bounded by enforceWindowEnd on the next app start, foreground or
+ * timer tick, plus the server rejecting out-of-window pings, so no data is stored past the window.
  * Follow-up: schedule the start/stop with expo-background-task.
  *
  * Mounted ONCE inside the root layout: on sign-in, on foreground, and on a timer aimed at the next window boundary
@@ -70,7 +70,7 @@ export function useTrackingLifecycle() {
     const run = async () => {
       if (running) return;
       running = true;
-      try { await recheck(); } catch (e) { console.warn('[tracking] recheck failed', e instanceof Error ? e.message : e); } finally { running = false; }
+      try { await recheck(() => alive); } catch (e) { console.warn('[tracking] recheck failed', e instanceof Error ? e.message : e); } finally { running = false; }
       if (!alive) return;
       clearTimeout(timer);
       const now = Date.now();
