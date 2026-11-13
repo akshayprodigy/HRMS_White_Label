@@ -58,6 +58,61 @@ describe('api client', () => {
     expect(mock.history.post.length).toBe(1);
   });
 
+  it('keeps tokens and does not log out when refresh fails with network/5xx', async () => {
+    const onLogout = jest.fn();
+    setLogoutHandler(onLogout);
+    mock.onGet('/a').reply(401, {});
+    mock.onPost('/auth/refresh').replyOnce(503, {}).onPost('/auth/refresh').networkErrorOnce();
+    await expect(api.get('/a')).rejects.toMatchObject({ status: 503 });
+    await expect(api.get('/a')).rejects.toMatchObject({ status: 0, code: 'network_error' });
+    expect(onLogout).not.toHaveBeenCalled();
+    expect(getTokens()).toEqual({ accessToken: 'old', refreshToken: 'r1' });
+  });
+
+  it.each([400, 403])('logs out when refresh fails with %i', async (status) => {
+    const onLogout = jest.fn();
+    setLogoutHandler(onLogout);
+    mock.onGet('/a').reply(401, {});
+    mock.onPost('/auth/refresh').reply(status, {});
+    await expect(api.get('/a')).rejects.toMatchObject({ status: 401 });
+    expect(onLogout).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resurrect the session when logout happens during an in-flight refresh', async () => {
+    mock.onGet('/a').reply(401, {});
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mock.onPost('/auth/refresh').reply(async () => {
+      await gate;
+      return [200, { access_token: 'new', refresh_token: 'r2' }];
+    });
+    const pending = api.get('/a');
+    await new Promise((r) => setTimeout(r, 10));
+    setTokens(null); // user logged out
+    release();
+    await expect(pending).rejects.toMatchObject({ status: 401, code: 'session_changed', message: 'Session changed' });
+    expect(getTokens()).toBeNull();
+    expect(await tokenStorage.load()).toBeNull();
+  });
+
+  it('retries a late 401 (sent with a rotated token) with the current token, no refresh', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mock.onGet('/a').reply(async (cfg) => {
+      if (cfg.headers?.Authorization === 'Bearer current') return [200, 'ok'];
+      await gate; // response arrives after the token was rotated
+      return [401, {}];
+    });
+    mock.onPost('/auth/refresh').reply(500);
+    const pending = api.get('/a');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mock.history.get[0].headers?.Authorization).toBe('Bearer old');
+    setTokens({ accessToken: 'current', refreshToken: 'r9' });
+    release();
+    expect((await pending).data).toBe('ok');
+    expect(mock.history.post.length).toBe(0);
+  });
+
   it('does not try to refresh on login failure', async () => {
     mock.onPost('/auth/login').reply(401, { detail: 'Incorrect email or password' });
     await expect(api.post('/auth/login', 'x')).rejects.toMatchObject({ message: 'Incorrect email or password' });

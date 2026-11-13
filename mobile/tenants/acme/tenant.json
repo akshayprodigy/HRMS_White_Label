@@ -2,8 +2,14 @@
   "name": "Acme HR",
   "slug": "acme-hr",
   "scheme": "acmehr",
-  "ios": { "bundleIdentifier": "com.acme.hr" },
-  "android": { "package": "com.acme.hr" },
+  "version": "1.0.0",
+  "buildNumber": 1,
+  "ios": {
+    "bundleIdentifier": "com.acme.hr"
+  },
+  "android": {
+    "package": "com.acme.hr"
+  },
   "colors": {
     "primary": "#0F766E",
     "primaryText": "#FFFFFF",

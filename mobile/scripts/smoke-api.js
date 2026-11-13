@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Smoke test against a running backend: login (form-urlencoded) -> /auth/me -> /auth/refresh.
-// Usage: API=http://localhost:8005/api/v1 node scripts/smoke-api.js [email] [password]
-const base = process.env.API || 'http://localhost:8005/api/v1';
-const [email = 'employee@gmail.com', password = 'test@12345'] = process.argv.slice(2);
+// Usage: SMOKE_EMAIL=... SMOKE_PASSWORD=... [API=http://localhost:8005/api/v1] node scripts/smoke-api.js
+const base = process.env.API || "http://localhost:8005/api/v1";
+const email = process.env.SMOKE_EMAIL;
+const password = process.env.SMOKE_PASSWORD;
+if (!email || !password) { console.error('set SMOKE_EMAIL and SMOKE_PASSWORD'); process.exit(2); }
 (async () => {
   const login = await fetch(`${base}/auth/login`, {
     method: 'POST',

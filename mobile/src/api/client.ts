@@ -1,5 +1,4 @@
-/* eslint-disable import/no-named-as-default-member */
-import axios, { type AxiosAdapter, type AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import { create as createAxios, type AxiosAdapter, type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { getApiBaseUrl } from '../config/tenant';
 import { tokenStorage, type Tokens } from '../auth/tokenStorage';
 import { ApiError, normalizeError } from './errors';
@@ -23,9 +22,9 @@ export function setLogoutHandler(fn: (() => void) | null) {
   onLogout = fn;
 }
 
-export const api = axios.create({ timeout: 20000, headers: { Accept: 'application/json' } });
+export const api = createAxios({ timeout: 20000, headers: { Accept: 'application/json' } });
 /** Separate bare instance for /auth/refresh so it never re-enters the 401 interceptor. */
-const refreshClient = axios.create({ timeout: 20000 });
+const refreshClient = createAxios({ timeout: 20000 });
 
 /** Test hook: route both instances through a mock adapter. */
 export function setAdapter(adapter: AxiosAdapter | undefined) {
@@ -43,15 +42,20 @@ api.interceptors.request.use((config) => {
 });
 
 async function doRefresh(): Promise<string> {
-  if (!tokens?.refreshToken) throw new ApiError('Session expired', 401, 'no_refresh_token');
+  const sent = tokens;
+  if (!sent?.refreshToken) throw new ApiError('Session expired', 401, 'no_refresh_token');
   const res = await refreshClient.post<{ access_token: string; refresh_token?: string }>(
     '/auth/refresh',
-    { refresh_token: tokens.refreshToken },
+    { refresh_token: sent.refreshToken },
     { baseURL: getApiBaseUrl() },
   );
+  // Logout / re-login while the refresh was in flight must not resurrect the old session.
+  if (!tokens || tokens.refreshToken !== sent.refreshToken) {
+    throw new ApiError('Session changed', 401, 'session_changed');
+  }
   const next: Tokens = {
     accessToken: res.data.access_token,
-    refreshToken: res.data.refresh_token ?? tokens.refreshToken,
+    refreshToken: res.data.refresh_token ?? sent.refreshToken,
   };
   tokens = next;
   await tokenStorage.save(next);
@@ -68,11 +72,15 @@ export function refreshAccessToken(): Promise<string> {
   return refreshInFlight;
 }
 
+/** Clears the in-memory + stored session and tells the AuthProvider (which also clears query cache). */
 async function forceLogout() {
   tokens = null;
   await tokenStorage.clear().catch(() => undefined);
   onLogout?.();
 }
+
+/** Refresh statuses that prove the refresh token is dead (vs. transient network/5xx failures). */
+const SESSION_DEAD = new Set([400, 401, 403]);
 
 api.interceptors.response.use(
   (r) => r,
@@ -84,14 +92,25 @@ api.interceptors.response.use(
       throw normalizeError(error);
     }
     cfg._retried = true;
+
+    // Late 401 for a request sent with an already-rotated token: retry with the current one.
+    const sentAuth = cfg.headers.Authorization;
+    if (sentAuth && sentAuth !== `Bearer ${tokens.accessToken}`) {
+      cfg.headers.Authorization = `Bearer ${tokens.accessToken}`;
+      return api.request(cfg);
+    }
+
     let access: string;
     try {
       access = await refreshAccessToken();
     } catch (e) {
       const refreshErr = normalizeError(e);
-      // A network failure during refresh is not proof the session is dead; keep the tokens.
-      if (refreshErr.status !== 0) await forceLogout();
-      throw refreshErr.status === 0 ? refreshErr : normalizeError(error);
+      if (refreshErr.code === 'session_changed') throw refreshErr;
+      if (SESSION_DEAD.has(refreshErr.status)) {
+        await forceLogout();
+        throw normalizeError(error);
+      }
+      throw refreshErr; // network / 5xx: keep tokens, let the caller retry later
     }
     cfg.headers.Authorization = `Bearer ${access}`;
     return api.request(cfg); // a second 401 propagates as a normalised ApiError (no further retry)

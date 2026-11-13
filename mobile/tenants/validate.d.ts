@@ -22,7 +22,13 @@ export type Tenant = {
     /** Optional overrides applied in dark mode. */
     colorsDark?: Partial<TenantColors>;
     apiBaseUrl: string;
+    /** Marketing version (default 1.0.0). */
+    version?: string;
+    /** Increment per store upload: iOS buildNumber and Android versionCode (default 1). */
+    buildNumber?: number;
     features: Record<string, boolean>;
 };
 /** Validate a parsed tenant.json; throws one Error listing every problem. */
 export declare function validateTenant(raw: unknown, tenantName?: string): Tenant;
+export declare function isLocalHost(url: string): boolean;
+export declare function apiHost(url: string): string | null;

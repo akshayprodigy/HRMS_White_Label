@@ -4,6 +4,7 @@ export type Tokens = { accessToken: string; refreshToken: string };
 
 const ACCESS = 'hrms.access_token';
 const REFRESH = 'hrms.refresh_token';
+const ME = 'hrms.me'; // last verified user profile (cached for offline restore)
 
 export const tokenStorage = {
   async load(): Promise<Tokens | null> {
@@ -17,6 +18,21 @@ export const tokenStorage = {
     await Promise.all([SecureStore.setItemAsync(ACCESS, t.accessToken), SecureStore.setItemAsync(REFRESH, t.refreshToken)]);
   },
   async clear(): Promise<void> {
-    await Promise.all([SecureStore.deleteItemAsync(ACCESS), SecureStore.deleteItemAsync(REFRESH)]);
+    await Promise.all([
+      SecureStore.deleteItemAsync(ACCESS),
+      SecureStore.deleteItemAsync(REFRESH),
+      SecureStore.deleteItemAsync(ME),
+    ]);
+  },
+  async saveMe(me: unknown): Promise<void> {
+    await SecureStore.setItemAsync(ME, JSON.stringify(me));
+  },
+  async loadMe<T>(): Promise<T | null> {
+    try {
+      const raw = await SecureStore.getItemAsync(ME);
+      return raw ? (JSON.parse(raw) as T) : null;
+    } catch {
+      return null;
+    }
   },
 };

@@ -1,37 +1,36 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Slot, useRouter, useSegments } from 'expo-router';
+import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { AuthProvider, useAuth } from '../src/auth/AuthProvider';
 import { ThemeProvider, useTheme } from '../src/theme';
 
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
 function AuthGate() {
   const { user, loading } = useAuth();
-  const segments = useSegments();
-  const router = useRouter();
-  const { colors, dark } = useTheme();
+  const { dark } = useTheme();
 
   useEffect(() => {
-    if (loading) return;
-    const inAuth = segments[0] === '(auth)';
-    if (!user && !inAuth) router.replace('/(auth)/login');
-    else if (user && inAuth) router.replace('/(tabs)');
-  }, [user, loading, segments, router]);
+    if (!loading) void SplashScreen.hideAsync().catch(() => undefined);
+  }, [loading]);
 
-  if (loading) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
-  }
+  // Keep the native splash up until the stored session has been resolved: no login-screen flicker.
+  if (loading) return null;
   return (
     <>
       <StatusBar style={dark ? 'light' : 'dark'} />
-      <Slot />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Protected guard={!!user}>
+          <Stack.Screen name="(tabs)" />
+        </Stack.Protected>
+        <Stack.Protected guard={!user}>
+          <Stack.Screen name="(auth)" />
+        </Stack.Protected>
+      </Stack>
     </>
   );
 }

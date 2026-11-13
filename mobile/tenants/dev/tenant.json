@@ -2,8 +2,14 @@
   "name": "HRMS Dev",
   "slug": "hrms-dev",
   "scheme": "hrmsdev",
-  "ios": { "bundleIdentifier": "com.innocore.hrms.dev" },
-  "android": { "package": "com.innocore.hrms.dev" },
+  "version": "1.0.0",
+  "buildNumber": 1,
+  "ios": {
+    "bundleIdentifier": "com.innocore.hrms.dev"
+  },
+  "android": {
+    "package": "com.innocore.hrms.dev"
+  },
   "colors": {
     "primary": "#2563EB",
     "primaryText": "#FFFFFF",

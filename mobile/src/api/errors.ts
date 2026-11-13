@@ -1,5 +1,4 @@
-/* eslint-disable import/no-named-as-default-member */
-import axios from 'axios';
+import { isAxiosError } from 'axios';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -15,7 +14,7 @@ export class ApiError extends Error {
 /** Handles {"error":{code,message}}, FastAPI {detail:[{msg}]} / {detail:"..."}, and transport failures. */
 export function normalizeError(err: unknown): ApiError {
   if (err instanceof ApiError) return err;
-  if (axios.isAxiosError(err)) {
+  if (isAxiosError(err)) {
     const res = err.response;
     if (!res) {
       return new ApiError(

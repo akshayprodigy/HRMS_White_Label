@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Generates simple placeholder icon.png + splash.png (1024x1024) for a tenant
+// Generates simple placeholder icon.png, splash.png, adaptive-icon.png (1024x1024) for a tenant
 // from its primary colour, using a dependency-free PNG encoder.
 // Usage: node scripts/gen-tenant-assets.js <tenant>
 const fs = require('fs');
@@ -48,4 +48,7 @@ const disc = (x, y, outside) =>
   inRing(x, y, 300) ? (inRing(x, y, 170) ? [pr, pg, pb, 255] : [255, 255, 255, 255]) : outside;
 fs.writeFileSync(path.join(dir, 'icon.png'), png(S, (x, y) => disc(x, y, [pr, pg, pb, 255])));
 fs.writeFileSync(path.join(dir, 'splash.png'), png(S, (x, y) => disc(x, y, [0, 0, 0, 0])));
-console.log(`wrote tenants/${tenant}/icon.png + splash.png`);
+// Android adaptive-icon foreground: transparent canvas, white ring inside the 66% safe zone
+fs.writeFileSync(path.join(dir, 'adaptive-icon.png'), png(S, (x, y) =>
+  inRing(x, y, 300) ? (inRing(x, y, 170) ? [0, 0, 0, 0] : [255, 255, 255, 255]) : [0, 0, 0, 0]));
+console.log(`wrote tenants/${tenant}/icon.png, splash.png, adaptive-icon.png`);

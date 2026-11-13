@@ -10,7 +10,7 @@ Expo development-build app (expo-router + TypeScript) for the HRMS backend.
 ```bash
 npm install
 npm run check          # eslint + tsc --noEmit + jest
-npx expo-doctor
+npm run doctor
 TENANT=dev npx expo start          # Metro (after a dev build is installed)
 scripts/build-tenant.sh dev ios    # prebuild + run on a simulator (DEVICE="iPhone 15")
 scripts/build-tenant.sh dev android
@@ -36,10 +36,13 @@ for colour placeholders), then `scripts/build-tenant.sh <tenant> <ios|android> [
 (physical devices are left alone). The iOS simulator uses `localhost` directly.
 
 ### Release builds (EAS)
-Release binaries need credentials that are not in this repo: an Apple team + signing (per bundle id), a Google Play
-upload key, an EAS account/project per tenant, and push credentials (FCM service account, APNs key).
-Run `TENANT=<tenant> eas build --platform <ios|android> --profile production` (add `--local` to build on this machine).
-`scripts/build-tenant.sh <tenant> <platform> release` only generates the native project.
+`scripts/build-tenant.sh <tenant> <ios|android> release` refuses tenants whose `apiBaseUrl` is localhost/10.0.2.2 or not https,
+then runs `TENANT=<tenant> eas build --local --platform <p> --profile production` (the production profile has no
+TENANT in `eas.json` on purpose; `app.config.ts` throws if a production EAS build has no `TENANT`).
+Bump `buildNumber` (and `version`) in the tenant's `tenant.json` for every store upload; it feeds iOS `buildNumber` and Android `versionCode`.
+Credentials that are not in this repo: an Apple team + signing (per bundle id), a Google Play upload key,
+an EAS account/project per tenant, and push credentials (FCM service account, APNs key).
+`eas.json` profiles: `development` (dev client, simulator), `preview` (internal), `production` (store).
 
 ## Layout
 `app/` expo-router routes (`(auth)/login`, `(tabs)/{index,punch,leave,schedule,more}`) -

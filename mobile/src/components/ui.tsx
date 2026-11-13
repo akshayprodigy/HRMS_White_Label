@@ -58,6 +58,7 @@ export function Button({ title, onPress, loading, disabled, variant = 'primary',
     <Pressable
       testID={testID}
       accessibilityRole="button"
+      accessibilityLabel={title}
       accessibilityState={{ disabled: !!off, busy: !!loading }}
       disabled={off}
       onPress={onPress}
@@ -80,7 +81,7 @@ export function Button({ title, onPress, loading, disabled, variant = 'primary',
   );
 }
 
-export function TextInput({ label, error, ...rest }: TextInputProps & { label: string; error?: string | null }) {
+export function TextInput({ label, error, ...rest }: TextInputProps & { label: string; error?: string | null; ref?: React.ComponentProps<typeof RNTextInput>['ref'] }) {
   const { colors, radius, spacing } = useTheme();
   return (
     <View style={{ marginBottom: spacing.md }}>
@@ -100,7 +101,11 @@ export function TextInput({ label, error, ...rest }: TextInputProps & { label: s
           fontSize: 16,
         }}
       />
-      {error ? <Text size={13} style={{ color: colors.danger, marginTop: spacing.xs }}>{error}</Text> : null}
+      {error ? (
+        <Text size={13} accessibilityRole="alert" accessibilityLiveRegion="polite" style={{ color: colors.danger, marginTop: spacing.xs }}>
+          {error}
+        </Text>
+      ) : null}
     </View>
   );
 }

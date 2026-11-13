@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { buildConfig } from '../app.config';
+import { buildConfig, resolveTenantName } from '../app.config';
 import { validateTenant } from '../tenants/validate';
 import { resolveApiBaseUrl } from '../src/config/tenant';
 
@@ -21,6 +21,33 @@ describe('validateTenant', () => {
     expect(() => validateTenant({ ...good, features: { x: 'yes' } })).toThrow(/features\.x/);
     const { features: _f, ...noFeatures } = good;
     expect(() => validateTenant(noFeatures)).toThrow(/features is required/);
+  });
+});
+
+describe('production safety rules', () => {
+  it('rejects plain http for non-local hosts unless the tenant is dev', () => {
+    const remote = { ...good, apiBaseUrl: 'http://hr.acme.com/api/v1' };
+    expect(() => validateTenant(remote, 'acme')).toThrow(/must use https/);
+    expect(() => validateTenant(remote, 'dev')).not.toThrow();
+    expect(() => validateTenant({ ...good, apiBaseUrl: 'http://10.0.2.2:8005/api/v1' }, 'acme')).not.toThrow();
+    expect(() => validateTenant({ ...good, apiBaseUrl: 'https://hr.acme.com/api/v1' }, 'acme')).not.toThrow();
+  });
+  it('validates version and buildNumber', () => {
+    expect(() => validateTenant({ ...good, version: '1.2' })).toThrow(/version/);
+    expect(() => validateTenant({ ...good, buildNumber: 0 })).toThrow(/buildNumber/);
+    expect(() => validateTenant({ ...good, version: '2.1.0', buildNumber: 7 })).not.toThrow();
+  });
+  it('requires TENANT for production EAS builds, defaults to dev otherwise', () => {
+    expect(resolveTenantName({})).toBe('dev');
+    expect(resolveTenantName({ TENANT: 'acme' })).toBe('acme');
+    expect(() => resolveTenantName({ EAS_BUILD_PROFILE: 'production' })).toThrow(/TENANT must be set/);
+  });
+  it('maps version, build numbers and the adaptive icon', () => {
+    const c = buildConfig('acme');
+    expect(c.version).toBe('1.0.0');
+    expect(c.ios?.buildNumber).toBe('1');
+    expect(c.android?.versionCode).toBe(1);
+    expect(c.android?.adaptiveIcon?.foregroundImage).toBe('./tenants/acme/adaptive-icon.png');
   });
 });
 

@@ -16,7 +16,8 @@ export function buildConfig(tenantName: string, root: string = __dirname): ExpoC
   const tenant = validateTenant(JSON.parse(fs.readFileSync(file, 'utf8')), tenantName);
   const icon = `./tenants/${tenantName}/icon.png`;
   const splash = `./tenants/${tenantName}/splash.png`;
-  for (const asset of [icon, splash]) {
+  const adaptive = `./tenants/${tenantName}/adaptive-icon.png`;
+  for (const asset of [icon, splash, adaptive]) {
     if (!fs.existsSync(path.join(root, asset))) throw new Error(`Tenant "${tenantName}" is missing ${asset}`);
   }
 
@@ -24,14 +25,15 @@ export function buildConfig(tenantName: string, root: string = __dirname): ExpoC
     name: tenant.name,
     slug: tenant.slug,
     scheme: tenant.scheme,
-    version: '1.0.0',
+    version: tenant.version ?? '1.0.0',
     orientation: 'portrait',
     icon,
     userInterfaceStyle: 'automatic',
-    ios: { bundleIdentifier: tenant.ios.bundleIdentifier, supportsTablet: false },
+    ios: { bundleIdentifier: tenant.ios.bundleIdentifier, supportsTablet: false, buildNumber: String(tenant.buildNumber ?? 1) },
     android: {
       package: tenant.android.package,
-      adaptiveIcon: { foregroundImage: icon, backgroundColor: tenant.colors.primary },
+      versionCode: tenant.buildNumber ?? 1,
+      adaptiveIcon: { foregroundImage: adaptive, backgroundColor: tenant.colors.primary },
     },
     plugins: [
       'expo-router',
@@ -43,4 +45,11 @@ export function buildConfig(tenantName: string, root: string = __dirname): ExpoC
   };
 }
 
-export default (): ExpoConfig => buildConfig(process.env.TENANT || 'dev');
+/** Release builds must name their tenant explicitly; silently defaulting to dev would ship the wrong app. */
+export function resolveTenantName(env: Record<string, string | undefined>): string {
+  if (env.TENANT) return env.TENANT;
+  if (env.EAS_BUILD_PROFILE === 'production') throw new Error('TENANT must be set for production builds (e.g. TENANT=acme eas build --local --profile production)');
+  return 'dev';
+}
+
+export default (): ExpoConfig => buildConfig(resolveTenantName(process.env));

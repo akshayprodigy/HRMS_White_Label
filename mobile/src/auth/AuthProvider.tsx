@@ -1,12 +1,17 @@
+import { useQueryClient } from '@tanstack/react-query';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { fetchMe, loginRequest, setLogoutHandler, setTokens, type Me } from '../api/client';
+import { fetchMe, loginRequest, normalizeError, setLogoutHandler, setTokens, type Me } from '../api/client';
 import { tokenStorage } from './tokenStorage';
 
-type AuthState = {
+export type AuthState = {
   user: Me | null;
   loading: boolean;
+  /** True when the session was restored from cache because the server could not be reached. */
+  unverified: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Re-validate a restored (unverified) session against the server. */
+  verify: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -22,14 +27,19 @@ export function onBeforeLogout(fn: () => Promise<void> | void) {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
+  const [unverified, setUnverified] = useState(false);
 
+  /** The single teardown path for both user logout and forced (refresh-failed) logout. */
   const clearSession = useCallback(async () => {
     setTokens(null);
     await tokenStorage.clear().catch(() => undefined);
+    queryClient.clear();
     setUser(null);
-  }, []);
+    setUnverified(false);
+  }, [queryClient]);
 
   const logout = useCallback(async () => {
     for (const fn of [...beforeLogoutHooks]) {
@@ -42,20 +52,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearSession();
   }, [clearSession]);
 
+  const verify = useCallback(async () => {
+    const me = await fetchMe();
+    await tokenStorage.saveMe(me);
+    setUser(me);
+    setUnverified(false);
+  }, []);
+
   useEffect(() => {
-    // Refresh failure inside the API client lands here.
-    setLogoutHandler(() => setUser(null));
+    setLogoutHandler(() => {
+      void clearSession();
+    });
     let alive = true;
     (async () => {
       try {
         const stored = await tokenStorage.load();
-        if (stored) {
-          setTokens(stored);
+        if (!stored) return;
+        setTokens(stored);
+        try {
           const me = await fetchMe();
+          await tokenStorage.saveMe(me);
           if (alive) setUser(me);
+        } catch (e) {
+          const err = normalizeError(e);
+          if (err.status === 401 || err.status === 403) {
+            await clearSession(); // refresh already failed: session is dead
+          } else {
+            // Offline / server trouble: keep tokens, restore the cached profile as unverified.
+            const cached = await tokenStorage.loadMe<Me>();
+            if (alive && cached) {
+              setUser(cached);
+              setUnverified(true);
+            }
+          }
         }
-      } catch {
-        if (alive) setUser(null);
       } finally {
         if (alive) setLoading(false);
       }
@@ -64,7 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       alive = false;
       setLogoutHandler(null);
     };
-  }, []);
+  }, [clearSession]);
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await loginRequest(username.trim(), password);
@@ -73,14 +103,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const me = await fetchMe();
       await tokenStorage.save(tokens);
+      await tokenStorage.saveMe(me);
       setUser(me);
+      setUnverified(false);
     } catch (e) {
       setTokens(null);
       throw e;
     }
   }, []);
 
-  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout]);
+  const value = useMemo(
+    () => ({ user, loading, unverified, login, logout, verify }),
+    [user, loading, unverified, login, logout, verify],
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
