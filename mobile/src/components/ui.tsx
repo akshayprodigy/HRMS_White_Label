@@ -110,3 +110,19 @@ export function TextInput({ label, error, ...rest }: TextInputProps & { label: s
     </View>
   );
 }
+
+export function Chip({ label, selected, onPress, testID }: { label: string; selected: boolean; onPress: () => void; testID?: string }) {
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={{ paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, borderWidth: 1, borderColor: colors.primary, backgroundColor: selected ? colors.primary : 'transparent' }}
+    >
+      <Text size={14} weight="600" style={{ color: selected ? colors.primaryText : colors.primary }}>{label}</Text>
+    </Pressable>
+  );
+}

@@ -1,0 +1,40 @@
+# Walk the Schedule tab's sub-views. Precondition: the seeded employee has already punched in today
+# (otherwise the gate notice replaces the schedule) -- see _login.yaml.
+appId: com.innocore.hrms.dev
+---
+- runFlow: _login.yaml
+- tapOn:
+    id: tab-schedule
+- extendedWaitUntil:
+    visible:
+      id: sched-tab-shifts
+    timeout: 15000
+- tapOn:
+    id: sched-tab-swaps
+- extendedWaitUntil:
+    visible: .*(Incoming|Outgoing).*
+    timeout: 15000
+- tapOn:
+    id: sched-tab-open
+- extendedWaitUntil:
+    visible: .*(Open shifts|No open shifts right now|Claim).*
+    timeout: 15000
+- tapOn:
+    id: sched-tab-availability
+- extendedWaitUntil:
+    visible:
+      id: avail-add
+    timeout: 15000
+- tapOn:
+    id: sched-tab-shifts
+- extendedWaitUntil:
+    visible:
+      id: mode-month
+    timeout: 15000
+- tapOn:
+    id: mode-month
+- extendedWaitUntil:
+    visible:
+      id: month-label
+    timeout: 15000
+- takeScreenshot: artifacts/schedule-tabs

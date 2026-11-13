@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
-import { Pressable, Switch, View } from 'react-native';
+import { Switch, View } from 'react-native';
 import { normalizeError } from '../../api/client';
-import { Button, Card, Text, TextInput } from '../../components/ui';
+import { Button, Card, Chip, Text, TextInput } from '../../components/ui';
 import { fmtUtcDate as fmtIsoDate } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { uploadAttachment, type LeaveType } from './api';
@@ -11,22 +11,6 @@ import { buildApplyPayload, certRequired, leaveDays, todayIso, validateLeaveForm
 
 export const EMERGENCY_HELP =
   'Use this for same-day or back-dated leave. Your company sets how many days back you can start (checked when you submit), and your scheduler is alerted to arrange cover. Proof is only needed when this leave type and length require a medical certificate; you can then upload it later from your leave history by the due date shown after you submit, otherwise the leave converts to loss of pay.';
-
-function Chip({ label, selected, onPress, testID }: { label: string; selected: boolean; onPress: () => void; testID?: string }) {
-  const { colors } = useTheme();
-  return (
-    <Pressable
-      testID={testID}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      accessibilityLabel={label}
-      onPress={onPress}
-      style={{ paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, borderWidth: 1, borderColor: colors.primary, backgroundColor: selected ? colors.primary : 'transparent' }}
-    >
-      <Text size={14} weight="600" style={{ color: selected ? colors.primaryText : colors.primary }}>{label}</Text>
-    </Pressable>
-  );
-}
 
 const EMPTY: LeaveFormValues = { typeId: null, start: '', end: '', halfDay: false, session: 'morning', reason: '', emergency: false, emergencyContact: '', attachment: null };
 
