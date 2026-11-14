@@ -40,6 +40,7 @@ export function buildConfig(tenantName: string, root: string = __dirname, env: R
     android: {
       package: tenant.android.package,
       versionCode: tenant.buildNumber ?? 1,
+      permissions: ['android.permission.CAMERA'],
       adaptiveIcon: { foregroundImage: adaptive, backgroundColor: tenant.colors.primary },
       ...(mapsKey ? { config: { googleMaps: { apiKey: mapsKey } } } : {}),
     },
@@ -59,8 +60,9 @@ export function buildConfig(tenantName: string, root: string = __dirname, env: R
           isIosBackgroundLocationEnabled: true, // adds UIBackgroundModes: location
         },
       ],
-      ['expo-camera', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera for your punch selfie.', microphonePermission: false, recordAudioAndroid: false }],
-      ['expo-image-picker', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera to photograph leave proof such as a medical certificate.', microphonePermission: false, photosPermission: false }],
+      // react-native-vision-camera (+ face detector) and react-native-nitro-* ship no Expo config plugin: they autolink, and the
+      // camera permission is declared here (Android CAMERA below, iOS NSCameraUsageDescription via this plugin's cameraPermission).
+      ['expo-image-picker', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera for your punch selfie and to photograph leave proof such as a medical certificate.', microphonePermission: false, photosPermission: false }],
       ...(cleartext ? [['expo-build-properties', { android: { usesCleartextTraffic: true } }] as [string, object]] : []),
       ['expo-splash-screen', { image: splash, imageWidth: 160, backgroundColor: tenant.colors.primary }],
     ],
