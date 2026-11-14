@@ -4825,4 +4825,7 @@ html {
     .xl\:block { display: block; }
   }
   :where(.divide-gray-100 > :not(:last-child)) { border-color: var(--color-gray-100); }
+  .border-gray-100 { border-color: #f3f4f6; }
+  .hover\:text-gray-800:hover { color: #1f2937; }
+  .-mb-px { margin-bottom: -1px; }
 }

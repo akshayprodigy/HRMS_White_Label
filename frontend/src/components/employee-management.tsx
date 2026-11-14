@@ -1,3 +1,4 @@
+import { attendanceModeLabel } from './biometric/biometric-utils';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Users, 
@@ -2721,7 +2722,7 @@ const AttendanceTab = () => {
                            <Badge variant={log.status === 'On Time' ? 'success' : 'warning'} className="text-[8px] uppercase">{log.status}</Badge>
                          </div>
                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                            <MapPin size={10}/> {log.geo} • <ShieldCheck size={10}/> {log.mode} Mode
+                            <MapPin size={10}/> {log.geo} • <ShieldCheck size={10}/> {attendanceModeLabel(log.mode)} Mode
                          </p>
                       </div>
                    </div>

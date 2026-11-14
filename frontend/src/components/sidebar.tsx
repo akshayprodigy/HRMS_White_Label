@@ -39,6 +39,7 @@ import {
   MapPin,
   Timer,
   ShieldAlert,
+  Fingerprint,
 } from "lucide-react";
 import { cn } from "./ui-elements";
 import logoImg from "../assets/veliora-logo.png";
@@ -265,6 +266,13 @@ const menuItems: MenuItem[] = [
     label: "Field Team",
     icon: MapPin,
     roles: ["hr", "pm", "dept head", "admin", "super admin"],
+    group: "Time & Attendance",
+  },
+  {
+    id: "biometric-devices",
+    label: "Biometric Devices",
+    icon: Fingerprint,
+    roles: ["hr", "admin", "super admin"],
     group: "Time & Attendance",
   },
   {

@@ -1,3 +1,4 @@
+import { attendanceModeLabel } from '../biometric/biometric-utils';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   X,
@@ -579,7 +580,7 @@ const LogView: React.FC<{
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
                 <Badge variant="neutral" className="text-[8px] uppercase">
-                  {l.mode}
+                  {attendanceModeLabel(l.mode)}
                 </Badge>
                 {canEdit && (
                   <button

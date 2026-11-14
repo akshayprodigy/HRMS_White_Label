@@ -34,6 +34,9 @@ import { CelebrationsReport } from './components/celebrations-report';
 import { RosterPlanner } from './components/roster-planner';
 import { LiveBoard } from './components/live-board';
 // Lazy: pulls in leaflet, which should not weigh down the main bundle.
+const BiometricDevices = React.lazy(() =>
+  import('./components/biometric/biometric-devices').then((m) => ({ default: m.BiometricDevices }))
+);
 const FieldTeam = React.lazy(() =>
   import('./components/field-team').then((m) => ({ default: m.FieldTeam }))
 );
@@ -445,6 +448,12 @@ const App = () => {
             <FieldTeam />
           </Suspense>
         );
+      case 'biometric-devices':
+        return (
+          <Suspense fallback={<p className="p-8 text-sm text-gray-500">Loading…</p>}>
+            <BiometricDevices />
+          </Suspense>
+        );
       case 'geo-workspace':
         return <GeoWorkspace role={userRole} />;
       case 'overtime-admin':
@@ -604,6 +613,7 @@ const App = () => {
       'roster-planner': 'Roster Planner',
       'live-board': 'Live Board',
       'field-team': 'Field Team',
+      'biometric-devices': 'Biometric Devices',
       'emergency-broadcast': 'Emergency Broadcast',
       'geo-workspace': 'Geo Attendance',
       'overtime-admin': 'Overtime Administration',
