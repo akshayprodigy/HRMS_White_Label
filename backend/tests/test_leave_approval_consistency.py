@@ -391,7 +391,10 @@ async def test_same_approver_double_click_cannot_skip_step(client, world):
         client.post(_a(item, "leave"), headers=h, json={"status": "approved"}),
     )
     codes = sorted(r.status_code for r in rs)
-    assert codes[0] == 200 and codes[1] in (400, 409), [r.text for r in rs]
+    # The loser now sees the winner's committed state: step 2 belongs to
+    # someone else -> 403 (or 409 if it lost the lock race on a decided item).
+    assert codes[0] == 200 and codes[1] in (400, 403, 409), \
+        [r.text for r in rs]
     async with SessionLocal() as db:
         it = await db.get(ApprovalItem, item)
         steps = {s.step_number: s.status for s in (await db.execute(

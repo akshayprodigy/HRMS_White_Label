@@ -14,7 +14,7 @@ from app.models.roster import (
     RosterEntry, RosterStatus,
 )
 from app.models.shift import ShiftTemplate
-from app.models.user import User
+from app.models.user import Role, User
 from app.schemas.roster import (
     RosterBulkResult,
     RosterEntryRead,
@@ -166,6 +166,50 @@ async def lock_row(db, stmt, msg: str = "Request already decided"):
         if mapped is None:
             raise
         raise mapped from exc
+
+
+async def lock_row_retry(db, stmt, msg: str = "Request already decided", *,
+                         tries: int = 6, reload=None):
+    """lock_row that survives benign lock conflicts (MariaDB 1020/1213 from a
+    writer that merely touched the row, e.g. an SLA job). On a conflict it
+    rolls back (fresh REPEATABLE READ snapshot), backs off and retries, so a
+    still-pending row proceeds and a decided one is seen as decided by the
+    caller's status check. `reload` is an optional `async fn()` that
+    re-loads session objects the caller still needs (rollback expires them,
+    e.g. the current user). Exhausted retries -> 409 (opt-in; lock_row itself
+    is unchanged)."""
+    for attempt in range(tries):
+        try:
+            return (await db.execute(
+                stmt.with_for_update().execution_options(
+                    populate_existing=True)
+            )).scalars().first()
+        except OperationalError as exc:
+            if (roster_svc.is_lock_conflict(exc) and attempt < tries - 1):
+                await db.rollback()
+                await asyncio.sleep(0.05 * (attempt + 1))
+                if reload is not None:
+                    await reload()
+                continue
+            mapped = await _map_db_error(db, exc, msg)
+            if mapped is None:
+                raise
+            raise mapped from exc
+
+
+def reload_user(db, user):
+    """Build a `reload` callback for lock_row_retry that re-loads `user`
+    (+ roles/permissions) after a rollback expired it. The id is captured
+    now: reading an expired attribute later would attempt sync IO."""
+    uid = user.id
+
+    async def _reload() -> None:
+        from sqlalchemy.orm import selectinload
+        await db.execute(
+            select(User).where(User.id == uid).options(
+                selectinload(User.roles).selectinload(Role.permissions))
+            .execution_options(populate_existing=True))
+    return _reload
 
 
 async def lock_rows(db, stmt, msg: str = CONFLICT_MSG) -> list:

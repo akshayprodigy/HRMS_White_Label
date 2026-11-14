@@ -12,8 +12,11 @@ from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, guard_conflicts, lock_row_retry, reload_user,
+)
 from app.services.leave_approval import (
-    _bump_ledger, apply_leave_decision, notify_new_leave,
+    ALREADY_ACTIONED, _bump_ledger, apply_leave_decision, notify_new_leave,
 )
 from app.services import emergency_leave as emergency_svc
 from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
@@ -659,6 +662,7 @@ async def submit_leave_proof(
 
 
 @router.post("/{id}/cancel", response_model=LeaveRequestRead)
+@guard_conflicts
 async def cancel_leave(
     *,
     db: deps.DBDep,
@@ -669,31 +673,41 @@ async def cancel_leave(
     request: Request
 ) -> Any:
     """Cancel a leave request."""
-    query = select(LeaveRequest).where(
-        LeaveRequest.id == id,
-        LeaveRequest.employee_id == current_user.id
-    )
-    result = await db.execute(query)
-    leave = result.scalar_one_or_none()
-    
+    # Lock order matches the decision path: ApprovalItem -> LeaveRequest.
+    reload = reload_user(db, current_user)
+    approval_item = await lock_row_retry(
+        db,
+        select(ApprovalItem).where(
+            ApprovalItem.resource_type == "leave_request",
+            ApprovalItem.resource_id == str(id),
+        ).options(selectinload(ApprovalItem.steps)),
+        ALREADY_ACTIONED, reload=reload)
+    leave = await lock_row_retry(
+        db,
+        select(LeaveRequest).where(
+            LeaveRequest.id == id,
+            LeaveRequest.employee_id == current_user.id),
+        ALREADY_ACTIONED, reload=reload)
+
     if not leave:
         raise HTTPException(status_code=404, detail="Leave request not found")
-    
+
+    # Re-checked after locking: an approver may have decided meanwhile.
     if leave.status not in [LeaveStatus.SUBMITTED, LeaveStatus.DRAFT]:
         raise HTTPException(
-            status_code=400, 
-            detail=f"Cannot cancel leave in {leave.status} status"
-        )
-    
+            status_code=409 if leave.status in (
+                LeaveStatus.APPROVED, LeaveStatus.REJECTED,
+                LeaveStatus.CANCELLED) else 400,
+            detail=(ALREADY_ACTIONED if leave.status in (
+                LeaveStatus.APPROVED, LeaveStatus.REJECTED,
+                LeaveStatus.CANCELLED)
+                else f"Cannot cancel leave in {leave.status} status"))
+    if approval_item is not None and approval_item.status != ApprovalStatus.PENDING:
+        raise HTTPException(status_code=409, detail=ALREADY_ACTIONED)
+
     leave.status = LeaveStatus.CANCELLED
-    
+
     # Cancel pending approvals
-    approval_query = select(ApprovalItem).where(
-        ApprovalItem.resource_type == "leave_request",
-        ApprovalItem.resource_id == str(id)
-    ).options(selectinload(ApprovalItem.steps))
-    app_result = await db.execute(approval_query)
-    approval_item = app_result.scalar_one_or_none()
     if approval_item:
         approval_item.status = ApprovalStatus.REJECTED # Or another status like CANCELLED if added
         for step in approval_item.steps:
@@ -713,7 +727,7 @@ async def cancel_leave(
         ip_address=request.client.host if request.client else None
     ))
     
-    await db.commit()
+    await commit_or_409(db, ALREADY_ACTIONED)
     return (await db.execute(
         select(LeaveRequest).where(LeaveRequest.id == id)
         .options(selectinload(LeaveRequest.leave_type))
@@ -884,6 +898,7 @@ async def get_leave_approvals(
 
 
 @router.post("/approvals/{item_id}/action")
+@guard_conflicts
 async def action_approval(
     *,
     db: deps.DBDep,
@@ -896,19 +911,22 @@ async def action_approval(
 ) -> Any:
     """Approve or reject a leave request."""
     query = select(ApprovalItem).where(ApprovalItem.id == item_id).options(selectinload(ApprovalItem.steps))
-    result = await db.execute(query)
-    approval_item = result.scalar_one_or_none()
-    
+    # Lock first (same order as /approvals/{id}/action); benign lock
+    # conflicts are retried on a fresh snapshot.
+    approval_item = await lock_row_retry(
+        db, query, ALREADY_ACTIONED,
+        reload=reload_user(db, current_user))
+
     if not approval_item:
         raise HTTPException(status_code=404, detail="Approval item not found")
+
+    if approval_item.status != ApprovalStatus.PENDING:
+        raise HTTPException(status_code=409, detail=ALREADY_ACTIONED)
 
     # W3: separation of duties — cannot approve your own request.
     if action.status == ApprovalStatus.APPROVED:
         requester_id = await resolve_approval_owner_id(db, approval_item)
         guard_self_approval(current_user.id, requester_id)
-
-    if approval_item.status != ApprovalStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Approval already actioned")
 
     # Find the current pending step
     role_ids = [r.id for r in current_user.roles]
@@ -955,7 +973,7 @@ async def action_approval(
         ip_address=request.client.host if request.client else None
     ))
     
-    await db.commit()
+    await commit_or_409(db, ALREADY_ACTIONED)
     return {"status": "success"}
 
 

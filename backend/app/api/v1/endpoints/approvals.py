@@ -4,10 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 from app.api import deps
-from app.api.v1.endpoints.roster_common import commit_or_409, lock_row
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, lock_row_retry, reload_user,
+)
 from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
 from app.services.leave_approval import (
-    COMP_OFF_RESOURCE, DECISION_RESOURCES, apply_leave_decision,
+    ALREADY_ACTIONED, COMP_OFF_RESOURCE, DECISION_RESOURCES,
+    apply_leave_decision,
 )
 from app.services.self_approval import guard_self_approval, resolve_approval_owner_id
 from app.models.user import User
@@ -508,9 +511,13 @@ async def action_approval(
     )
     # Lock the item for the whole decision: concurrent decisions serialise and
     # a lost race (MariaDB 1020/1213) becomes a 409, never a 500.
-    item = await lock_row(db, query, "Approval already decided")
+    item = await lock_row_retry(
+        db, query, ALREADY_ACTIONED,
+        reload=reload_user(db, current_user))
     if not item:
         raise HTTPException(status_code=404, detail="Approval item not found")
+    if item.status != ApprovalStatus.PENDING:
+        raise HTTPException(status_code=409, detail=ALREADY_ACTIONED)
 
     # Leave / comp-off requests have no "changes requested" state.
     if (item.resource_type in DECISION_RESOURCES
@@ -603,7 +610,7 @@ async def action_approval(
                     "success" if approve else "error",
                     item.resource_type, item.resource_id,
                 )
-        await commit_or_409(db, "Approval already decided")
+        await commit_or_409(db, ALREADY_ACTIONED)
         await db.refresh(item)
         return item
 
@@ -710,7 +717,7 @@ async def action_approval(
         item.status = ApprovalStatus.PENDING
         await _notify_next_approver(next_user.id)
 
-        await commit_or_409(db, "Approval already decided")
+        await commit_or_409(db, ALREADY_ACTIONED)
         await db.refresh(item)
         return item
 
@@ -754,7 +761,7 @@ async def action_approval(
                 "warning",
             )
 
-        await commit_or_409(db, "Approval already decided")
+        await commit_or_409(db, ALREADY_ACTIONED)
         await db.refresh(item)
         return item
     
@@ -788,6 +795,6 @@ async def action_approval(
             "warning",
         )
 
-    await commit_or_409(db, "Approval already decided")
+    await commit_or_409(db, ALREADY_ACTIONED)
     await db.refresh(item)
     return item
