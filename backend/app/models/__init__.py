@@ -244,3 +244,7 @@ from .location import (
     TrackingPolicy, TrackingOverride, TrackingConsent, LocationPing,
     TrackingAlert,
 )
+from .biometric import (
+    BiometricDevice, BiometricDeviceUser, BiometricUserMap, BiometricPunch,
+    BiometricDeviceStatus, BiometricPunchState,
+)
