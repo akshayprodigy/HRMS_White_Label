@@ -1,18 +1,22 @@
 /**
  * Liveness (anti-spoof) for selfie punches.
  *
- * SDK 58 / expo-camera has NO face detection (expo-face-detector was removed), and a robust blink / head-turn
- * detector needs a native frame processor (react-native-vision-camera + a face-detector plugin), which is not
- * installed (no native builds here). So this module is a pluggable seam:
- *  - ChallengeLivenessDetector: complete, tested challenge logic (blink / turn head) over a FaceSignalSource.
- *    A vision-camera/ML Kit based source is registered with registerFaceSignalSource() once a dev build has one.
- *  - FallbackLivenessDetector (default): captures 2 frames ~1s apart and reports liveness_passed = null (UNKNOWN).
- *  - Dev bypass (tenant flag devLivenessBypass): one frame, liveness_passed = null.
- * Limits: the fallback cannot bind the submitted frame to a live person (no face check), and the score stays null
- * unless a real detector supplies one.
+ * Real on-device face detection: react-native-vision-camera + react-native-vision-camera-face-detector (Google
+ * ML Kit) run in FaceCamera.tsx and feed FaceObservations (see faceSignal.ts) into a FaceSignalSource. This module
+ * stays pure and native-free so it is unit-testable:
+ *  - ChallengeLivenessDetector: prompts a random challenge (blink, or turn the head to either side), waits for
+ *    observations that satisfy it (8 s timeout) and then captures the still. passed = true/false.
+ *  - FallbackLivenessDetector: no face signal available. Two frames ~1 s apart, passed = null (UNKNOWN).
+ *  - DevBypassLivenessDetector (tenant flag devLivenessBypass): one frame, passed = null.
  * Nothing in here ever returns `passed: true` without a face signal source actually observing the challenge.
+ * Limits: this is a challenge-response check, not a certified presentation-attack detector; a replayed video of the
+ * user performing the challenge could pass. The server stores passed/score and flags false for HR review. Score is null
+ * (ML Kit gives no liveness confidence).
+ *
+ * Head turn is SIGN-AGNOSTIC: ML Kit's yaw sign differs between Android/iOS and with front-camera mirroring, so
+ * the challenge is "face centred, then |yaw| >= 20 degrees to either side" and never depends on the sign.
  */
-export type LivenessChallenge = 'blink' | 'turn_left';
+export type LivenessChallenge = 'blink' | 'turn_head';
 
 export type LivenessResult = {
   /** true = challenge observed, false = challenge failed/timed out, null = unknown (no detector). */
@@ -21,7 +25,7 @@ export type LivenessResult = {
   method: 'challenge' | 'frames' | 'dev-bypass';
 };
 
-export type FaceObservation = { faceVisible: boolean; leftEyeOpen?: number; rightEyeOpen?: number; /** degrees, + = turned to the user's left */ yaw?: number };
+export type FaceObservation = { faceVisible: boolean; leftEyeOpen?: number; rightEyeOpen?: number; /** degrees; the sign is platform dependent, only |yaw| is used */ yaw?: number };
 export type FaceSignalSource = { subscribe(cb: (o: FaceObservation) => void): () => void };
 
 /** What a detector gets from the camera screen. */
@@ -44,14 +48,21 @@ export const CHALLENGE_TIMEOUT_MS = 8000;
 const EYE_OPEN = 0.6;
 const EYE_CLOSED = 0.3;
 const TURN_DEG = 20;
+const CENTRE_DEG = 10;
 
-/** Pure evaluator: feed observations, it reports when the challenge is satisfied. */
+/** Pure evaluator: feed observations, it reports when the challenge is satisfied. Losing the face resets progress. */
 export function createChallengeEvaluator(challenge: LivenessChallenge) {
   let sawOpen = false;
   let sawClosed = false;
   let sawCentre = false;
   return (o: FaceObservation): boolean => {
-    if (!o.faceVisible) return false;
+    if (!o.faceVisible) {
+      // No face (or several): progress must be one continuous, single-face sequence, so a photo swap can't complete it.
+      sawOpen = false;
+      sawClosed = false;
+      sawCentre = false;
+      return false;
+    }
     if (challenge === 'blink') {
       const l = o.leftEyeOpen, r = o.rightEyeOpen;
       if (l == null || r == null) return false;
@@ -63,10 +74,17 @@ export function createChallengeEvaluator(challenge: LivenessChallenge) {
       return l > EYE_OPEN && r > EYE_OPEN; // open -> closed -> open
     }
     if (o.yaw == null) return false;
-    if (Math.abs(o.yaw) < 10) sawCentre = true;
-    return sawCentre && o.yaw >= TURN_DEG;
+    const yaw = Math.abs(o.yaw);
+    if (yaw < CENTRE_DEG) sawCentre = true;
+    return sawCentre && yaw >= TURN_DEG;
   };
 }
+
+export function pickChallenge(rng: () => number = Math.random): LivenessChallenge {
+  return rng() < 0.5 ? 'blink' : 'turn_head';
+}
+
+const PROMPTS: Record<LivenessChallenge, string> = { blink: 'Blink', turn_head: 'Turn your head left or right' };
 
 export class ChallengeLivenessDetector implements LivenessDetector {
   readonly id = 'challenge';
@@ -78,7 +96,7 @@ export class ChallengeLivenessDetector implements LivenessDetector {
   ) {}
 
   async run(session: CaptureSession): Promise<LivenessCapture> {
-    session.setPrompt(this.kind === 'blink' ? 'Blink' : 'Turn head left');
+    session.setPrompt(PROMPTS[this.kind]);
     const evaluate = createChallengeEvaluator(this.kind);
     let unsub: () => void = () => undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -117,13 +135,8 @@ export class DevBypassLivenessDetector implements LivenessDetector {
   }
 }
 
-let faceSource: FaceSignalSource | null = null;
-/** A dev build with a native face detector calls this once at startup (see README, "Liveness"). */
-export function registerFaceSignalSource(s: FaceSignalSource | null) {
-  faceSource = s;
-}
-export function getLivenessDetector(opts: { devBypass?: boolean } = {}): LivenessDetector {
+export function getLivenessDetector(opts: { devBypass?: boolean; source?: FaceSignalSource | null; challenge?: LivenessChallenge } = {}): LivenessDetector {
   if (opts.devBypass) return new DevBypassLivenessDetector();
-  if (faceSource) return new ChallengeLivenessDetector(faceSource);
+  if (opts.source) return new ChallengeLivenessDetector(opts.source, opts.challenge ?? pickChallenge());
   return new FallbackLivenessDetector();
 }

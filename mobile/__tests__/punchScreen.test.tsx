@@ -13,7 +13,6 @@ jest.mock('../src/auth/AuthProvider', () => ({ useAuth: () => ({ user: { id: 1, 
 jest.mock('expo-file-system', () => ({ File: class {}, Directory: class {}, Paths: {} }));
 jest.mock('expo-image-manipulator', () => ({ manipulateAsync: jest.fn(), SaveFormat: { JPEG: 'jpeg' } }));
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'uuid-test-0001' }));
-jest.mock('expo-camera', () => ({ CameraView: 'CameraView', useCameraPermissions: () => [{ granted: true }, jest.fn()] }));
 const mockSelfie = jest.fn();
 jest.mock('../src/features/punch/SelfieCapture', () => {
   const { Pressable, Text } = require('react-native');
