@@ -53,6 +53,7 @@ beforeEach(async () => {
   await tokenStorage.saveMe({ id: 1 });
   setMetaStore(memoryStore());
   resetTrackingForTests();
+  jest.spyOn(Date, 'now').mockReturnValue(NOW); // fixtures are dated 2026-11-13: pin the clock so queue age checks do not expire them
   queue = new PingQueue(memoryStore());
   setPingQueue(queue);
   mockLoc.started = false;
