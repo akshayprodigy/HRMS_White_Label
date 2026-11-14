@@ -97,7 +97,8 @@ async def cdata_post(request: Request, db: deps.DBDep):
             held = (await db.execute(
                 select(func.count()).select_from(BiometricPunch).where(
                     BiometricPunch.device_id == dev_id,
-                    BiometricPunch.state == BiometricPunchState.PENDING_DEVICE)
+                    BiometricPunch.state == BiometricPunchState.PENDING_DEVICE,
+                    BiometricPunch.source.notin_(bio.IMPORT_SOURCES))
             )).scalar() or 0
             if held >= bio.MAX_PENDING_TAPS_PER_DEVICE:
                 log.warning("iclock: pending device %s holds %s taps; "

@@ -111,6 +111,21 @@ def _collect(header: list, rows) -> list[tuple[int, dict]]:
     return out
 
 
+def _skip_comments(rdr):
+    """(row_number, cells), dropping pure comment lines (exactly one non-empty
+    cell, starting with '#') in the block directly after the header. Any
+    other row, '#12,2026-...' included, is data."""
+    lead = True
+    for n, r in enumerate(rdr, start=2):
+        if lead:
+            filled = [c for c in r if not _is_blank(c)]
+            if len(filled) == 1 and str(filled[0]).lstrip().startswith("#"):
+                continue
+            if filled:
+                lead = False
+        yield n, r
+
+
 def _read_csv(data: bytes) -> list[tuple[int, dict]]:
     try:
         text = data.decode("utf-8-sig")
@@ -123,9 +138,7 @@ def _read_csv(data: bytes) -> list[tuple[int, dict]]:
         first = next(rdr, None)
         if first is None:
             raise ImportFileError("The file is empty")
-        return _collect(first, (
-            (n, r) for n, r in enumerate(rdr, start=2)
-            if not (r and str(r[0]).lstrip().startswith("#"))))
+        return _collect(first, _skip_comments(rdr))
     except csv.Error as exc:
         raise ImportFileError(f"Invalid CSV: {exc}") from None
 
@@ -136,6 +149,8 @@ def _read_xlsx(data: bytes) -> list[tuple[int, dict]]:
     from openpyxl import load_workbook
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
+            # central-directory sizes can be understated; MAX_SCAN and the
+            # threadpool bound the damage
             if sum(i.file_size for i in z.infolist()) > MAX_UNCOMPRESSED:
                 raise ImportFileError("Workbook is too large when unpacked")
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -383,13 +398,16 @@ async def _resolve(db, parsed: Parsed, identify_by: str) -> set[str]:
             keep.append(r)
         parsed.rows = keep
     else:
-        cache: dict = {}
+        by_dev: dict = {}
         for r in parsed.rows:
-            k = (dev_by_serial.get(r.device_serial) if r.device_serial else None,
-                 r.ident)
-            if k not in cache:
-                cache[k] = await bio.resolve_user_id(db, k[0], r.ident)
-            r.user_id = cache[k]
+            by_dev.setdefault(
+                dev_by_serial.get(r.device_serial) if r.device_serial else None,
+                set()).add(r.ident)
+        maps = {did: await bio.resolve_pins(db, did, pins)
+                for did, pins in by_dev.items()}
+        for r in parsed.rows:
+            did = dev_by_serial.get(r.device_serial) if r.device_serial else None
+            r.user_id = maps[did].get(r.ident)
     parsed.errors.sort(key=lambda e: e["row"])
     return {r.ident for r in parsed.rows if r.user_id is None}
 

@@ -421,7 +421,8 @@ async def test_unknown_code_unmapped_then_employee_backfills(api, world):
         await db.commit()
     res = await bio.apply_pending(SessionLocal, pin=code,
                                   states={"unmapped"})
-    assert res["counts"] == {"unmapped": 2}
+    assert res["counts"] == {}  # pin-scoped back-fills skip code rows
+    assert await _batch_states(batch) == ["unmapped", "unmapped"]
     # an employee that gets this code later back-fills on reprocess
     async with SessionLocal() as db:
         await db.execute(update(Employee).where(
@@ -699,3 +700,61 @@ async def test_template_and_permission(api, world):
     assert (await api.get(f"{P}/import/template", headers=api.emp)
             ).status_code == 403
     assert await _att(world["a"]) == []
+
+
+async def test_hash_code_is_data_not_comment(api, world):
+    s = world["sfx"]
+    async with SessionLocal() as db:
+        await db.execute(update(Employee).where(
+            Employee.user_id == world["b"]).values(employee_id=f"#{s}"))
+        await db.commit()
+    text = ("employee_code,timestamp\n"
+            "# a pure comment line\n"
+            f"#{s},{D} 09:00\n"
+            "#loose,2026-01-01 09:00 junk\n")
+    j = (await _post(api, "preview", _csv(text), identify_by="employee_code",
+                     utc_offset_minutes="330")).json()
+    assert (j["rows"], j["valid"], j["invalid"]) == (2, 1, 1)
+    assert j["unknown_people"] == 0
+    assert j["errors"][0]["row"] == 4  # visible, not silently dropped
+    # a '#' line after data is a data row (error), not a comment
+    text = f"employee_code,timestamp\nBI{s}a,{D} 09:00\n# late comment\n"
+    j = (await _post(api, "preview", _csv(text), identify_by="employee_code",
+                     utc_offset_minutes="330")).json()
+    assert j["rows"] == 2 and j["invalid"] == 1
+
+
+async def test_pin_preview_5000_distinct_pins_timing(api, world):
+    import time
+    s = world["sfx"]
+    async with SessionLocal() as db:
+        db.add_all([BiometricUserMap(device_id=None, pin=f"P{s}{i}",
+                                     user_id=world["a"]) for i in range(0, 5000, 7)])
+        db.add(BiometricUserMap(device_id=world["dev"], pin=f"P{s}0",
+                                user_id=world["b"]))
+        await db.commit()
+    lines = ["pin,timestamp,device_serial"] + [
+        f"P{s}{i},{D} 09:00,{'BIMP' + s if i == 0 else ''}" for i in range(5000)]
+    t0 = time.monotonic()
+    j = (await _post(api, "preview", _csv("\n".join(lines) + "\n"),
+                     identify_by="pin", utc_offset_minutes="330")).json()
+    print(f"\n5000-pin preview: {time.monotonic() - t0:.2f}s")
+    assert j["valid"] == 5000
+    assert j["unknown_people"] == 5000 - len(range(0, 5000, 7))
+    assert [x["known_person"] for x in j["sample"][:2]] == [True, False]
+
+
+async def test_resolve_pins_device_wins_and_rows_resolved(api, world):
+    s = world["sfx"]
+    async with SessionLocal() as db:
+        db.add_all([
+            BiometricUserMap(device_id=None, pin=f"R{s}", user_id=world["a"]),
+            BiometricUserMap(device_id=world["dev"], pin=f"R{s}",
+                             user_id=world["b"]),
+            BiometricUserMap(device_id=None, pin=f"Q{s}", user_id=world["c"]),
+        ])
+        await db.commit()
+        got = await bio.resolve_pins(db, world["dev"], [f"R{s}", f"Q{s}", "zz"])
+        assert got == {f"R{s}": world["b"], f"Q{s}": world["c"]}
+        assert (await bio.resolve_pins(db, None, [f"R{s}"])) == {
+            f"R{s}": world["a"]}

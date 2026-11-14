@@ -88,6 +88,24 @@ async def resolve_codes(db, codes) -> tuple[dict[str, int], set[str]]:
     return ok, {c for c, u in found.items() if len(u) > 1}
 
 
+async def resolve_pins(db, device_id: Optional[int], pins) -> dict[str, int]:
+    """Batch form of resolve_user_id: {pin: user_id} for the pins that
+    resolve (device map wins over the global one). Chunked IN queries."""
+    wanted = sorted(set(pins))
+    out: dict[str, int] = {}
+    for i in range(0, len(wanted), _CODE_CHUNK):
+        chunk = wanted[i:i + _CODE_CHUNK]
+        scopes = ([device_id] if device_id is not None else []) + [None]
+        for scope in scopes:  # device map first: setdefault keeps its win
+            cond = (BiometricUserMap.device_id.is_(None) if scope is None
+                    else BiometricUserMap.device_id == scope)
+            for pin, uid in (await db.execute(
+                    select(BiometricUserMap.pin, BiometricUserMap.user_id)
+                    .where(cond, BiometricUserMap.pin.in_(chunk)))).all():
+                out.setdefault(pin, uid)
+    return out
+
+
 async def resolve_tap_user(db, source: Optional[str], device_id: Optional[int],
                            pin: str) -> Optional[int]:
     """THE resolver for a stored tap (store and back-fill alike).
@@ -131,6 +149,9 @@ async def store_taps(
     if source == IMPORT_CODE:
         ok, _amb = await resolve_codes(db, pins)
         resolved = {p: ok.get(p.strip().upper()) for p in pins}
+    elif import_batch is not None:
+        mapped = await resolve_pins(db, device_id, pins)
+        resolved = {p: mapped.get(p) for p in pins}
 
     async def uid_of(pin: str) -> Optional[int]:
         if pin not in resolved:
@@ -447,6 +468,7 @@ async def apply_pending(
             conds.append(BiometricPunch.device_id == device_id)
         if pin is not None:
             conds.append(BiometricPunch.pin == pin)
+            conds.append(BiometricPunch.source != IMPORT_CODE)  # pin maps only
         if import_batch is not None:
             conds.append(BiometricPunch.import_batch == import_batch)
         if user_id is not None:
@@ -454,7 +476,8 @@ async def apply_pending(
                 BiometricUserMap.user_id == user_id))).scalars().all()
             ors = [BiometricPunch.user_id == user_id]
             for m in maps:
-                c = BiometricPunch.pin == m.pin
+                c = and_(BiometricPunch.pin == m.pin,
+                         BiometricPunch.source != IMPORT_CODE)
                 if m.device_id is not None:
                     c = and_(c, BiometricPunch.device_id == m.device_id)
                 ors.append(c)
