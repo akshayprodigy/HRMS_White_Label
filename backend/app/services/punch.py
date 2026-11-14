@@ -421,10 +421,16 @@ async def record_punch_in(
     liveness_score: Optional[float] = None, is_offline: bool = False,
     client_uuid: Optional[str] = None, ip: Optional[str] = None,
     fresh: bool = False, device_captured_at: Optional[datetime] = None,
+    geo_bypass: bool = False, quiet: bool = False,
 ) -> tuple[Attendance, bool]:
     """Punch in. Returns (row, created). Idempotent per logical work-date:
     an existing row for the resolved work_date is returned, created=False.
-    Flushes only. Raises PunchRejected (policy) / HTTPException."""
+    Flushes only. Raises PunchRejected (policy) / HTTPException.
+
+    geo_bypass: skip the selfie requirement and geofence evaluation (fixed
+    biometric hardware; only services/biometric.py passes it).
+    quiet: suppress employee/HR notifications (geo flag, unscheduled login);
+    audit rows, attribution and flags are unaffected (back-fill)."""
     now = datetime.now(timezone.utc)
     # Live callers pass captured_at=None: the punch time is SERVER time; any
     # client clock is kept only in device_captured_at (diagnostics).
@@ -445,14 +451,18 @@ async def record_punch_in(
         return existing, False
 
     rules = await get_time_rules(db)
-    if _selfie_required(rules, mobile=is_offline or mode == "mobile") \
+    if not geo_bypass and _selfie_required(
+            rules, mobile=is_offline or mode == "mobile") \
             and selfie_id is None:
         raise PunchRejected(
             status_code=400, detail="A selfie is required to punch in.")
 
-    geo_enabled, mode_enf, allowed_fences = await _load_geo_config_with_fences(
-        db, user.id
-    )
+    if geo_bypass:
+        geo_enabled, mode_enf, allowed_fences = (
+            False, EnforcementMode.STRICT, [])
+    else:
+        geo_enabled, mode_enf, allowed_fences = (
+            await _load_geo_config_with_fences(db, user.id))
     decision = evaluate_punch(
         punch_lat=lat, punch_lng=lng, accuracy_m=accuracy,
         is_mock_location=is_mock, fences=allowed_fences,
@@ -541,7 +551,7 @@ async def record_punch_in(
             resource_type="attendance", resource_id=str(db_obj.id),
             ip_address=ip, details={"latitude": lat, "longitude": lng},
         ))
-    if db_obj.geo_flag is not None:
+    if db_obj.geo_flag is not None and not quiet:
         try:
             await _notify_geo_flag(
                 db, employee=user, attendance_id=db_obj.id,
@@ -550,7 +560,7 @@ async def record_punch_in(
         except Exception:  # pragma: no cover - defensive
             pass
     # W8: unscheduled-login alert (no shift / outside window). Best-effort.
-    if flag in ("no_shift", "outside_window"):
+    if flag in ("no_shift", "outside_window") and not quiet:
         try:
             await _notify_unscheduled_login(
                 db, employee=user, attendance_id=db_obj.id,
@@ -635,19 +645,101 @@ async def record_punch_out(
 
     selfie_file = await claim_selfie(db, user, selfie_id)
 
+    return await finalize_punch_out(
+        db, user, attendance, at, ip=ip, lat=lat, lng=lng, accuracy=accuracy,
+        is_mock=is_mock, selfie_name=selfie_file,
+        liveness_passed=liveness_passed, liveness_score=liveness_score,
+        is_offline=is_offline, client_uuid=client_uuid, decision=out_decision,
+    )
+
+
+async def apply_out_window_flag(
+    db, user, attendance: Attendance, at: datetime
+) -> None:
+    """If the punch-out lands far outside the expected window for this
+    record's shift, surface that to HR via the flag (without
+    discarding any existing flag from punch-in)."""
+    if attendance.shift_template_id is not None and attendance.attribution_flag is None:
+        out_work_date, _out_shift_id, _out_cm, out_flag = await _attribute_punch(
+            db, user.id, at
+        )
+        if (
+            out_work_date != attendance.work_date
+            or out_flag == AttributionFlag.OUTSIDE_WINDOW.value
+        ):
+            attendance.attribution_flag = AttributionFlag.OUTSIDE_WINDOW.value
+
+
+async def _comp_off_after_punch_out(
+    db, user, attendance: Attendance, at: datetime, ip: Optional[str]
+) -> None:
+    """Comp-off trigger — uses attendance.work_date (logical date). Wrapped in
+    a savepoint so a bug here can't poison the punch-out transaction.
+    _maybe_create_comp_off_accrual is idempotent per (user, holiday_date): an
+    existing accrual is never re-sized."""
+    accrual = None
+    accrual_error: Optional[str] = None
+    try:
+        async with db.begin_nested():
+            accrual = await _maybe_create_comp_off_accrual(
+                db, user=user, attendance=attendance,
+                punch_in=attendance.captured_at, punch_out=at,
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        accrual = None
+        accrual_error = str(exc)
+
+    if accrual_error is not None:
+        db.add(AuditLog(
+            user_id=user.id, action="COMP_OFF_ACCRUAL_FAILED",
+            resource_type="attendance", resource_id=str(attendance.id),
+            ip_address=ip, details={"error": accrual_error},
+        ))
+    if accrual is not None:
+        db.add(AuditLog(
+            user_id=user.id, action="COMP_OFF_ACCRUAL_CREATED",
+            resource_type="comp_off_accrual", resource_id=str(accrual.id),
+            ip_address=ip,
+            details={
+                "holiday_date": accrual.holiday_date.isoformat(),
+                "holiday_name": accrual.holiday_name,
+                "worked_minutes": accrual.worked_minutes,
+                "days_credited": accrual.days_credited,
+            },
+        ))
+
+
+async def finalize_punch_out(
+    db, user, attendance: Attendance, at: datetime, *,
+    ip: Optional[str] = None, lat: Optional[float] = None,
+    lng: Optional[float] = None, accuracy: Optional[float] = None,
+    is_mock: bool = False, selfie_name: Optional[str] = None,
+    liveness_passed: Optional[bool] = None,
+    liveness_score: Optional[float] = None, is_offline: bool = False,
+    client_uuid: Optional[str] = None,
+    decision: Optional[GeoDecision] = None, quiet: bool = False,
+) -> Attendance:
+    """Close an open attendance row as of `at`: set punch_out_time and the
+    punch-out geo fields (from `decision`, the already-evaluated geo result;
+    None = no geo data, e.g. biometric), flag an out-of-window punch-out,
+    audit, and run the comp-off accrual. Flushes only. quiet suppresses the
+    geo-flag notification (back-fill)."""
+    now = datetime.now(timezone.utc)
     attendance.punch_out_time = at
     attendance.punch_out_latitude = lat
     attendance.punch_out_longitude = lng
     attendance.punch_out_accuracy = accuracy
     attendance.punch_out_is_mock = is_mock
     attendance.punch_out_matched_fence_id = (
-        out_decision.matched_fence.id if out_decision.matched_fence else None
+        decision.matched_fence.id if decision and decision.matched_fence
+        else None
     )
-    attendance.punch_out_distance_to_fence_meters = out_decision.distance_m
+    attendance.punch_out_distance_to_fence_meters = (
+        decision.distance_m if decision else None)
     attendance.punch_out_geo_flag = (
-        out_decision.geo_flag.value if out_decision.geo_flag else None
+        decision.geo_flag.value if decision and decision.geo_flag else None
     )
-    attendance.punch_out_selfie_url = selfie_file
+    attendance.punch_out_selfie_url = selfie_name
     attendance.punch_out_liveness_passed = liveness_passed
     attendance.punch_out_liveness_score = liveness_score
     if client_uuid is not None:
@@ -658,18 +750,7 @@ async def record_punch_out(
     attendance.review_flag = _review_flag(
         liveness_passed, is_offline, attendance.review_flag)
 
-    # If the punch-out lands far outside the expected window for this
-    # record's shift, surface that to HR via the flag (without
-    # discarding any existing flag from punch-in).
-    if attendance.shift_template_id is not None and attendance.attribution_flag is None:
-        out_work_date, _out_shift_id, _out_cm, out_flag = await _attribute_punch(
-            db, user.id, at
-        )
-        if (
-            out_work_date != attendance.work_date
-            or out_flag == AttributionFlag.OUTSIDE_WINDOW.value
-        ):
-            attendance.attribution_flag = AttributionFlag.OUTSIDE_WINDOW.value
+    await apply_out_window_flag(db, user, attendance, at)
 
     audit_details = {
         "punch_out_time": at.isoformat(),
@@ -702,45 +783,42 @@ async def record_punch_out(
             resource_type="attendance", resource_id=str(attendance.id),
             ip_address=ip, details={"latitude": lat, "longitude": lng},
         ))
-    if attendance.punch_out_geo_flag is not None:
+    if attendance.punch_out_geo_flag is not None and decision is not None \
+            and not quiet:
         try:
             await _notify_geo_flag(
                 db, employee=user, attendance_id=attendance.id,
-                decision=out_decision, when="punch_out",
+                decision=decision, when="punch_out",
             )
         except Exception:  # pragma: no cover - defensive
             pass
 
-    # Comp-off trigger — uses attendance.work_date (logical date). Wrapped in
-    # a savepoint so a bug here can't poison the punch-out transaction.
-    accrual = None
-    accrual_error: Optional[str] = None
-    try:
-        async with db.begin_nested():
-            accrual = await _maybe_create_comp_off_accrual(
-                db, user=user, attendance=attendance,
-                punch_in=attendance.captured_at, punch_out=at,
-            )
-    except Exception as exc:  # pragma: no cover - defensive
-        accrual = None
-        accrual_error = str(exc)
+    await _comp_off_after_punch_out(db, user, attendance, at, ip)
+    return attendance
 
-    if accrual_error is not None:
-        db.add(AuditLog(
-            user_id=user.id, action="COMP_OFF_ACCRUAL_FAILED",
-            resource_type="attendance", resource_id=str(attendance.id),
-            ip_address=ip, details={"error": accrual_error},
-        ))
-    if accrual is not None:
-        db.add(AuditLog(
-            user_id=user.id, action="COMP_OFF_ACCRUAL_CREATED",
-            resource_type="comp_off_accrual", resource_id=str(accrual.id),
-            ip_address=ip,
-            details={
-                "holiday_date": accrual.holiday_date.isoformat(),
-                "holiday_name": accrual.holiday_name,
-                "worked_minutes": accrual.worked_minutes,
-                "days_credited": accrual.days_credited,
-            },
-        ))
+
+async def extend_punch_out(
+    db, user, attendance: Attendance, at: datetime, *,
+    ip: Optional[str] = None,
+) -> Attendance:
+    """Move an already-closed row's punch_out_time later (a later device tap
+    for a row that was closed earlier). Keeps the existing punch-out geo /
+    selfie data, audits, re-checks the out-window flag and re-runs the
+    (idempotent) comp-off helper. Flushes only."""
+    previous = attendance.punch_out_time
+    attendance.punch_out_time = at
+    await apply_out_window_flag(db, user, attendance, at)
+    db.add(AuditLog(
+        user_id=user.id, action="PUNCH_OUT", resource_type="attendance",
+        resource_id=str(attendance.id), ip_address=ip,
+        details={
+            "punch_out_time": at.isoformat(),
+            "previous_punch_out_time": previous.isoformat() if previous else None,
+            "extended": True,
+            "work_date": attendance.work_date.isoformat()
+            if attendance.work_date else None,
+            "attribution_flag": attendance.attribution_flag,
+        },
+    ))
+    await _comp_off_after_punch_out(db, user, attendance, at, ip)
     return attendance
