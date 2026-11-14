@@ -16,7 +16,7 @@ export function PunchScreen() {
   const { colors } = useTheme();
   const { today, query } = useAttendanceGate();
   const invalidate = useInvalidateAfterPunch();
-  const { items: pending } = usePunchQueue();
+  const { items: pending, rejected } = usePunchQueue();
   const syncNow = useSyncNow();
   const [perm, setPerm] = useState<PermState>('unknown');
   const [fix, setFix] = useState<Fix | null>(null);
@@ -137,14 +137,14 @@ export function PunchScreen() {
       ) : null}
       {selfie && !capturing ? <Text size={12} muted>Selfie attached</Text> : null}
 
-      {result ? <ResultNotice result={result} /> : null}
+      {result ? <ResultNotice result={result} pendingIds={pending.map((p) => p.client_uuid)} rejectedIds={rejected.map((r) => r.client_uuid)} /> : null}
 
       <RunningLateCard isMarked={today?.is_marked} />
     </Screen>
   );
 }
 
-function ResultNotice({ result }: { result: PunchOutcome }) {
+function ResultNotice({ result, pendingIds, rejectedIds }: { result: PunchOutcome; pendingIds: string[]; rejectedIds: string[] }) {
   const { colors } = useTheme();
   if (result.status === 'ok') {
     const flag = flagNotice(result.flag);
@@ -165,6 +165,17 @@ function ResultNotice({ result }: { result: PunchOutcome }) {
     );
   }
   if (result.status === 'queued') {
+    const id = result.item.client_uuid;
+    // Left the queue: a rejection is shown by the pending banner; anything else was accepted by the server.
+    if (!pendingIds.includes(id)) {
+      if (rejectedIds.includes(id)) return null;
+      return (
+        <Card testID="punch-synced" accessibilityRole="alert" style={{ gap: 4 }}>
+          <Text weight="600">Synced</Text>
+          <Text size={14}>Your offline punch has been sent to the server.</Text>
+        </Card>
+      );
+    }
     return (
       <Card testID="punch-queued" accessibilityRole="alert" style={{ gap: 4 }}>
         <Text weight="600">Saved offline</Text>

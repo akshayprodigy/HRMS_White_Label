@@ -137,6 +137,8 @@ describe('PunchQueue', () => {
     expect(out).toMatchObject({ duplicate: 1, rejected: 1 });
     expect(q.getSnapshot().rejected[0].reason).toMatch(/locked for payroll/);
     expect(friendlyReason('captured_too_old')).toMatch(/too long ago/);
+    expect(friendlyReason('invalid_coordinates')).toMatch(/location reading was invalid/);
+    expect(friendlyReason('internal_error')).toMatch(/server had a problem/);
   });
 
   it('a concurrent sync returns busy; an enqueue during a sync is kept for the next one', async () => {

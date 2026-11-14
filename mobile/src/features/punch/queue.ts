@@ -89,6 +89,8 @@ const REASONS: Record<string, string> = {
   payroll_locked: 'This period is already locked for payroll. Ask HR to correct your attendance.',
   invalid_client_uuid: 'This punch was damaged on the phone and could not be sent.',
   already_punched_in: 'Already recorded.',
+  invalid_coordinates: 'Your location reading was invalid. Punch again with location on.',
+  internal_error: 'The server had a problem with this punch. Ask HR to check your attendance.',
   outside_geofence: 'You were outside the allowed punch location.',
   OUTSIDE_GEOFENCE: 'You were outside the allowed punch location.',
 };

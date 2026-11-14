@@ -22,12 +22,27 @@ export function ApplyLeaveForm({ types, onDone, onCancel, now }: { types: LeaveT
   const [serverError, setServerError] = useState<string | null>(null);
   const inFlight = useRef(false); // synchronous: two taps before a re-render must not submit twice
   const uploaded = useRef<{ uri: string; url: string } | null>(null); // survives a failed apply so a retry does not re-upload
+  const prefilled = useRef<{ start: string; end: string; prevStart: string; prevEnd: string } | null>(null); // dates the emergency toggle filled in
   const set = (p: Partial<LeaveFormValues>) => setV((cur) => ({ ...cur, ...p }));
   const type = types.find((t) => t.id === v.typeId);
   const days = leaveDays(v.start, v.halfDay ? v.start : v.end, v.halfDay);
   const needsCert = certRequired(type, days, v.emergency);
   const deferredCert = v.emergency && !!type?.requires_medical_cert_after && days >= type.requires_medical_cert_after;
   const today = () => todayIso(now?.());
+
+  const toggleEmergency = (on: boolean) => {
+    if (on) {
+      if (!v.start) {
+        prefilled.current = { start: today(), end: today(), prevStart: v.start, prevEnd: v.end };
+        set({ emergency: true, start: today(), end: today() });
+      } else set({ emergency: true });
+      return;
+    }
+    const p = prefilled.current;
+    prefilled.current = null;
+    // Undo the prefill, but never clobber a date the user has since typed.
+    setV((cur) => ({ ...cur, emergency: false, ...(p && cur.start === p.start ? { start: p.prevStart } : {}), ...(p && cur.end === p.end ? { end: p.prevEnd } : {}) }));
+  };
 
   const submit = async () => {
     if (inFlight.current) return;
@@ -121,7 +136,7 @@ export function ApplyLeaveForm({ types, onDone, onCancel, now }: { types: LeaveT
             testID="toggle-emergency"
             accessibilityLabel="Emergency leave"
             value={v.emergency}
-            onValueChange={(on) => set({ emergency: on, ...(on && !v.start ? { start: today(), end: today() } : {}) })}
+            onValueChange={toggleEmergency}
           />
         </View>
         {v.emergency ? <Text testID="emergency-help" muted size={13}>{EMERGENCY_HELP}</Text> : null}

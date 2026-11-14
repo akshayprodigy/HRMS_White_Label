@@ -111,6 +111,18 @@ describe('apply form', () => {
     expect(await screen.findByTestId('leave-notice')).toHaveTextContent(/Upload your proof by 17 Nov/);
     expect(JSON.parse(applyPosts()[0].data)).toMatchObject({ is_emergency: true, start_date: '2026-11-11', attachment_url: null });
   });
+  it('toggling emergency off restores the dates from before it was turned on', async () => {
+    await open();
+    await fireEvent(screen.getByTestId('toggle-emergency'), 'valueChange', true);
+    expect(screen.getByTestId('input-start').props.value).toBe('2026-11-13');
+    await fireEvent(screen.getByTestId('toggle-emergency'), 'valueChange', false);
+    expect(screen.getByTestId('input-start').props.value).toBe('');
+    expect(screen.getByTestId('input-end').props.value).toBe('');
+    await fireEvent.changeText(screen.getByTestId('input-start'), '2026-11-20');
+    await fireEvent(screen.getByTestId('toggle-emergency'), 'valueChange', true);
+    await fireEvent(screen.getByTestId('toggle-emergency'), 'valueChange', false);
+    expect(screen.getByTestId('input-start').props.value).toBe('2026-11-20');
+  });
   it('shows the server back-date window rejection', async () => {
     mock.onPost('/leave/apply').reply(400, { detail: 'Emergency leave can be back-dated at most 3 day(s) (earliest 2026-11-10)' });
     await open();

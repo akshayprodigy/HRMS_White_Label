@@ -70,6 +70,42 @@ describe('PunchScreen', () => {
     expect(screen.queryByTestId('punch-error')).toBeNull();
   });
 
+  it.each([
+    [{ review_flag: 'liveness_failed', attribution_flag: 'NO_SHIFT' }, 'Punch recorded, but flagged for review (selfie check not confirmed).'],
+    [{ review_flag: 'offline' }, 'Punch recorded, but flagged for review (offline punch).'],
+    [{ review_flag: 'something_new' }, 'Punch recorded, but flagged for review.'],
+  ])('flag note reflects the server reason %j', async (flags, text) => {
+    mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
+    mock.onPost('/attendance/mark').reply(200, { id: 1, captured_at: '2026-11-13T09:00:00Z', punch_out_time: null, ...flags });
+    await renderWithProviders(<PunchScreen />);
+    await waitFor(() => expect(screen.getByTestId('punch-button')).not.toBeDisabled());
+    await fireEvent.press(screen.getByTestId('punch-button'));
+    await fireEvent.press(await screen.findByTestId('selfie-stub'));
+    expect(await screen.findByTestId('punch-flag')).toHaveTextContent(text);
+  });
+
+  it('the Saved offline notice becomes Synced once the queued punch syncs', async () => {
+    mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
+    mock.onPost('/attendance/mark').networkError();
+    let up = false;
+    mock.onPost('/attendance/offline-sync').reply((cfg) => {
+      if (!up) return [0 as number, {}];
+      const p = JSON.parse(cfg.data).punches[0];
+      return [200, { results: [{ client_uuid: p.client_uuid, kind: p.kind, status: 'created', attendance_id: 5 }] }];
+    });
+    mock.onPost('/attendance/offline-sync').networkErrorOnce();
+    await renderWithProviders(<PunchScreen />);
+    await waitFor(() => expect(screen.getByTestId('punch-button')).not.toBeDisabled());
+    await fireEvent.press(screen.getByTestId('punch-button'));
+    await fireEvent.press(await screen.findByTestId('selfie-stub'));
+    await screen.findByTestId('punch-queued');
+    up = true;
+    const { getPunchQueue, syncDeps } = require('../src/features/punch/api');
+    await act(async () => { await getPunchQueue().sync(syncDeps, { force: true }); });
+    expect(await screen.findByTestId('punch-synced')).toBeTruthy();
+    expect(screen.queryByTestId('punch-queued')).toBeNull();
+  });
+
   it('shows the geofence rejection message and code', async () => {
     mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
     mock.onPost('/attendance/mark').reply(422, { detail: { error: 'OUTSIDE_GEOFENCE', message: 'You are 420 m from Head Office.' } });

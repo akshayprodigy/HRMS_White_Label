@@ -68,8 +68,10 @@ export type SelfieInput = { uri: string; liveness_passed: boolean | null; livene
 /** `capturedAt` is stamped when the user taps Punch (not when the request finally goes out). */
 export type PunchInput = { kind: PunchKind; fix: Fix | null; selfie?: SelfieInput | null; uuid: () => string; capturedAt?: string };
 
+type PunchFlags = { review_flag?: string | null; geo_flag?: string | null; attribution_flag?: string | null; punch_out_geo_flag?: string | null };
+
 export type PunchOutcome =
-  | { status: 'ok'; attendance: AttendanceRow & { geo_flag?: string | null; attribution_flag?: string | null }; flag: string | null }
+  | { status: 'ok'; attendance: AttendanceRow & PunchFlags; flag: string | null }
   | { status: 'queued'; item: QueuedPunch; behind?: boolean }
   | { status: 'already' }
   | { status: 'error'; error: ApiError; needsSelfie: boolean };
@@ -130,9 +132,9 @@ export async function submitPunch(input: PunchInput, q: PunchQueue = getPunchQue
   };
   try {
     const res = await api.post(input.kind === 'in' ? '/attendance/mark' : '/attendance/punch-out', body);
-    const att = res.data as AttendanceRow & { geo_flag?: string | null; attribution_flag?: string | null };
+    const att = res.data as AttendanceRow & PunchFlags;
     await cleanup();
-    return { status: 'ok', attendance: att, flag: att.geo_flag ?? att.attribution_flag ?? null };
+    return { status: 'ok', attendance: att, flag: att.review_flag ?? (input.kind === 'out' ? att.punch_out_geo_flag : null) ?? att.geo_flag ?? att.attribution_flag ?? null };
   } catch (e) {
     const err = normalizeError(e);
     if (isRetryable(err)) return queueIt(selfieId);
@@ -141,8 +143,14 @@ export async function submitPunch(input: PunchInput, q: PunchQueue = getPunchQue
   }
 }
 
-/** Human text for the flagged-result notice. */
+const FLAG_TEXT: Record<string, string> = {
+  liveness_failed: 'selfie check not confirmed',
+  offline: 'offline punch',
+  no_shift: 'no shift',
+};
+/** Human text for the flagged-result notice; unknown reasons fall back to a generic message. */
 export function flagNotice(flag: string | null): string | null {
   if (!flag) return null;
-  return `Punch recorded, but flagged for review (${flag.replace(/_/g, ' ').toLowerCase()}).`;
+  const text = FLAG_TEXT[flag.toLowerCase()];
+  return `Punch recorded, but flagged for review${text ? ` (${text})` : ''}.`;
 }
