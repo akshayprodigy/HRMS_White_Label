@@ -266,6 +266,8 @@ async def offline_sync(
                             att = await punch_svc.record_punch_out(
                                 db, user, at=cap, **common)
                             r = res("created", att_id=att.id)
+                    except punch_svc.AlreadyRecorded as exc:
+                        r = res("duplicate", att_id=exc.attendance_id)
                     except punch_svc.PunchRejected as exc:
                         # Caught inside the savepoint so the STRICT-geo
                         # audit row it added is kept.

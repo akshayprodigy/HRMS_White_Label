@@ -6,6 +6,15 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 
 
+class LockRetry(HTTPException):
+    """409 for a transient lock conflict (MariaDB 1020 / deadlock): the
+    caller may retry on a fresh transaction. Distinct from the permanent
+    409 "locked by a payroll run"."""
+
+    def __init__(self, detail: str = "Concurrent update; retry"):
+        super().__init__(status_code=409, detail=detail)
+
+
 async def assert_attendance_editable(
     db, work_date: date, fresh: bool = False) -> None:
     """Refuse edits once a payroll run has locked attendance for that
@@ -33,10 +42,9 @@ async def assert_attendance_editable(
         if not fresh or getattr(exc.orig, "args", (None,))[0] != 1020:
             raise
         # MariaDB 1020: payroll state changed after our snapshot.
-        raise HTTPException(
-            status_code=409,
-            detail=f"Attendance for {work_date.isoformat()} is locked by a "
-                   "payroll run that just changed; retry.") from exc
+        raise LockRetry(
+            f"Attendance for {work_date.isoformat()} is locked by a "
+            "payroll run that just changed; retry.") from exc
     if run:
         raise HTTPException(
             status_code=409,

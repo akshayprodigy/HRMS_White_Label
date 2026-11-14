@@ -24,6 +24,7 @@ from app.models.notification import Notification
 from app.models.shift import ShiftTemplate
 from app.models.user import Role, User as UserModel
 from app.schemas.geofence import GeoRejectionDetail
+from app.services.attendance_lock import LockRetry
 from app.services.comp_off_accrual import create_comp_off_accrual
 from app.services.effective_shift import effective_shift_on
 from app.services.geofence import EnforcementMode, GeoDecision, evaluate_punch
@@ -312,6 +313,15 @@ class PunchRejected(HTTPException):
     offline sync catches it inside the item's savepoint and reports it."""
 
 
+class AlreadyRecorded(PunchRejected):
+    """A punch-out replay for a day a device tap already closed at or after
+    that time. Offline sync reports it as an idempotent 'duplicate'."""
+
+    def __init__(self, attendance_id: int, **kw):
+        super().__init__(**kw)
+        self.attendance_id = attendance_id
+
+
 async def _fresh_one(db, stmt, fresh: bool):
     """First row of `stmt`. fresh=True uses a locking read so a row
     committed after our REPEATABLE READ snapshot is still seen (MariaDB
@@ -323,8 +333,7 @@ async def _fresh_one(db, stmt, fresh: bool):
     except OperationalError as exc:
         from app.services.roster import is_lock_conflict
         if is_lock_conflict(exc):
-            raise HTTPException(
-                status_code=409, detail="Concurrent update; retry") from exc
+            raise LockRetry() from exc
         raise
 
 
@@ -574,11 +583,11 @@ async def record_punch_in(
 # --- punch out ----------------------------------------------------------
 
 
-async def _closed_biometric_row_before(
+async def _device_closed_row(
     db, user_id: int, at: datetime, fresh: bool = False
 ) -> Optional[Attendance]:
-    """The latest row for `at`'s work_date if a device tap closed it (it has
-    an APPLIED BiometricPunch) and `at` is after its punch-out; else None."""
+    """The latest closed row for `at`'s work_date if a device tap took part
+    in it (it has an APPLIED BiometricPunch); else None."""
     from app.models.biometric import BiometricPunch, BiometricPunchState
     work_date = (await _attribute_punch(db, user_id, at))[0]
     row = await _fresh_one(db, (
@@ -589,12 +598,12 @@ async def _closed_biometric_row_before(
         .order_by(Attendance.captured_at.desc())
         .limit(1)
     ), fresh)
-    if row is None or not as_utc(at) > as_utc(row.punch_out_time):
+    if row is None:
         return None
     has_tap = (await db.execute(select(BiometricPunch.id).where(
         BiometricPunch.attendance_id == row.id,
         BiometricPunch.state == BiometricPunchState.APPLIED,
-    ).limit(1))).first()
+    ).limit(1).with_for_update(read=True))).first()
     return row if has_tap else None
 
 
@@ -605,9 +614,12 @@ async def record_punch_out(
     selfie_id: Optional[int] = None, liveness_passed: Optional[bool] = None,
     liveness_score: Optional[float] = None, is_offline: bool = False,
     client_uuid: Optional[str] = None, ip: Optional[str] = None,
-    fresh: bool = False,
+    fresh: bool = False, mode: Optional[str] = None,
 ) -> Attendance:
     """Close the open punch as of `at` (default now). Flushes only.
+    `mode` is the CALLER ("mobile" for the app): the selfie rule follows the
+    caller / is_offline, never a device-created row's mode. Callers that do
+    not send it fall back to the row's own mode only when it is "mobile".
     400 no open punch (offline: none that started before `at`), 400 missing
     selfie, 422 STRICT geo rejection."""
     now = datetime.now(timezone.utc)
@@ -619,8 +631,15 @@ async def record_punch_out(
         # Merged sources: a device tap may already have closed the day. The
         # latest out wins, so a later app punch-out extends it. App-only
         # (non-biometric) closed rows keep the 400 below.
-        attendance = await _closed_biometric_row_before(
-            db, user.id, at, fresh=fresh)
+        closed = await _device_closed_row(db, user.id, at, fresh=fresh)
+        if closed is not None:
+            if not as_utc(at) > as_utc(closed.punch_out_time):
+                # replay of an offline / duplicate punch-out: already recorded
+                raise AlreadyRecorded(
+                    closed.id, status_code=400,
+                    detail="You have already punched out for the current "
+                           "shift.")
+            attendance = closed
     if attendance is None:
         raise PunchRejected(
             status_code=400,
@@ -640,7 +659,8 @@ async def record_punch_out(
 
     rules = await get_time_rules(db)
     if _selfie_required(
-        rules, mobile=is_offline or attendance.mode == "mobile"
+        rules, mobile=is_offline or mode == "mobile" or (
+            mode is None and attendance.mode == "mobile")
     ) and selfie_id is None:
         raise PunchRejected(
             status_code=400, detail="A selfie is required to punch out.")

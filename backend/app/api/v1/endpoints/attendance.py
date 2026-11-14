@@ -60,6 +60,8 @@ class PunchOutBody(BaseModel):
     selfie_id: Optional[int] = None
     liveness_passed: Optional[bool] = None
     liveness_score: Optional[float] = None
+    # Caller; "mobile" makes the mobile selfie rule apply (record_punch_out).
+    mode: Optional[str] = None
 
 
 
@@ -187,6 +189,7 @@ async def punch_out(
                 liveness_passed=body.liveness_passed if body is not None else None,
                 liveness_score=body.liveness_score if body is not None else None,
                 ip=ip, fresh=True,
+                mode=body.mode if body is not None else None,
             )
         except PunchRejected:
             await db.commit()

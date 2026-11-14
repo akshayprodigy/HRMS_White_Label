@@ -121,7 +121,7 @@ export async function submitPunch(input: PunchInput, q: PunchQueue = getPunchQue
     }
   }
   const body = {
-    ...(input.kind === 'in' ? { mode: 'mobile' } : {}),
+    mode: 'mobile',
     latitude: fix?.latitude ?? null,
     longitude: fix?.longitude ?? null,
     accuracy: fix?.accuracy ?? null,

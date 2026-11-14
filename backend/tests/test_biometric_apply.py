@@ -9,7 +9,10 @@ from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from _cleanup import purge_shift_templates
 from app.core.security import get_password_hash
@@ -26,9 +29,14 @@ from app.models.employee import Employee
 from app.models.hr import HolidayCalendar
 from app.models.notification import Notification
 from app.models.shift import EmployeeShiftAssignment, ShiftTemplate
+from app.models.system import SystemSetting
 from app.models.user import Role, User, user_roles
 from app.services import biometric as bio
+from app.api import deps
+from app.main import create_app
 from app.services import punch
+from app.services.time_rules import set_time_rules
+from app.services.attendance_lock import LockRetry
 
 NAMES = ("fwd", "rev", "rnd", "night", "app", "edit", "lock", "unm", "pend",
          "single", "quiet", "live", "conc", "hol", "inact", "mapq", "perm")
@@ -529,7 +537,7 @@ async def test_apply_pending_conflict_leaves_state_others_apply(
 
     async def flaky(db, bp, **kw):
         if bp.id == ids[1]:
-            raise HTTPException(status_code=409, detail=bio.CONFLICT_DETAIL)
+            raise LockRetry()
         return await real(db, bp, **kw)
     monkeypatch.setattr(bio, "apply_punch", flaky)
     counts = await bio.apply_pending(SessionLocal, pin=pin, attempts=2)
@@ -589,3 +597,104 @@ async def test_app_only_second_punch_out_still_400(world):
         with pytest.raises(punch.PunchRejected) as ei:
             await punch.record_punch_out(db, user, at=at(d, 19, 0), fresh=True)
         assert ei.value.status_code == 400
+
+
+@pytest.fixture
+async def rules():
+    keys = ("attendance.selfie_required", "attendance.offline_max_hours")
+    async with SessionLocal() as db:
+        saved = {k: (await db.get(SystemSetting, k)) for k in keys}
+        saved = {k: (v.value if v else None) for k, v in saved.items()}
+
+    async def setter(**kw):
+        async with SessionLocal() as db:
+            await set_time_rules(db, {f"attendance.{k}": v for k, v in kw.items()})
+    yield setter
+    async with SessionLocal() as db:
+        for k, v in saved.items():
+            row = await db.get(SystemSetting, k)
+            if v is None and row is not None:
+                await db.delete(row)
+            elif v is not None and row is not None:
+                row.value = v
+        await db.commit()
+
+
+async def test_selfie_rule_follows_caller_not_device_row_mode(world, rules):
+    await rules(selfie_required="1")
+    d = date(2031, 7, 20)
+    await feed(world, "single", [at(d, 9, 0)])  # device-created, mode biometric
+    async with SessionLocal() as db:
+        user = await db.get(User, world["single"])
+        for kw in ({"mode": "mobile"}, {"is_offline": True}):
+            with pytest.raises(punch.PunchRejected) as ei:
+                await punch.record_punch_out(
+                    db, user, at=at(d, 18, 0), fresh=True, **kw)
+            assert ei.value.status_code == 400
+            assert "selfie" in str(ei.value.detail).lower()
+        # a web caller is exempt, as before
+        await punch.record_punch_out(
+            db, user, at=at(d, 18, 0), fresh=True, mode="web")
+        await db.commit()
+    (row,) = await day_row(world, "single", d)
+    assert io(row) == (at(d, 9, 0), at(d, 18, 0))
+
+
+async def test_offline_punch_out_replay_on_device_closed_row_is_duplicate(
+        world, rules):
+    await rules(offline_max_hours="72", selfie_required="0")
+    y = datetime.now(timezone.utc).date() - timedelta(days=1)
+    await feed(world, "perm", [at(y, 10, 0), at(y, 17, 0)])
+    app = create_app()
+    app.dependency_overrides[deps.verify_attendance] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://test") as c:
+        r = await c.post("/api/v1/auth/login", data={
+            "username": f"bio_perm_{world['sfx']}@t.com", "password": "x"})
+        assert r.status_code == 200, r.text
+        h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        item = lambda when: {
+            "client_uuid": uuid.uuid4().hex, "kind": "out",
+            "captured_at": when.isoformat()}
+        r = await c.post("/api/v1/attendance/offline-sync", headers=h, json={
+            "punches": [item(at(y, 12, 0)), item(at(y, 17, 0))]})
+    res = r.json()["results"]
+    assert [x["status"] for x in res] == ["duplicate", "duplicate"], res
+    assert all(x["attendance_id"] for x in res)
+    (row,) = await day_row(world, "perm", y)
+    assert io(row) == (at(y, 10, 0), at(y, 17, 0))
+
+
+async def test_apply_pending_stamp_failure_is_a_conflict_not_an_abort(
+        world, monkeypatch):
+    d = date(2031, 7, 21)
+    pin, ids = await _unmapped_taps(
+        world, "mapq", d, [at(d, 9, 0), at(d, 13, 0), at(d, 18, 0)])
+    real = bio.apply_punch
+
+    async def boom(db, bp, **kw):
+        if bp.id == ids[1]:
+            raise RuntimeError("kaboom")
+        return await real(db, bp, **kw)
+    monkeypatch.setattr(bio, "apply_punch", boom)
+
+    class FakeOrig(Exception):
+        pass
+    err = OperationalError("stmt", {}, FakeOrig(1213, "deadlock"))
+    err.orig = FakeOrig(1213, "deadlock")
+    real_commit = AsyncSession.commit
+
+    async def commit(self):
+        # the ERROR-stamping commit hits a deadlock
+        if any(isinstance(o, BiometricPunch) and o.id == ids[1]
+               and o.state == S.ERROR for o in self.dirty):
+            raise err
+        return await real_commit(self)
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    counts = await bio.apply_pending(SessionLocal, pin=pin)
+    monkeypatch.setattr(AsyncSession, "commit", real_commit)
+    assert counts == {S.APPLIED: 2, "conflict": 1}
+    async with SessionLocal() as db:
+        assert (await db.get(BiometricPunch, ids[0])).state == S.APPLIED
+        assert (await db.get(BiometricPunch, ids[2])).state == S.APPLIED
+        assert (await db.get(BiometricPunch, ids[1])).state == S.UNMAPPED

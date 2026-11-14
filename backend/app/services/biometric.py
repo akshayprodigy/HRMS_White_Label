@@ -34,7 +34,7 @@ from app.models.biometric import (
 from app.models.user import User
 from app.services import punch
 from app.services.roster import is_lock_conflict
-from app.services.attendance_lock import assert_attendance_editable
+from app.services.attendance_lock import LockRetry, assert_attendance_editable
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +46,6 @@ PIN_MAX = 32
 PENDING_APPLY = "received"
 
 _S = BiometricPunchState
-CONFLICT_DETAIL = "Concurrent update; retry"  # punch._fresh_one
 
 
 async def resolve_user_id(db, device_id: Optional[int], pin: str) -> Optional[int]:
@@ -241,10 +240,8 @@ async def apply_punch(db, bp: BiometricPunch, *, dedupe_seconds: int = DEFAULT_D
     try:
         await assert_attendance_editable(db, work_date, fresh=True)
     except HTTPException as exc:
-        if exc.status_code != 409:
-            raise
-        if "retry" in str(exc.detail):  # payroll state changed under us
-            raise HTTPException(status_code=409, detail=CONFLICT_DETAIL)
+        if isinstance(exc, LockRetry) or exc.status_code != 409:
+            raise  # transient (retried by the caller) / not a payroll lock
         _finish(bp, _S.LOCKED, error=str(exc.detail))
         return
 
@@ -260,7 +257,7 @@ async def apply_punch(db, bp: BiometricPunch, *, dedupe_seconds: int = DEFAULT_D
 def _is_conflict(exc: Exception) -> bool:
     """Transient lock conflict worth a retry on a fresh transaction."""
     if isinstance(exc, HTTPException):
-        return exc.status_code == 409 and exc.detail == CONFLICT_DETAIL
+        return isinstance(exc, LockRetry)
     if not isinstance(exc, OperationalError):
         return False
     # 1305: the server already aborted the transaction (1020/1213), so the
@@ -297,6 +294,8 @@ async def _apply_tap_tx(
             except (HTTPException, OperationalError) as exc:
                 if not _is_conflict(exc):
                     raise
+                log.warning("biometric tap %s: lock conflict, attempt %s/%s: "
+                            "%r", bp_id, attempt + 1, attempts, exc)
                 last = exc
                 await db.rollback()
         await asyncio.sleep(0.05 * (attempt + 1))
@@ -374,14 +373,21 @@ async def apply_pending(
                 state = "conflict"
             else:
                 state = _S.ERROR
-                async with session_factory() as db:
-                    bp = await db.get(BiometricPunch, bp_id)
-                    if bp is not None:
-                        bp.state = _S.ERROR
-                        bp.attendance_id = None
-                        bp.error = (f"{type(exc).__name__}: "
-                                    f"{getattr(exc, 'detail', None) or exc}"
-                                    )[:255]
-                        await db.commit()
+                try:
+                    async with session_factory() as db:
+                        bp = await db.get(BiometricPunch, bp_id)
+                        if bp is not None:
+                            bp.state = _S.ERROR
+                            bp.attendance_id = None
+                            bp.error = (
+                                f"{type(exc).__name__}: "
+                                f"{getattr(exc, 'detail', None) or exc}"
+                            )[:255]
+                            await db.commit()
+                except Exception as stamp_exc:  # never abort the batch
+                    log.warning("biometric tap %s: could not stamp ERROR "
+                                "(%r) after %r", bp_id, stamp_exc, exc)
+                    state = ("conflict" if _is_conflict(stamp_exc)
+                             else "unstamped")
         counts[state] = counts.get(state, 0) + 1
     return counts
