@@ -783,6 +783,42 @@ register_job(JobSpec(
 ))
 
 
+async def _job_biometric_device_offline_alerts(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.biometric import offline_alerts_job
+    return await offline_alerts_job(session)
+
+
+register_job(JobSpec(
+    name="biometric_device_offline_alerts",
+    display_name="Biometric device offline alerts",
+    description=(
+        "Every 10 minutes: alert HR and biometric managers once when an "
+        "active biometric device has not called in for "
+        "`biometric.offline_minutes`. Pending / disabled devices are never "
+        "alerted; the alert re-arms when the device comes back online."
+    ),
+    default_cadence_cron="*/10 * * * *",
+    fn=_job_biometric_device_offline_alerts,
+))
+
+
+async def _job_biometric_pending_device_expiry(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.biometric import pending_expiry_job
+    return await pending_expiry_job(session)
+
+
+register_job(JobSpec(
+    name="biometric_pending_device_expiry",
+    display_name="Expire stale pending biometric devices",
+    description=(
+        "Daily: delete biometric devices still pending approval after 7 "
+        "days, with their held taps and enrolled users."
+    ),
+    default_cadence_cron="30 3 * * *",
+    fn=_job_biometric_pending_device_expiry,
+))
+
+
 async def _job_overtime_recompute_yesterday(session: AsyncSession) -> Dict[str, Any]:
     """Recompute OT + night allowance for a lookback window of
     yesterday-2 .. yesterday (UTC) for every attendance row that has a

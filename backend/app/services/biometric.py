@@ -314,11 +314,25 @@ async def _apply_locked(db, bp, user, work_date, t, dedupe_seconds, quiet,
     _finish(bp, state, row.id)
 
 
-async def apply_punch(db, bp: BiometricPunch, *, dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS,
+async def dedupe_rule(db) -> int:
+    """Time rule biometric.dedupe_seconds (0-3600); bad value -> default."""
+    from app.services.time_rules import get_time_rules
+    try:
+        v = int(str((await get_time_rules(db)).get(
+            "biometric.dedupe_seconds", DEFAULT_DEDUPE_SECONDS)).strip())
+        return v if 0 <= v <= 3600 else DEFAULT_DEDUPE_SECONDS
+    except (TypeError, ValueError):
+        return DEFAULT_DEDUPE_SECONDS
+
+
+async def apply_punch(db, bp: BiometricPunch, *, dedupe_seconds: Optional[int] = None,
                       quiet: bool = False) -> None:
     """Fold one raw tap into Attendance and set bp.state / attendance_id /
     applied_at / error. quiet=True suppresses employee/HR notifications
-    (back-fill); live taps pass quiet=False and behave like app punches."""
+    (back-fill); live taps pass quiet=False and behave like app punches.
+    dedupe_seconds=None reads the time rule biometric.dedupe_seconds."""
+    if dedupe_seconds is None:
+        dedupe_seconds = await dedupe_rule(db)
     device = None
     if bp.device_id is not None:
         device = await db.get(BiometricDevice, bp.device_id)
@@ -373,7 +387,7 @@ def _is_conflict(exc: Exception) -> bool:
 
 
 async def _apply_tap_tx(
-    session_factory, bp_id: int, *, dedupe_seconds: int, quiet: bool,
+    session_factory, bp_id: int, *, dedupe_seconds: Optional[int], quiet: bool,
     attempts: int, reresolve: bool = False,
     only_states: Optional[set] = None,
 ) -> str:
@@ -411,7 +425,7 @@ async def _apply_tap_tx(
 
 async def apply_punch_committed(
     session_factory, bp_id: int, *,
-    dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS, quiet: bool = False,
+    dedupe_seconds: Optional[int] = None, quiet: bool = False,
     attempts: int = 4,
 ) -> str:
     """Apply one stored tap (live device tap) in its OWN transaction and
@@ -431,7 +445,7 @@ DEFAULT_PENDING_STATES = frozenset(
 async def apply_pending(
     session_factory, *, user_id: Optional[int] = None,
     device_id: Optional[int] = None, pin: Optional[str] = None,
-    limit: int = 500, dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS,
+    limit: int = 500, dedupe_seconds: Optional[int] = None,
     states=DEFAULT_PENDING_STATES, attempts: int = 4,
     after_id: int = 0, deadline_s: float = 60.0,
     import_batch: Optional[str] = None,
@@ -546,6 +560,8 @@ PERM_BIOMETRIC = "biometric manage"
 # Task 7 may turn these into time rules.
 MAX_PENDING_DEVICES = 50
 MAX_PENDING_TAPS_PER_DEVICE = 20000
+MAX_PENDING_PER_IP = 5  # pending devices one source IP may create
+PENDING_DEVICE_TTL_DAYS = 7  # unapproved devices are purged after this
 CAP_ALERT_TITLE = "Biometric device registrations are being refused"
 
 
@@ -566,7 +582,21 @@ def _is_trusted_hop(addr: str) -> bool:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     return any(ip.version == n.version and ip in n for n in _TRUSTED_NETS)
+
+
+def _unmap(addr: str) -> str:
+    """IPv4-mapped IPv6 (::ffff:a.b.c.d) -> a.b.c.d; anything else as is."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return addr
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        return str(ip.ipv4_mapped)
+    return addr
 
 
 def client_ip(client_host: Optional[str], forwarded_for: Optional[str]) -> Optional[str]:
@@ -580,6 +610,7 @@ def client_ip(client_host: Optional[str], forwarded_for: Optional[str]) -> Optio
     unparseable entry falls back to the TCP peer. A public peer: the header is
     ignored."""
     import ipaddress
+    client_host = _unmap(client_host) if client_host else client_host
     if not (client_host and forwarded_for and _is_trusted_hop(client_host)):
         return client_host
     entries = [e.strip() for e in forwarded_for.split(",")]
@@ -588,9 +619,10 @@ def client_ip(client_host: Optional[str], forwarded_for: Optional[str]) -> Optio
             ipaddress.ip_address(entry)
         except ValueError:
             return client_host
+        entry = _unmap(entry)
         if not _is_trusted_hop(entry):
             return entry
-    return entries[-1]
+    return _unmap(entries[-1])
 
 
 def ip_allowed(allowlist: Optional[str], ip: Optional[str]) -> bool:
@@ -709,6 +741,15 @@ async def _get_or_register_once(
                         "SN %s from %s", pending, sn, ip)
             await _alert_cap(db, now)
             return None
+        if ip:
+            from_ip = (await db.execute(
+                select(func.count()).select_from(BiometricDevice).where(
+                    BiometricDevice.status == BiometricDeviceStatus.PENDING,
+                    BiometricDevice.last_ip == ip))).scalar() or 0
+            if from_ip >= MAX_PENDING_PER_IP:
+                log.warning("biometric: %s pending devices already from %s, "
+                            "refusing to register SN %s", from_ip, ip, sn)
+                return None
         dev = BiometricDevice(
             serial=sn, status=BiometricDeviceStatus.PENDING,
             utc_offset_minutes=await _default_offset(db),
@@ -788,3 +829,82 @@ async def upsert_device_users(db, device_id: int, users) -> int:
         await db.execute(stmt)
         n += 1
     return n
+
+
+# ---------------- Scheduler jobs (Task 7) ----------------
+
+async def _offline_threshold_minutes(db) -> int:
+    from app.services.time_rules import get_time_rules
+    try:
+        v = int(str((await get_time_rules(db)).get(
+            "biometric.offline_minutes", 30)).strip())
+        return v if 5 <= v <= 1440 else 30
+    except (TypeError, ValueError):
+        return 30
+
+
+async def offline_alerts_job(db) -> dict:
+    """Alert once per offline episode. ACTIVE devices only (pending and
+    disabled are never alerted). A device is stale when last_seen_at is older
+    than the threshold, or (never seen) approved_at / created_at is. The stamp
+    is an atomic conditional UPDATE, so concurrent runs alert once. Commits."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=await _offline_threshold_minutes(db))
+    ref = func.coalesce(BiometricDevice.last_seen_at,
+                        BiometricDevice.approved_at, BiometricDevice.created_at)
+    devs = (await db.execute(select(BiometricDevice).where(
+        BiometricDevice.status == BiometricDeviceStatus.ACTIVE,
+        BiometricDevice.offline_alerted_at.is_(None),
+        ref < cutoff))).scalars().all()
+    alerted = 0
+    for d in devs:
+        since = as_utc(d.last_seen_at or d.approved_at or d.created_at)
+        dev_id, label, serial = d.id, d.name or d.serial, d.serial
+        res = await db.execute(update(BiometricDevice).where(
+            BiometricDevice.id == dev_id,
+            BiometricDevice.status == BiometricDeviceStatus.ACTIVE,
+            BiometricDevice.offline_alerted_at.is_(None))
+            .values(offline_alerted_at=now))
+        if res.rowcount != 1:
+            continue
+        await db.commit()
+        alerted += 1
+        await _notify_after_commit(
+            db, "Biometric device offline",
+            f"Biometric device {label} ({serial}) offline since "
+            f"{since.strftime('%Y-%m-%d %H:%M')} UTC", dev_id)
+    return {"checked": len(devs), "alerted": alerted}
+
+
+async def pending_expiry_job(db) -> dict:
+    """Delete devices still PENDING after PENDING_DEVICE_TTL_DAYS together
+    with their held taps (explicit delete, like the HR delete endpoint) and
+    enrolled users (FK cascade). One audit summary row. Commits."""
+    from datetime import timedelta
+    from sqlalchemy import delete
+    cutoff = datetime.now(timezone.utc) - timedelta(days=PENDING_DEVICE_TTL_DAYS)
+    rows = (await db.execute(select(
+        BiometricDevice.id, BiometricDevice.serial).where(
+        BiometricDevice.status == BiometricDeviceStatus.PENDING,
+        BiometricDevice.created_at < cutoff))).all()
+    if not rows:
+        return {"expired": 0}
+    ids = [r[0] for r in rows]
+    taps = 0
+    for i in range(0, len(ids), 200):
+        chunk = ids[i:i + 200]
+        taps += (await db.execute(delete(BiometricPunch).where(
+            BiometricPunch.device_id.in_(chunk),
+            BiometricPunch.state == _S.PENDING_DEVICE))).rowcount or 0
+        await db.execute(delete(BiometricDevice).where(
+            BiometricDevice.id.in_(chunk),
+            BiometricDevice.status == BiometricDeviceStatus.PENDING))
+    db.add(AuditLog(
+        user_id=None, action="BIOMETRIC_PENDING_DEVICES_EXPIRED",
+        resource_type="biometric_device", resource_id="batch",
+        details={"devices": len(ids), "taps_deleted": taps,
+                 "serials": [r[1] for r in rows][:50],
+                 "ttl_days": PENDING_DEVICE_TTL_DAYS}))
+    await db.commit()
+    return {"expired": len(ids), "taps_deleted": taps}

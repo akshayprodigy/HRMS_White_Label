@@ -67,6 +67,21 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Offline-captured punches are accepted only if captured within this "
         "many hours of syncing (1-72); they are flagged for HR review",
     ),
+    "biometric.offline_minutes": (
+        "30",
+        "A device is offline when it has not called in for this many "
+        "minutes (5-1440)",
+    ),
+    "biometric.default_utc_offset_minutes": (
+        "330",
+        "Clock offset in minutes given to newly registered biometric "
+        "devices (-720 to 840; 330 = IST)",
+    ),
+    "biometric.dedupe_seconds": (
+        "120",
+        "Taps this close to the first punch are treated as duplicates "
+        "(0-3600 seconds)",
+    ),
     "tracking.retention_days": (
         "30",
         "Delete live-location pings (and tracking alerts) older than this "
@@ -198,6 +213,18 @@ async def set_time_rules(
                 "attendance.offline_max_hours must be a whole number "
                 "between 1 and 72")
         updates["attendance.offline_max_hours"] = sv
+    for key, lo, hi in (("biometric.offline_minutes", 5, 1440),
+                        ("biometric.default_utc_offset_minutes", -720, 840),
+                        ("biometric.dedupe_seconds", 0, 3600)):
+        v = updates.get(key)
+        if v is not None:
+            sv = str(v).strip()
+            body = sv[1:] if sv[:1] == "-" and lo < 0 else sv
+            if not (body.isascii() and body.isdigit()) or not (
+                    lo <= int(sv) <= hi):
+                raise ValueError(
+                    f"{key} must be a whole number between {lo} and {hi}")
+            updates[key] = str(int(sv))
     rd = updates.get("attendance.selfie_retention_days")
     if rd is not None:
         sv = str(rd).strip()
