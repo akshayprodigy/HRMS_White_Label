@@ -422,3 +422,27 @@ async def test_notify_failure_does_not_undo_device(client, world, monkeypatch):
     r = await client.get("/iclock/cdata", params={"SN": s})
     assert r.status_code == 200 and f"GET OPTION FROM: {s}" in r.text
     assert (await _dev(s)) is not None
+
+
+async def test_sn_trailing_newline_rejected(client, world):
+    s = sn(world, "nl")
+    r = await client.get(f"/iclock/cdata?SN={s}%0A")
+    assert r.status_code == 400
+    assert await _dev(s + "\n") is None and await _dev(s) is None
+
+
+async def test_malicious_stamp_ignored_but_upload_processed(client, world):
+    s = sn(world, "st")
+    await client.get("/iclock/cdata", params={"SN": s})
+    await _set(s, status=BiometricDeviceStatus.ACTIVE)
+    r = await client.post(
+        "/iclock/cdata",
+        params={"SN": s, "table": "ATTLOG", "Stamp": "5\nTimeZone=99\nErrorDelay=0"},
+        content="")
+    assert r.status_code == 200 and r.text.startswith("OK")
+    assert (await _dev(s)).attlog_stamp is None
+    r = await client.post("/iclock/cdata",
+                          params={"SN": s, "table": "ATTLOG", "Stamp": "123"}, content="")
+    assert (await _dev(s)).attlog_stamp == "123"
+    hs = await client.get("/iclock/cdata", params={"SN": s})
+    assert "ATTLOGStamp=123\n" in hs.text and hs.text.count("TimeZone=") == 1

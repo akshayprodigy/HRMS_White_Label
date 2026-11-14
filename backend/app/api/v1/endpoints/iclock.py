@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_BODY = 1024 * 1024
-_SN_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SN_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def _text(body: str, status: int = 200) -> PlainTextResponse:
@@ -45,7 +45,7 @@ async def _read_body(request: Request) -> Optional[str]:
 async def _gate(request: Request, db):
     """Common per-request checks. Returns (device, None) or (None, response)."""
     sn = request.query_params.get("SN", "")
-    if not _SN_RE.match(sn):
+    if not _SN_RE.fullmatch(sn):
         return None, _text("ERROR", 400)
     ip = bio.client_ip(request.client.host if request.client else None,
                        request.headers.get("x-forwarded-for"))
@@ -81,7 +81,8 @@ async def cdata_post(request: Request, db: deps.DBDep):
     if body is None:
         return _text("ERROR", 413)
     table = (request.query_params.get("table") or "").upper()
-    stamp = (request.query_params.get("Stamp") or "")[:32] or None
+    # Only a strictly well-formed stamp is kept; anything else is ignored.
+    stamp = adms.clean_stamp(request.query_params.get("Stamp"))
     dev_id, offset = dev.id, dev.utc_offset_minutes
 
     if table == "ATTLOG":

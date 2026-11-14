@@ -608,3 +608,9 @@ async def store_dev(did, pin, times):
         await bio.store_taps(db, source="adms", device=dev,
                              taps=[(pin, t, "0", "1", "raw") for t in times])
         await db.commit()
+
+
+async def test_mapping_pin_newline_rejected(api, world):
+    r = await api.put(P + "/mappings", headers=api.hr,
+                      json={"pin": f"{world['sfx']}n\nx", "user_id": world["a"]})
+    assert r.status_code in (400, 422), r.text

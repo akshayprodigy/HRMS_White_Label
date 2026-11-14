@@ -79,3 +79,22 @@ def test_handshake_exact():
 
 def test_ok_count():
     assert p.ok_count(3) == "OK: 3"
+
+
+def test_pin_and_stamp_reject_trailing_newline():
+    assert p._PIN_RE.fullmatch("12")
+    assert not p._PIN_RE.fullmatch("12\n")
+    assert p.clean_stamp("123_a-B") == "123_a-B"
+    assert p.clean_stamp("5\n") is None
+    assert p.clean_stamp("5\nTimeZone=99") is None
+    assert p.clean_stamp("x" * 33) is None
+    assert p.clean_stamp("") is None
+
+
+def test_handshake_drops_unsafe_stamps_and_newlines():
+    out = p.handshake_response("SN1", "5\nTimeZone=99\nErrorDelay=0", "7\n", 330)
+    assert "ATTLOGStamp=None\n" in out and "OPERLOGStamp=None\n" in out
+    assert out.count("TimeZone=") == 1 and out.count("ErrorDelay=") == 1
+    out = p.handshake_response("SN\r\n1", "55", "66", 330)
+    assert out.splitlines()[0] == "GET OPTION FROM: SN1"
+    assert "ATTLOGStamp=55\n" in out

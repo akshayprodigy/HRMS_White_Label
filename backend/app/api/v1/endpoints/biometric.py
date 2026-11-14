@@ -429,7 +429,7 @@ async def put_mapping(body: MappingIn, db: deps.DBDep, me: deps.CurrentUser):
     next_after_id}."""
     me_id = me.id
     pin = body.pin.strip()
-    if not _PIN_RE.match(pin):
+    if not _PIN_RE.fullmatch(pin):
         raise HTTPException(400, "Invalid PIN (letters, digits, _ and - only)")
     if body.device_id is not None:
         await _get_device(db, body.device_id)

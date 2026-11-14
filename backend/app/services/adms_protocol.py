@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-_PIN_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_PIN_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+_STAMP_RE = re.compile(r"[0-9A-Za-z_-]{1,32}")
+
+
+def clean_stamp(v: Optional[str]) -> Optional[str]:
+    """A stamp safe to store/echo, else None (never raises)."""
+    return v if v and _STAMP_RE.fullmatch(v) else None
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 MAX_LINES = 5000  # per request; extra lines are ignored (device resends)
@@ -40,7 +46,7 @@ def parse_attlog(body: str) -> tuple[list[AttLog], list[str]]:
             continue
         parts = line.split("\t")
         pin = parts[0].strip()
-        if not _PIN_RE.match(pin):
+        if not _PIN_RE.fullmatch(pin):
             errors.append(f"line {n}: invalid PIN")
             continue
         if len(parts) < 2:
@@ -68,7 +74,7 @@ def parse_operlog_users(body: str) -> list[DeviceUser]:
                 k, v = part.split("=", 1)
                 kv[k.strip()] = v
         pin = kv.get("PIN", "").strip()
-        if not _PIN_RE.match(pin):
+        if not _PIN_RE.fullmatch(pin):
             continue
         name = (kv.get("Name") or "").strip()[:120] or None
         users.append(DeviceUser(pin=pin, name=name))
@@ -82,6 +88,9 @@ def to_utc(local: datetime, utc_offset_minutes: int) -> datetime:
 def handshake_response(sn: str, attlog_stamp: Optional[str], operlog_stamp: Optional[str],
                        utc_offset_minutes: int) -> str:
     tz = f"{utc_offset_minutes / 60:g}"
+    sn = re.sub(r"[\r\n]", "", str(sn))
+    attlog_stamp = clean_stamp(attlog_stamp)
+    operlog_stamp = clean_stamp(operlog_stamp)
     return "\n".join([
         f"GET OPTION FROM: {sn}",
         f"ATTLOGStamp={attlog_stamp or 'None'}",
