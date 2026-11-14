@@ -18,6 +18,7 @@ export interface BackfillScope {
 }
 
 interface BackfillState {
+  key: string;
   counts: Record<string, number>;
   remaining: number;
   next: number | null;
@@ -25,27 +26,47 @@ interface BackfillState {
   stalled?: boolean;
 }
 
+const scopeKey = (s: BackfillScope) =>
+  [s.state ?? 'pending', s.device_id ?? '', s.pin ?? '', s.import_batch ?? ''].join('|');
+
 /**
- * Tracks a chunked back-fill. Every response carries `remaining` and
- * `next_after_id`; while remaining > 0 the UI offers "Continue", which calls
- * POST /punches/reprocess {state:'pending', after_id} and sums the counts.
+ * Tracks chunked back-fills, one notice per scope. Every response carries
+ * `remaining` and `next_after_id`; while remaining > 0 the UI offers
+ * "Continue", which calls POST /punches/reprocess {state, after_id} and sums
+ * the counts. Finished notices auto-dismiss after 10 s.
  */
 export const useBackfill = (onProgress?: () => void) => {
-  const [bf, setBf] = useState<BackfillState | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [list, setList] = useState<BackfillState[]>([]);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   const start = useCallback((resp: BackfillResp, scope: BackfillScope) => {
-    setBf({
-      counts: resp.backfill ?? {},
-      remaining: resp.remaining ?? 0,
-      next: resp.next_after_id ?? null,
-      scope,
-    });
+    const key = scopeKey(scope);
+    const n: BackfillState = {
+      key, counts: resp.backfill ?? {}, remaining: resp.remaining ?? 0,
+      next: resp.next_after_id ?? null, scope,
+    };
+    setList((l) => [...l.filter((x) => x.key !== key), n]);
   }, []);
 
-  const cont = useCallback(async () => {
+  const dismiss = useCallback((key?: string) => {
+    setList((l) => (key ? l.filter((x) => x.key !== key) : []));
+  }, []);
+
+  // Auto-dismiss finished notices.
+  useEffect(() => {
+    const done = list.filter((x) => x.remaining === 0);
+    if (!done.length) return;
+    const t = window.setTimeout(
+      () => setList((l) => l.filter((x) => !done.some((d) => d.key === x.key && d.counts === x.counts))),
+      10_000
+    );
+    return () => window.clearTimeout(t);
+  }, [list]);
+
+  const cont = useCallback(async (key: string) => {
+    const bf = list.find((x) => x.key === key);
     if (!bf) return;
-    setBusy(true);
+    setBusyKey(key);
     try {
       const body: Record<string, unknown> = { state: bf.scope.state ?? 'pending', after_id: bf.next ?? 0 };
       if (bf.scope.device_id != null) body.device_id = bf.scope.device_id;
@@ -54,47 +75,64 @@ export const useBackfill = (onProgress?: () => void) => {
       const r = await client.post<BackfillResp>(ENDPOINTS.BIOMETRIC.REPROCESS, body);
       const got = Object.values(r.data.backfill ?? {}).reduce((a, b) => a + b, 0);
       const next = r.data.next_after_id ?? null;
-      setBf({
+      const upd: BackfillState = {
+        ...bf,
         counts: sumCounts(bf.counts, r.data.backfill),
         remaining: r.data.remaining ?? 0,
         next,
-        scope: bf.scope,
         stalled: (r.data.remaining ?? 0) > 0 && got === 0 && next === bf.next,
-      });
+      };
+      setList((l) => l.map((x) => (x.key === key ? upd : x)));
       onProgress?.();
     } catch (err: any) {
       toast.error(errMsg(err, 'Could not continue processing'));
     } finally {
-      setBusy(false);
+      setBusyKey(null);
     }
-  }, [bf, onProgress]);
+  }, [list, onProgress]);
 
-  const dismiss = useCallback(() => setBf(null), []);
-  return { bf, busy, start, cont, dismiss };
+  return { list, busy: busyKey !== null, busyKey, start, cont, dismiss };
 };
 
 export const BackfillNotice: React.FC<{ ctl: ReturnType<typeof useBackfill> }> = ({ ctl }) => {
-  const { bf, busy, cont, dismiss } = ctl;
-  if (!bf) return null;
-  const done = bf.remaining === 0;
+  const { list, busy, busyKey, cont, dismiss } = ctl;
+  if (!list.length) return null;
   return (
-    <div
-      role="status"
-      className={`p-3 rounded-lg text-sm flex items-center justify-between gap-3 flex-wrap ${
-        done ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-900'
-      }`}
-    >
-      <span>
-        {done ? 'All taps processed. ' : ''}Applied so far: {countsText(bf.counts)}.
-        {!done && <> <strong>{bf.remaining}</strong> taps still to process.</>}
-      </span>
-      <span className="flex items-center gap-2">
-        {!done && bf.stalled && <span className="text-sm">No progress — check the Punch log.</span>}
-        {!done && !bf.stalled && (
-          <Button size="sm" onClick={cont} isLoading={busy} disabled={busy}>Continue</Button>
-        )}
-        <Button size="sm" variant="outline" onClick={dismiss} disabled={busy}>Dismiss</Button>
-      </span>
+    <div className="space-y-2">
+      {list.map((bf) => {
+        const done = bf.remaining === 0;
+        const label = [
+          bf.scope.import_batch ? `import ${bf.scope.import_batch.slice(0, 8)}` : '',
+          bf.scope.device_id != null ? `device ${bf.scope.device_id}` : '',
+          bf.scope.pin ? `PIN ${bf.scope.pin}` : '',
+        ].filter(Boolean).join(', ');
+        return (
+          <div
+            key={bf.key}
+            role="status"
+            className={`p-3 rounded-lg text-sm flex items-center justify-between gap-3 flex-wrap ${
+              done ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-900'
+            }`}
+          >
+            <span>
+              {label ? `${label}: ` : ''}
+              {done ? 'All taps processed. ' : ''}Applied so far: {countsText(bf.counts)}.
+              {!done && <> <strong>{bf.remaining}</strong> taps still to process.</>}
+            </span>
+            <span className="flex items-center gap-2">
+              {!done && bf.stalled && <span className="text-sm">No progress — check the Punch log.</span>}
+              {!done && !bf.stalled && (
+                <Button size="sm" onClick={() => cont(bf.key)} isLoading={busyKey === bf.key} disabled={busy}>
+                  Continue
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={() => dismiss(bf.key)} disabled={busyKey === bf.key}>
+                Dismiss
+              </Button>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 };

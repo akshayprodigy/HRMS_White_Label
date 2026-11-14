@@ -4,7 +4,7 @@ import { Card, Button } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
-import { BackfillResp, COMMON_OFFSETS, downloadTextFile, utcText } from './biometric-utils';
+import { BackfillResp, COMMON_OFFSETS, countsText, downloadTextFile, utcText } from './biometric-utils';
 import { Th, inputCls, labelCls, useBackfill } from './shared';
 
 /** API timestamps are UTC instants; show them in the UTC convention. */
@@ -58,7 +58,6 @@ export const ImportTab: React.FC<{ backfill: ReturnType<typeof useBackfill> }> =
     }
     setBusy('preview');
     resetOutput();
-    backfill.dismiss();
     try {
       const r = await client.post<Preview>(ENDPOINTS.BIOMETRIC.IMPORT_PREVIEW, form());
       setPreview(r.data);
@@ -83,7 +82,7 @@ export const ImportTab: React.FC<{ backfill: ReturnType<typeof useBackfill> }> =
       setPreview(null);
       toast.success(`Imported ${r.data.inserted} tap(s)`);
       if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { import_batch: r.data.import_batch });
-      else backfill.start({ ...r.data, remaining: 0 }, { import_batch: r.data.import_batch });
+      else toast.success(`All taps processed: ${countsText(r.data.backfill ?? {})}`);
       setFile(null);
       setFileKey((k) => k + 1);
     } catch (err: any) {

@@ -60,7 +60,7 @@ export const MappingTab: React.FC<{
     return () => window.clearTimeout(t);
   }, [load, devId, tick]);
 
-  useEffect(() => { setUsers([]); setMaps([]); setPickingPin(null); setReplace(null); setUnmapId(null); }, [deviceId]);
+  useEffect(() => { reqRef.current++; setUsers([]); setMaps([]); setPickingPin(null); setReplace(null); setUnmapId(null); }, [deviceId]);
 
   const putMap = async (pin: string, emp: EmpOpt, doReplace: boolean) => {
     setBusy(true);
