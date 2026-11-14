@@ -812,7 +812,8 @@ register_job(JobSpec(
     display_name="Expire stale pending biometric devices",
     description=(
         "Daily: delete biometric devices still pending approval after 7 "
-        "days, with their held taps and enrolled users."
+        "idle days or 60 days total, with their held taps and enrolled "
+        "users."
     ),
     default_cadence_cron="30 3 * * *",
     fn=_job_biometric_pending_device_expiry,

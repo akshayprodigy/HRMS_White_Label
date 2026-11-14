@@ -1,5 +1,5 @@
 from datetime import datetime, timezone, timedelta, date
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, and_, or_
@@ -61,7 +61,7 @@ class PunchOutBody(BaseModel):
     liveness_passed: Optional[bool] = None
     liveness_score: Optional[float] = None
     # Caller; "mobile" makes the mobile selfie rule apply (record_punch_out).
-    mode: Optional[str] = None
+    mode: Optional[Literal["web", "mobile"]] = None
 
 
 

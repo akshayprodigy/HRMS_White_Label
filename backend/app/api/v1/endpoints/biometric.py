@@ -44,24 +44,10 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(deps.check_permissions([PERM_BIOMETRIC]))])
 
-DEFAULT_OFFLINE_MINUTES = 30
-# States that reflect real attendance decisions; a device holding any of
-# them cannot be deleted (junk / held taps are removed with the device).
-KEEP_STATES = (S.APPLIED, S.DUPLICATE, S.EDITED, S.LOCKED, PENDING_APPLY)
-
 
 def _audit(db, me_id: int, action: str, rtype: str, rid, details: dict):
     db.add(AuditLog(user_id=me_id, action=action, resource_type=rtype,
                     resource_id=str(rid), details=details))
-
-
-async def _offline_minutes(db) -> int:
-    try:
-        v = int((await get_time_rules(db)).get("biometric.offline_minutes",
-                                               DEFAULT_OFFLINE_MINUTES))
-        return v if v > 0 else DEFAULT_OFFLINE_MINUTES
-    except (TypeError, ValueError):
-        return DEFAULT_OFFLINE_MINUTES
 
 
 def _health(d: BiometricDevice, now: datetime, offline_min: int) -> str:
@@ -130,7 +116,7 @@ async def _dev_full(db, d: BiometricDevice) -> dict:
     """Device object including the counts (after a refresh)."""
     await db.refresh(d)
     counts = await _device_counts(db, [d.id])
-    return _dev_out(d, datetime.now(timezone.utc), await _offline_minutes(db),
+    return _dev_out(d, datetime.now(timezone.utc), await bio_svc.offline_threshold_minutes(db),
                     counts.get(d.id))
 
 
@@ -143,7 +129,7 @@ def _bf(res: dict) -> dict:
 @router.get("/devices")
 async def list_devices(db: deps.DBDep):
     now = datetime.now(timezone.utc)
-    offline_min = await _offline_minutes(db)
+    offline_min = await bio_svc.offline_threshold_minutes(db)
     devs = (await db.execute(
         select(BiometricDevice).order_by(BiometricDevice.id))).scalars().all()
     counts = await _device_counts(db, [d.id for d in devs])
@@ -268,7 +254,7 @@ async def delete_device(device_id: int, db: deps.DBDep, me: deps.CurrentUser):
         raise HTTPException(409, "Disable the device before deleting it")
     kept = (await db.execute(select(func.count()).select_from(BiometricPunch)
             .where(BiometricPunch.device_id == device_id,
-                   BiometricPunch.state.in_(KEEP_STATES)))).scalar_one()
+                   BiometricPunch.state.in_(bio_svc.KEEP_STATES)))).scalar_one()
     if kept:
         raise HTTPException(
             409, "Device has punches that were applied to attendance; "
@@ -549,7 +535,7 @@ async def list_punches(
         conds.append(BiometricPunch.pin == pin)
     if user_id is not None:
         conds.append(BiometricPunch.user_id == user_id)
-    if source == "import":  # both import flavours
+    if source == "import":  # alias: expands to import_code + import_pin
         conds.append(BiometricPunch.source.in_(bio_svc.IMPORT_SOURCES))
     elif source:
         conds.append(BiometricPunch.source == source)

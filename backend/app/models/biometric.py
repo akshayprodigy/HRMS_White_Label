@@ -101,7 +101,11 @@ class BiometricUserMap(Base):
 
 class BiometricPunch(Base):
     __tablename__ = "biometric_punch"  # type: ignore[assignment]
-    __table_args__ = (Index("ix_biometric_punch_user_time", "user_id", "punch_time"),)
+    __table_args__ = (
+        Index("ix_biometric_punch_user_time", "user_id", "punch_time"),
+        Index("ix_biometric_punch_state_time", "state", "punch_time"),
+        Index("ix_biometric_punch_device_time", "device_id", "punch_time"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dedupe_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)

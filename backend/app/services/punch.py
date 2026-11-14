@@ -618,8 +618,8 @@ async def record_punch_out(
 ) -> Attendance:
     """Close the open punch as of `at` (default now). Flushes only.
     `mode` is the CALLER ("mobile" for the app): the selfie rule follows the
-    caller / is_offline, never a device-created row's mode. Callers that do
-    not send it fall back to the row's own mode only when it is "mobile".
+    caller / is_offline, and a mobile-created row always counts as mobile; a
+    device-created row ("biometric") stays caller-based.
     400 no open punch (offline: none that started before `at`), 400 missing
     selfie, 422 STRICT geo rejection."""
     now = datetime.now(timezone.utc)
@@ -659,8 +659,8 @@ async def record_punch_out(
 
     rules = await get_time_rules(db)
     if _selfie_required(
-        rules, mobile=is_offline or mode == "mobile" or (
-            mode is None and attendance.mode == "mobile")
+        rules, mobile=is_offline or mode == "mobile"
+        or attendance.mode == "mobile"
     ) and selfie_id is None:
         raise PunchRejected(
             status_code=400, detail="A selfie is required to punch out.")

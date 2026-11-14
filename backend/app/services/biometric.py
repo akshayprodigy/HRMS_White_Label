@@ -110,7 +110,7 @@ async def resolve_tap_user(db, source: Optional[str], device_id: Optional[int],
                            pin: str) -> Optional[int]:
     """THE resolver for a stored tap (store and back-fill alike).
     import_code rows resolve ONLY by employee code; every other source
-    (adms/device, import_pin) through BiometricUserMap (device map when the
+    (device, import_pin) through BiometricUserMap (device map when the
     row has a device, else the global one)."""
     if source == IMPORT_CODE:
         ok, _amb = await resolve_codes(db, [pin])
@@ -562,7 +562,7 @@ async def apply_pending(
 DEFAULT_UTC_OFFSET_MINUTES = 330  # IST; time rule biometric.default_utc_offset_minutes
 PERM_BIOMETRIC = "biometric manage"
 # Pending (unapproved) devices an attacker can create by inventing serials.
-# Task 7 may turn these into time rules.
+# fixed caps (not time rules).
 MAX_PENDING_DEVICES = 50
 MAX_PENDING_TAPS_PER_DEVICE = 20000
 MAX_PENDING_PER_IP = 5  # pending devices one source IP may create
@@ -840,7 +840,7 @@ async def upsert_device_users(db, device_id: int, users) -> int:
 
 # ---------------- Scheduler jobs (Task 7) ----------------
 
-async def _offline_threshold_minutes(db) -> int:
+async def offline_threshold_minutes(db) -> int:
     from app.services.time_rules import get_time_rules
     try:
         v = int(str((await get_time_rules(db)).get(
@@ -861,7 +861,7 @@ async def offline_alerts_job(db, serial_prefix: Optional[str] = None) -> dict:
     test-only filter."""
     from datetime import timedelta
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(minutes=await _offline_threshold_minutes(db))
+    cutoff = now - timedelta(minutes=await offline_threshold_minutes(db))
     ref = func.coalesce(BiometricDevice.last_seen_at,
                         BiometricDevice.approved_at, BiometricDevice.created_at)
     q = select(BiometricDevice.id, BiometricDevice.name,

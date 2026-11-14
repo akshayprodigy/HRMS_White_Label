@@ -183,13 +183,15 @@ Devices push attendance to `http(s)://<your-host>/iclock/cdata` using the ADMS (
   - Taps arrive as device PINs. Map them to employees on the **Mapping** tab; *Auto-map* matches PIN = employee code.
   - Set each device's **UTC offset** to the device clock. New devices default to the time rule `biometric.default_utc_offset_minutes` (330 = IST).
 - **No password:** the protocol has no real authentication; a device is identified by its serial number only. Protections:
-  - HR approval, and an optional per-device **IP allow-list**.
+  - HR approval, and a per-device **IP allow-list**. For ACTIVE devices the allow-list is the main defence: with an empty list anyone who knows the serial can send forged punches. Set it to the office's public IP (the Devices tab warns on active devices without one).
   - Caps: 50 pending devices in total, 5 per source IP, 20,000 held taps per pending device.
-  - `limit_req` in nginx, at 120 requests/minute per IP.
+  - `limit_req` in nginx, at 120 requests/minute per IP with `burst=60`, a 2 MiB body limit (`client_max_body_size 2m`) and a 30s `proxy_read_timeout` on `/iclock`. `frontend/nginx.local.conf` carries the same blocks.
   - Pending devices never approved are removed after 7 idle days (or 60 days in total) by the daily `biometric_pending_device_expiry` job.
 - **Real client IP:** the allow-list relies on nginx overwriting `X-Forwarded-For` with `$remote_addr`.
   - Keep the backend port (8000) **unpublished** in production. `docker-compose.prod.yml` publishes only 80/443. A private-network peer that can reach the backend directly could otherwise claim any IP.
   - If you put another proxy or load balancer in front of nginx, configure `set_real_ip_from <proxy-ip>; real_ip_header X-Forwarded-For; real_ip_recursive on;` in nginx. Without it every device appears with the proxy's IP, and allow-lists and rate limits stop working per device.
+- **Check "Last IP" after first connect:** once a device has connected, look at its **Last IP** on the Devices tab. If it shows a docker gateway or proxy IP instead of the office's public IP, the real client IP is being lost, and allow-lists and rate limits won't work per device (see the `set_real_ip_from` note above).
+- **Time rules:** `biometric.dedupe_seconds` (taps from the same PIN closer than this are treated as duplicates) and `biometric.offline_minutes` (offline threshold, 5-1440, default 30) are set under time rules.
 - **Offline alerts:** `biometric_device_offline_alerts` runs every 10 minutes and alerts HR once when an approved device has been silent for longer than `biometric.offline_minutes` (default 30). It needs `ENABLE_SCHEDULER=1`. The scheduler should run in only one process: with several Gunicorn workers, enable it on a single worker or container to avoid duplicate runs. Duplicates are harmless for these jobs but waste work.
 - **Other vendors:** any device without ADMS push can export a CSV/XLSX file. HR imports it on the **Import** tab: preview first, then import. Re-importing the same file is safe. The import route allows uploads up to 6 MB (`/api/v1/biometric/import` in nginx).
 

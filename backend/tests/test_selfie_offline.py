@@ -288,6 +288,34 @@ async def test_selfie_required_rule(client, world, rules):
         "mode": "mobile"})).status_code == 200  # rule off: no selfie needed
 
 
+async def test_punch_out_mode_cannot_bypass_mobile_selfie(client, world, rules):
+    await rules(selfie_required="1")
+    h = await _login(client, world["email"]("e1"))
+    s1 = (await _selfie(client, h)).json()["selfie_id"]
+    assert (await client.post(f"{ATT}/mark", headers=h, json={
+        "mode": "mobile", "selfie_id": s1})).status_code == 200
+    # claiming "web" on a mobile-created row must not skip the selfie
+    r = await client.post(f"{ATT}/punch-out", headers=h, json={"mode": "web"})
+    assert r.status_code == 400 and "selfie" in _msg(r)
+    # only web / mobile are accepted
+    r = await client.post(f"{ATT}/punch-out", headers=h, json={"mode": "x"})
+    assert r.status_code == 422
+
+
+async def test_device_created_row_web_punch_out_ok(client, world, rules):
+    await rules(selfie_required="1")
+    h = await _login(client, world["email"]("e2"))
+    assert (await client.post(f"{ATT}/mark", headers=h, json={
+        "mode": "office"})).status_code == 200
+    async with SessionLocal() as db:
+        row = (await db.execute(select(Attendance).where(
+            Attendance.user_id == world["ids"]["e2"]))).scalars().all()[-1]
+        row.mode = "biometric"
+        await db.commit()
+    r = await client.post(f"{ATT}/punch-out", headers=h, json={"mode": "web"})
+    assert r.status_code == 200, r.text
+
+
 async def test_selfie_required_applies_to_offline_items(client, world, rules):
     await rules(selfie_required="1")
     h = await _login(client, world["email"]("e1"))

@@ -39,6 +39,7 @@ export const DevicesTab: React.FC<{
     run(d.id, async () => {
       const r = await client.post<BackfillResp>(ENDPOINTS.BIOMETRIC.DEVICE_APPROVE(d.id));
       toast.success(`Device approved: ${countsText(r.data.backfill ?? {})}`);
+      if (!(d.ip_allowlist ?? '').trim()) toast.warning(`${NO_ALLOWLIST_WARNING}. Set one via Edit.`);
       if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: d.id, label: d.name || d.serial });
     }, 'Could not approve the device');
 
@@ -104,6 +105,11 @@ export const DevicesTab: React.FC<{
                             {d.name ? `${d.serial} · ` : ''}{offsetLabel(d.utc_offset_minutes)}
                             {d.location_note ? ` · ${d.location_note}` : ''}
                           </div>
+                          {noAllowlist(d) && (
+                            <div className="mt-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3" role="note">
+                              {NO_ALLOWLIST_WARNING}
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-2"><Badge variant={STATUS_VARIANT[d.status]}>{d.status}</Badge></td>
                         <td className="px-3 py-2"><Badge variant={h.variant}>{h.label}</Badge></td>
@@ -182,6 +188,9 @@ export const DevicesTab: React.FC<{
   );
 };
 
+const NO_ALLOWLIST_WARNING = 'No IP allow-list \u2014 anyone with the serial can send punches';
+const noAllowlist = (d: Device) => d.status === 'active' && !(d.ip_allowlist ?? '').trim();
+
 const EditDevice: React.FC<{ device: Device; onClose: () => void; onSaved: () => Promise<void> }> = ({
   device, onClose, onSaved,
 }) => {
@@ -252,6 +261,11 @@ const EditDevice: React.FC<{ device: Device; onClose: () => void; onSaved: () =>
           <label className={labelCls} htmlFor="bd-ips">IP allow-list (comma separated, empty = any)</label>
           <input id="bd-ips" className={`${inputCls} w-full`} placeholder="10.0.0.5, 10.0.0.6" value={ips}
             onChange={(e) => setIps(e.target.value)} />
+          {device.status === 'active' && !ips.trim() && (
+            <p className="mt-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3" role="note">
+              {NO_ALLOWLIST_WARNING}. Set it to the office's public IP.
+            </p>
+          )}
         </div>
         <div>
           <label className={labelCls} htmlFor="bd-note">Location note</label>
