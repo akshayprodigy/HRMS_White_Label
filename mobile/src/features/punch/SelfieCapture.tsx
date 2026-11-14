@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Linking, StyleSheet, View } from 'react-native';
 import { Button, Card, Text } from '../../components/ui';
 import { getTenant } from '../../config/tenant';
-import { compressSelfie, type SelfieInput } from './api';
+import { compressSelfie, withUprightCopy, type SelfieInput } from './api';
 import { loadFaceCamera } from './faceCameraLoader';
 import { createFaceSignal, type FaceLike } from './faceSignal';
 import { selfieFiles } from './store';
@@ -97,7 +97,7 @@ export function SelfieCapture({ onDone, onCancel, allowSkip = true }: { onDone: 
         },
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
         setPrompt,
-        verifyStill: native ? async (uri) => native.stillHasExactlyOneFace(uri) : undefined,
+        verifyStill: native ? (uri) => withUprightCopy(uri, native.stillHasExactlyOneFace) : undefined,
       };
       const { frameUri, result } = await getLivenessDetector({ devBypass: bypass, source: signal.source }).run(session, ac.signal);
       if (result.passed === false) {

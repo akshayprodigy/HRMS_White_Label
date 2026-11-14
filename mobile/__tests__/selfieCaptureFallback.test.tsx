@@ -7,7 +7,7 @@ jest.mock('../src/config/tenant', () => ({ getTenant: () => ({ ...require('../te
 jest.mock('expo-image-picker', () => ({ launchCameraAsync: jest.fn(), CameraType: { front: 'front' } }));
 jest.mock('expo-file-system', () => ({ File: class {}, Directory: class {}, Paths: {} }));
 jest.mock('expo-image-manipulator', () => ({ manipulateAsync: jest.fn(), SaveFormat: { JPEG: 'jpeg' } }));
-jest.mock('../src/features/punch/api', () => ({ compressSelfie: jest.fn(async (u: string) => u) }));
+jest.mock('../src/features/punch/api', () => ({ compressSelfie: jest.fn(async (u: string) => u), withUprightCopy: jest.fn(async (u: string, check: (x: string) => unknown) => check(u)) }));
 jest.mock('../src/features/punch/store', () => ({ selfieFiles: { remove: jest.fn(async () => undefined) } }));
 jest.mock('expo-router', () => ({ useIsFocused: () => true }));
 jest.mock('../src/features/punch/faceCameraLoader', () => ({ loadFaceCamera: () => null }));

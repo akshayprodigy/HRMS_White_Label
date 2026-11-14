@@ -32,6 +32,21 @@ export async function compressSelfie(uri: string): Promise<string> {
   return out;
 }
 
+/**
+ * Run `check` on an upright, downscaled copy of a camera still and delete the copy afterwards.
+ * Re-encoding through the image manipulator bakes the EXIF orientation into the pixels; the iOS ML Kit
+ * image detector does not apply UIImage orientation itself, so a raw portrait still could read as sideways
+ * (no face found -> every genuine punch flagged).
+ */
+export async function withUprightCopy<T>(uri: string, check: (uprightUri: string) => T | Promise<T>): Promise<T> {
+  const r = await manipulateAsync(uri, [{ resize: { width: 720 } }], { compress: 0.8, format: SaveFormat.JPEG });
+  try {
+    return await check(r.uri);
+  } finally {
+    try { new File(r.uri).delete(); } catch { /* best effort */ }
+  }
+}
+
 /** POST /attendance/selfie (multipart `file`) -> selfie_id. */
 export async function uploadSelfie(uri: string): Promise<number> {
   const form = new FormData();

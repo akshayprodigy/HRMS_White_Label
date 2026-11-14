@@ -10,7 +10,7 @@ jest.mock('expo-router', () => ({ useIsFocused: () => true }));
 jest.mock('expo-image-picker', () => ({ launchCameraAsync: jest.fn(), CameraType: { front: 'front' } }));
 jest.mock('expo-file-system', () => ({ File: class {}, Directory: class {}, Paths: {} }));
 jest.mock('expo-image-manipulator', () => ({ manipulateAsync: jest.fn(), SaveFormat: { JPEG: 'jpeg' } }));
-jest.mock('../src/features/punch/api', () => ({ compressSelfie: jest.fn(async (u: string) => u) }));
+jest.mock('../src/features/punch/api', () => ({ compressSelfie: jest.fn(async (u: string) => u), withUprightCopy: jest.fn(async (u: string, check: (x: string) => unknown) => check(u)) }));
 jest.mock('../src/features/punch/store', () => ({ selfieFiles: { remove: jest.fn(async () => undefined) } }));
 
 let mockOnFaces: (f: FaceLike[]) => void = () => undefined;
@@ -172,5 +172,22 @@ describe('SelfieCapture (native face camera)', () => {
     expect(screen.getByTestId('camera-open-settings')).toBeTruthy();
     await fireEvent.press(screen.getByTestId('selfie-skip'));
     expect(onDone).toHaveBeenCalledWith(null);
+  });
+});
+
+describe('withUprightCopy', () => {
+  it('runs the check on an upright re-encoded copy and deletes the copy', async () => {
+    const actual = jest.requireActual('../src/features/punch/api') as typeof import('../src/features/punch/api');
+    const manip = require('expo-image-manipulator').manipulateAsync as jest.Mock;
+    manip.mockResolvedValueOnce({ uri: 'file:///upright.jpg' });
+    const deleted: string[] = [];
+    const fs = require('expo-file-system');
+    fs.File = class { constructor(public uri: string) {} delete() { deleted.push(this.uri); } };
+    const seen: string[] = [];
+    const ok = await actual.withUprightCopy('file:///raw.jpg', (u) => { seen.push(u); return true; });
+    expect(ok).toBe(true);
+    expect(manip).toHaveBeenCalledWith('file:///raw.jpg', [{ resize: { width: 720 } }], expect.objectContaining({ format: 'jpeg' }));
+    expect(seen).toEqual(['file:///upright.jpg']);
+    expect(deleted).toEqual(['file:///upright.jpg']);
   });
 });
