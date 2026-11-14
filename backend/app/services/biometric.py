@@ -20,16 +20,16 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.datetime_utils import as_utc
 from app.models.attendance import Attendance
 from app.models.audit import AuditLog
 from app.models.biometric import (
-    BiometricDevice, BiometricDeviceStatus, BiometricPunch,
-    BiometricPunchState, BiometricUserMap,
+    BiometricDevice, BiometricDeviceStatus, BiometricDeviceUser,
+    BiometricPunch, BiometricPunchState, BiometricUserMap,
 )
 from app.models.user import User
 from app.services import punch
@@ -391,3 +391,182 @@ async def apply_pending(
                              else "unstamped")
         counts[state] = counts.get(state, 0) + 1
     return counts
+
+
+# ---------------- ADMS device registration (Task 4) ----------------
+
+DEFAULT_UTC_OFFSET_MINUTES = 330  # IST; time rule biometric.default_utc_offset_minutes
+PERM_BIOMETRIC = "biometric manage"
+
+
+class IpNotAllowed(Exception):
+    """Device IP is outside the device's ip_allowlist."""
+
+
+def client_ip(client_host: Optional[str], forwarded_for: Optional[str]) -> Optional[str]:
+    """The device's IP. Behind a trusted proxy (X-Forwarded-For present AND the
+    TCP peer is a private / loopback address) the first X-Forwarded-For entry
+    is used; anything else is the TCP peer."""
+    import ipaddress
+    if client_host and forwarded_for:
+        try:
+            peer = ipaddress.ip_address(client_host)
+            trusted = peer.is_private or peer.is_loopback
+        except ValueError:
+            trusted = False
+        if trusted:
+            first = forwarded_for.split(",")[0].strip()
+            try:
+                ipaddress.ip_address(first)
+                return first
+            except ValueError:
+                pass
+    return client_host
+
+
+def ip_allowed(allowlist: Optional[str], ip: Optional[str]) -> bool:
+    """Empty allow-list = allow all. Entries are comma / whitespace separated
+    IPs or CIDRs; an unparseable client IP is denied when a list is set."""
+    import ipaddress
+    entries = [e for e in (allowlist or "").replace(",", " ").split() if e]
+    if not entries:
+        return True
+    try:
+        addr = ipaddress.ip_address(ip or "")
+    except ValueError:
+        return False
+    for e in entries:
+        try:
+            if addr in ipaddress.ip_network(e, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+async def _default_offset(db) -> int:
+    from app.services.time_rules import get_time_rules
+    try:
+        return int((await get_time_rules(db)).get(
+            "biometric.default_utc_offset_minutes", DEFAULT_UTC_OFFSET_MINUTES))
+    except (TypeError, ValueError):
+        return DEFAULT_UTC_OFFSET_MINUTES
+
+
+async def _notify_managers(db, title: str, message: str, device_id: int) -> None:
+    """Best-effort: users holding 'biometric manage' (HR / Super Admin by
+    seeding) plus active HR-role users."""
+    from app.models.user import Permission, Role
+    from app.services import roster as roster_svc
+    try:
+        ids = set((await db.execute(
+            select(User.id).join(User.roles).join(Role.permissions)
+            .where(User.is_active.is_(True), Permission.name == PERM_BIOMETRIC)
+        )).scalars().all())
+        ids |= set((await db.execute(
+            select(User.id).join(User.roles)
+            .where(User.is_active.is_(True), Role.name == "HR")
+        )).scalars().all())
+        await roster_svc.notify_many(
+            db, [(uid, title, message, "biometric_device", str(device_id))
+                 for uid in sorted(ids)])
+    except Exception:  # never fail a device request over a notification
+        log.warning("biometric manager notification failed", exc_info=True)
+
+
+async def _get_or_register_once(
+    db, sn: str, ip: Optional[str],
+) -> BiometricDevice:
+    """Find the device by serial or auto-register it as PENDING, then record
+    last_seen_at / last_ip. Commits (the registration, the notification and the
+    heartbeat are durable before any tap processing).
+
+    - Raises IpNotAllowed (touching nothing) for a known device whose
+      allow-list excludes `ip`.
+    - Two racing first calls: the unique serial + a savepoint insert yield one
+      device; only the inserting call notifies. The loser rolls back and
+      re-selects on a fresh snapshot.
+    - "Back online" fires once: the offline_alerted_at clear is an atomic
+      conditional UPDATE and only the call that changed a row notifies."""
+    now = datetime.now(timezone.utc)
+    dev = (await db.execute(select(BiometricDevice).where(
+        BiometricDevice.serial == sn))).scalars().first()
+    created = False
+    if dev is None:
+        dev = BiometricDevice(
+            serial=sn, status=BiometricDeviceStatus.PENDING,
+            utc_offset_minutes=await _default_offset(db),
+            last_seen_at=now, last_ip=ip)
+        try:
+            async with db.begin_nested():
+                db.add(dev)
+                await db.flush()
+            created = True
+        except IntegrityError:
+            await db.rollback()  # fresh snapshot so the winner's row is visible
+            dev = (await db.execute(select(BiometricDevice).where(
+                BiometricDevice.serial == sn))).scalars().first()
+            if dev is None:
+                raise
+    if created:
+        await _notify_managers(
+            db, "New biometric device waiting for approval",
+            f"New biometric device {sn} is waiting for approval"
+            + (f" (from {ip})" if ip else ""), dev.id)
+        await db.commit()
+        return dev
+    if not ip_allowed(dev.ip_allowlist, ip):
+        raise IpNotAllowed(sn)
+    was_offline = dev.offline_alerted_at is not None
+    dev_id = dev.id
+    res = await db.execute(
+        update(BiometricDevice).where(BiometricDevice.id == dev_id)
+        .values(last_seen_at=now, last_ip=ip))
+    cleared = False
+    if was_offline:
+        res = await db.execute(
+            update(BiometricDevice).where(
+                BiometricDevice.id == dev_id,
+                BiometricDevice.offline_alerted_at.is_not(None))
+            .values(offline_alerted_at=None))
+        cleared = res.rowcount == 1
+    if cleared:
+        await _notify_managers(
+            db, "Biometric device back online",
+            f"Biometric device {dev.name or sn} ({sn}) is back online", dev_id)
+    await db.commit()
+    await db.refresh(dev)
+    return dev
+
+
+async def get_or_register_device(
+    db, sn: str, ip: Optional[str], tries: int = 6,
+) -> BiometricDevice:
+    """_get_or_register_once, retried on a fresh snapshot when concurrent
+    heartbeats of the same device collide (MariaDB 1020 / deadlock)."""
+    for attempt in range(tries):
+        try:
+            return await _get_or_register_once(db, sn, ip)
+        except OperationalError as exc:
+            if attempt == tries - 1 or not _is_conflict(exc):
+                raise
+            await db.rollback()
+            await asyncio.sleep(0.05 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
+async def upsert_device_users(db, device_id: int, users) -> int:
+    """Upsert OPERLOG USER lines (pin, name). Returns the number processed."""
+    n = 0
+    seen: dict[str, Optional[str]] = {}
+    for u in users:
+        seen[u.pin] = u.name
+    for pin, name in seen.items():
+        stmt = mysql_insert(BiometricDeviceUser).values(
+            device_id=device_id, pin=pin, name=name,
+            updated_at=datetime.now(timezone.utc))
+        stmt = stmt.on_duplicate_key_update(
+            name=stmt.inserted.name, updated_at=stmt.inserted.updated_at)
+        await db.execute(stmt)
+        n += 1
+    return n

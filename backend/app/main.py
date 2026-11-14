@@ -30,6 +30,10 @@ def create_app() -> FastAPI:
     setup_exception_handlers(app)
     app.include_router(api_router, prefix=settings.API_V1_STR)
 
+    # ADMS / iClock biometric devices: app root, no auth (serial lookup only).
+    from app.api.v1.endpoints import iclock
+    app.include_router(iclock.router, prefix="/iclock", include_in_schema=False)
+
     # Section L: pick providers from env. Boots as LOG providers by
     # default — no accidental real sends without creds.
     from app.services.notifications_delivery import (

@@ -62,6 +62,11 @@
           changeOrigin: true,
           xfwd: true,
         },
+        '/iclock': {
+          target: 'http://backend:8000',
+          changeOrigin: true,
+          xfwd: true,
+        },
       },
     },
   });
