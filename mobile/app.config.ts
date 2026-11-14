@@ -3,6 +3,17 @@ import path from 'path';
 import type { ExpoConfig } from 'expo/config';
 import { validateTenant } from './tenants/validate';
 
+/**
+ * R8 (minified release) strips WorkManager's generated Room database, which crashes the app at launch
+ * (androidx.startup InitializationProvider -> WorkDatabase). WorkManager comes in via expo-task-manager / expo-location.
+ * vision-camera, face-detector and nitro-* annotate their JNI classes with @DoNotStrip and ML Kit ships consumer rules,
+ * so they need nothing here.
+ */
+export const ANDROID_PROGUARD_RULES = [
+  '-keep class androidx.work.impl.WorkDatabase_Impl { *; }',
+  '-keep class * extends androidx.room.RoomDatabase { *; }',
+].join('\n');
+
 export function buildConfig(tenantName: string, root: string = __dirname, env: Record<string, string | undefined> = process.env): ExpoConfig {
   const dir = path.join(root, 'tenants', tenantName);
   const file = path.join(dir, 'tenant.json');
@@ -63,7 +74,7 @@ export function buildConfig(tenantName: string, root: string = __dirname, env: R
       // react-native-vision-camera (+ face detector) and react-native-nitro-* ship no Expo config plugin: they autolink, and the
       // camera permission is declared here (Android CAMERA below, iOS NSCameraUsageDescription via this plugin's cameraPermission).
       ['expo-image-picker', { cameraPermission: 'Allow $(PRODUCT_NAME) to use the camera for your punch selfie and to photograph leave proof such as a medical certificate.', microphonePermission: false, photosPermission: false }],
-      ...(cleartext ? [['expo-build-properties', { android: { usesCleartextTraffic: true } }] as [string, object]] : []),
+      ['expo-build-properties', { android: { ...(cleartext ? { usesCleartextTraffic: true } : {}), extraProguardRules: ANDROID_PROGUARD_RULES } }],
       ['expo-splash-screen', { image: splash, imageWidth: 160, backgroundColor: tenant.colors.primary }],
     ],
     experiments: { typedRoutes: true },

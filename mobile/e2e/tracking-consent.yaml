@@ -15,6 +15,9 @@ appId: com.innocore.hrms.dev
 - runFlow: _login.yaml
 - tapOn:
     id: tab-more
+- scrollUntilVisible:
+    element:
+      id: open-location-sharing
 - tapOn:
     id: open-location-sharing
 - extendedWaitUntil:
@@ -29,6 +32,9 @@ appId: com.innocore.hrms.dev
       - assertVisible: .*Only during your rostered shifts.*
       - assertVisible: .*30 days.*
       - assertVisible: .*revoke consent at any time.*
+      - scrollUntilVisible:
+          element:
+            id: tracking-agree
       - tapOn:
           id: tracking-agree
       # The OS location prompt follows; allow while using / always as the simulator offers.

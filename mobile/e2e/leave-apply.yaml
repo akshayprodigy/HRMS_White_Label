@@ -11,6 +11,10 @@ appId: com.innocore.hrms.dev
 - assertVisible:
     id: apply-form
 # Validation: an empty submit shows field errors and creates nothing.
+# The submit button is below the fold on tall forms / small screens.
+- scrollUntilVisible:
+    element:
+      id: submit-leave
 - tapOn:
     id: submit-leave
 - assertVisible: Choose a leave type.
@@ -36,6 +40,10 @@ appId: com.innocore.hrms.dev
     id: input-reason
 - inputText: Maestro e2e leave
 - hideKeyboard
+# The submit button is below the fold on tall forms / small screens.
+- scrollUntilVisible:
+    element:
+      id: submit-leave
 - tapOn:
     id: submit-leave
 - assertVisible:

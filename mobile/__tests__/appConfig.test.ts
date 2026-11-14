@@ -55,8 +55,15 @@ describe('cleartext traffic', () => {
   const plugin = (c: ReturnType<typeof buildConfig>) =>
     (c.plugins as unknown[]).find((p) => Array.isArray(p) && p[0] === 'expo-build-properties');
   it('enables Android cleartext only for the http dev tenant', () => {
-    expect(plugin(buildConfig('dev'))).toEqual(['expo-build-properties', { android: { usesCleartextTraffic: true } }]);
-    expect(plugin(buildConfig('acme'))).toBeUndefined();
+    expect((plugin(buildConfig('dev')) as [string, { android: Record<string, unknown> }])[1].android.usesCleartextTraffic).toBe(true);
+    expect((plugin(buildConfig('acme')) as [string, { android: Record<string, unknown> }])[1].android.usesCleartextTraffic).toBeUndefined();
+  });
+  it('always ships the R8 keep rules for the WorkManager Room database (release launch crash)', () => {
+    for (const t of ['dev', 'acme']) {
+      const rules = ((plugin(buildConfig(t)) as [string, { android: { extraProguardRules: string } }])[1]).android.extraProguardRules;
+      expect(rules).toContain('-keep class androidx.work.impl.WorkDatabase_Impl { *; }');
+      expect(rules).toContain('-keep class * extends androidx.room.RoomDatabase { *; }');
+    }
   });
 });
 

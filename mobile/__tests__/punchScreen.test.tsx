@@ -55,6 +55,21 @@ describe('PunchScreen', () => {
     expect(JSON.parse(mock.history.post[0].data)).toMatchObject({ mode: 'mobile', is_mock_location: true });
   });
 
+  it('a recorded-but-flagged punch reads as success with a neutral note, not error red', async () => {
+    let marked = false;
+    mock.onGet('/attendance/today').reply(() => [200, marked ? { is_marked: true, attendance: { id: 1, captured_at: '2026-11-13T09:00:00Z', punch_out_time: null } } : { is_marked: false, attendance: null }]);
+    mock.onPost('/attendance/mark').reply(() => { marked = true; return [200, { id: 1, captured_at: '2026-11-13T09:00:00Z', punch_out_time: null, attribution_flag: 'NO_SHIFT' }]; });
+    await renderWithProviders(<PunchScreen />);
+    await waitFor(() => expect(screen.getByTestId('punch-button')).toHaveTextContent('Punch in'));
+    await fireEvent.press(screen.getByTestId('punch-button'));
+    await fireEvent.press(await screen.findByTestId('selfie-stub'));
+    const note = await screen.findByTestId('punch-flag');
+    expect(note).toHaveTextContent('Punch recorded, but flagged for review (no shift).');
+    const danger = require('../tenants/dev/tenant.json').colors.danger;
+    expect(JSON.stringify(note.props.style)).not.toContain(danger);
+    expect(screen.queryByTestId('punch-error')).toBeNull();
+  });
+
   it('shows the geofence rejection message and code', async () => {
     mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
     mock.onPost('/attendance/mark').reply(422, { detail: { error: 'OUTSIDE_GEOFENCE', message: 'You are 420 m from Head Office.' } });

@@ -151,7 +151,8 @@ function ResultNotice({ result }: { result: PunchOutcome }) {
     return (
       <Card testID="punch-result" accessibilityRole="alert" style={{ gap: 4 }}>
         <Text weight="600">Punch recorded</Text>
-        {flag ? <Text testID="punch-flag" style={{ color: colors.danger }}>{flag}</Text> : null}
+        {/* The punch SUCCEEDED; a flag is only a review note, so it is neutral (not the error red). */}
+        {flag ? <Text testID="punch-flag" muted size={14}>{flag}</Text> : null}
       </Card>
     );
   }
