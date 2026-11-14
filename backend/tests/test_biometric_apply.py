@@ -298,14 +298,14 @@ async def test_unmapped_then_map_then_apply_pending(world):
         assert rows[0].state == S.UNMAPPED
         await db.commit()
         await _map(db, world, "unm", pin)
-        counts = await bio.apply_pending(db, pin=pin)
+        counts = await bio.apply_pending(SessionLocal, pin=pin)
         await db.commit()
         assert counts == {S.APPLIED: 2}
     (row,) = await day_row(world, "unm", d)
     assert io(row) == (at(d, 9, 0), at(d, 18, 0))
     # user_id filter also finds rows via the user's maps
     async with SessionLocal() as db:
-        assert await bio.apply_pending(db, user_id=world["unm"]) == {}
+        assert await bio.apply_pending(SessionLocal, user_id=world["unm"]) == {}
 
 
 async def test_apply_pending_by_user_id(world):
@@ -316,7 +316,7 @@ async def test_apply_pending_by_user_id(world):
         await bio.store_taps(db, source="adms", device=dev,
                              taps=[(pin, at(d, 9, 0), None, None, "r")])
         await _map(db, world, "mapq", pin)
-        assert await bio.apply_pending(db, user_id=world["mapq"]) == \
+        assert await bio.apply_pending(SessionLocal, user_id=world["mapq"]) == \
             {S.APPLIED: 1}
         await db.commit()
     assert len(await day_row(world, "mapq", d)) == 1
@@ -339,11 +339,11 @@ async def test_pending_device_then_approve_then_apply_pending(world):
         assert [r.state for r in rows] == [S.PENDING_DEVICE] * 2
         await bio.apply_punch(db, rows[0])
         assert rows[0].state == S.PENDING_DEVICE
-        assert await bio.apply_pending(db, device_id=pdev.id) == \
+        assert await bio.apply_pending(SessionLocal, device_id=pdev.id) == \
             {S.PENDING_DEVICE: 2}  # still pending: nothing applied
         pdev.status = BiometricDeviceStatus.ACTIVE
         await db.commit()
-        assert await bio.apply_pending(db, device_id=pdev.id) == {S.APPLIED: 2}
+        assert await bio.apply_pending(SessionLocal, device_id=pdev.id) == {S.APPLIED: 2}
         await db.commit()
     (row,) = await day_row(world, "pend", d)
     assert io(row) == (at(d, 9, 0), at(d, 18, 0))
@@ -412,7 +412,7 @@ async def test_backfill_is_quiet_live_tap_notifies_like_app_punch(world):
         await bio.store_taps(db, source="adms", device=dev,
                              taps=[(pin, at(d, 9, 0), None, None, "r")])
         await _map(db, world, "quiet", pin)
-        assert await bio.apply_pending(db, pin=pin) == {S.APPLIED: 1}
+        assert await bio.apply_pending(SessionLocal, pin=pin) == {S.APPLIED: 1}
         await db.commit()
     (qrow,) = await day_row(world, "quiet", d)
     assert qrow.attribution_flag == "no_shift"  # attribution kept
@@ -452,15 +452,140 @@ async def test_concurrent_first_taps_make_one_row(world):
     assert io(rows[0]) == (at(d, 9, 0), at(d, 18, 0))
 
 
-async def test_comp_off_follows_extended_punch_out_any_order(world):
-    d = date(2031, 6, 2)
+async def _accruals(w):
     async with SessionLocal() as db:
-        db.add(HolidayCalendar(name=f"BIOH{world['sfx']}", date=d,
-                               location="All"))
+        return (await db.execute(select(CompOffAccrual).where(
+            CompOffAccrual.user_id == w["hol"]
+        ).order_by(CompOffAccrual.holiday_date))).scalars().all()
+
+
+async def test_comp_off_is_independent_of_arrival_order(world):
+    ds = [date(2031, 6, 2) + timedelta(days=i) for i in range(4)]
+    async with SessionLocal() as db:
+        for d in ds:
+            db.add(HolidayCalendar(name=f"BIOH{world['sfx']}", date=d,
+                                   location="All"))
         await db.commit()
-    taps = [at(d, 9, 0), at(d, 13, 0), at(d, 17, 0)]  # in, 4h (no), 8h (yes)
-    await feed(world, "hol", taps)
+    t = lambda d: {"in": at(d, 9, 0), "mid": at(d, 13, 0), "out": at(d, 17, 0)}
+    orders = [
+        ("in", "mid", "out"),   # out extended twice
+        ("out", "mid", "in"),   # fully reversed
+        ("mid", "out", "in"),   # closed row, earliest tap arrives last
+        ("out", "in", "mid"),
+    ]
+    for d, order in zip(ds, orders):
+        tt = t(d)
+        await feed(world, "hol", [tt["in"], tt["mid"], tt["out"]],
+                   order=[tt[k] for k in order])
+    acc = await _accruals(world)
+    assert [(a.holiday_date, a.worked_minutes) for a in acc] == \
+        [(d, 480) for d in ds]
+
+
+async def test_in_move_writes_audit_row(world):
+    d = date(2031, 7, 10)
+    await feed(world, "rev", [at(d, 9, 0), at(d, 18, 0)],
+               order=[at(d, 18, 0), at(d, 9, 0)])
+    (row,) = await day_row(world, "rev", d)
     async with SessionLocal() as db:
-        acc = (await db.execute(select(CompOffAccrual).where(
-            CompOffAccrual.user_id == world["hol"]))).scalars().all()
-    assert len(acc) == 1 and acc[0].worked_minutes == 480
+        a = (await db.execute(select(AuditLog).where(
+            AuditLog.resource_id == str(row.id),
+            AuditLog.action == "BIOMETRIC_PUNCH_IN_MOVED"))).scalars().all()
+    assert len(a) == 1
+    assert a[0].details["previous"].startswith("2031-07-10T18:00")
+    assert a[0].details["new"].startswith("2031-07-10T09:00")
+
+
+async def test_app_out_later_than_tap_stays(world):
+    d = date(2031, 3, 30)
+    async with SessionLocal() as db:
+        user = await db.get(User, world["app"])
+        await punch.record_punch_in(
+            db, user, mode="web", captured_at=at(d, 9, 10), fresh=True)
+        await punch.record_punch_out(db, user, at=at(d, 19, 0), fresh=True)
+        await db.commit()
+    assert await feed(world, "app", [at(d, 18, 0)]) == [S.DUPLICATE]
+    (row,) = await day_row(world, "app", d)
+    assert io(row) == (at(d, 9, 10), at(d, 19, 0))
+
+
+async def _unmapped_taps(w, name, d, times):
+    pin = f"{w['sfx']}{name}"
+    async with SessionLocal() as db:
+        dev = await db.get(BiometricDevice, w["dev"])
+        _, rows = await bio.store_taps(
+            db, source="adms", device=dev,
+            taps=[(pin, tm, None, None, "r") for tm in times])
+        await _map(db, w, name, pin)
+        return pin, [r.id for r in rows]
+
+
+async def test_apply_pending_conflict_leaves_state_others_apply(
+        world, monkeypatch):
+    d = date(2031, 7, 11)
+    pin, ids = await _unmapped_taps(
+        world, "mapq", d, [at(d, 9, 0), at(d, 13, 0), at(d, 18, 0)])
+    real = bio.apply_punch
+
+    async def flaky(db, bp, **kw):
+        if bp.id == ids[1]:
+            raise HTTPException(status_code=409, detail=bio.CONFLICT_DETAIL)
+        return await real(db, bp, **kw)
+    monkeypatch.setattr(bio, "apply_punch", flaky)
+    counts = await bio.apply_pending(SessionLocal, pin=pin, attempts=2)
+    assert counts == {S.APPLIED: 2, "conflict": 1}
+    async with SessionLocal() as db:
+        st = {i: (await db.get(BiometricPunch, i)).state for i in ids}
+    assert st[ids[1]] == S.UNMAPPED  # unchanged, never ERROR
+    assert st[ids[0]] == st[ids[2]] == S.APPLIED
+    # next run (no more conflict) picks it up
+    monkeypatch.setattr(bio, "apply_punch", real)
+    assert await bio.apply_pending(SessionLocal, pin=pin) == {S.DUPLICATE: 1}
+
+
+async def test_apply_pending_error_path_continues_and_reprocess_states(
+        world, monkeypatch):
+    d = date(2031, 7, 12)
+    pin, ids = await _unmapped_taps(
+        world, "mapq", d, [at(d, 9, 0), at(d, 13, 0), at(d, 18, 0)])
+    real = bio.apply_punch
+
+    async def boom(db, bp, **kw):
+        if bp.id == ids[1]:
+            raise RuntimeError("kaboom")
+        return await real(db, bp, **kw)
+    monkeypatch.setattr(bio, "apply_punch", boom)
+    counts = await bio.apply_pending(SessionLocal, pin=pin)
+    assert counts == {S.APPLIED: 2, S.ERROR: 1}
+    async with SessionLocal() as db:
+        bp = await db.get(BiometricPunch, ids[1])
+        assert bp.state == S.ERROR and "kaboom" in bp.error
+    # default states skip ERROR rows; states={error} reprocesses them
+    monkeypatch.setattr(bio, "apply_punch", real)
+    assert await bio.apply_pending(SessionLocal, pin=pin) == {}
+    assert await bio.apply_pending(
+        SessionLocal, pin=pin, states={S.ERROR}) == {S.DUPLICATE: 1}
+
+
+async def test_app_punch_out_extends_device_closed_row(world):
+    d = date(2031, 7, 13)
+    await feed(world, "single", [at(d, 9, 0), at(d, 17, 0)])
+    async with SessionLocal() as db:
+        user = await db.get(User, world["single"])
+        await punch.record_punch_out(db, user, at=at(d, 19, 0), fresh=True)
+        await db.commit()
+    (row,) = await day_row(world, "single", d)
+    assert io(row) == (at(d, 9, 0), at(d, 19, 0))
+
+
+async def test_app_only_second_punch_out_still_400(world):
+    d = date(2031, 7, 14)
+    async with SessionLocal() as db:
+        user = await db.get(User, world["lock"])
+        await punch.record_punch_in(
+            db, user, mode="web", captured_at=at(d, 9, 10), fresh=True)
+        await punch.record_punch_out(db, user, at=at(d, 18, 0), fresh=True)
+        await db.commit()
+        with pytest.raises(punch.PunchRejected) as ei:
+            await punch.record_punch_out(db, user, at=at(d, 19, 0), fresh=True)
+        assert ei.value.status_code == 400

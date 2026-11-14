@@ -15,6 +15,7 @@ caller commits.
 """
 import asyncio
 import hashlib
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -25,13 +26,17 @@ from sqlalchemy.exc import OperationalError
 
 from app.core.datetime_utils import as_utc
 from app.models.attendance import Attendance
+from app.models.audit import AuditLog
 from app.models.biometric import (
     BiometricDevice, BiometricDeviceStatus, BiometricPunch,
     BiometricPunchState, BiometricUserMap,
 )
 from app.models.user import User
 from app.services import punch
+from app.services.roster import is_lock_conflict
 from app.services.attendance_lock import assert_attendance_editable
+
+log = logging.getLogger(__name__)
 
 DEFAULT_DEDUPE_SECONDS = 120
 RAW_MAX = 500
@@ -41,6 +46,7 @@ PIN_MAX = 32
 PENDING_APPLY = "received"
 
 _S = BiometricPunchState
+CONFLICT_DETAIL = "Concurrent update; retry"  # punch._fresh_one
 
 
 async def resolve_user_id(db, device_id: Optional[int], pin: str) -> Optional[int]:
@@ -146,13 +152,25 @@ async def _merge(db, bp, user, row: Attendance, t: datetime,
 
     in_moved = new_in < cur_in
     if in_moved:
-        row.captured_at = new_in
         wd, sid, cross, flag = await punch._attribute_punch(db, user.id, new_in)
-        if wd == row.work_date:
+        if wd != row.work_date:
+            # Unreachable (the row was selected by this tap's work_date). Never
+            # move the in-time without re-attributing it.
+            log.error("biometric tap %s attributes to %s, row %s is %s: "
+                      "in-time not moved", bp.id, wd, row.id, row.work_date)
+            in_moved = False
+            new_in = cur_in
+        else:
+            row.captured_at = new_in
             row.shift_template_id = sid
             row.is_cross_midnight = cross
             row.attribution_flag = flag
-        changed = True
+            db.add(AuditLog(
+                user_id=user.id, action="BIOMETRIC_PUNCH_IN_MOVED",
+                resource_type="attendance", resource_id=str(row.id),
+                details={"previous": cur_in.isoformat(),
+                         "new": new_in.isoformat(), "biometric_punch_id": bp.id}))
+            changed = True
 
     out_changed = False
     if (top - new_in).total_seconds() >= dedupe_seconds and (
@@ -163,9 +181,12 @@ async def _merge(db, bp, user, row: Attendance, t: datetime,
             await punch.extend_punch_out(db, user, row, top)
         out_changed = changed = True
     if in_moved and not out_changed and row.punch_out_time is not None:
-        # the in-time attribution was refreshed; keep the out-window flag
-        # consistent with it
-        await punch.apply_out_window_flag(db, user, row, as_utc(row.punch_out_time))
+        # The in-time moved on a closed row: keep the out-window flag
+        # consistent and re-run the (idempotent) comp-off helper so the
+        # result does not depend on arrival order.
+        out_at = as_utc(row.punch_out_time)
+        await punch.apply_out_window_flag(db, user, row, out_at)
+        await punch._comp_off_after_punch_out(db, user, row, out_at, None)
     return _S.APPLIED if changed else _S.DUPLICATE
 
 
@@ -222,6 +243,8 @@ async def apply_punch(db, bp: BiometricPunch, *, dedupe_seconds: int = DEFAULT_D
     except HTTPException as exc:
         if exc.status_code != 409:
             raise
+        if "retry" in str(exc.detail):  # payroll state changed under us
+            raise HTTPException(status_code=409, detail=CONFLICT_DETAIL)
         _finish(bp, _S.LOCKED, error=str(exc.detail))
         return
 
@@ -234,16 +257,27 @@ async def apply_punch(db, bp: BiometricPunch, *, dedupe_seconds: int = DEFAULT_D
                             dedupe_seconds, quiet, serial)
 
 
-async def apply_punch_committed(
-    session_factory, bp_id: int, *,
-    dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS, quiet: bool = False,
-    attempts: int = 4,
+def _is_conflict(exc: Exception) -> bool:
+    """Transient lock conflict worth a retry on a fresh transaction."""
+    if isinstance(exc, HTTPException):
+        return exc.status_code == 409 and exc.detail == CONFLICT_DETAIL
+    if not isinstance(exc, OperationalError):
+        return False
+    # 1305: the server already aborted the transaction (1020/1213), so the
+    # savepoint rollback that follows it fails; same transient cause.
+    orig = getattr(exc, "orig", None)
+    return is_lock_conflict(exc) or bool(
+        orig is not None and orig.args and orig.args[0] == 1305)
+
+
+async def _apply_tap_tx(
+    session_factory, bp_id: int, *, dedupe_seconds: int, quiet: bool,
+    attempts: int, reresolve: bool = False,
+    only_states: Optional[set] = None,
 ) -> str:
-    """Apply one stored tap in its OWN transaction and commit; returns the
-    final state. For live device taps. Two concurrent first taps for the same
-    employee/day serialise on the user-row lock; the loser either merges or,
-    when MariaDB rejects its stale REPEATABLE READ snapshot (1020/deadlock ->
-    409 / OperationalError), is retried on a brand-new session/snapshot."""
+    """Apply one stored tap in its own transaction and commit; returns the
+    final state. Retries lock conflicts on a brand-new session/snapshot and
+    re-raises the conflict when retries run out (state left unchanged)."""
     last: Optional[Exception] = None
     for attempt in range(attempts):
         async with session_factory() as db:
@@ -251,13 +285,17 @@ async def apply_punch_committed(
                 bp = await db.get(BiometricPunch, bp_id)
                 if bp is None:
                     raise ValueError(f"biometric_punch {bp_id} not found")
+                if only_states is not None and bp.state not in only_states:
+                    return bp.state  # handled meanwhile by someone else
+                if reresolve:
+                    bp.user_id = await resolve_user_id(db, bp.device_id, bp.pin)
                 await apply_punch(
                     db, bp, dedupe_seconds=dedupe_seconds, quiet=quiet)
                 state = bp.state
                 await db.commit()
                 return state
             except (HTTPException, OperationalError) as exc:
-                if isinstance(exc, HTTPException) and exc.status_code != 409:
+                if not _is_conflict(exc):
                     raise
                 last = exc
                 await db.rollback()
@@ -266,46 +304,84 @@ async def apply_punch_committed(
     raise last
 
 
+async def apply_punch_committed(
+    session_factory, bp_id: int, *,
+    dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS, quiet: bool = False,
+    attempts: int = 4,
+) -> str:
+    """Apply one stored tap (live device tap) in its OWN transaction and
+    commit; returns the final state. Two concurrent first taps for the same
+    employee/day serialise on the user-row lock; the loser either merges or,
+    when MariaDB rejects its stale REPEATABLE READ snapshot (1020/deadlock),
+    is retried on a fresh session."""
+    return await _apply_tap_tx(
+        session_factory, bp_id, dedupe_seconds=dedupe_seconds, quiet=quiet,
+        attempts=attempts)
+
+
+DEFAULT_PENDING_STATES = frozenset(
+    {_S.UNMAPPED, _S.PENDING_DEVICE, PENDING_APPLY})
+
+
 async def apply_pending(
-    db, *, user_id: Optional[int] = None, device_id: Optional[int] = None,
-    pin: Optional[str] = None, limit: int = 2000,
-    dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS,
+    session_factory, *, user_id: Optional[int] = None,
+    device_id: Optional[int] = None, pin: Optional[str] = None,
+    limit: int = 2000, dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS,
+    states=DEFAULT_PENDING_STATES, attempts: int = 4,
 ) -> dict[str, int]:
-    """Back-fill (device approved / mapping added / reprocess): re-resolve and
-    apply UNMAPPED / PENDING_DEVICE / un-applied rows in punch_time order, each
-    in its own savepoint (a failure -> ERROR, never aborts the batch). Always
-    quiet. Returns counts per resulting state."""
-    stmt = select(BiometricPunch).where(BiometricPunch.state.in_(
-        [_S.UNMAPPED, _S.PENDING_DEVICE, PENDING_APPLY]))
-    if device_id is not None:
-        stmt = stmt.where(BiometricPunch.device_id == device_id)
-    if pin is not None:
-        stmt = stmt.where(BiometricPunch.pin == pin)
-    if user_id is not None:
-        maps = (await db.execute(select(BiometricUserMap).where(
-            BiometricUserMap.user_id == user_id))).scalars().all()
-        conds = [BiometricPunch.user_id == user_id]
-        for m in maps:
-            c = BiometricPunch.pin == m.pin
-            if m.device_id is not None:
-                c = and_(c, BiometricPunch.device_id == m.device_id)
-            conds.append(c)
-        stmt = stmt.where(or_(*conds))
-    stmt = stmt.order_by(BiometricPunch.punch_time, BiometricPunch.id).limit(limit)
-    rows = (await db.execute(
-        stmt.execution_options(populate_existing=True))).scalars().all()
+    """Back-fill (device approved / mapping added / reprocess). Takes a
+    SESSION FACTORY (e.g. SessionLocal) and commits itself: every tap is
+    re-resolved and applied, quiet, in its own short transaction in
+    punch_time order, so no locks are held across taps (no cross-user
+    deadlocks) and a dead transaction can't poison the rest.
+
+    `states` selects which rows to process (Task 5 reprocess passes
+    {error, locked}). Returns counts per resulting state. A tap whose lock
+    conflicts outlast the retries keeps its state and is counted under
+    "conflict"; a non-lock exception stamps that tap ERROR and the batch
+    continues. Never stamps ERROR for a transient conflict."""
+    states = set(states)
+    async with session_factory() as db:
+        stmt = select(BiometricPunch.id).where(
+            BiometricPunch.state.in_(states))
+        if device_id is not None:
+            stmt = stmt.where(BiometricPunch.device_id == device_id)
+        if pin is not None:
+            stmt = stmt.where(BiometricPunch.pin == pin)
+        if user_id is not None:
+            maps = (await db.execute(select(BiometricUserMap).where(
+                BiometricUserMap.user_id == user_id))).scalars().all()
+            conds = [BiometricPunch.user_id == user_id]
+            for m in maps:
+                c = BiometricPunch.pin == m.pin
+                if m.device_id is not None:
+                    c = and_(c, BiometricPunch.device_id == m.device_id)
+                conds.append(c)
+            stmt = stmt.where(or_(*conds))
+        stmt = stmt.order_by(
+            BiometricPunch.punch_time, BiometricPunch.id).limit(limit)
+        ids = list((await db.execute(stmt)).scalars().all())
 
     counts: dict[str, int] = {}
-    for bp in rows:
+    for bp_id in ids:
         try:
-            async with db.begin_nested():
-                bp.user_id = await resolve_user_id(db, bp.device_id, bp.pin)
-                await apply_punch(
-                    db, bp, dedupe_seconds=dedupe_seconds, quiet=True)
-        except Exception as exc:  # never abort the batch
-            bp.state = _S.ERROR
-            bp.attendance_id = None
-            bp.error = (f"{type(exc).__name__}: "
-                        f"{getattr(exc, 'detail', None) or exc}")[:255]
-        counts[bp.state] = counts.get(bp.state, 0) + 1
+            state = await _apply_tap_tx(
+                session_factory, bp_id, dedupe_seconds=dedupe_seconds,
+                quiet=True, attempts=attempts, reresolve=True,
+                only_states=states)
+        except Exception as exc:
+            if _is_conflict(exc):
+                state = "conflict"
+            else:
+                state = _S.ERROR
+                async with session_factory() as db:
+                    bp = await db.get(BiometricPunch, bp_id)
+                    if bp is not None:
+                        bp.state = _S.ERROR
+                        bp.attendance_id = None
+                        bp.error = (f"{type(exc).__name__}: "
+                                    f"{getattr(exc, 'detail', None) or exc}"
+                                    )[:255]
+                        await db.commit()
+        counts[state] = counts.get(state, 0) + 1
     return counts

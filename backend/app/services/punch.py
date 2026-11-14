@@ -574,6 +574,30 @@ async def record_punch_in(
 # --- punch out ----------------------------------------------------------
 
 
+async def _closed_biometric_row_before(
+    db, user_id: int, at: datetime, fresh: bool = False
+) -> Optional[Attendance]:
+    """The latest row for `at`'s work_date if a device tap closed it (it has
+    an APPLIED BiometricPunch) and `at` is after its punch-out; else None."""
+    from app.models.biometric import BiometricPunch, BiometricPunchState
+    work_date = (await _attribute_punch(db, user_id, at))[0]
+    row = await _fresh_one(db, (
+        select(Attendance)
+        .where(Attendance.user_id == user_id,
+               Attendance.work_date == work_date,
+               Attendance.punch_out_time.is_not(None))
+        .order_by(Attendance.captured_at.desc())
+        .limit(1)
+    ), fresh)
+    if row is None or not as_utc(at) > as_utc(row.punch_out_time):
+        return None
+    has_tap = (await db.execute(select(BiometricPunch.id).where(
+        BiometricPunch.attendance_id == row.id,
+        BiometricPunch.state == BiometricPunchState.APPLIED,
+    ).limit(1))).first()
+    return row if has_tap else None
+
+
 async def record_punch_out(
     db, user, *, at: Optional[datetime] = None,
     lat: Optional[float] = None, lng: Optional[float] = None,
@@ -592,11 +616,18 @@ async def record_punch_out(
         db, user.id, at, fresh=fresh
     )
     if attendance is None:
+        # Merged sources: a device tap may already have closed the day. The
+        # latest out wins, so a later app punch-out extends it. App-only
+        # (non-biometric) closed rows keep the 400 below.
+        attendance = await _closed_biometric_row_before(
+            db, user.id, at, fresh=fresh)
+    if attendance is None:
         raise PunchRejected(
             status_code=400,
             detail="You have not punched in for an open shift.",
         )
-    if attendance.punch_out_time is not None:
+    if attendance.punch_out_time is not None and not as_utc(at) > as_utc(
+            attendance.punch_out_time):
         raise PunchRejected(
             status_code=400,
             detail="You have already punched out for the current shift.",
