@@ -7,21 +7,25 @@ ISO value wins. Rows are numbered like a spreadsheet: header = 1, first data
 row = 2."""
 import csv
 import io
+import logging
 import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import select
+from starlette.concurrency import run_in_threadpool
 
 from app.models.biometric import BiometricDevice, BiometricPunch
-from app.models.employee import Employee
-from app.models.user import User
 from app.services import biometric as bio
+
+log = logging.getLogger(__name__)
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 20000
+MAX_SCAN = MAX_ROWS * 5          # rows scanned, blank ones included
+MAX_UNCOMPRESSED = 100 * 1024 * 1024
 MAX_COLS = 30
 MAX_FUTURE = timedelta(hours=24)
 MAX_AGE = timedelta(days=400)
@@ -30,12 +34,27 @@ ERROR_CAP = 200
 SAMPLE_N = 20
 _CHUNK = 500
 
-TEMPLATE_CODE = ("employee_code,timestamp,device_serial\n"
+_NOTE = ("# Lines starting with # are ignored. timestamp: YYYY-MM-DD HH:MM[:SS] "
+         "or DD/MM/YYYY HH:MM[:SS] (day first); an ISO value may carry an "
+         "offset (+05:30 / Z).\n")
+TEMPLATE_CODE = ("employee_code,timestamp,device_serial\n" + _NOTE +
                  "EMP001,2026-11-03 09:02:11,\n"
                  "EMP001,2026-11-03 18:31:40,\n")
-TEMPLATE_PIN = ("pin,timestamp,device_serial\n"
+TEMPLATE_PIN = ("pin,timestamp,device_serial\n" + _NOTE +
                 "1001,2026-11-03 09:02:11,\n"
                 "1001,2026-11-03 18:31:40,\n")
+
+
+def source_for(identify_by: str) -> str:
+    return bio.IMPORT_CODE if identify_by == "employee_code" else bio.IMPORT_PIN
+
+
+def source_key_for(identify_by: str, serial: Optional[str]) -> str:
+    """Dedupe namespace: code rows never collide with pin rows, and the same
+    pin from two devices is two taps."""
+    if identify_by == "employee_code":
+        return bio.IMPORT_CODE
+    return f"{bio.IMPORT_PIN}:{serial}" if serial else bio.IMPORT_PIN
 
 
 class ImportFileError(Exception):
@@ -78,6 +97,8 @@ def _collect(header: list, rows) -> list[tuple[int, dict]]:
         raise ImportFileError("The file has no header row")
     out: list[tuple[int, dict]] = []
     for i, cells in rows:  # i = spreadsheet row number
+        if i > MAX_SCAN + 1:
+            raise ImportFileError("Too many rows (blank rows count too)")
         if all(_is_blank(c) for c in cells):
             continue
         if len(out) >= MAX_ROWS:
@@ -102,7 +123,9 @@ def _read_csv(data: bytes) -> list[tuple[int, dict]]:
         first = next(rdr, None)
         if first is None:
             raise ImportFileError("The file is empty")
-        return _collect(first, ((n, r) for n, r in enumerate(rdr, start=2)))
+        return _collect(first, (
+            (n, r) for n, r in enumerate(rdr, start=2)
+            if not (r and str(r[0]).lstrip().startswith("#"))))
     except csv.Error as exc:
         raise ImportFileError(f"Invalid CSV: {exc}") from None
 
@@ -112,9 +135,12 @@ def _read_xlsx(data: bytes) -> list[tuple[int, dict]]:
         raise ImportFileError("Not a valid .xlsx file")
     from openpyxl import load_workbook
     try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            if sum(i.file_size for i in z.infolist()) > MAX_UNCOMPRESSED:
+                raise ImportFileError("Workbook is too large when unpacked")
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    except (zipfile.BadZipFile, KeyError, ValueError, OSError):
-        raise ImportFileError("Not a valid .xlsx file") from None
+    except ImportFileError:
+        raise
     except Exception:
         raise ImportFileError("Not a valid .xlsx file") from None
     try:
@@ -166,9 +192,13 @@ def _parse_text_ts(s: str) -> datetime:
     s = s.strip()
     iso = s[:-1] + "+00:00" if s[-1:] in ("Z", "z") else s
     try:
-        return datetime.fromisoformat(iso)
+        dt = datetime.fromisoformat(iso)
     except ValueError:
-        pass
+        dt = None
+    if dt is not None:
+        if len(iso) <= 10:
+            raise ValueError("timestamp has no time part")
+        return dt
     for df in _DATE_FMTS:
         for tf in _TIME_FMTS:
             dt = _try(s, (f"{df} {tf}",))
@@ -217,7 +247,7 @@ def parse_timestamp(rec: dict, offset_minutes: int) -> datetime:
         if isinstance(ts, datetime):
             dt = ts
         elif isinstance(ts, date):
-            dt = datetime(ts.year, ts.month, ts.day)
+            raise ValueError("timestamp has no time part")
         elif isinstance(ts, (int, float)) and not isinstance(ts, bool):
             raise ValueError("timestamp must be a date/time, not a number")
         else:
@@ -232,6 +262,21 @@ def parse_timestamp(rec: dict, offset_minutes: int) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+_DMY = re.compile(r"^\s*(\d{1,2})[/-](\d{1,2})[/-]\d{4}")
+
+
+def ambiguous_dmy(rec: dict) -> bool:
+    """dd/mm/yyyy text where day and month are both <= 12 and differ."""
+    v = rec.get("timestamp")
+    if _is_blank(v):
+        v = rec.get("date")
+    if not isinstance(v, str):
+        return False
+    m = _DMY.match(v)
+    return bool(m and int(m[1]) <= 12 and int(m[2]) <= 12
+                and m[1].lstrip("0") != m[2].lstrip("0"))
+
+
 @dataclass
 class Row:
     row: int
@@ -239,6 +284,7 @@ class Row:
     when: datetime
     device_serial: Optional[str] = None
     user_id: Optional[int] = None  # filled by resolve
+    ambiguous: bool = False
 
 
 @dataclass
@@ -293,15 +339,22 @@ def validate_rows(raw: list[tuple[int, dict]], identify_by: str,
             bad(n, "timestamp is older than 400 days")
             continue
         serial = _ident(rec.get("device_serial")) or None
-        out.rows.append(Row(n, ident, when, serial))
+        out.rows.append(Row(n, ident, when, serial, None, ambiguous_dmy(rec)))
     return out
 
 
 # ---------------- DB-backed resolution ----------------
 
+def _row_error(parsed: Parsed, row: Row, msg: str) -> None:
+    parsed.invalid += 1
+    if len(parsed.errors) < ERROR_CAP:
+        parsed.errors.append({"row": row.row, "message": msg})
+
+
 async def _resolve(db, parsed: Parsed, identify_by: str) -> set[str]:
-    """Fills Row.user_id; flags unknown device serials as invalid. Returns
-    the set of idents that resolve to nobody."""
+    """Fills Row.user_id; flags unknown device serials and ambiguous codes as
+    invalid. Returns the set of idents that resolve to nobody. Uses the same
+    resolvers as store_taps / back-fill (codes: Employee only; pins: map)."""
     serials = sorted({r.device_serial for r in parsed.rows if r.device_serial})
     dev_by_serial: dict[str, int] = {}
     for i in range(0, len(serials), _CHUNK):
@@ -312,40 +365,38 @@ async def _resolve(db, parsed: Parsed, identify_by: str) -> set[str]:
     keep: list[Row] = []
     for r in parsed.rows:
         if r.device_serial and r.device_serial not in dev_by_serial:
-            parsed.invalid += 1
-            if len(parsed.errors) < ERROR_CAP:
-                parsed.errors.append({
-                    "row": r.row,
-                    "message": f"unknown device_serial '{r.device_serial[:40]}'"})
+            _row_error(parsed, r,
+                       f"unknown device_serial '{r.device_serial[:40]}'")
         else:
             keep.append(r)
     parsed.rows = keep
-    parsed.errors.sort(key=lambda e: e["row"])
 
-    cache: dict = {}
     if identify_by == "employee_code":
-        codes = sorted({r.ident for r in parsed.rows})
-        for i in range(0, len(codes), _CHUNK):
-            q = (select(Employee.employee_id, Employee.user_id)
-                 .join(User, User.id == Employee.user_id)
-                 .where(User.is_active.is_(True),
-                        func.upper(Employee.employee_id).in_(codes[i:i + _CHUNK])))
-            for code, uid in (await db.execute(q)).all():
-                cache.setdefault(code.strip().upper(), uid)
+        ok, amb = await bio.resolve_codes(db, {r.ident for r in parsed.rows})
+        keep = []
         for r in parsed.rows:
-            r.user_id = cache.get(r.ident)
+            if r.ident in amb:
+                _row_error(parsed, r, f"employee_code '{r.ident}' matches "
+                                      "more than one employee")
+                continue
+            r.user_id = ok.get(r.ident)
+            keep.append(r)
+        parsed.rows = keep
     else:
+        cache: dict = {}
         for r in parsed.rows:
             k = (dev_by_serial.get(r.device_serial) if r.device_serial else None,
                  r.ident)
             if k not in cache:
                 cache[k] = await bio.resolve_user_id(db, k[0], r.ident)
             r.user_id = cache[k]
+    parsed.errors.sort(key=lambda e: e["row"])
     return {r.ident for r in parsed.rows if r.user_id is None}
 
 
-def dedupe_key(r: Row) -> str:
-    return bio._dedupe_key("import", r.ident[:bio.PIN_MAX], r.when)
+def dedupe_key(r: Row, identify_by: str) -> str:
+    return bio._dedupe_key(source_key_for(identify_by, r.device_serial),
+                           r.ident[:bio.PIN_MAX], r.when)
 
 
 async def _existing_keys(db, keys: list[str]) -> set[str]:
@@ -359,22 +410,26 @@ async def _existing_keys(db, keys: list[str]) -> set[str]:
 async def analyse(db, filename: str, data: bytes, identify_by: str,
                   offset_minutes: int) -> dict:
     """Parse + validate + resolve; writes nothing. Returns the summary plus
-    the working objects under "_parsed" (used by commit)."""
-    raw = read_rows(filename, data)
-    parsed = validate_rows(raw, identify_by, offset_minutes,
-                           datetime.now(timezone.utc))
+    the working objects under "_parsed" (used by commit). Parsing is CPU
+    bound, so it runs in the threadpool."""
+    raw = await run_in_threadpool(read_rows, filename, data)
+    parsed = await run_in_threadpool(
+        validate_rows, raw, identify_by, offset_minutes,
+        datetime.now(timezone.utc))
     unknown = await _resolve(db, parsed, identify_by)
     seen: set[str] = set()
     dups = 0
+    keys = []
     for r in parsed.rows:
-        k = dedupe_key(r)
+        k = dedupe_key(r, identify_by)
+        keys.append(k)
         if k in seen:
             dups += 1
         seen.add(k)
     existing = await _existing_keys(db, sorted(seen))
-    already = sum(1 for r in parsed.rows
-                  if dedupe_key(r) in existing)
+    already = sum(1 for k in keys if k in existing)
     times = [r.when for r in parsed.rows]
+    amb_rows = [r.row for r in parsed.rows if r.ambiguous]
     return {
         "rows": parsed.total, "valid": len(parsed.rows),
         "invalid": parsed.invalid, "unknown_people": len(unknown),
@@ -382,6 +437,11 @@ async def analyse(db, filename: str, data: bytes, identify_by: str,
         "date_range": ({"from": min(times).isoformat(),
                         "to": max(times).isoformat()} if times else None),
         "errors": parsed.errors,
+        "warnings": ([{
+            "code": "ambiguous_day_month", "count": len(amb_rows),
+            "rows": amb_rows[:10],
+            "message": "Ambiguous day/month (both parts <= 12); read as "
+                       "DD/MM"}] if amb_rows else []),
         "sample": [{"row": r.row, "identifier": r.ident,
                     "timestamp": r.when.isoformat(),
                     "device_serial": r.device_serial,

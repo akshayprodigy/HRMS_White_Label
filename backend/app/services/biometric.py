@@ -32,6 +32,7 @@ from app.models.biometric import (
     BiometricDevice, BiometricDeviceStatus, BiometricDeviceUser,
     BiometricPunch, BiometricPunchState, BiometricUserMap,
 )
+from app.models.employee import Employee
 from app.models.user import User
 from app.services import punch
 from app.services.roster import is_lock_conflict
@@ -62,6 +63,43 @@ async def resolve_user_id(db, device_id: Optional[int], pin: str) -> Optional[in
         BiometricUserMap.pin == pin))).scalars().first()
 
 
+IMPORT_CODE = "import_code"
+IMPORT_PIN = "import_pin"
+IMPORT_SOURCES = (IMPORT_CODE, IMPORT_PIN)
+_CODE_CHUNK = 500
+
+
+async def resolve_codes(db, codes) -> tuple[dict[str, int], set[str]]:
+    """Employee codes -> user ids (trimmed, case-insensitive, ACTIVE users
+    only). Returns ({UPPER code: user_id}, {ambiguous UPPER codes}); never
+    consults BiometricUserMap."""
+    wanted = sorted({(c or "").strip().upper() for c in codes} - {""})
+    found: dict[str, set[int]] = {}
+    for i in range(0, len(wanted), _CODE_CHUNK):
+        key = func.upper(func.trim(Employee.employee_id))
+        rows = (await db.execute(
+            select(key, Employee.user_id)
+            .join(User, User.id == Employee.user_id)
+            .where(User.is_active.is_(True), key.in_(wanted[i:i + _CODE_CHUNK]))
+        )).all()
+        for code, uid in rows:
+            found.setdefault(code, set()).add(uid)
+    ok = {c: next(iter(u)) for c, u in found.items() if len(u) == 1}
+    return ok, {c for c, u in found.items() if len(u) > 1}
+
+
+async def resolve_tap_user(db, source: Optional[str], device_id: Optional[int],
+                           pin: str) -> Optional[int]:
+    """THE resolver for a stored tap (store and back-fill alike).
+    import_code rows resolve ONLY by employee code; every other source
+    (adms/device, import_pin) through BiometricUserMap (device map when the
+    row has a device, else the global one)."""
+    if source == IMPORT_CODE:
+        ok, _amb = await resolve_codes(db, [pin])
+        return ok.get((pin or "").strip().upper())
+    return await resolve_user_id(db, device_id, pin)
+
+
 def _dedupe_key(source_key: str, pin: str, when: datetime) -> str:
     return hashlib.sha256(
         f"{source_key}|{pin}|{as_utc(when).isoformat()}".encode()
@@ -72,51 +110,88 @@ async def store_taps(
     db, *, source: str, device: Optional[BiometricDevice],
     taps: list[tuple],
     import_batch: Optional[str] = None,
+    source_key: Optional[str] = None,
 ) -> tuple[int, list[BiometricPunch]]:
     """Insert raw taps (INSERT IGNORE on dedupe_key, so re-sent batches are
-    no-ops). taps = (pin, utc_time, status, verify, raw[, user_id]); the optional
-    6th element pre-resolves the user (import by employee code), bypassing the
-    BiometricUserMap lookup for that tap. Returns (number newly
+    no-ops). taps = (pin, utc_time, status, verify, raw). Returns (number newly
     inserted, the new rows). Initial state: PENDING_DEVICE when the device is
-    not active, UNMAPPED when no user resolves, else PENDING_APPLY."""
-    source_key = device.serial if device is not None else "import"
+    not active, UNMAPPED when no user resolves (resolve_tap_user), else
+    PENDING_APPLY. `source_key` namespaces the dedupe key (default: device
+    serial, else "import"). With `import_batch` the rows go in as chunked
+    multi-row INSERT IGNOREs (file-internal duplicates dropped); without it
+    one INSERT per tap (live device pushes)."""
+    source_key = source_key or (device.serial if device is not None else "import")
+    device_id = device.id if device is not None else None
     device_active = (device is None
                      or device.status == BiometricDeviceStatus.ACTIVE)
-    new_keys: list[str] = []
+    now = datetime.now(timezone.utc)
+
     resolved: dict[str, Optional[int]] = {}
-    for tap in taps:
-        pin, when, status, verify, raw = tap[:5]
-        override = tap[5] if len(tap) > 5 else None
-        pin = (pin or "")[:PIN_MAX]
-        when = as_utc(when)
-        key = _dedupe_key(source_key, pin, when)
-        if override is not None:
-            uid = override
-        else:
-            if pin not in resolved:
-                resolved[pin] = await resolve_user_id(
-                    db, device.id if device is not None else None, pin)
-            uid = resolved[pin]
+    pins = {(t[0] or "")[:PIN_MAX] for t in taps}
+    if source == IMPORT_CODE:
+        ok, _amb = await resolve_codes(db, pins)
+        resolved = {p: ok.get(p.strip().upper()) for p in pins}
+
+    async def uid_of(pin: str) -> Optional[int]:
+        if pin not in resolved:
+            resolved[pin] = await resolve_tap_user(db, source, device_id, pin)
+        return resolved[pin]
+
+    async def values_of(pin, when, status, verify, raw, key) -> dict:
+        uid = await uid_of(pin)
         if not device_active:
             state = _S.PENDING_DEVICE
         elif uid is None:
             state = _S.UNMAPPED
         else:
             state = PENDING_APPLY
-        res = await db.execute(mysql_insert(BiometricPunch).values(
-            dedupe_key=key, source=source,
-            device_id=device.id if device is not None else None,
+        return dict(
+            dedupe_key=key, source=source, device_id=device_id,
             import_batch=import_batch, pin=pin, punch_time=when,
             device_status=(status[:8] if status else None),
             verify_type=(verify[:8] if verify else None),
             raw=(raw or "")[:RAW_MAX] or None, user_id=uid, state=state,
-            created_at=datetime.now(timezone.utc),
+            created_at=now)
+
+    if import_batch is not None:
+        vals: dict[str, dict] = {}
+        for tap in taps:
+            pin, when, status, verify, raw = tap[:5]
+            pin = (pin or "")[:PIN_MAX]
+            when = as_utc(when)
+            key = _dedupe_key(source_key, pin, when)
+            if key not in vals:
+                vals[key] = await values_of(pin, when, status, verify, raw, key)
+        keys = list(vals)
+        inserted = 0
+        rows: list[BiometricPunch] = []
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            res = await db.execute(mysql_insert(BiometricPunch).values(
+                [vals[k] for k in chunk]).prefix_with("IGNORE"))
+            if res.rowcount:
+                inserted += res.rowcount
+                rows.extend((await db.execute(select(BiometricPunch).where(
+                    BiometricPunch.import_batch == import_batch,
+                    BiometricPunch.dedupe_key.in_(chunk)
+                ).execution_options(populate_existing=True))).scalars().all())
+        rows.sort(key=lambda r: (as_utc(r.punch_time), r.id))
+        return inserted, rows
+
+    new_keys: list[str] = []
+    for tap in taps:
+        pin, when, status, verify, raw = tap[:5]
+        pin = (pin or "")[:PIN_MAX]
+        when = as_utc(when)
+        key = _dedupe_key(source_key, pin, when)
+        res = await db.execute(mysql_insert(BiometricPunch).values(
+            **await values_of(pin, when, status, verify, raw, key)
         ).prefix_with("IGNORE"))
         if res.rowcount == 1:
             new_keys.append(key)
     if not new_keys:
         return 0, []
-    rows: list[BiometricPunch] = []
+    rows = []
     for i in range(0, len(new_keys), 500):
         rows.extend((await db.execute(select(BiometricPunch).where(
             BiometricPunch.dedupe_key.in_(new_keys[i:i + 500])
@@ -229,7 +304,8 @@ async def apply_punch(db, bp: BiometricPunch, *, dedupe_seconds: int = DEFAULT_D
         if device is None or device.status != BiometricDeviceStatus.ACTIVE:
             bp.state, bp.error = _S.PENDING_DEVICE, None
             return
-    uid = bp.user_id or await resolve_user_id(db, bp.device_id, bp.pin)
+    uid = bp.user_id or await resolve_tap_user(
+        db, bp.source, bp.device_id, bp.pin)
     if uid is None:
         bp.user_id, bp.state, bp.error = None, _S.UNMAPPED, None
         return
@@ -292,10 +368,9 @@ async def _apply_tap_tx(
                     raise ValueError(f"biometric_punch {bp_id} not found")
                 if only_states is not None and bp.state not in only_states:
                     return bp.state  # handled meanwhile by someone else
-                if reresolve and not (
-                        bp.source == "import" and bp.user_id is not None):
-                    # import rows keep a pre-set identity (employee code)
-                    bp.user_id = await resolve_user_id(db, bp.device_id, bp.pin)
+                if reresolve:
+                    bp.user_id = await resolve_tap_user(
+                        db, bp.source, bp.device_id, bp.pin)
                 await apply_punch(
                     db, bp, dedupe_seconds=dedupe_seconds, quiet=quiet)
                 state = bp.state

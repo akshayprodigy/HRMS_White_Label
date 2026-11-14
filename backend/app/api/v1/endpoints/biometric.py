@@ -9,6 +9,8 @@ import ipaddress
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional, Union
 
+import logging
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -37,6 +39,8 @@ from app.services.time_rules import get_time_rules
 PunchState = Literal[
     "pending_device", "unmapped", "applied", "duplicate", "locked",
     "edited", "error", "ignored", "received"]
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(deps.check_permissions([PERM_BIOMETRIC]))])
 
@@ -526,6 +530,8 @@ async def list_punches(
     db: deps.DBDep, state: Optional[PunchState] = None,
     device_id: Optional[int] = None, pin: Optional[str] = None,
     user_id: Optional[int] = None,
+    source: Optional[Literal["device", "import", "import_code",
+                             "import_pin"]] = None,
     from_: Optional[datetime] = Query(None, alias="from"),
     to: Optional[datetime] = None,
     limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
@@ -541,6 +547,10 @@ async def list_punches(
         conds.append(BiometricPunch.pin == pin)
     if user_id is not None:
         conds.append(BiometricPunch.user_id == user_id)
+    if source == "import":  # both import flavours
+        conds.append(BiometricPunch.source.in_(bio_svc.IMPORT_SOURCES))
+    elif source:
+        conds.append(BiometricPunch.source == source)
     if from_ is not None:
         conds.append(BiometricPunch.punch_time >= as_utc(from_))
     if to is not None:
@@ -619,25 +629,31 @@ async def _read_import_form(request: Request, db):
     if cl and cl.isdigit() and int(cl) > imp.MAX_BYTES + 64 * 1024:
         raise HTTPException(413, "File is larger than 5 MB")
     try:
-        form = await request.form()
+        async with request.form(max_files=1, max_fields=10) as form:
+            f = form.get("file")
+            if f is None or not hasattr(f, "read"):
+                raise HTTPException(400, "Missing 'file'")
+            data = await f.read(imp.MAX_BYTES + 1)
+            filename = f.filename or ""
+            fields = {k: form.get(k) for k in
+                      ("identify_by", "utc_offset_minutes", "skip_invalid")}
+    except HTTPException:
+        raise
     except Exception:
+        log.warning("biometric import: bad multipart body", exc_info=True)
         raise HTTPException(400, "Expected a multipart form with a 'file'")
-    f = form.get("file")
-    if f is None or not hasattr(f, "read"):
-        raise HTTPException(400, "Missing 'file'")
-    data = await f.read(imp.MAX_BYTES + 1)
     if len(data) > imp.MAX_BYTES:
         raise HTTPException(413, "File is larger than 5 MB")
-    identify_by = str(form.get("identify_by") or "employee_code").strip()
-    raw_off = form.get("utc_offset_minutes")
+    identify_by = str(fields["identify_by"] or "employee_code").strip()
+    raw_off = fields["utc_offset_minutes"]
     try:
         offset = (int(str(raw_off).strip())
                   if raw_off not in (None, "")
                   else await _default_offset_minutes(db))
     except ValueError:
         raise HTTPException(400, "utc_offset_minutes must be an integer")
-    skip = str(form.get("skip_invalid") or "").strip().lower() == "true"
-    return f.filename or "", data, identify_by, offset, skip
+    skip = str(fields["skip_invalid"] or "").strip().lower() == "true"
+    return filename, data, identify_by, offset, skip
 
 
 async def _analyse(db, request: Request):
@@ -675,15 +691,23 @@ async def import_preview(request: Request, db: deps.DBDep):
 @router.post("/import/commit")
 async def import_commit(request: Request, db: deps.DBDep, me: deps.CurrentUser):
     """Same form as preview. 400 when invalid rows exist and skip_invalid is
-    not 'true'. Stores the raw taps (committed), then applies them quietly,
-    bounded to ~60s; when `remaining` > 0 continue with POST
-    /punches/reprocess {state: "pending", import_batch, after_id:
+    not 'true'. Rows are stored with source import_code (identify_by
+    employee_code: resolved ONLY by Employee.employee_id) or import_pin
+    (resolved through the pin map; device map when device_serial is given,
+    and the row then carries that device). Unknown people are stored
+    UNMAPPED: a later pin mapping back-fills import_pin rows, and a later
+    employee with that code back-fills import_code rows on reprocess
+    (state=unmapped). Taps are committed first, then applied quietly within
+    the remaining time budget (<= ~90s total); when `remaining` > 0 continue
+    with POST /punches/reprocess {state: "pending", import_batch, after_id:
     next_after_id}. Returns {import_batch, inserted, already_imported,
     duplicates_in_file, skipped_invalid, unknown_people, by_state, backfill,
     remaining, next_after_id}."""
+    t0 = time.monotonic()
     me_id = me.id
     filename, identify_by, skip, res = await _analyse(db, request)
     parsed = res.pop("_parsed")
+    res.pop("warnings", None)
     if res["invalid"] > 0 and not skip:
         raise HTTPException(400, detail={"error": {
             "code": "400",
@@ -694,16 +718,32 @@ async def import_commit(request: Request, db: deps.DBDep, me: deps.CurrentUser):
     if not parsed.rows:
         raise HTTPException(400, "No valid rows to import")
     batch = str(uuid.uuid4())
-    inserted, _rows = await bio_svc.store_taps(
-        db, source="import", device=None, import_batch=batch,
-        taps=[(r.ident, r.when, None, None, f"import:{filename}"[:64],
-               r.user_id) for r in parsed.rows])
+    source = imp.source_for(identify_by)
+    groups: dict[Optional[str], list] = {}
+    for r in parsed.rows:
+        ser = r.device_serial if identify_by == "pin" else None
+        groups.setdefault(ser, []).append(
+            (r.ident, r.when, None, None, f"import:{filename}"[:64]))
+    devs = {}
+    if any(groups):
+        devs = {d.serial: d for d in (await db.execute(
+            select(BiometricDevice).where(
+                BiometricDevice.serial.in_([k for k in groups if k])))
+        ).scalars().all()}
+    inserted = 0
+    for ser, taps in groups.items():
+        n, _rows = await bio_svc.store_taps(
+            db, source=source, device=devs.get(ser) if ser else None,
+            import_batch=batch, taps=taps,
+            source_key=imp.source_key_for(identify_by, ser))
+        inserted += n
     _audit(db, me_id, "BIOMETRIC_IMPORT", "biometric_punch", batch, {
         "filename": filename[:200], "rows": res["rows"], "valid": res["valid"],
         "inserted": inserted, "batch": batch, "identify_by": identify_by})
     await commit_or_409(db)
+    budget = max(5.0, 90.0 - (time.monotonic() - t0))
     ap = await apply_pending(SessionLocal, import_batch=batch,
-                             states={PENDING_APPLY}, deadline_s=60)
+                             states={PENDING_APPLY}, deadline_s=budget)
     async with SessionLocal() as s2:
         by_state = dict((await s2.execute(
             select(BiometricPunch.state, func.count())
