@@ -138,9 +138,10 @@ async def dev_row(dev_id):
         return d
 
 
-async def run_alerts():
+async def run_alerts(world):
     async with SessionLocal() as db:
-        return await bio.offline_alerts_job(db)
+        return await bio.offline_alerts_job(
+            db, serial_prefix=f"BHL{world['sfx']}")
 
 
 async def offline_notifs(dev_id, title="Biometric device offline"):
@@ -156,7 +157,7 @@ async def offline_notifs(dev_id, title="Biometric device offline"):
 async def test_offline_alert_once_then_rearms_after_handshake(world):
     stale = await mkdev(world, "stale", seen=now() - timedelta(hours=2))
     fresh = await mkdev(world, "fresh", seen=now() - timedelta(minutes=2))
-    await run_alerts()
+    await run_alerts(world)
     d = await dev_row(stale)
     assert d.offline_alerted_at is not None
     first = await offline_notifs(stale)
@@ -165,7 +166,7 @@ async def test_offline_alert_once_then_rearms_after_handshake(world):
     assert (await dev_row(fresh)).offline_alerted_at is None
     assert await offline_notifs(fresh) == []
 
-    await run_alerts()  # not again
+    await run_alerts(world)  # not again
     assert len(await offline_notifs(stale)) == len(first)
 
     # device calls in: back online, alert cleared
@@ -178,7 +179,7 @@ async def test_offline_alert_once_then_rearms_after_handshake(world):
         dev = await db.get(BiometricDevice, stale)
         dev.last_seen_at = now() - timedelta(hours=3)
         await db.commit()
-    await run_alerts()
+    await run_alerts(world)
     assert len(await offline_notifs(stale)) == 2 * len(first)
 
 
@@ -191,7 +192,7 @@ async def test_pending_and_disabled_never_alerted_never_seen_rules(world):
                             created=old)  # approved just now: grace
     never_new2 = await mkdev(world, "nnew2", seen=None,
                              created=now() - timedelta(minutes=3))
-    await run_alerts()
+    await run_alerts(world)
     for k in (pend, dis, never_new, never_new2):
         assert (await dev_row(k)).offline_alerted_at is None
         assert await offline_notifs(k) == []
@@ -203,30 +204,58 @@ async def test_offline_threshold_follows_rule(world):
     d = await mkdev(world, "thr", seen=now() - timedelta(minutes=45))
     async with SessionLocal() as db:
         await set_time_rules(db, {"biometric.offline_minutes": "120"})
-    await run_alerts()
+    await run_alerts(world)
     assert (await dev_row(d)).offline_alerted_at is None
     async with SessionLocal() as db:
         await set_time_rules(db, {"biometric.offline_minutes": "30"})
-    await run_alerts()
+    await run_alerts(world)
     assert (await dev_row(d)).offline_alerted_at is not None
 
 
-async def test_jobs_registered_and_run_now(world):
+async def test_jobs_registered_and_run_now(world, monkeypatch):
+    import dataclasses
+    from app.models.scheduled_job import ScheduledJob
+    from app.services import scheduler
     from app.services.scheduler import REGISTRY
-    assert REGISTRY["biometric_device_offline_alerts"].default_cadence_cron \
-        == "*/10 * * * *"
-    assert "biometric_pending_device_expiry" in REGISTRY
+    names = ("biometric_device_offline_alerts", "biometric_pending_device_expiry")
+    assert REGISTRY[names[0]].default_cadence_cron == "*/10 * * * *"
+    assert REGISTRY[names[1]].default_cadence_cron == "30 3 * * *"
+    real_fns = {n: REGISTRY[n].fn for n in names}  # real wiring is the job fns
+    assert real_fns[names[0]].__name__ == "_job_biometric_device_offline_alerts"
+
+    async def stub(session):
+        return {"stub": True}
+
+    for n in names:
+        monkeypatch.setitem(REGISTRY, n, dataclasses.replace(REGISTRY[n], fn=stub))
+    saved = {}
+    async with SessionLocal() as db:
+        await scheduler.ensure_jobs(db)
+        for n in names:
+            r = (await db.execute(select(ScheduledJob).where(
+                ScheduledJob.name == n))).scalar_one()
+            saved[n] = (r.last_run_at, r.last_status, r.last_summary,
+                        r.last_duration_ms, r.last_error)
     app = create_app()
     app.dependency_overrides[deps.verify_attendance] = lambda: None
-    async with AsyncClient(transport=ASGITransport(app=app),
-                           base_url="http://test") as c:
-        r = await c.post("/api/v1/auth/login", data={
-            "username": f"bhl_hr_{world['sfx']}@t.com", "password": "x"})
-        h = {"Authorization": f"Bearer {r.json()['access_token']}"}
-        for name in ("biometric_device_offline_alerts",
-                     "biometric_pending_device_expiry"):
-            r = await c.post(f"/api/v1/admin/jobs/{name}/run-now", headers=h)
-            assert r.status_code == 200, r.text
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app),
+                               base_url="http://test") as c:
+            r = await c.post("/api/v1/auth/login", data={
+                "username": f"bhl_hr_{world['sfx']}@t.com", "password": "x"})
+            h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+            for name in names:
+                r = await c.post(f"/api/v1/admin/jobs/{name}/run-now", headers=h)
+                assert r.status_code == 200, r.text
+                assert r.json()["ok"] is True, r.text
+    finally:
+        async with SessionLocal() as db:
+            for n, (a, st, sm, du, er) in saved.items():
+                row = (await db.execute(select(ScheduledJob).where(
+                    ScheduledJob.name == n))).scalar_one()
+                row.last_run_at, row.last_status, row.last_summary = a, st, sm
+                row.last_duration_ms, row.last_error = du, er
+            await db.commit()
 
 
 # ---------------- registration limits ----------------
@@ -250,36 +279,141 @@ async def test_per_ip_pending_cap(world):
         assert known is not None
 
 
-async def test_pending_expiry(world):
-    old = now() - timedelta(days=bio.PENDING_DEVICE_TTL_DAYS + 1)
-    p_old = await mkdev(world, "xold", status=DS.PENDING, created=old, seen=old)
-    p_new = await mkdev(world, "xnew", status=DS.PENDING,
-                        created=now() - timedelta(days=1))
-    a_old = await mkdev(world, "xact", created=old, seen=now())
+async def run_expiry(world):
     async with SessionLocal() as db:
-        for did in (p_old, p_new, a_old):
-            dev = await db.get(BiometricDevice, did)
-            await bio.store_taps(db, source="adms", device=dev, taps=[
-                (f"{world['sfx']}x{did}", at(date(2031, 3, 3), 9), "0", "1", "r")])
-        db.add(BiometricDeviceUser(device_id=p_old, pin=f"{world['sfx']}e",
+        return await bio.pending_expiry_job(
+            db, serial_prefix=f"BHL{world['sfx']}")
+
+
+async def put_tap(world, did, state_tag="x"):
+    pin = f"{world['sfx']}{state_tag}{did}"
+    async with SessionLocal() as db:
+        dev = await db.get(BiometricDevice, did)
+        await bio.store_taps(db, source="adms", device=dev, taps=[
+            (pin, at(date(2031, 3, 3), 9), "0", "1", "r")])
+        await db.commit()
+    return pin
+
+
+async def tap_count(pin):
+    async with SessionLocal() as db:
+        return len((await db.execute(select(BiometricPunch.id).where(
+            BiometricPunch.pin == pin))).scalars().all())
+
+
+async def test_pending_expiry_idle_based(world):
+    d = lambda n: now() - timedelta(days=n)
+    idle8 = await mkdev(world, "i8", status=DS.PENDING, created=d(9), seen=d(8))
+    seen_recent = await mkdev(world, "sr", status=DS.PENDING, created=d(10),
+                              seen=d(1))
+    young = await mkdev(world, "yg", status=DS.PENDING, created=d(1))
+    never_old = await mkdev(world, "no", status=DS.PENDING, created=d(8))
+    ancient = await mkdev(world, "an", status=DS.PENDING, created=d(61),
+                          seen=now())
+    active_old = await mkdev(world, "ac", created=d(70), seen=d(30))
+    pins = {k: await put_tap(world, k) for k in
+            (idle8, seen_recent, young, never_old, ancient, active_old)}
+    async with SessionLocal() as db:
+        db.add(BiometricDeviceUser(device_id=idle8, pin=f"{world['sfx']}e",
                                    name="E", updated_at=now()))
         await db.commit()
-        res = await bio.pending_expiry_job(db)
-    assert res["expired"] >= 1 and res["taps_deleted"] >= 1
+    res = await run_expiry(world)
+    assert res["expired"] == 3 and res["taps_deleted"] == 3
     async with SessionLocal() as db:
-        assert await db.get(BiometricDevice, p_old) is None
-        assert await db.get(BiometricDevice, p_new) is not None
-        assert await db.get(BiometricDevice, a_old) is not None
-        assert (await db.execute(select(BiometricPunch).where(
-            BiometricPunch.pin == f"{world['sfx']}x{p_old}"))).first() is None
-        assert (await db.execute(select(BiometricPunch).where(
-            BiometricPunch.pin == f"{world['sfx']}x{p_new}"))).first()
+        for k in (idle8, never_old, ancient):
+            assert await db.get(BiometricDevice, k) is None
+            assert await tap_count(pins[k]) == 0  # no orphan taps
+        for k in (seen_recent, young, active_old):
+            assert await db.get(BiometricDevice, k) is not None
+            assert await tap_count(pins[k]) == 1
         assert (await db.execute(select(BiometricDeviceUser).where(
-            BiometricDeviceUser.device_id == p_old))).first() is None
+            BiometricDeviceUser.device_id == idle8))).first() is None
         audits = [a for a in (await db.execute(select(AuditLog).where(
             AuditLog.action == EXPIRED_ACTION))).scalars().all()
             if world["sfx"] in str(a.details)]
-        assert len(audits) == 1
+        assert len(audits) == 1 and audits[0].details["devices"] == 3
+
+
+async def test_expiry_skips_device_approved_meanwhile_and_kept_taps(world):
+    old = now() - timedelta(days=9)
+    approved = await mkdev(world, "ap", status=DS.PENDING, created=old, seen=old)
+    held = await mkdev(world, "hd", status=DS.PENDING, created=old, seen=old)
+    p_ap = await put_tap(world, approved)
+    # a device that (defensively) holds an applied-type tap is skipped
+    async with SessionLocal() as db:
+        dev = await db.get(BiometricDevice, held)
+        _n, rows = await bio.store_taps(db, source="adms", device=dev, taps=[
+            (f"{world['sfx']}kept", at(date(2031, 3, 3), 9), "0", "1", "r")])
+        rows[0].state = S.APPLIED
+        await db.commit()
+    # approve wins the race: the candidate list is stale, the locked re-check
+    # sees status=active, so nothing is deleted
+    async with SessionLocal() as db:
+        d = await db.get(BiometricDevice, approved)
+        d.status = DS.ACTIVE
+        await db.commit()
+    res = await run_expiry(world)
+    assert res["expired"] == 0
+    async with SessionLocal() as db:
+        assert await db.get(BiometricDevice, approved) is not None
+        assert await db.get(BiometricDevice, held) is not None
+    assert await tap_count(p_ap) == 1
+
+
+async def test_notify_failure_rolls_back_and_retries(world, monkeypatch):
+    old = now() - timedelta(hours=3)
+    first = await mkdev(world, "n1", seen=old)
+    second = await mkdev(world, "n2", seen=old + timedelta(minutes=1))
+    real = bio._notify_managers
+
+    async def boom(db, title, message, device_id):
+        if device_id == first:
+            raise RuntimeError("notify down")
+        return await real(db, title, message, device_id)
+
+    monkeypatch.setattr(bio, "_notify_managers", boom)
+    res = await run_alerts(world)
+    assert res["alerted"] == 1 and res["failed"] == 1
+    assert (await dev_row(first)).offline_alerted_at is None  # stamp undone
+    assert (await dev_row(second)).offline_alerted_at is not None
+    assert await offline_notifs(second) and not await offline_notifs(first)
+    monkeypatch.setattr(bio, "_notify_managers", real)
+    await run_alerts(world)  # retried
+    assert (await dev_row(first)).offline_alerted_at is not None
+    assert await offline_notifs(first)
+
+
+async def test_stamp_rechecks_staleness(world):
+    """A device that called in after the job's SELECT must not be stamped:
+    the job's UPDATE carries the staleness predicate. Simulated by running the
+    job's exact stamp against a device that just handshook."""
+    from sqlalchemy import func, update
+    dev_id = await mkdev(world, "rc", seen=now() - timedelta(hours=2))
+    async with SessionLocal() as db:  # handshake lands
+        await bio.get_or_register_device(db, f"BHL{world['sfx']}rc", None)
+    async with SessionLocal() as db:
+        res = await db.execute(update(BiometricDevice).where(
+            BiometricDevice.id == dev_id,
+            BiometricDevice.status == DS.ACTIVE,
+            BiometricDevice.offline_alerted_at.is_(None),
+            func.coalesce(BiometricDevice.last_seen_at,
+                          BiometricDevice.approved_at,
+                          BiometricDevice.created_at)
+            < now() - timedelta(minutes=30)).values(offline_alerted_at=now()))
+        assert res.rowcount == 0
+        await db.rollback()
+    await run_alerts(world)
+    assert (await dev_row(dev_id)).offline_alerted_at is None
+
+
+async def test_handshake_clear_is_unconditional(world):
+    dev_id = await mkdev(world, "hc", seen=now() - timedelta(hours=2))
+    await run_alerts(world)
+    assert (await dev_row(dev_id)).offline_alerted_at is not None
+    async with SessionLocal() as db:
+        await bio.get_or_register_device(db, f"BHL{world['sfx']}hc", None)
+    assert (await dev_row(dev_id)).offline_alerted_at is None
+    assert len(await offline_notifs(dev_id, "Biometric device back online")) >= 1
 
 
 # ---------------- ipv4-mapped IPv6 ----------------

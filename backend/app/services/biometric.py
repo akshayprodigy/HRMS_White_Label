@@ -438,6 +438,8 @@ async def apply_punch_committed(
         attempts=attempts)
 
 
+KEEP_STATES = (_S.APPLIED, _S.DUPLICATE, _S.EDITED, _S.LOCKED, PENDING_APPLY)
+
 DEFAULT_PENDING_STATES = frozenset(
     {_S.UNMAPPED, _S.PENDING_DEVICE, PENDING_APPLY})
 
@@ -471,6 +473,9 @@ async def apply_pending(
     A tap whose lock conflicts outlast the retries is counted under
     "conflict"; a non-lock exception stamps that tap ERROR and the batch
     continues. Never stamps ERROR for a transient conflict."""
+    if dedupe_seconds is None:  # resolve the rule once per call
+        async with session_factory() as _rdb:
+            dedupe_seconds = await dedupe_rule(_rdb)
     states = set(states)
     started = time.monotonic()
     counts: dict[str, int] = {}
@@ -561,7 +566,8 @@ PERM_BIOMETRIC = "biometric manage"
 MAX_PENDING_DEVICES = 50
 MAX_PENDING_TAPS_PER_DEVICE = 20000
 MAX_PENDING_PER_IP = 5  # pending devices one source IP may create
-PENDING_DEVICE_TTL_DAYS = 7  # unapproved devices are purged after this
+PENDING_DEVICE_TTL_DAYS = 7  # pending devices idle this long are purged
+PENDING_DEVICE_MAX_AGE_DAYS = 60  # ... or this old, however recently seen
 CAP_ALERT_TITLE = "Biometric device registrations are being refused"
 
 
@@ -648,8 +654,10 @@ def ip_allowed(allowlist: Optional[str], ip: Optional[str]) -> bool:
 async def _default_offset(db) -> int:
     from app.services.time_rules import get_time_rules
     try:
-        return int((await get_time_rules(db)).get(
-            "biometric.default_utc_offset_minutes", DEFAULT_UTC_OFFSET_MINUTES))
+        v = int(str((await get_time_rules(db)).get(
+            "biometric.default_utc_offset_minutes",
+            DEFAULT_UTC_OFFSET_MINUTES)).strip())
+        return v if -720 <= v <= 840 else DEFAULT_UTC_OFFSET_MINUTES
     except (TypeError, ValueError):
         return DEFAULT_UTC_OFFSET_MINUTES
 
@@ -775,19 +783,18 @@ async def _get_or_register_once(
         return dev
     if not ip_allowed(dev.ip_allowlist, ip):
         raise IpNotAllowed(sn)
-    was_offline = dev.offline_alerted_at is not None
     dev_id = dev.id
-    res = await db.execute(
+    await db.execute(
         update(BiometricDevice).where(BiometricDevice.id == dev_id)
         .values(last_seen_at=now, last_ip=ip))
-    cleared = False
-    if was_offline:
-        res = await db.execute(
-            update(BiometricDevice).where(
-                BiometricDevice.id == dev_id,
-                BiometricDevice.offline_alerted_at.is_not(None))
-            .values(offline_alerted_at=None))
-        cleared = res.rowcount == 1
+    # Unconditional atomic clear: only the call that really changed a row
+    # (rowcount 1) announces "back online"; no stale pre-read.
+    res = await db.execute(
+        update(BiometricDevice).where(
+            BiometricDevice.id == dev_id,
+            BiometricDevice.offline_alerted_at.is_not(None))
+        .values(offline_alerted_at=None))
+    cleared = res.rowcount == 1
     await db.commit()
     await db.refresh(dev)
     if cleared:
@@ -843,68 +850,108 @@ async def _offline_threshold_minutes(db) -> int:
         return 30
 
 
-async def offline_alerts_job(db) -> dict:
+async def offline_alerts_job(db, serial_prefix: Optional[str] = None) -> dict:
     """Alert once per offline episode. ACTIVE devices only (pending and
     disabled are never alerted). A device is stale when last_seen_at is older
-    than the threshold, or (never seen) approved_at / created_at is. The stamp
-    is an atomic conditional UPDATE, so concurrent runs alert once. Commits."""
+    than the threshold, or (never seen) approved_at / created_at is. Per
+    device, in ONE transaction: the stamp is a conditional UPDATE that
+    re-checks status / unalerted / staleness (a handshake that landed after
+    the SELECT wins), then the notification, then a single commit. Any error
+    rolls the stamp back so the next run retries. `serial_prefix` is a
+    test-only filter."""
     from datetime import timedelta
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=await _offline_threshold_minutes(db))
     ref = func.coalesce(BiometricDevice.last_seen_at,
                         BiometricDevice.approved_at, BiometricDevice.created_at)
-    devs = (await db.execute(select(BiometricDevice).where(
+    q = select(BiometricDevice.id, BiometricDevice.name,
+               BiometricDevice.serial, ref).where(
         BiometricDevice.status == BiometricDeviceStatus.ACTIVE,
-        BiometricDevice.offline_alerted_at.is_(None),
-        ref < cutoff))).scalars().all()
-    alerted = 0
-    for d in devs:
-        since = as_utc(d.last_seen_at or d.approved_at or d.created_at)
-        dev_id, label, serial = d.id, d.name or d.serial, d.serial
-        res = await db.execute(update(BiometricDevice).where(
-            BiometricDevice.id == dev_id,
-            BiometricDevice.status == BiometricDeviceStatus.ACTIVE,
-            BiometricDevice.offline_alerted_at.is_(None))
-            .values(offline_alerted_at=now))
-        if res.rowcount != 1:
-            continue
-        await db.commit()
-        alerted += 1
-        await _notify_after_commit(
-            db, "Biometric device offline",
-            f"Biometric device {label} ({serial}) offline since "
-            f"{since.strftime('%Y-%m-%d %H:%M')} UTC", dev_id)
-    return {"checked": len(devs), "alerted": alerted}
+        BiometricDevice.offline_alerted_at.is_(None), ref < cutoff)
+    if serial_prefix:
+        q = q.where(BiometricDevice.serial.like(f"{serial_prefix}%"))
+    devs = (await db.execute(q)).all()
+    await db.rollback()  # end the read snapshot
+    alerted = failed = 0
+    for dev_id, name, serial, since in devs:
+        try:
+            res = await db.execute(update(BiometricDevice).where(
+                BiometricDevice.id == dev_id,
+                BiometricDevice.status == BiometricDeviceStatus.ACTIVE,
+                BiometricDevice.offline_alerted_at.is_(None), ref < cutoff)
+                .values(offline_alerted_at=now))
+            if res.rowcount != 1:
+                await db.rollback()
+                continue
+            await _notify_managers(
+                db, "Biometric device offline",
+                f"Biometric device {name or serial} ({serial}) offline since "
+                f"{as_utc(since).strftime('%Y-%m-%d %H:%M')} UTC", dev_id)
+            await db.commit()
+            alerted += 1
+        except Exception:
+            failed += 1
+            log.warning("biometric offline alert for %s failed", serial,
+                        exc_info=True)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+    return {"checked": len(devs), "alerted": alerted, "failed": failed}
 
 
-async def pending_expiry_job(db) -> dict:
-    """Delete devices still PENDING after PENDING_DEVICE_TTL_DAYS together
-    with their held taps (explicit delete, like the HR delete endpoint) and
-    enrolled users (FK cascade). One audit summary row. Commits."""
+async def pending_expiry_job(db, serial_prefix: Optional[str] = None) -> dict:
+    """Delete abandoned PENDING devices: idle (coalesce(last_seen_at,
+    created_at)) for PENDING_DEVICE_TTL_DAYS, or created more than
+    PENDING_DEVICE_MAX_AGE_DAYS ago. Candidates are locked FOR UPDATE and
+    re-checked (an approve that won the lock is skipped); every punch of the
+    locked devices is deleted, except devices holding applied-type taps, which
+    are skipped. One audit row from the locked set. Commits. `serial_prefix`
+    is a test-only filter."""
     from datetime import timedelta
     from sqlalchemy import delete
-    cutoff = datetime.now(timezone.utc) - timedelta(days=PENDING_DEVICE_TTL_DAYS)
-    rows = (await db.execute(select(
-        BiometricDevice.id, BiometricDevice.serial).where(
-        BiometricDevice.status == BiometricDeviceStatus.PENDING,
-        BiometricDevice.created_at < cutoff))).all()
-    if not rows:
-        return {"expired": 0}
-    ids = [r[0] for r in rows]
-    taps = 0
-    for i in range(0, len(ids), 200):
-        chunk = ids[i:i + 200]
-        taps += (await db.execute(delete(BiometricPunch).where(
-            BiometricPunch.device_id.in_(chunk),
-            BiometricPunch.state == _S.PENDING_DEVICE))).rowcount or 0
+    n = datetime.now(timezone.utc)
+    idle = n - timedelta(days=PENDING_DEVICE_TTL_DAYS)
+    hard = n - timedelta(days=PENDING_DEVICE_MAX_AGE_DAYS)
+    cond = [BiometricDevice.status == BiometricDeviceStatus.PENDING,
+            or_(func.coalesce(BiometricDevice.last_seen_at,
+                              BiometricDevice.created_at) < idle,
+                BiometricDevice.created_at < hard)]
+    if serial_prefix:
+        cond.append(BiometricDevice.serial.like(f"{serial_prefix}%"))
+    cand = (await db.execute(select(BiometricDevice.id).where(*cond))).scalars().all()
+    await db.rollback()
+    expired, taps = 0, 0
+    for i in range(0, len(cand), 100):
+        chunk = cand[i:i + 100]
+        locked = (await db.execute(
+            select(BiometricDevice.id, BiometricDevice.serial)
+            .where(BiometricDevice.id.in_(chunk), *cond)
+            .with_for_update())).all()
+        ids = [r[0] for r in locked]
+        if ids:
+            kept = set((await db.execute(
+                select(BiometricPunch.device_id).where(
+                    BiometricPunch.device_id.in_(ids),
+                    BiometricPunch.state.in_(KEEP_STATES))
+                .distinct())).scalars().all())
+            locked = [r for r in locked if r[0] not in kept]
+            ids = [r[0] for r in locked]
+        if not ids:
+            await db.rollback()
+            continue
+        chunk_taps = (await db.execute(delete(BiometricPunch).where(
+            BiometricPunch.device_id.in_(ids)))).rowcount or 0
+        taps += chunk_taps
         await db.execute(delete(BiometricDevice).where(
-            BiometricDevice.id.in_(chunk),
-            BiometricDevice.status == BiometricDeviceStatus.PENDING))
-    db.add(AuditLog(
-        user_id=None, action="BIOMETRIC_PENDING_DEVICES_EXPIRED",
-        resource_type="biometric_device", resource_id="batch",
-        details={"devices": len(ids), "taps_deleted": taps,
-                 "serials": [r[1] for r in rows][:50],
-                 "ttl_days": PENDING_DEVICE_TTL_DAYS}))
-    await db.commit()
-    return {"expired": len(ids), "taps_deleted": taps}
+            BiometricDevice.id.in_(ids)))
+        expired += len(ids)
+        db.add(AuditLog(
+            user_id=None, action="BIOMETRIC_PENDING_DEVICES_EXPIRED",
+            resource_type="biometric_device", resource_id="batch",
+            details={"devices": len(ids), "taps_deleted": chunk_taps,
+                     "serials": [r[1] for r in locked][:50],
+                     "ttl_days": PENDING_DEVICE_TTL_DAYS,
+                     "max_age_days": PENDING_DEVICE_MAX_AGE_DAYS}))
+        await db.commit()
+    return {"expired": expired, "taps_deleted": taps}
