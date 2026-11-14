@@ -43,6 +43,10 @@ NAMES = ("fwd", "rev", "rnd", "night", "app", "edit", "lock", "unm", "pend",
 NO_SHIFT = {"quiet", "live"}
 
 
+async def _ap(*a, **k):
+    return (await bio.apply_pending(*a, **k))["counts"]
+
+
 def at(d: date, hh: int, mm: int, ss: int = 0) -> datetime:
     return datetime(d.year, d.month, d.day, hh, mm, ss, tzinfo=timezone.utc)
 
@@ -306,14 +310,14 @@ async def test_unmapped_then_map_then_apply_pending(world):
         assert rows[0].state == S.UNMAPPED
         await db.commit()
         await _map(db, world, "unm", pin)
-        counts = await bio.apply_pending(SessionLocal, pin=pin)
+        counts = await _ap(SessionLocal, pin=pin)
         await db.commit()
         assert counts == {S.APPLIED: 2}
     (row,) = await day_row(world, "unm", d)
     assert io(row) == (at(d, 9, 0), at(d, 18, 0))
     # user_id filter also finds rows via the user's maps
     async with SessionLocal() as db:
-        assert await bio.apply_pending(SessionLocal, user_id=world["unm"]) == {}
+        assert await _ap(SessionLocal, user_id=world["unm"]) == {}
 
 
 async def test_apply_pending_by_user_id(world):
@@ -324,7 +328,7 @@ async def test_apply_pending_by_user_id(world):
         await bio.store_taps(db, source="adms", device=dev,
                              taps=[(pin, at(d, 9, 0), None, None, "r")])
         await _map(db, world, "mapq", pin)
-        assert await bio.apply_pending(SessionLocal, user_id=world["mapq"]) == \
+        assert await _ap(SessionLocal, user_id=world["mapq"]) == \
             {S.APPLIED: 1}
         await db.commit()
     assert len(await day_row(world, "mapq", d)) == 1
@@ -347,11 +351,11 @@ async def test_pending_device_then_approve_then_apply_pending(world):
         assert [r.state for r in rows] == [S.PENDING_DEVICE] * 2
         await bio.apply_punch(db, rows[0])
         assert rows[0].state == S.PENDING_DEVICE
-        assert await bio.apply_pending(SessionLocal, device_id=pdev.id) == \
+        assert await _ap(SessionLocal, device_id=pdev.id) == \
             {S.PENDING_DEVICE: 2}  # still pending: nothing applied
         pdev.status = BiometricDeviceStatus.ACTIVE
         await db.commit()
-        assert await bio.apply_pending(SessionLocal, device_id=pdev.id) == {S.APPLIED: 2}
+        assert await _ap(SessionLocal, device_id=pdev.id) == {S.APPLIED: 2}
         await db.commit()
     (row,) = await day_row(world, "pend", d)
     assert io(row) == (at(d, 9, 0), at(d, 18, 0))
@@ -420,7 +424,7 @@ async def test_backfill_is_quiet_live_tap_notifies_like_app_punch(world):
         await bio.store_taps(db, source="adms", device=dev,
                              taps=[(pin, at(d, 9, 0), None, None, "r")])
         await _map(db, world, "quiet", pin)
-        assert await bio.apply_pending(SessionLocal, pin=pin) == {S.APPLIED: 1}
+        assert await _ap(SessionLocal, pin=pin) == {S.APPLIED: 1}
         await db.commit()
     (qrow,) = await day_row(world, "quiet", d)
     assert qrow.attribution_flag == "no_shift"  # attribution kept
@@ -540,7 +544,7 @@ async def test_apply_pending_conflict_leaves_state_others_apply(
             raise LockRetry()
         return await real(db, bp, **kw)
     monkeypatch.setattr(bio, "apply_punch", flaky)
-    counts = await bio.apply_pending(SessionLocal, pin=pin, attempts=2)
+    counts = await _ap(SessionLocal, pin=pin, attempts=2)
     assert counts == {S.APPLIED: 2, "conflict": 1}
     async with SessionLocal() as db:
         st = {i: (await db.get(BiometricPunch, i)).state for i in ids}
@@ -548,7 +552,7 @@ async def test_apply_pending_conflict_leaves_state_others_apply(
     assert st[ids[0]] == st[ids[2]] == S.APPLIED
     # next run (no more conflict) picks it up
     monkeypatch.setattr(bio, "apply_punch", real)
-    assert await bio.apply_pending(SessionLocal, pin=pin) == {S.DUPLICATE: 1}
+    assert await _ap(SessionLocal, pin=pin) == {S.DUPLICATE: 1}
 
 
 async def test_apply_pending_error_path_continues_and_reprocess_states(
@@ -563,15 +567,15 @@ async def test_apply_pending_error_path_continues_and_reprocess_states(
             raise RuntimeError("kaboom")
         return await real(db, bp, **kw)
     monkeypatch.setattr(bio, "apply_punch", boom)
-    counts = await bio.apply_pending(SessionLocal, pin=pin)
+    counts = await _ap(SessionLocal, pin=pin)
     assert counts == {S.APPLIED: 2, S.ERROR: 1}
     async with SessionLocal() as db:
         bp = await db.get(BiometricPunch, ids[1])
         assert bp.state == S.ERROR and "kaboom" in bp.error
     # default states skip ERROR rows; states={error} reprocesses them
     monkeypatch.setattr(bio, "apply_punch", real)
-    assert await bio.apply_pending(SessionLocal, pin=pin) == {}
-    assert await bio.apply_pending(
+    assert await _ap(SessionLocal, pin=pin) == {}
+    assert await _ap(
         SessionLocal, pin=pin, states={S.ERROR}) == {S.DUPLICATE: 1}
 
 
@@ -691,7 +695,7 @@ async def test_apply_pending_stamp_failure_is_a_conflict_not_an_abort(
             raise err
         return await real_commit(self)
     monkeypatch.setattr(AsyncSession, "commit", commit)
-    counts = await bio.apply_pending(SessionLocal, pin=pin)
+    counts = await _ap(SessionLocal, pin=pin)
     monkeypatch.setattr(AsyncSession, "commit", real_commit)
     assert counts == {S.APPLIED: 2, "conflict": 1}
     async with SessionLocal() as db:

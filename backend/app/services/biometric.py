@@ -16,6 +16,7 @@ caller commits.
 import asyncio
 import hashlib
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -325,72 +326,106 @@ DEFAULT_PENDING_STATES = frozenset(
 async def apply_pending(
     session_factory, *, user_id: Optional[int] = None,
     device_id: Optional[int] = None, pin: Optional[str] = None,
-    limit: int = 2000, dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS,
+    limit: int = 500, dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS,
     states=DEFAULT_PENDING_STATES, attempts: int = 4,
-) -> dict[str, int]:
+    after_id: int = 0, deadline_s: float = 60.0,
+) -> dict:
     """Back-fill (device approved / mapping added / reprocess). Takes a
     SESSION FACTORY (e.g. SessionLocal) and commits itself: every tap is
-    re-resolved and applied, quiet, in its own short transaction in
-    punch_time order, so no locks are held across taps (no cross-user
-    deadlocks) and a dead transaction can't poison the rest.
+    re-resolved and applied, quiet, in its own short transaction, so no
+    locks are held across taps (no cross-user deadlocks) and a dead
+    transaction can't poison the rest.
 
-    `states` selects which rows to process (Task 5 reprocess passes
-    {error, locked}). Returns counts per resulting state. A tap whose lock
-    conflicts outlast the retries keeps its state and is counted under
+    Keyset paging: rows are selected by `id > after_id` in id order, `limit`
+    per page (each page is applied in punch_time order), looping until no
+    rows are left or `deadline_s` has elapsed (checked between pages, so a
+    call is bounded to roughly deadline_s plus one page). Rows that stay in
+    their state (still unmapped, lock conflict) are passed over, never
+    re-selected within a run.
+
+    `states` selects which rows to process (reprocess passes {error} /
+    {unmapped} / {locked}). Returns
+      {"counts": {state: n}, "remaining": rows in `states` (same filters)
+       with id > next_after_id, "next_after_id": last processed id}.
+    Callers with remaining > 0 continue by passing after_id=next_after_id.
+    A tap whose lock conflicts outlast the retries is counted under
     "conflict"; a non-lock exception stamps that tap ERROR and the batch
     continues. Never stamps ERROR for a transient conflict."""
     states = set(states)
-    async with session_factory() as db:
-        stmt = select(BiometricPunch.id).where(
-            BiometricPunch.state.in_(states))
+    started = time.monotonic()
+    counts: dict[str, int] = {}
+    last_id = after_id
+
+    async def _filters(db):
+        conds = [BiometricPunch.state.in_(states)]
         if device_id is not None:
-            stmt = stmt.where(BiometricPunch.device_id == device_id)
+            conds.append(BiometricPunch.device_id == device_id)
         if pin is not None:
-            stmt = stmt.where(BiometricPunch.pin == pin)
+            conds.append(BiometricPunch.pin == pin)
         if user_id is not None:
             maps = (await db.execute(select(BiometricUserMap).where(
                 BiometricUserMap.user_id == user_id))).scalars().all()
-            conds = [BiometricPunch.user_id == user_id]
+            ors = [BiometricPunch.user_id == user_id]
             for m in maps:
                 c = BiometricPunch.pin == m.pin
                 if m.device_id is not None:
                     c = and_(c, BiometricPunch.device_id == m.device_id)
-                conds.append(c)
-            stmt = stmt.where(or_(*conds))
-        stmt = stmt.order_by(
-            BiometricPunch.punch_time, BiometricPunch.id).limit(limit)
-        ids = list((await db.execute(stmt)).scalars().all())
+                ors.append(c)
+            conds.append(or_(*ors))
+        return conds
 
-    counts: dict[str, int] = {}
-    for bp_id in ids:
-        try:
-            state = await _apply_tap_tx(
-                session_factory, bp_id, dedupe_seconds=dedupe_seconds,
-                quiet=True, attempts=attempts, reresolve=True,
-                only_states=states)
-        except Exception as exc:
-            if _is_conflict(exc):
-                state = "conflict"
-            else:
-                state = _S.ERROR
-                try:
-                    async with session_factory() as db:
-                        bp = await db.get(BiometricPunch, bp_id)
-                        if bp is not None:
-                            bp.state = _S.ERROR
-                            bp.attendance_id = None
-                            bp.error = (
-                                f"{type(exc).__name__}: "
-                                f"{getattr(exc, 'detail', None) or exc}"
-                            )[:255]
-                            await db.commit()
-                except Exception as stamp_exc:  # never abort the batch
-                    log.warning("biometric tap %s: could not stamp ERROR "
-                                "(%r) after %r", bp_id, stamp_exc, exc)
-                    state = ("conflict" if _is_conflict(stamp_exc)
-                             else "unstamped")
-        counts[state] = counts.get(state, 0) + 1
-    return counts
+    while True:
+        async with session_factory() as db:
+            conds = await _filters(db)
+            page = (await db.execute(
+                select(BiometricPunch.id, BiometricPunch.punch_time)
+                .where(*conds, BiometricPunch.id > last_id)
+                .order_by(BiometricPunch.id).limit(limit))).all()
+        if not page:
+            break
+        page_max = page[-1][0]
+        order = sorted(page, key=lambda r: (as_utc(r[1]), r[0]))
+        for bp_id, _t in order:
+            try:
+                state = await _apply_tap_tx(
+                    session_factory, bp_id, dedupe_seconds=dedupe_seconds,
+                    quiet=True, attempts=attempts, reresolve=True,
+                    only_states=states)
+            except Exception as exc:
+                if _is_conflict(exc):
+                    state = "conflict"
+                else:
+                    state = _S.ERROR
+                    try:
+                        async with session_factory() as db:
+                            bp = await db.get(BiometricPunch, bp_id)
+                            if bp is not None:
+                                bp.state = _S.ERROR
+                                bp.attendance_id = None
+                                bp.error = (
+                                    f"{type(exc).__name__}: "
+                                    f"{getattr(exc, 'detail', None) or exc}"
+                                )[:255]
+                                await db.commit()
+                    except Exception as stamp_exc:  # never abort the batch
+                        log.warning("biometric tap %s: could not stamp ERROR "
+                                    "(%r) after %r", bp_id, stamp_exc, exc)
+                        state = ("conflict" if _is_conflict(stamp_exc)
+                                 else "unstamped")
+            counts[state] = counts.get(state, 0) + 1
+        last_id = page_max
+        if len(page) < limit:
+            break
+        if time.monotonic() - started >= deadline_s:
+            break
+
+    async with session_factory() as db:
+        conds = await _filters(db)
+        remaining = (await db.execute(
+            select(func.count()).select_from(BiometricPunch).where(
+                *conds, BiometricPunch.id > last_id))).scalar_one()
+    return {"counts": counts, "remaining": remaining,
+            "next_after_id": last_id}
 
 
 # ---------------- ADMS device registration (Task 4) ----------------

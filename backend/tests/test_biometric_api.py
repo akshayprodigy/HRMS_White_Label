@@ -2,6 +2,7 @@
 
 DB-backed on the real dev DB, far-future dates (2031), full teardown."""
 import asyncio
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -131,21 +132,15 @@ async def states(pin):
 # ---------------- permission matrix ----------------
 
 async def test_403_matrix_and_hr_ok(api, world):
+    from app.api.v1.endpoints.biometric import router as bio_router
+    routes = []
+    for rt in bio_router.routes:
+        path = rt.path.replace("{device_id}", str(world["d_act"])).replace(
+            "{map_id}", "1")
+        for m in rt.methods:
+            routes.append((m, path, {}))
+    assert len(routes) >= 12, routes
     d = world["d_act"]
-    routes = [
-        ("GET", "/devices", None),
-        ("PATCH", f"/devices/{d}", {"name": "x"}),
-        ("POST", f"/devices/{d}/approve", None),
-        ("POST", f"/devices/{d}/disable", None),
-        ("DELETE", f"/devices/{d}", None),
-        ("GET", f"/devices/{d}/users", None),
-        ("GET", "/mappings", None),
-        ("PUT", "/mappings", {"pin": "x", "user_id": 1}),
-        ("DELETE", "/mappings/1", None),
-        ("POST", "/mappings/auto", {"device_id": d}),
-        ("GET", "/punches", None),
-        ("POST", "/punches/reprocess", {"state": "error"}),
-    ]
     for email in ("employee@gmail.com", "pm@gmail.com"):
         h = await _login(api, email, "test@12345")
         for m, path, body in routes:
@@ -190,7 +185,7 @@ async def test_list_health_and_counts(api, world):
     r = await api.post(f"{P}/devices/{world['d_other']}/disable", headers=api.hr)
     assert r.status_code == 200 and r.json()["health"] == "disabled"
     assert (await api.post(f"{P}/devices/{world['d_other']}/disable",
-                           headers=api.hr)).status_code == 400
+                           headers=api.hr)).status_code == 409
     async with SessionLocal() as db:
         n = (await db.execute(select(AuditLog).where(
             AuditLog.action == "BIOMETRIC_DEVICE_DISABLED",
@@ -239,8 +234,11 @@ async def test_approve_backfills_pending_taps(api, world):
     async with SessionLocal() as db:
         dev = await db.get(BiometricDevice, world["d_pend"])
         assert dev.approved_by_id == world["hr"] and dev.approved_at
+    assert j["remaining"] == 0 and "next_after_id" in j
+    assert j["device"]["enrolled_users"] == 0 and \
+        j["device"]["pending_punches"] == 0
     assert (await api.post(f"{P}/devices/{world['d_pend']}/approve",
-                           headers=api.hr)).status_code == 400
+                           headers=api.hr)).status_code == 409
 
 
 async def test_delete_device(api, world):
@@ -259,7 +257,10 @@ async def test_delete_device(api, world):
     await bio.apply_pending(SessionLocal, pin=pin)
     assert S.APPLIED in await states(pin)
     r = await api.delete(f"{P}/devices/{world['d_act']}", headers=api.hr)
-    assert r.status_code == 409
+    assert r.status_code == 409 and "Disable" in r.text  # active
+    await api.post(f"{P}/devices/{world['d_act']}/disable", headers=api.hr)
+    r = await api.delete(f"{P}/devices/{world['d_act']}", headers=api.hr)
+    assert r.status_code == 409  # applied taps
     assert (await api.delete(f"{P}/devices/99999999",
                              headers=api.hr)).status_code == 404
 
@@ -294,6 +295,19 @@ async def test_mapping_upsert_conflict_replace(api, world):
     r = await api.put(P + "/mappings", headers=api.hr, json={
         "device_id": world["d_act"], "pin": pin, "user_id": world["c"]})
     assert r.status_code == 200
+    # unchanged: no extra audit, no back-fill
+    async with SessionLocal() as db:
+        n0 = len((await db.execute(select(AuditLog.id).where(
+            AuditLog.action == "BIOMETRIC_MAPPING_SET",
+            AuditLog.user_id == world["hr"]))).scalars().all())
+    r = await api.put(P + "/mappings", headers=api.hr, json={
+        "device_id": world["d_act"], "pin": pin, "user_id": world["c"]})
+    assert r.status_code == 200 and r.json()["backfill"] == {}
+    async with SessionLocal() as db:
+        n1 = len((await db.execute(select(AuditLog.id).where(
+            AuditLog.action == "BIOMETRIC_MAPPING_SET",
+            AuditLog.user_id == world["hr"]))).scalars().all())
+    assert n0 == n1
     # list + filter
     r = await api.get(P + "/mappings", headers=api.hr, params={"q": pin})
     assert len(r.json()) == 2
@@ -423,6 +437,7 @@ async def test_punch_log_filters_and_paging(api, world):
     r = await g(pin=pin, **{"from": at(d, 10).isoformat(),
                             "to": at(d, 18).isoformat()})
     assert r.json()["total"] == 1
+    assert (await g(state="bogus")).status_code == 422
     assert (await g(limit=201)).status_code == 422
     assert (await g(limit=0)).status_code == 422
 
@@ -459,3 +474,137 @@ async def test_reprocess_locked(api, world, monkeypatch):
             AuditLog.action == "BIOMETRIC_REPROCESS",
             AuditLog.user_id == world["hr"]))).scalars().all()
     assert len(n) >= 2
+
+
+# ---------------- review fixes ----------------
+
+async def test_like_wildcards_escaped(api, world):
+    sfx = world["sfx"]
+    async with SessionLocal() as db:
+        db.add_all([BiometricUserMap(device_id=None, pin=f"{sfx}w1", user_id=world["a"]),
+                    BiometricUserMap(device_id=None, pin=f"{sfx}w2", user_id=world["a"])])
+        await db.commit()
+    for q in ("_", "%"):
+        r = await api.get(P + "/mappings", headers=api.hr, params={"q": q})
+        assert r.status_code == 200
+        # none of our pins / names contain a literal _ or %, so no match
+        assert not [x for x in r.json() if sfx in x["pin"]], q
+    r = await api.get(P + "/mappings", headers=api.hr, params={"q": f"{sfx}w_"})
+    assert r.json() == []  # '_' is literal, not "any char"
+
+
+async def test_global_mapping_backfills_two_devices_and_import(api, world):
+    sfx, d = world["sfx"], date(2031, 6, 1)
+    pin = f"{sfx}gl"
+    await store(world, "d_act", pin, [at(d, 9)])
+    await store(world, "d_other", pin, [at(d, 12)])
+    async with SessionLocal() as db:
+        await bio.store_taps(db, source="import", device=None,
+                             taps=[(pin, at(d, 18), None, None, "csv")],
+                             import_batch=uuid.uuid4().hex)
+        await db.commit()
+    assert await states(pin) == [S.UNMAPPED] * 3
+    r = await api.put(P + "/mappings", headers=api.hr, json={
+        "device_id": None, "pin": pin, "user_id": world["a"]})
+    assert r.status_code == 200 and r.json()["remaining"] == 0
+    assert S.UNMAPPED not in await states(pin)
+    async with SessionLocal() as db:
+        rows = (await db.execute(select(BiometricPunch).where(
+            BiometricPunch.pin == pin))).scalars().all()
+    assert {x.source for x in rows} == {"adms", "import"} or \
+        {x.source for x in rows} >= {"import"}
+    assert all(x.user_id == world["a"] for x in rows)
+
+
+async def test_apply_pending_keyset_paging(world):
+    sfx, d = world["sfx"], date(2031, 6, 2)
+    # 3 unmappable pins first (lowest ids), then 7 mappable taps
+    junk = [f"{sfx}j{i}" for i in range(3)]
+    for p in junk:
+        await store(world, "d_act", p, [at(d, 8)])
+    pin = f"{sfx}pg"
+    await store(world, "d_act", pin, [at(d, 9, m) for m in range(7)])
+    async with SessionLocal() as db:
+        db.add(BiometricUserMap(device_id=None, pin=pin, user_id=world["a"]))
+        await db.commit()
+    kw = dict(device_id=world["d_act"], limit=2)
+    # deadline 0 -> stops after the first page; remaining > 0
+    r1 = await bio.apply_pending(SessionLocal, deadline_s=0, **kw)
+    assert sum(r1["counts"].values()) == 2 and r1["remaining"] > 0
+    # continue until done; unmappable rows never block later mappable ones
+    cursor, total, guard = r1["next_after_id"], dict(r1["counts"]), 0
+    while True:
+        r = await bio.apply_pending(SessionLocal, after_id=cursor,
+                                    deadline_s=0, **kw)
+        for k, v in r["counts"].items():
+            total[k] = total.get(k, 0) + v
+        cursor = r["next_after_id"]
+        guard += 1
+        if r["remaining"] == 0 or guard > 20:
+            break
+    assert r["remaining"] == 0 and guard <= 20
+    st = await states(pin)
+    assert S.UNMAPPED not in st and len(st) == 7
+    for p in junk:
+        assert await states(p) == [S.UNMAPPED]
+    # one unbounded call from scratch: junk rows remain but are passed over
+    r = await bio.apply_pending(SessionLocal, **kw)
+    assert r["remaining"] == 0 and r["counts"].get(S.UNMAPPED, 0) == 3
+
+
+async def test_reprocess_after_id_continues(api, world):
+    sfx, d = world["sfx"], date(2031, 6, 3)
+    pin = f"{sfx}ra"
+    await store(world, "d_act", pin, [at(d, 9, m) for m in range(5)])
+    async with SessionLocal() as db:
+        db.add(BiometricUserMap(device_id=None, pin=pin, user_id=world["b"]))
+        await db.commit()
+    # tiny page via direct call, then finish through the endpoint
+    r = await bio.apply_pending(SessionLocal, pin=pin, limit=2, deadline_s=0)
+    assert r["remaining"] == 3
+    r = await api.post(P + "/punches/reprocess", headers=api.hr, json={
+        "state": "pending", "pin": pin, "after_id": r["next_after_id"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["remaining"] == 0
+    assert S.UNMAPPED not in await states(pin)
+
+
+async def test_approve_vs_attlog_race(api, world):
+    sfx = world["sfx"]
+    async with SessionLocal() as db:
+        db.add(BiometricUserMap(device_id=None, pin=f"{sfx}rc", user_id=world["a"]))
+        await db.commit()
+    for i in range(4):
+        async with SessionLocal() as db:
+            dev = BiometricDevice(serial=f"BAPI{sfx}r{i}", utc_offset_minutes=0,
+                                  status=DS.PENDING,
+                                  last_seen_at=datetime.now(timezone.utc))
+            db.add(dev)
+            await db.commit()
+            did = dev.id
+        # one pre-held tap so approve has work, then race approve vs attlog
+        await store_dev(did, f"{sfx}rc", [datetime(2031, 7, 1, 1, i, tzinfo=timezone.utc)])
+        t = f"2031-07-02 0{i}:30:00"
+        body = f"{sfx}rc\t{t}\t0\t1\t0\t0\t0\t0\t0\t0\n"
+        ra, rb = await asyncio.gather(
+            api.post(f"{P}/devices/{did}/approve", headers=api.hr),
+            api.post("/iclock/cdata", params={"SN": f"BAPI{sfx}r{i}",
+                                              "table": "ATTLOG", "Stamp": "1"},
+                     content=body))
+        assert ra.status_code == 200, ra.text
+        assert rb.status_code == 200, rb.text
+        async with SessionLocal() as db:
+            held = (await db.execute(select(BiometricPunch.id).where(
+                BiometricPunch.device_id == did,
+                BiometricPunch.state == S.PENDING_DEVICE))).scalars().all()
+            allp = (await db.execute(select(BiometricPunch.id).where(
+                BiometricPunch.device_id == did))).scalars().all()
+        assert held == [] and len(allp) == 2, (i, held, allp)
+
+
+async def store_dev(did, pin, times):
+    async with SessionLocal() as db:
+        dev = await db.get(BiometricDevice, did)
+        await bio.store_taps(db, source="adms", device=dev,
+                             taps=[(pin, t, "0", "1", "raw") for t in times])
+        await db.commit()

@@ -28,6 +28,10 @@ from app.services import biometric as bio
 D = date(2031, 1, 6)
 
 
+async def _ap(*a, **k):
+    return (await bio.apply_pending(*a, **k))["counts"]
+
+
 @pytest.fixture
 async def client():
     app = create_app()
@@ -366,7 +370,7 @@ async def test_apply_failure_does_not_fail_response(client, world, monkeypatch):
     assert (r.status_code, r.text) == (200, "OK: 2")
     assert {x.state for x in await _punches(pin)} == {bio.PENDING_APPLY}
     monkeypatch.undo()
-    counts = await bio.apply_pending(SessionLocal, pin=pin)
+    counts = await _ap(SessionLocal, pin=pin)
     assert sum(counts.values()) == 2
     assert len(await _attendance(uid)) == 1
 

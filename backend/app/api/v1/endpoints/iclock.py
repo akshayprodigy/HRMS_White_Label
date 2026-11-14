@@ -106,8 +106,17 @@ async def cdata_post(request: Request, db: deps.DBDep):
                 return _text(adms.ok_count(len(records)))
 
         async def _store():
-            d = await db.get(BiometricDevice, dev_id,
-                             populate_existing=True)
+            # Shared lock-read: serialises with approve (which locks the row
+            # FOR UPDATE), so a tap is never stored PENDING_DEVICE after the
+            # approve back-fill already ran.
+            from sqlalchemy import select as _select
+            d = (await db.execute(
+                _select(BiometricDevice).where(BiometricDevice.id == dev_id)
+                .with_for_update(read=True)
+                .execution_options(populate_existing=True))).scalars().first()
+            if d is None or d.status == BiometricDeviceStatus.DISABLED:
+                new_ids[:] = []
+                return
             _n, rows = await bio.store_taps(
                 db, source="device", device=d, taps=taps)
             new_ids[:] = [r.id for r in rows

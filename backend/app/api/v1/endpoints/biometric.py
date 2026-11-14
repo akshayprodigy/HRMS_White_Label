@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
 from app.api import deps
-from app.api.v1.endpoints.roster_common import commit_or_409, lock_row
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, lock_row, lock_row_retry,
+)
 from app.core.datetime_utils import as_utc
 from app.db.session import SessionLocal
 from app.models.audit import AuditLog
@@ -25,15 +27,19 @@ from app.models.biometric import (
 from app.models.employee import Employee
 from app.models.user import User
 from app.services.adms_protocol import _PIN_RE
-from app.services.biometric import PERM_BIOMETRIC, apply_pending
+from app.services.biometric import DEFAULT_PENDING_STATES, PENDING_APPLY, PERM_BIOMETRIC, apply_pending
 from app.services.time_rules import get_time_rules
+
+PunchState = Literal[
+    "pending_device", "unmapped", "applied", "duplicate", "locked",
+    "edited", "error", "ignored", "received"]
 
 router = APIRouter(dependencies=[Depends(deps.check_permissions([PERM_BIOMETRIC]))])
 
 DEFAULT_OFFLINE_MINUTES = 30
 # States that reflect real attendance decisions; a device holding any of
 # them cannot be deleted (junk / held taps are removed with the device).
-KEEP_STATES = (S.APPLIED, S.DUPLICATE, S.EDITED, S.LOCKED)
+KEEP_STATES = (S.APPLIED, S.DUPLICATE, S.EDITED, S.LOCKED, PENDING_APPLY)
 
 
 def _audit(db, me_id: int, action: str, rtype: str, rid, details: dict):
@@ -76,7 +82,7 @@ def _dev_out(d: BiometricDevice, now, offline_min, counts=None) -> dict:
 
 async def _get_device(db, device_id: int, lock: bool = False) -> BiometricDevice:
     stmt = select(BiometricDevice).where(BiometricDevice.id == device_id)
-    d = (await lock_row(db, stmt, "Device is busy, retry")
+    d = (await lock_row_retry(db, stmt, "Device is busy, retry")
          if lock else (await db.execute(stmt)).scalars().first())
     if d is None:
         raise HTTPException(404, "Device not found")
@@ -85,30 +91,54 @@ async def _get_device(db, device_id: int, lock: bool = False) -> BiometricDevice
 
 # ------------------------------ devices ------------------------------
 
+async def _device_counts(db, ids) -> dict[int, dict]:
+    """pending / unmapped / enrolled counts per device id (grouped queries)."""
+    ids = list(ids)
+    counts: dict[int, dict] = {i: {} for i in ids}
+    if not ids:
+        return counts
+    for did, n in (await db.execute(
+            select(BiometricPunch.device_id, func.count()).where(
+                BiometricPunch.state == S.PENDING_DEVICE,
+                BiometricPunch.device_id.in_(ids))
+            .group_by(BiometricPunch.device_id))).all():
+        counts[did]["pending"] = n
+    for did, n in (await db.execute(
+            select(BiometricPunch.device_id,
+                   func.count(func.distinct(BiometricPunch.pin))).where(
+                BiometricPunch.state == S.UNMAPPED,
+                BiometricPunch.device_id.in_(ids))
+            .group_by(BiometricPunch.device_id))).all():
+        counts[did]["unmapped"] = n
+    for did, n in (await db.execute(
+            select(BiometricDeviceUser.device_id, func.count())
+            .where(BiometricDeviceUser.device_id.in_(ids))
+            .group_by(BiometricDeviceUser.device_id))).all():
+        counts[did]["enrolled"] = n
+    return counts
+
+
+async def _dev_full(db, d: BiometricDevice) -> dict:
+    """Device object including the counts (after a refresh)."""
+    await db.refresh(d)
+    counts = await _device_counts(db, [d.id])
+    return _dev_out(d, datetime.now(timezone.utc), await _offline_minutes(db),
+                    counts.get(d.id))
+
+
+def _bf(res: dict) -> dict:
+    """Response fragment for an apply_pending result."""
+    return {"backfill": res["counts"], "remaining": res["remaining"],
+            "next_after_id": res["next_after_id"]}
+
+
 @router.get("/devices")
 async def list_devices(db: deps.DBDep):
     now = datetime.now(timezone.utc)
     offline_min = await _offline_minutes(db)
     devs = (await db.execute(
         select(BiometricDevice).order_by(BiometricDevice.id))).scalars().all()
-    counts: dict[int, dict] = {d.id: {} for d in devs}
-    for did, n in (await db.execute(
-            select(BiometricPunch.device_id, func.count()).where(
-                BiometricPunch.state == S.PENDING_DEVICE,
-                BiometricPunch.device_id.is_not(None))
-            .group_by(BiometricPunch.device_id))).all():
-        counts.setdefault(did, {})["pending"] = n
-    for did, n in (await db.execute(
-            select(BiometricPunch.device_id,
-                   func.count(func.distinct(BiometricPunch.pin))).where(
-                BiometricPunch.state == S.UNMAPPED,
-                BiometricPunch.device_id.is_not(None))
-            .group_by(BiometricPunch.device_id))).all():
-        counts.setdefault(did, {})["unmapped"] = n
-    for did, n in (await db.execute(
-            select(BiometricDeviceUser.device_id, func.count())
-            .group_by(BiometricDeviceUser.device_id))).all():
-        counts.setdefault(did, {})["enrolled"] = n
+    counts = await _device_counts(db, [d.id for d in devs])
     return [_dev_out(d, now, offline_min, counts.get(d.id)) for d in devs]
 
 
@@ -168,18 +198,20 @@ async def update_device(device_id: int, body: DevicePatch, db: deps.DBDep,
     _audit(db, me_id, "BIOMETRIC_DEVICE_UPDATED", "biometric_device",
            device_id, changes)
     await commit_or_409(db)
-    await db.refresh(d)
-    return _dev_out(d, datetime.now(timezone.utc), await _offline_minutes(db))
+    return await _dev_full(db, d)
 
 
 @router.post("/devices/{device_id}/approve")
 async def approve_device(device_id: int, db: deps.DBDep, me: deps.CurrentUser):
-    """pending/disabled -> active, then back-fills held taps. Approving an
-    already-active device is a 400. Returns {device, backfill: counts}."""
+    """pending/disabled -> active, then back-fills held taps (bounded to
+    ~60s). If `remaining` > 0 continue with POST /punches/reprocess
+    {state: "pending", device_id, after_id: next_after_id}. Approving an
+    already-active device is a 409. Returns {device, backfill: counts,
+    remaining, next_after_id}."""
     me_id = me.id
     d = await _get_device(db, device_id, lock=True)
     if d.status == BiometricDeviceStatus.ACTIVE:
-        raise HTTPException(400, "Device is already active")
+        raise HTTPException(409, "Device is already active")
     prev = d.status
     d.status = BiometricDeviceStatus.ACTIVE
     d.approved_by_id = me_id
@@ -187,11 +219,17 @@ async def approve_device(device_id: int, db: deps.DBDep, me: deps.CurrentUser):
     _audit(db, me_id, "BIOMETRIC_DEVICE_APPROVED", "biometric_device",
            device_id, {"serial": d.serial, "from": prev})
     await commit_or_409(db)
-    counts = await apply_pending(SessionLocal, device_id=device_id)
-    await db.refresh(d)
-    return {"device": _dev_out(d, datetime.now(timezone.utc),
-                               await _offline_minutes(db)),
-            "backfill": counts}
+    res = await apply_pending(SessionLocal, device_id=device_id)
+    if res["counts"] and res["remaining"] == 0:
+        # Sweep taps stored while the first pass ran (ids are monotonic, so
+        # continue after the last processed id).
+        res2 = await apply_pending(SessionLocal, device_id=device_id,
+                                   after_id=res["next_after_id"])
+        for k, v in res2["counts"].items():
+            res["counts"][k] = res["counts"].get(k, 0) + v
+        res["remaining"] = res2["remaining"]
+        res["next_after_id"] = res2["next_after_id"]
+    return {"device": await _dev_full(db, d), **_bf(res)}
 
 
 @router.post("/devices/{device_id}/disable")
@@ -200,24 +238,26 @@ async def disable_device(device_id: int, db: deps.DBDep, me: deps.CurrentUser):
     me_id = me.id
     d = await _get_device(db, device_id, lock=True)
     if d.status == BiometricDeviceStatus.DISABLED:
-        raise HTTPException(400, "Device is already disabled")
+        raise HTTPException(409, "Device is already disabled")
     prev = d.status
     d.status = BiometricDeviceStatus.DISABLED
     _audit(db, me_id, "BIOMETRIC_DEVICE_DISABLED", "biometric_device",
            device_id, {"serial": d.serial, "from": prev})
     await commit_or_409(db)
-    await db.refresh(d)
-    return _dev_out(d, datetime.now(timezone.utc), await _offline_minutes(db))
+    return await _dev_full(db, d)
 
 
 @router.delete("/devices/{device_id}")
 async def delete_device(device_id: int, db: deps.DBDep, me: deps.CurrentUser):
-    """409 when the device has any applied / duplicate / edited / locked
-    taps (they back real attendance). Otherwise deletes the device with its
+    """Only pending or disabled devices (409 for an active one). 409 when
+    the device has any applied / duplicate / edited / locked / received taps
+    (they back real attendance). Otherwise deletes the device with its
     held raw taps (pending_device, unmapped, error, ignored), enrolled users
     and device-specific mappings."""
     me_id = me.id
     d = await _get_device(db, device_id, lock=True)
+    if d.status == BiometricDeviceStatus.ACTIVE:
+        raise HTTPException(409, "Disable the device before deleting it")
     kept = (await db.execute(select(func.count()).select_from(BiometricPunch)
             .where(BiometricPunch.device_id == device_id,
                    BiometricPunch.state.in_(KEEP_STATES)))).scalar_one()
@@ -352,10 +392,13 @@ async def list_mappings(db: deps.DBDep, device_id: Optional[int] = None,
     if device_id is not None:
         stmt = stmt.where(BiometricUserMap.device_id == device_id)
     if q and q.strip():
-        like = f"%{q.strip()}%"
+        esc = (q.strip().replace("\\", "\\\\").replace("%", "\\%")
+               .replace("_", "\\_"))
+        like = f"%{esc}%"
         stmt = stmt.where(
-            BiometricUserMap.pin.ilike(like) | User.full_name.ilike(like)
-            | Employee.employee_id.ilike(like))
+            BiometricUserMap.pin.ilike(like, escape="\\")
+            | User.full_name.ilike(like, escape="\\")
+            | Employee.employee_id.ilike(like, escape="\\"))
     maps = (await db.execute(stmt.limit(1000))).scalars().all()
     info = await _user_info(db, [m.user_id for m in maps])
     return [_map_out(m, info) for m in maps]
@@ -373,7 +416,9 @@ async def put_mapping(body: MappingIn, db: deps.DBDep, me: deps.CurrentUser):
     """Upsert a mapping (device_id null = every device). 409 if the pin is
     already mapped to a different user in that scope unless replace=true.
     Back-fills held taps for the pin (all devices for a global mapping, plus
-    imports). Returns {mapping, backfill: counts}."""
+    imports); an unchanged mapping (same user) is a no-op without audit or
+    back-fill. Returns {mapping, backfill: counts, remaining,
+    next_after_id}."""
     me_id = me.id
     pin = body.pin.strip()
     if not _PIN_RE.match(pin):
@@ -389,6 +434,7 @@ async def put_mapping(body: MappingIn, db: deps.DBDep, me: deps.CurrentUser):
         BiometricUserMap.device_key == key, BiometricUserMap.pin == pin),
         "Mapping is being changed, retry")
     prev_user = None
+    changed = True
     if existing is not None:
         if existing.user_id != body.user_id:
             if not body.replace:
@@ -398,20 +444,28 @@ async def put_mapping(body: MappingIn, db: deps.DBDep, me: deps.CurrentUser):
             prev_user = existing.user_id
             existing.user_id = body.user_id
             existing.created_by_id = me_id
+        else:
+            changed = False
         m = existing
     else:
         m = BiometricUserMap(device_id=body.device_id, pin=pin,
                              user_id=body.user_id, created_by_id=me_id)
         db.add(m)
+    if not changed:
+        info = await _user_info(db, [m.user_id])
+        out = _map_out(m, info)
+        await db.rollback()  # release the row lock
+        return {"mapping": out, "backfill": {}, "remaining": 0,
+                "next_after_id": 0}
     _audit(db, me_id, "BIOMETRIC_MAPPING_SET", "biometric_user_map",
            existing.id if existing else "new",
            {"device_id": body.device_id, "pin": pin, "user_id": body.user_id,
             "replaced_user_id": prev_user})
     await commit_or_409(db, "Mapping was changed by someone else, retry")
-    counts = await apply_pending(SessionLocal, pin=pin, device_id=body.device_id)
+    res = await apply_pending(SessionLocal, pin=pin, device_id=body.device_id)
     await db.refresh(m)
     info = await _user_info(db, [m.user_id])
-    return {"mapping": _map_out(m, info), "backfill": counts}
+    return {"mapping": _map_out(m, info), **_bf(res)}
 
 
 @router.delete("/mappings/{map_id}")
@@ -439,7 +493,8 @@ class AutoIn(BaseModel):
 async def auto_map(body: AutoIn, db: deps.DBDep, me: deps.CurrentUser):
     """Creates device-specific mappings for every enrolled, not yet mapped
     device user with a unique suggestion (employee code, else full name),
-    then back-fills the device. Returns {created, backfill}."""
+    then back-fills the device. Returns {created, backfill, remaining,
+    next_after_id}."""
     me_id = me.id
     await _get_device(db, body.device_id)
     dus = (await db.execute(select(BiometricDeviceUser).where(
@@ -455,16 +510,16 @@ async def auto_map(body: AutoIn, db: deps.DBDep, me: deps.CurrentUser):
         _audit(db, me_id, "BIOMETRIC_MAPPING_AUTO", "biometric_device",
                body.device_id, {"created": len(sug), "pins": sorted(sug)})
         await commit_or_409(db, "Mappings changed concurrently, retry")
-    counts = (await apply_pending(SessionLocal, device_id=body.device_id)
-              if sug else {})
-    return {"created": len(sug), "backfill": counts}
+    res = (await apply_pending(SessionLocal, device_id=body.device_id)
+           if sug else {"counts": {}, "remaining": 0, "next_after_id": 0})
+    return {"created": len(sug), **_bf(res)}
 
 
 # ------------------------------ punch log ------------------------------
 
 @router.get("/punches")
 async def list_punches(
-    db: deps.DBDep, state: Optional[str] = None,
+    db: deps.DBDep, state: Optional[PunchState] = None,
     device_id: Optional[int] = None, pin: Optional[str] = None,
     user_id: Optional[int] = None,
     from_: Optional[datetime] = Query(None, alias="from"),
@@ -511,20 +566,30 @@ async def list_punches(
 
 
 class ReprocessIn(BaseModel):
-    state: Literal["error", "unmapped", "locked"]
+    # "pending" = unmapped + pending_device + received (what approve and
+    # mapping back-fills work on); use it to continue a partial back-fill.
+    state: Literal["error", "unmapped", "locked", "pending"]
     device_id: Optional[int] = None
+    pin: Optional[str] = Field(None, max_length=32)
+    after_id: int = Field(0, ge=0)
 
 
 @router.post("/punches/reprocess")
 async def reprocess(body: ReprocessIn, db: deps.DBDep, me: deps.CurrentUser):
     """Re-runs the apply step for taps in the given state (locked taps are
-    retried for when payroll was unlocked). Returns {backfill: counts}."""
+    retried for when payroll was unlocked). Bounded to ~60s: when
+    `remaining` > 0 call again with after_id=next_after_id. Returns
+    {backfill: counts, remaining, next_after_id}. Audited before the run."""
     me_id = me.id
     if body.device_id is not None:
         await _get_device(db, body.device_id)
-    counts = await apply_pending(SessionLocal, device_id=body.device_id,
-                                 states={body.state})
     _audit(db, me_id, "BIOMETRIC_REPROCESS", "biometric_punch", body.state,
-           {"state": body.state, "device_id": body.device_id, "counts": counts})
+           {"state": body.state, "device_id": body.device_id, "pin": body.pin,
+            "after_id": body.after_id})
     await commit_or_409(db)
-    return {"backfill": counts}
+    states = (set(DEFAULT_PENDING_STATES) if body.state == "pending"
+              else {body.state})
+    res = await apply_pending(SessionLocal, device_id=body.device_id,
+                              pin=body.pin, states=states,
+                              after_id=body.after_id)
+    return _bf(res)
