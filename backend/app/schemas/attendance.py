@@ -6,8 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 class AttendanceBase(BaseModel):
     mode: str
     remarks: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    latitude: Optional[float] = Field(
+        default=None, ge=-90.0, le=90.0, allow_inf_nan=False)
+    longitude: Optional[float] = Field(
+        default=None, ge=-180.0, le=180.0, allow_inf_nan=False)
     accuracy: Optional[float] = None
 
 

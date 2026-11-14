@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 from app.api import deps
@@ -50,8 +50,10 @@ router = APIRouter()
 class PunchOutBody(BaseModel):
     """Optional geolocation snapshot at punch-out. All fields are
     best-effort — a missing GPS reading must not block the user."""
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    latitude: Optional[float] = Field(
+        default=None, ge=-90.0, le=90.0, allow_inf_nan=False)
+    longitude: Optional[float] = Field(
+        default=None, ge=-180.0, le=180.0, allow_inf_nan=False)
     accuracy: Optional[float] = None
     is_mock_location: Optional[bool] = False
     # Selfie (from POST /attendance/selfie) + on-device liveness result.

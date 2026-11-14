@@ -175,7 +175,7 @@ async def apply_leave_decision(
         raise HTTPException(status_code=404, detail="Approval item not found")
     item = locked
     if item.status != ApprovalStatus.PENDING:
-        raise HTTPException(status_code=400, detail=ALREADY_ACTIONED)
+        raise HTTPException(status_code=409, detail=ALREADY_ACTIONED)
     steps = sorted(
         (await db.execute(
             select(ApprovalStep).where(ApprovalStep.approval_item_id == item.id)

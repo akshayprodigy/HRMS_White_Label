@@ -1,5 +1,6 @@
 from typing import Any, Dict
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -28,6 +29,20 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 }
             },
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ):
+        # Same {"detail": [...]} shape as FastAPI's default, but without the
+        # echoed `input`/`ctx`: a NaN/Infinity input is not JSON-serialisable
+        # and would turn the 422 into a 500.
+        errs = [
+            {"type": e.get("type"), "loc": list(e.get("loc", ())),
+             "msg": e.get("msg")}
+            for e in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": errs})
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):

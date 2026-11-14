@@ -5,6 +5,7 @@ punch (an employee with no punch yet today must be able to call it) and the
 selfie is uploaded just before punching. Auth is required; every route only
 touches the caller's own data (HR may view selfies).
 """
+import math
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -143,6 +144,10 @@ async def view_selfie(
                  "X-Content-Type-Options": "nosniff"})
 
 
+def _coord_ok(v, limit: float) -> bool:
+    return v is None or (math.isfinite(v) and -limit <= v <= limit)
+
+
 def _reason(exc: HTTPException) -> str:
     d = exc.detail
     if isinstance(d, dict):
@@ -212,6 +217,11 @@ async def offline_sync(
                     out[i] = res("rejected", "invalid_client_uuid")
                 else:
                     out[i] = res("duplicate", att_id=dup.id)
+                continue
+            # Per-item (not whole-batch) coordinate validation; null is ok.
+            if not (_coord_ok(it.latitude, 90.0)
+                    and _coord_ok(it.longitude, 180.0)):
+                out[i] = res("rejected", "invalid_coordinates")
                 continue
             if cap > now + FUTURE_SKEW:
                 out[i] = res("rejected", "captured_in_future")
