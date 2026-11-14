@@ -169,6 +169,7 @@ export const TrackingSettings: React.FC = () => {
     try {
       await client.put(ENDPOINTS.TRACKING.OVERRIDE(userId), { enabled });
       await loadOverrides();
+      toast.success(enabled ? 'Tracking override enabled' : 'Tracking override disabled');
     } catch (e: any) {
       denied(e, setPolicyReadOnly, 'Failed to set override');
     } finally {
@@ -182,6 +183,7 @@ export const TrackingSettings: React.FC = () => {
     try {
       await client.delete(ENDPOINTS.TRACKING.OVERRIDE(userId));
       await loadOverrides();
+      toast.success('Override removed');
     } catch (e: any) {
       denied(e, setPolicyReadOnly, 'Failed to remove override');
     } finally {

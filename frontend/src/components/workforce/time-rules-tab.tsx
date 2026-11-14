@@ -234,7 +234,9 @@ export const TimeRulesTab: React.FC = () => {
             </span>
           </label>
         </div>
+      </Card>
 
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">

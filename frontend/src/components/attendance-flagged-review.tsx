@@ -256,6 +256,27 @@ export const AttendanceFlaggedReview: React.FC = () => {
     return c;
   }, [items]);
 
+  const reviewCounts = useMemo(() => {
+    const c = { offline: 0, liveness_failed: 0, unknown: 0 };
+    items.forEach((i) => {
+      const live =
+        i.review_flag === 'liveness_failed' ||
+        i.liveness_passed === false ||
+        i.punch_out_liveness_passed === false;
+      const unk =
+        i.has_selfie === true &&
+        (i.liveness_passed == null || (i.has_punch_out_selfie === true && i.punch_out_liveness_passed == null));
+      if (i.is_offline) c.offline += 1;
+      if (live) c.liveness_failed += 1;
+      else if (unk) c.unknown += 1;
+    });
+    return c;
+  }, [items]);
+
+  const showAttr = flagKind === 'all' || flagKind === 'attribution';
+  const showGeo = flagKind === 'all' || flagKind === 'geo';
+  const showReview = flagKind === 'all' || flagKind === 'review';
+
   return (
     <div className="p-8 space-y-6 max-w-[1600px] mx-auto animate-in fade-in duration-300">
       <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
@@ -300,7 +321,7 @@ export const AttendanceFlaggedReview: React.FC = () => {
       </div>
 
       {/* Attribution count tiles */}
-      <div>
+      {showAttr && <div>
         <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
           Shift Attribution
         </div>
@@ -330,10 +351,10 @@ export const AttendanceFlaggedReview: React.FC = () => {
             </Card>
           ))}
         </div>
-      </div>
+      </div>}
 
       {/* Geo count tiles */}
-      <div>
+      {showGeo && <div>
         <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
           Geo Fencing
         </div>
@@ -367,7 +388,27 @@ export const AttendanceFlaggedReview: React.FC = () => {
             );
           })}
         </div>
-      </div>
+      </div>}
+
+      {showReview && (
+        <div>
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+            Offline / Selfie
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {([
+              ['offline', 'Offline punches'],
+              ['liveness_failed', 'Liveness failed'],
+              ['unknown', 'Liveness unknown'],
+            ] as const).map(([k, label]) => (
+              <Card key={k} className="p-4 border-slate-200">
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">{label}</div>
+                <div className="text-3xl font-black text-[#0F172A] tabular-nums mt-1">{reviewCounts[k]}</div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
 
       <Card className="p-0 border-slate-200 overflow-hidden bg-white">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/40 gap-4 flex-wrap">

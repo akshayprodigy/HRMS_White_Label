@@ -177,7 +177,7 @@ const MyPrefsTab: React.FC = () => {
           <label className="text-sm flex items-center gap-2 mt-4">
             <input type="checkbox" checked={!!quiet.hard_opt_out}
               onChange={e => setQuiet({ ...quiet, hard_opt_out: e.target.checked })} />
-            Hard opt-out from all email/SMS
+            Hard opt-out from all email, SMS and push (in-app notifications are still delivered)
           </label>
         </div>
       </Card>

@@ -292,7 +292,7 @@ export const FieldTeam: React.FC = () => {
           <p className="text-sm font-medium text-gray-800">No one is being tracked</p>
           <p className="text-sm text-gray-500 mt-1">
             Tracking is off by default; HR can enable it per role in Tracking settings
-            (Workforce → Time Rules).
+            (Attendance Control → Workforce Activity → Time Rules tab).
           </p>
         </Card>
       ) : data ? (
