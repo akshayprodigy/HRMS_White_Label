@@ -15,7 +15,7 @@ from app.api.v1.endpoints import (
     roster_open_shifts, calendar_feed, roster_live, roster_late,
     roster_on_call, roster_acks, safety_profile,
     attendance_regularization, schedule_delegations, broadcasts, attendance_bulk,
-    devices, notification_actions, attendance_offline, tracking,
+    devices, notification_actions, attendance_offline, tracking, biometric,
 )
 
 api_router = APIRouter()
@@ -49,6 +49,9 @@ api_router.include_router(devices.router, prefix="/devices", tags=["devices"])
 # punch, so NOT attendance-gated. Auth required.
 api_router.include_router(
     tracking.router, prefix="/tracking", tags=["tracking"])
+# Biometric device admin: needs 'biometric manage', NOT attendance-gated.
+api_router.include_router(
+    biometric.router, prefix="/biometric", tags=["biometric"])
 api_router.include_router(
     notification_actions.router, prefix="/notifications",
     tags=["notifications"])
