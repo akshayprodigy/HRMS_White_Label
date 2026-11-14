@@ -170,6 +170,29 @@ echo 'renew_hook = docker exec erp-united-exploration-frontend-1 nginx -s reload
   - RBAC: Role-based access control enforced at the API router level.
   - JWT: Secure token-based authentication.
 
+## Biometric devices (ZKTeco / eSSL ADMS push)
+
+Devices push attendance to `http(s)://<your-host>/iclock/cdata` using the ADMS ("iClock" / PUSH SDK) protocol. Nginx routes `/iclock` to the backend (`frontend/nginx.conf`).
+
+- **Device settings** (on the device: *Comm → Cloud Server / ADMS*):
+  - Set **Server address** to your public host name or IP and **Server port** to `80`, or to `443` only if the firmware supports HTTPS.
+  - Turn the **domain name** option on if you use a host name.
+  - No path setting is needed: devices always call `/iclock/...`.
+- **Plain HTTP on port 80:** most ZKTeco / eSSL firmware cannot follow redirects or use HTTPS. `nginx.conf` therefore serves `/iclock` over plain HTTP on port 80, while every other path still redirects to HTTPS. Don't remove that location block.
+- **Approval:** a device's first call registers it as **pending**. Its taps are stored but not applied until HR approves it under *Time & Attendance → Biometric Devices*. Approving back-fills the held taps.
+  - Taps arrive as device PINs. Map them to employees on the **Mapping** tab; *Auto-map* matches PIN = employee code.
+  - Set each device's **UTC offset** to the device clock. New devices default to the time rule `biometric.default_utc_offset_minutes` (330 = IST).
+- **No password:** the protocol has no real authentication; a device is identified by its serial number only. Protections:
+  - HR approval, and an optional per-device **IP allow-list**.
+  - Caps: 50 pending devices in total, 5 per source IP, 20,000 held taps per pending device.
+  - `limit_req` in nginx, at 120 requests/minute per IP.
+  - Pending devices never approved are removed after 7 idle days (or 60 days in total) by the daily `biometric_pending_device_expiry` job.
+- **Real client IP:** the allow-list relies on nginx overwriting `X-Forwarded-For` with `$remote_addr`.
+  - Keep the backend port (8000) **unpublished** in production. `docker-compose.prod.yml` publishes only 80/443. A private-network peer that can reach the backend directly could otherwise claim any IP.
+  - If you put another proxy or load balancer in front of nginx, configure `set_real_ip_from <proxy-ip>; real_ip_header X-Forwarded-For; real_ip_recursive on;` in nginx. Without it every device appears with the proxy's IP, and allow-lists and rate limits stop working per device.
+- **Offline alerts:** `biometric_device_offline_alerts` runs every 10 minutes and alerts HR once when an approved device has been silent for longer than `biometric.offline_minutes` (default 30). It needs `ENABLE_SCHEDULER=1`. The scheduler should run in only one process: with several Gunicorn workers, enable it on a single worker or container to avoid duplicate runs. Duplicates are harmless for these jobs but waste work.
+- **Other vendors:** any device without ADMS push can export a CSV/XLSX file. HR imports it on the **Import** tab: preview first, then import. Re-importing the same file is safe. The import route allows uploads up to 6 MB (`/api/v1/biometric/import` in nginx).
+
 ## Resource Usage (Hostinger KVM 4)
 - **CPU**: 4 vCPU allows ~9 Gunicorn workers. Each worker handles dozens of concurrent requests.
 - **RAM**: 16 GB is extremely generous for this stack. MariaDB can be tuned for high performance with this headroom.
