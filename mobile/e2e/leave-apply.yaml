@@ -17,9 +17,16 @@ appId: com.innocore.hrms.dev
       id: submit-leave
 - tapOn:
     id: submit-leave
-- assertVisible: Choose a leave type.
 - assertVisible: Enter a reason.
+# The form scrolls so the first error sits under the status bar (not 100% visible); scroll back up to it.
+- scrollUntilVisible:
+    element: Choose a leave type.
+    direction: UP
+- assertVisible: Choose a leave type.
 # Emergency toggle reveals the helper text; turn it back off.
+- scrollUntilVisible:
+    element:
+      id: toggle-emergency
 - tapOn:
     id: toggle-emergency
 - assertVisible:
@@ -27,15 +34,30 @@ appId: com.innocore.hrms.dev
 - tapOn:
     id: toggle-emergency
 # Fill and submit.
+- scrollUntilVisible:
+    element:
+      id: type-.*
+    direction: UP
 - tapOn:
     id: type-.*
     index: 0
 - tapOn:
     id: input-start
+# Toggling emergency on/off leaves today's date prefilled; clear it before typing.
+- eraseText: 12
 - inputText: ${output.leaveDate}
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: input-end
 - tapOn:
     id: input-end
+- eraseText: 12
 - inputText: ${output.leaveDate}
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: input-reason
 - tapOn:
     id: input-reason
 - inputText: Maestro e2e leave
@@ -46,10 +68,18 @@ appId: com.innocore.hrms.dev
       id: submit-leave
 - tapOn:
     id: submit-leave
+# After submitting, the view is scrolled down to the list: check the request there, then scroll back up for the notice.
+- assertVisible: Maestro e2e leave
+- scrollUntilVisible:
+    element:
+      id: leave-notice
+    direction: UP
 - assertVisible:
     id: leave-notice
-- assertVisible: Maestro e2e leave
 # Cancel the request again (confirm step).
+- scrollUntilVisible:
+    element:
+      id: cancel-.*
 - tapOn:
     id: cancel-.*
     index: 0
