@@ -9,7 +9,9 @@ import ipaddress
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
@@ -28,6 +30,8 @@ from app.models.employee import Employee
 from app.models.user import User
 from app.services.adms_protocol import _PIN_RE
 from app.services.biometric import DEFAULT_PENDING_STATES, PENDING_APPLY, PERM_BIOMETRIC, apply_pending
+from app.services import biometric as bio_svc
+from app.services import biometric_import as imp
 from app.services.time_rules import get_time_rules
 
 PunchState = Literal[
@@ -572,6 +576,7 @@ class ReprocessIn(BaseModel):
     device_id: Optional[int] = None
     pin: Optional[str] = Field(None, max_length=32)
     after_id: int = Field(0, ge=0)
+    import_batch: Optional[str] = Field(None, max_length=36)
 
 
 @router.post("/punches/reprocess")
@@ -585,11 +590,129 @@ async def reprocess(body: ReprocessIn, db: deps.DBDep, me: deps.CurrentUser):
         await _get_device(db, body.device_id)
     _audit(db, me_id, "BIOMETRIC_REPROCESS", "biometric_punch", body.state,
            {"state": body.state, "device_id": body.device_id, "pin": body.pin,
-            "after_id": body.after_id})
+            "after_id": body.after_id, "import_batch": body.import_batch})
     await commit_or_409(db)
     states = (set(DEFAULT_PENDING_STATES) if body.state == "pending"
               else {body.state})
     res = await apply_pending(SessionLocal, device_id=body.device_id,
                               pin=body.pin, states=states,
-                              after_id=body.after_id)
+                              after_id=body.after_id,
+                              import_batch=body.import_batch)
     return _bf(res)
+
+
+# ---------------- CSV / Excel import (Task 6) ----------------
+
+async def _default_offset_minutes(db) -> int:
+    try:
+        return int((await get_time_rules(db)).get(
+            "biometric.default_utc_offset_minutes", 330))
+    except (TypeError, ValueError):
+        return 330
+
+
+async def _read_import_form(request: Request, db):
+    """Multipart parse with the size guard applied before the body is read
+    (Content-Length) and again on the actual bytes. -> (filename, bytes,
+    identify_by, offset, skip_invalid)."""
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > imp.MAX_BYTES + 64 * 1024:
+        raise HTTPException(413, "File is larger than 5 MB")
+    try:
+        form = await request.form()
+    except Exception:
+        raise HTTPException(400, "Expected a multipart form with a 'file'")
+    f = form.get("file")
+    if f is None or not hasattr(f, "read"):
+        raise HTTPException(400, "Missing 'file'")
+    data = await f.read(imp.MAX_BYTES + 1)
+    if len(data) > imp.MAX_BYTES:
+        raise HTTPException(413, "File is larger than 5 MB")
+    identify_by = str(form.get("identify_by") or "employee_code").strip()
+    raw_off = form.get("utc_offset_minutes")
+    try:
+        offset = (int(str(raw_off).strip())
+                  if raw_off not in (None, "")
+                  else await _default_offset_minutes(db))
+    except ValueError:
+        raise HTTPException(400, "utc_offset_minutes must be an integer")
+    skip = str(form.get("skip_invalid") or "").strip().lower() == "true"
+    return f.filename or "", data, identify_by, offset, skip
+
+
+async def _analyse(db, request: Request):
+    filename, data, identify_by, offset, skip = await _read_import_form(
+        request, db)
+    try:
+        res = await imp.analyse(db, filename, data, identify_by, offset)
+    except imp.ImportFileError as exc:
+        raise HTTPException(exc.status, exc.message)
+    return filename, identify_by, skip, res
+
+
+@router.get("/import/template")
+async def import_template(
+        identify_by: Literal["employee_code", "pin"] = "employee_code"):
+    body = (imp.TEMPLATE_CODE if identify_by == "employee_code"
+            else imp.TEMPLATE_PIN)
+    return Response(body, media_type="text/csv", headers={
+        "Content-Disposition":
+            f'attachment; filename="punch_import_{identify_by}.csv"'})
+
+
+@router.post("/import/preview")
+async def import_preview(request: Request, db: deps.DBDep):
+    """multipart: file, identify_by (employee_code|pin), utc_offset_minutes
+    (default: time rule), skip_invalid (ignored). Writes nothing. Returns
+    {rows, valid, invalid, unknown_people (distinct people), duplicates_in_file,
+    already_imported (rows), date_range {from,to}|null, errors [{row,message}]
+    (first 200), sample (first 20)}."""
+    _f, _i, _s, res = await _analyse(db, request)
+    res.pop("_parsed")
+    return res
+
+
+@router.post("/import/commit")
+async def import_commit(request: Request, db: deps.DBDep, me: deps.CurrentUser):
+    """Same form as preview. 400 when invalid rows exist and skip_invalid is
+    not 'true'. Stores the raw taps (committed), then applies them quietly,
+    bounded to ~60s; when `remaining` > 0 continue with POST
+    /punches/reprocess {state: "pending", import_batch, after_id:
+    next_after_id}. Returns {import_batch, inserted, already_imported,
+    duplicates_in_file, skipped_invalid, unknown_people, by_state, backfill,
+    remaining, next_after_id}."""
+    me_id = me.id
+    filename, identify_by, skip, res = await _analyse(db, request)
+    parsed = res.pop("_parsed")
+    if res["invalid"] > 0 and not skip:
+        raise HTTPException(400, detail={"error": {
+            "code": "400",
+            "message": f"{res['invalid']} invalid row(s); fix them or "
+                       "import with skip_invalid",
+            "details": {"invalid": res["invalid"],
+                        "errors": res["errors"][:50]}}})
+    if not parsed.rows:
+        raise HTTPException(400, "No valid rows to import")
+    batch = str(uuid.uuid4())
+    inserted, _rows = await bio_svc.store_taps(
+        db, source="import", device=None, import_batch=batch,
+        taps=[(r.ident, r.when, None, None, f"import:{filename}"[:64],
+               r.user_id) for r in parsed.rows])
+    _audit(db, me_id, "BIOMETRIC_IMPORT", "biometric_punch", batch, {
+        "filename": filename[:200], "rows": res["rows"], "valid": res["valid"],
+        "inserted": inserted, "batch": batch, "identify_by": identify_by})
+    await commit_or_409(db)
+    ap = await apply_pending(SessionLocal, import_batch=batch,
+                             states={PENDING_APPLY}, deadline_s=60)
+    async with SessionLocal() as s2:
+        by_state = dict((await s2.execute(
+            select(BiometricPunch.state, func.count())
+            .where(BiometricPunch.import_batch == batch)
+            .group_by(BiometricPunch.state))).all())
+    return {
+        "import_batch": batch, "inserted": inserted,
+        "already_imported": res["already_imported"],
+        "duplicates_in_file": res["duplicates_in_file"],
+        "skipped_invalid": res["invalid"],
+        "unknown_people": res["unknown_people"],
+        "by_state": by_state, **_bf(ap)}

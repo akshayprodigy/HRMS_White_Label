@@ -70,11 +70,13 @@ def _dedupe_key(source_key: str, pin: str, when: datetime) -> str:
 
 async def store_taps(
     db, *, source: str, device: Optional[BiometricDevice],
-    taps: list[tuple[str, datetime, Optional[str], Optional[str], str]],
+    taps: list[tuple],
     import_batch: Optional[str] = None,
 ) -> tuple[int, list[BiometricPunch]]:
     """Insert raw taps (INSERT IGNORE on dedupe_key, so re-sent batches are
-    no-ops). taps = (pin, utc_time, status, verify, raw). Returns (number newly
+    no-ops). taps = (pin, utc_time, status, verify, raw[, user_id]); the optional
+    6th element pre-resolves the user (import by employee code), bypassing the
+    BiometricUserMap lookup for that tap. Returns (number newly
     inserted, the new rows). Initial state: PENDING_DEVICE when the device is
     not active, UNMAPPED when no user resolves, else PENDING_APPLY."""
     source_key = device.serial if device is not None else "import"
@@ -82,14 +84,19 @@ async def store_taps(
                      or device.status == BiometricDeviceStatus.ACTIVE)
     new_keys: list[str] = []
     resolved: dict[str, Optional[int]] = {}
-    for pin, when, status, verify, raw in taps:
+    for tap in taps:
+        pin, when, status, verify, raw = tap[:5]
+        override = tap[5] if len(tap) > 5 else None
         pin = (pin or "")[:PIN_MAX]
         when = as_utc(when)
         key = _dedupe_key(source_key, pin, when)
-        if pin not in resolved:
-            resolved[pin] = await resolve_user_id(
-                db, device.id if device is not None else None, pin)
-        uid = resolved[pin]
+        if override is not None:
+            uid = override
+        else:
+            if pin not in resolved:
+                resolved[pin] = await resolve_user_id(
+                    db, device.id if device is not None else None, pin)
+            uid = resolved[pin]
         if not device_active:
             state = _S.PENDING_DEVICE
         elif uid is None:
@@ -285,7 +292,9 @@ async def _apply_tap_tx(
                     raise ValueError(f"biometric_punch {bp_id} not found")
                 if only_states is not None and bp.state not in only_states:
                     return bp.state  # handled meanwhile by someone else
-                if reresolve:
+                if reresolve and not (
+                        bp.source == "import" and bp.user_id is not None):
+                    # import rows keep a pre-set identity (employee code)
                     bp.user_id = await resolve_user_id(db, bp.device_id, bp.pin)
                 await apply_punch(
                     db, bp, dedupe_seconds=dedupe_seconds, quiet=quiet)
@@ -329,6 +338,7 @@ async def apply_pending(
     limit: int = 500, dedupe_seconds: int = DEFAULT_DEDUPE_SECONDS,
     states=DEFAULT_PENDING_STATES, attempts: int = 4,
     after_id: int = 0, deadline_s: float = 60.0,
+    import_batch: Optional[str] = None,
 ) -> dict:
     """Back-fill (device approved / mapping added / reprocess). Takes a
     SESSION FACTORY (e.g. SessionLocal) and commits itself: every tap is
@@ -362,6 +372,8 @@ async def apply_pending(
             conds.append(BiometricPunch.device_id == device_id)
         if pin is not None:
             conds.append(BiometricPunch.pin == pin)
+        if import_batch is not None:
+            conds.append(BiometricPunch.import_batch == import_batch)
         if user_id is not None:
             maps = (await db.execute(select(BiometricUserMap).where(
                 BiometricUserMap.user_id == user_id))).scalars().all()
