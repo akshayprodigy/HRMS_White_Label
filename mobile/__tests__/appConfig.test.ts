@@ -110,3 +110,21 @@ describe('shift location tracking config', () => {
     expect((withKey.extra as { mapsEnabled: boolean }).mapsEnabled).toBe(true);
   });
 });
+
+describe('camera permissions (VisionCamera selfie)', () => {
+  const c = buildConfig('dev');
+  const plugins = c.plugins as unknown[];
+  const named = (n: string) => plugins.find((p) => p === n || (Array.isArray(p) && p[0] === n));
+  it('declares the iOS camera usage string and Android CAMERA, with no microphone', () => {
+    const picker = named('expo-image-picker') as [string, { cameraPermission: string; microphonePermission: unknown }];
+    expect(picker[1].cameraPermission).toMatch(/camera for your punch selfie/);
+    expect(picker[1].microphonePermission).toBe(false);
+    expect(c.android?.permissions).toContain('android.permission.CAMERA');
+    expect(c.android?.permissions).not.toContain('android.permission.RECORD_AUDIO');
+    expect(JSON.stringify(c.ios?.infoPlist ?? {})).not.toMatch(/NSMicrophoneUsageDescription/);
+  });
+  it('no longer uses expo-camera', () => {
+    expect(named('expo-camera')).toBeUndefined();
+    expect(JSON.stringify(c)).not.toContain('expo-camera');
+  });
+});

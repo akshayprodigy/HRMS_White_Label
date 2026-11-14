@@ -1,29 +1,29 @@
 import { createFaceSignal, facesToObservation } from '../src/features/punch/faceSignal';
-import type { FaceObservation } from '../src/features/punch/liveness';
+import { createChallengeEvaluator, type FaceObservation } from '../src/features/punch/liveness';
 
-const face = (yawAngle = 0, l = 0.9, r = 0.9) => ({ yawAngle, leftEyeOpenProbability: l, rightEyeOpenProbability: r });
+const face = (yawAngle = 0, l = 0.9, r = 0.9, trackingId = 1) => ({ yawAngle, leftEyeOpenProbability: l, rightEyeOpenProbability: r, trackingId });
 
 describe('faceSignal', () => {
-  it('maps exactly one face to a visible observation', () => {
-    expect(facesToObservation([face(12, 0.2, 0.3)])).toEqual({ faceVisible: true, leftEyeOpen: 0.2, rightEyeOpen: 0.3, yaw: 12 });
+  it('maps exactly one face to a visible observation, carrying the tracking id', () => {
+    expect(facesToObservation([face(12, 0.2, 0.3, 7)])).toEqual({ faceVisible: true, leftEyeOpen: 0.2, rightEyeOpen: 0.3, yaw: 12, trackingId: 7 });
   });
   it('0 faces and >1 faces are not visible', () => {
     expect(facesToObservation([])).toEqual({ faceVisible: false });
     expect(facesToObservation([face(), face()])).toEqual({ faceVisible: false });
   });
-  it('throttles but always delivers a visibility change, and unsubscribes', () => {
-    let t = 0;
-    const { source, pushFaces } = createFaceSignal(100, () => t);
+  it('delivers every callback (no throttle) so a one-sample closed-eye reading is not dropped, and unsubscribes', () => {
+    const { source, pushFaces } = createFaceSignal();
     const got: FaceObservation[] = [];
-    const unsub = source.subscribe((o) => got.push(o));
-    pushFaces([face()]); // t=0 delivered
-    t = 30; pushFaces([face()]); // dropped
-    t = 60; pushFaces([]); // visibility flip: delivered despite throttle
-    t = 70; pushFaces([]); // dropped
-    t = 200; pushFaces([face()]); // delivered
-    expect(got.map((o) => o.faceVisible)).toEqual([true, false, true]);
+    const ev = createChallengeEvaluator('blink');
+    let passed = false;
+    const unsub = source.subscribe((o) => { got.push(o); if (ev(o)) passed = true; });
+    pushFaces([face(0, 0.9, 0.9)]);
+    pushFaces([face(0, 0.1, 0.1)]); // a single, immediate closed sample
+    pushFaces([face(0, 0.9, 0.9)]);
+    expect(got).toHaveLength(3);
+    expect(passed).toBe(true);
     unsub();
-    t = 500; pushFaces([face()]);
+    pushFaces([face()]);
     expect(got).toHaveLength(3);
   });
 });

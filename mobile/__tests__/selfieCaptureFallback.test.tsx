@@ -9,6 +9,7 @@ jest.mock('expo-file-system', () => ({ File: class {}, Directory: class {}, Path
 jest.mock('expo-image-manipulator', () => ({ manipulateAsync: jest.fn(), SaveFormat: { JPEG: 'jpeg' } }));
 jest.mock('../src/features/punch/api', () => ({ compressSelfie: jest.fn(async (u: string) => u) }));
 jest.mock('../src/features/punch/store', () => ({ selfieFiles: { remove: jest.fn(async () => undefined) } }));
+jest.mock('expo-router', () => ({ useIsFocused: () => true }));
 jest.mock('../src/features/punch/faceCameraLoader', () => ({ loadFaceCamera: () => null }));
 
 describe('SelfieCapture without the native face module', () => {
