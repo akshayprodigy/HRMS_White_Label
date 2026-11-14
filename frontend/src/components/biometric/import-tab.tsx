@@ -5,7 +5,7 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { BackfillResp, COMMON_OFFSETS, downloadTextFile, utcText } from './biometric-utils';
-import { BackfillNotice, Th, inputCls, labelCls, useBackfill } from './shared';
+import { Th, inputCls, labelCls, useBackfill } from './shared';
 
 /** API timestamps are UTC instants; show them in the UTC convention. */
 const isoText = (v: string) => utcText(v);
@@ -24,7 +24,7 @@ interface CommitResult extends BackfillResp {
   skipped_invalid: number; unknown_people: number; by_state: Record<string, number>;
 }
 
-export const ImportTab: React.FC = () => {
+export const ImportTab: React.FC<{ backfill: ReturnType<typeof useBackfill> }> = ({ backfill }) => {
   const [file, setFile] = useState<File | null>(null);
   const [identifyBy, setIdentifyBy] = useState<'employee_code' | 'pin'>('employee_code');
   const [offset, setOffset] = useState('330');
@@ -36,9 +36,8 @@ export const ImportTab: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [commitErrors, setCommitErrors] = useState<{ row: number; message: string }[]>([]);
   const [fileKey, setFileKey] = useState(0);
-  const backfill = useBackfill();
 
-  const minutes = offset === 'custom' ? Number(customOffset) : Number(offset);
+  const minutes = offset === 'custom' && !customOffset.trim() ? NaN : offset === 'custom' ? Number(customOffset) : Number(offset);
 
   const form = (extra?: Record<string, string>) => {
     const f = new FormData();
@@ -264,7 +263,6 @@ export const ImportTab: React.FC = () => {
           )}
         </Card>
       )}
-      <BackfillNotice ctl={backfill} />
     </div>
   );
 };

@@ -8,11 +8,13 @@ import {
   BackfillResp, Device, PUNCH_STATES, PUNCH_STATE_VARIANT, Punch, REPROCESS_STATES,
   countsText, dayStartIso, localText, utcText,
 } from './biometric-utils';
-import { BackfillNotice, EmpOpt, EmployeePicker, Th, inputCls, labelCls, useBackfill } from './shared';
+import { EmpOpt, EmployeePicker, Th, inputCls, labelCls, useBackfill } from './shared';
 
 const PAGE = 50;
 
-export const PunchLogTab: React.FC<{ devices: Device[] }> = ({ devices }) => {
+export const PunchLogTab: React.FC<{
+  devices: Device[]; backfill: ReturnType<typeof useBackfill>; tick: number;
+}> = ({ devices, backfill, tick }) => {
   const [state, setState] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [source, setSource] = useState('');
@@ -45,20 +47,22 @@ export const PunchLogTab: React.FC<{ devices: Device[] }> = ({ devices }) => {
       if (id !== reqRef.current) return;
       setItems(r.data.items);
       setTotal(r.data.total);
+      if (r.data.items.length === 0 && r.data.total > 0 && offset > 0) {
+        setOffset(Math.max(0, (Math.ceil(r.data.total / PAGE) - 1) * PAGE));
+      }
       setError(null);
     } catch (err: any) {
       if (id === reqRef.current) setError(errMsg(err, 'Failed to load the punch log'));
     } finally {
       if (id === reqRef.current) setLoading(false);
     }
-  }, [state, deviceId, source, pin, emp, from, to, offset]);
+  }, [state, deviceId, source, pin, emp, from, to, offset, tick]);
 
   useEffect(() => {
     const t = window.setTimeout(load, 200);
     return () => window.clearTimeout(t);
   }, [load]);
 
-  const backfill = useBackfill(load);
 
   const filt = <T,>(set: (v: T) => void) => (v: T) => { set(v); setOffset(0); };
 
@@ -71,7 +75,7 @@ export const PunchLogTab: React.FC<{ devices: Device[] }> = ({ devices }) => {
       const r = await client.post<BackfillResp>(ENDPOINTS.BIOMETRIC.REPROCESS, body);
       toast.success(`Reprocessed: ${countsText(r.data.backfill ?? {})}`);
       if ((r.data.remaining ?? 0) > 0) {
-        backfill.start(r.data, { device_id: deviceId ? Number(deviceId) : null, pin: pin.trim() || undefined });
+        backfill.start(r.data, { state: rState, device_id: deviceId ? Number(deviceId) : null, pin: pin.trim() || undefined });
       }
       await load();
     } catch (err: any) {
@@ -143,12 +147,11 @@ export const PunchLogTab: React.FC<{ devices: Device[] }> = ({ devices }) => {
               {REPROCESS_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <Button variant="outline" onClick={reprocess} isLoading={reprocessing} disabled={backfill.busy}>Reprocess</Button>
+          <Button variant="outline" onClick={reprocess} isLoading={reprocessing} disabled={backfill.busy || reprocessing}>Reprocess</Button>
           <span className="text-xs text-gray-500">Uses the device and PIN filters above.</span>
         </div>
       </Card>
 
-      <BackfillNotice ctl={backfill} />
       {error && <div role="alert" className="p-3 rounded-lg bg-red-50 text-sm text-red-700">{error}</div>}
 
       <Card className="p-0">
@@ -169,7 +172,7 @@ export const PunchLogTab: React.FC<{ devices: Device[] }> = ({ devices }) => {
                     <span title={utcText(p.punch_time)}>{localText(p.punch_time)}</span>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                    {p.device_serial ?? (p.import_batch ? `Import ${p.import_batch.slice(0, 8)}` : p.source)}
+                    {(p.device_id != null ? (devices.find((d) => d.id === p.device_id)?.name || p.device_serial) : null) ?? (p.import_batch ? `Import ${p.import_batch.slice(0, 8)}` : p.source)}
                   </td>
                   <td className="px-3 py-2 font-mono">{p.pin}</td>
                   <td className="px-3 py-2">

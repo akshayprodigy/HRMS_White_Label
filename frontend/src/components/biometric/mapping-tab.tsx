@@ -1,16 +1,19 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, Button, Badge } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { BackfillResp, Device, DeviceUser, MappingInfo, countsText } from './biometric-utils';
-import { BackfillNotice, EmpOpt, EmployeePicker, Th, inputCls, labelCls, useBackfill } from './shared';
+import { EmpOpt, EmployeePicker, Th, inputCls, labelCls, useBackfill } from './shared';
 
 interface Pending409 { pin: string; emp: EmpOpt; msg: string }
 
-export const MappingTab: React.FC<{ devices: Device[]; reloadDevices: () => Promise<void> }> = ({
-  devices, reloadDevices,
+export const MappingTab: React.FC<{
+  devices: Device[]; reloadDevices: () => Promise<void>;
+  backfill: ReturnType<typeof useBackfill>; tick: number;
+}> = ({
+  devices, reloadDevices, backfill, tick,
 }) => {
   const [deviceId, setDeviceId] = useState<string>(''); // '' = global
   const [users, setUsers] = useState<DeviceUser[]>([]);
@@ -25,36 +28,39 @@ export const MappingTab: React.FC<{ devices: Device[]; reloadDevices: () => Prom
   const [newPin, setNewPin] = useState('');
   const [newEmp, setNewEmp] = useState<EmpOpt | null>(null);
   const devId = deviceId === '' ? null : Number(deviceId);
+  const reqRef = useRef(0);
 
   const load = useCallback(async () => {
+    const id = ++reqRef.current;
     setLoading(true);
     try {
       if (devId != null) {
         const r = await client.get<DeviceUser[]>(ENDPOINTS.BIOMETRIC.DEVICE_USERS(devId));
+        if (id !== reqRef.current) return;
         setUsers(r.data);
       } else {
         const r = await client.get<MappingInfo[]>(ENDPOINTS.BIOMETRIC.MAPPINGS, {
           params: q.trim() ? { q: q.trim() } : {},
         });
+        if (id !== reqRef.current) return;
         setMaps(r.data);
       }
       setError(null);
     } catch (err: any) {
-      setError(errMsg(err, 'Failed to load mappings'));
+      if (id === reqRef.current) setError(errMsg(err, 'Failed to load mappings'));
     } finally {
-      setLoading(false);
+      if (id === reqRef.current) setLoading(false);
     }
   }, [devId, q]);
 
   const refreshAll = useCallback(async () => { await load(); await reloadDevices(); }, [load, reloadDevices]);
-  const backfill = useBackfill(refreshAll);
 
   useEffect(() => {
     const t = window.setTimeout(load, devId == null ? 250 : 0);
     return () => window.clearTimeout(t);
-  }, [load, devId]);
+  }, [load, devId, tick]);
 
-  useEffect(() => { setPickingPin(null); setReplace(null); setUnmapId(null); backfill.dismiss(); }, [deviceId]); // eslint-disable-line
+  useEffect(() => { setUsers([]); setMaps([]); setPickingPin(null); setReplace(null); setUnmapId(null); }, [deviceId]);
 
   const putMap = async (pin: string, emp: EmpOpt, doReplace: boolean) => {
     setBusy(true);
@@ -64,15 +70,16 @@ export const MappingTab: React.FC<{ devices: Device[]; reloadDevices: () => Prom
         device_id: devId, pin, user_id: emp.user_id, replace: doReplace,
       });
       toast.success(`PIN ${pin} mapped to ${emp.name}: ${countsText(r.data.backfill ?? {})}`);
-      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: devId, pin });
+      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: devId, pin, state: 'pending' });
       setPickingPin(null);
       setReplace(null);
       setNewPin('');
       setNewEmp(null);
       await refreshAll();
     } catch (err: any) {
-      if (err?.response?.status === 409 && !doReplace) {
-        setReplace({ pin, emp, msg: errMsg(err, 'This PIN is already mapped to another employee.') });
+      const m409 = errMsg(err, 'This PIN is already mapped to another employee.');
+      if (err?.response?.status === 409 && !doReplace && /already mapped/i.test(m409)) {
+        setReplace({ pin, emp, msg: m409 });
       } else {
         setError(errMsg(err, 'Could not map the PIN'));
       }
@@ -166,7 +173,6 @@ export const MappingTab: React.FC<{ devices: Device[]; reloadDevices: () => Prom
         Mapping a PIN applies its held taps to attendance. Removing a mapping does not undo attendance already applied.
       </p>
 
-      <BackfillNotice ctl={backfill} />
       {error && <div role="alert" className="p-3 rounded-lg bg-red-50 text-sm text-red-700">{error}</div>}
 
       {devId != null ? (

@@ -11,6 +11,7 @@ export const inputCls =
 export const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 
 export interface BackfillScope {
+  state?: string;
   device_id?: number | null;
   pin?: string;
   import_batch?: string;
@@ -21,6 +22,7 @@ interface BackfillState {
   remaining: number;
   next: number | null;
   scope: BackfillScope;
+  stalled?: boolean;
 }
 
 /**
@@ -45,16 +47,19 @@ export const useBackfill = (onProgress?: () => void) => {
     if (!bf) return;
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { state: 'pending', after_id: bf.next };
+      const body: Record<string, unknown> = { state: bf.scope.state ?? 'pending', after_id: bf.next ?? 0 };
       if (bf.scope.device_id != null) body.device_id = bf.scope.device_id;
       if (bf.scope.pin) body.pin = bf.scope.pin;
       if (bf.scope.import_batch) body.import_batch = bf.scope.import_batch;
       const r = await client.post<BackfillResp>(ENDPOINTS.BIOMETRIC.REPROCESS, body);
+      const got = Object.values(r.data.backfill ?? {}).reduce((a, b) => a + b, 0);
+      const next = r.data.next_after_id ?? null;
       setBf({
         counts: sumCounts(bf.counts, r.data.backfill),
         remaining: r.data.remaining ?? 0,
-        next: r.data.next_after_id ?? null,
+        next,
         scope: bf.scope,
+        stalled: (r.data.remaining ?? 0) > 0 && got === 0 && next === bf.next,
       });
       onProgress?.();
     } catch (err: any) {
@@ -84,8 +89,9 @@ export const BackfillNotice: React.FC<{ ctl: ReturnType<typeof useBackfill> }> =
         {!done && <> <strong>{bf.remaining}</strong> taps still to process.</>}
       </span>
       <span className="flex items-center gap-2">
-        {!done && (
-          <Button size="sm" onClick={cont} isLoading={busy}>Continue</Button>
+        {!done && bf.stalled && <span className="text-sm">No progress — check the Punch log.</span>}
+        {!done && !bf.stalled && (
+          <Button size="sm" onClick={cont} isLoading={busy} disabled={busy}>Continue</Button>
         )}
         <Button size="sm" variant="outline" onClick={dismiss} disabled={busy}>Dismiss</Button>
       </span>

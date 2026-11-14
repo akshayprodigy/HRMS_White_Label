@@ -123,7 +123,7 @@ export const offsetLabel = (m: number): string => {
 };
 
 export const relTime = (iso: string | null, now: Date = new Date()): string => {
-  if (!iso) return 'never';
+  if (!iso) return 'Never';
   const secs = Math.max(0, Math.round((now.getTime() - parseServerDate(iso).getTime()) / 1000));
   if (secs < 60) return 'just now';
   const mins = Math.floor(secs / 60);

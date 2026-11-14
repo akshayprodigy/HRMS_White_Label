@@ -9,6 +9,7 @@ import { DevicesTab } from './devices-tab';
 import { MappingTab } from './mapping-tab';
 import { PunchLogTab } from './punch-log-tab';
 import { ImportTab } from './import-tab';
+import { BackfillNotice, useBackfill } from './shared';
 
 type Tab = 'devices' | 'mapping' | 'punches' | 'import';
 const TABS: { id: Tab; label: string }[] = [
@@ -38,6 +39,11 @@ export const BiometricDevices: React.FC = () => {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // Back-fill continuation lives here so a pending "Continue" survives tab switches.
+  const [tick, setTick] = useState(0);
+  const onProgress = useCallback(() => { reload(); setTick((t) => t + 1); }, [reload]);
+  const backfill = useBackfill(onProgress);
 
   return (
     <div className="p-8 space-y-5">
@@ -78,10 +84,12 @@ export const BiometricDevices: React.FC = () => {
 
       {error && <div role="alert" className="p-3 rounded-lg bg-red-50 text-sm text-red-700">{error}</div>}
 
-      {tab === 'devices' && <DevicesTab devices={devices} reload={reload} />}
-      {tab === 'mapping' && <MappingTab devices={devices ?? []} reloadDevices={reload} />}
-      {tab === 'punches' && <PunchLogTab devices={devices ?? []} />}
-      {tab === 'import' && <ImportTab />}
+      <BackfillNotice ctl={backfill} />
+
+      {tab === 'devices' && <DevicesTab devices={devices} reload={reload} backfill={backfill} />}
+      {tab === 'mapping' && <MappingTab devices={devices ?? []} reloadDevices={reload} backfill={backfill} tick={tick} />}
+      {tab === 'punches' && <PunchLogTab devices={devices ?? []} backfill={backfill} tick={tick} />}
+      {tab === 'import' && <ImportTab backfill={backfill} />}
     </div>
   );
 };

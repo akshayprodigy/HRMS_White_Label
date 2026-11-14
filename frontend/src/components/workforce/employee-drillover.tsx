@@ -1,5 +1,5 @@
-import { attendanceModeLabel } from '../biometric/biometric-utils';
 import React, { useEffect, useMemo, useState } from 'react';
+import { attendanceModeLabel } from '../biometric/biometric-utils';
 import {
   X,
   Download,

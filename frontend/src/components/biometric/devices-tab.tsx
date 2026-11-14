@@ -8,16 +8,17 @@ import {
   BackfillResp, COMMON_OFFSETS, Device, HEALTH_META, STATUS_VARIANT,
   countsText, offsetLabel, relTime, utcText, localText,
 } from './biometric-utils';
-import { BackfillNotice, Th, inputCls, labelCls, useBackfill } from './shared';
+import { Th, inputCls, labelCls, useBackfill } from './shared';
 
 type Confirm = { id: number; kind: 'disable' | 'delete' } | null;
 
-export const DevicesTab: React.FC<{ devices: Device[] | null; reload: () => Promise<void> }> = ({ devices, reload }) => {
+export const DevicesTab: React.FC<{
+  devices: Device[] | null; reload: () => Promise<void>; backfill: ReturnType<typeof useBackfill>;
+}> = ({ devices, reload, backfill }) => {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [rowError, setRowError] = useState<{ id: number; msg: string } | null>(null);
   const [editing, setEditing] = useState<Device | null>(null);
-  const backfill = useBackfill(reload);
 
   const run = async (id: number, fn: () => Promise<void>, fallback: string) => {
     setBusyId(id);
@@ -27,6 +28,7 @@ export const DevicesTab: React.FC<{ devices: Device[] | null; reload: () => Prom
       setConfirm(null);
       await reload();
     } catch (err: any) {
+      setConfirm(null);
       setRowError({ id, msg: errMsg(err, fallback) });
     } finally {
       setBusyId(null);
@@ -58,7 +60,6 @@ export const DevicesTab: React.FC<{ devices: Device[] | null; reload: () => Prom
 
   return (
     <div className="space-y-4">
-      <BackfillNotice ctl={backfill} />
       {anyBusy && busyId !== null && (
         <div role="status" className="p-3 rounded-lg bg-indigo-50 text-sm text-indigo-800">
           Working… approving a device with many held taps can take a minute or more. Please keep this page open.
@@ -124,15 +125,17 @@ export const DevicesTab: React.FC<{ devices: Device[] | null; reload: () => Prom
                             )}
                             {d.status !== 'disabled' && (
                               <Button size="sm" variant="outline" disabled={anyBusy}
-                                onClick={() => setConfirm({ id: d.id, kind: 'disable' })}>
+                                onClick={() => { setRowError(null); setConfirm({ id: d.id, kind: 'disable' }); }}>
                                 Disable
                               </Button>
                             )}
                             <Button size="sm" variant="outline" disabled={anyBusy} onClick={() => setEditing(d)}>Edit</Button>
-                            <Button size="sm" variant="ghost" disabled={anyBusy}
-                              onClick={() => setConfirm({ id: d.id, kind: 'delete' })}>
+                            <Button size="sm" variant="ghost" disabled={anyBusy || d.status === 'active'}
+                              title={d.status === 'active' ? 'Disable first' : undefined}
+                              onClick={() => { setRowError(null); setConfirm({ id: d.id, kind: 'delete' }); }}>
                               Delete
                             </Button>
+                            {d.status === 'active' && <span className="text-xs text-gray-400">Disable first</span>}
                           </div>
                         </td>
                       </tr>
@@ -190,9 +193,14 @@ const EditDevice: React.FC<{ device: Device; onClose: () => void; onSaved: () =>
   const [note, setNote] = useState(device.location_note ?? '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  React.useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose, saving]);
 
   const save = async () => {
-    const minutes = offsetSel === 'custom' ? Number(custom) : Number(offsetSel);
+    const minutes = offsetSel === 'custom' && !custom.trim() ? NaN : offsetSel === 'custom' ? Number(custom) : Number(offsetSel);
     if (!Number.isInteger(minutes) || minutes < -720 || minutes > 840) {
       setErr('UTC offset must be a whole number of minutes between -720 and 840.');
       return;
@@ -227,7 +235,7 @@ const EditDevice: React.FC<{ device: Device; onClose: () => void; onSaved: () =>
         <h3 className="text-base font-semibold text-gray-900">Edit device {device.serial}</h3>
         <div>
           <label className={labelCls} htmlFor="bd-name">Name</label>
-          <input id="bd-name" className={`${inputCls} w-full`} value={name} onChange={(e) => setName(e.target.value)} />
+          <input id="bd-name" maxLength={120} className={`${inputCls} w-full`} value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <div>
           <label className={labelCls} htmlFor="bd-offset">Device clock UTC offset</label>
@@ -247,7 +255,7 @@ const EditDevice: React.FC<{ device: Device; onClose: () => void; onSaved: () =>
         </div>
         <div>
           <label className={labelCls} htmlFor="bd-note">Location note</label>
-          <input id="bd-note" className={`${inputCls} w-full`} value={note} onChange={(e) => setNote(e.target.value)} />
+          <input id="bd-note" maxLength={200} className={`${inputCls} w-full`} value={note} onChange={(e) => setNote(e.target.value)} />
         </div>
         {err && <p role="alert" className="text-sm text-red-700">{err}</p>}
         <div className="flex justify-end gap-2">
