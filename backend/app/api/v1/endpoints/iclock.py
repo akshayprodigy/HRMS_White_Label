@@ -54,6 +54,8 @@ async def _gate(request: Request, db):
     except bio.IpNotAllowed:
         log.warning("iclock: SN %s from %s rejected by ip allow-list", sn, ip)
         return None, _text("ERROR", 403)
+    if dev is None:  # too many pending devices: ignore, device retries later
+        return None, _text("OK")
     return dev, None
 
 
@@ -83,10 +85,25 @@ async def cdata_post(request: Request, db: deps.DBDep):
     dev_id, offset = dev.id, dev.utc_offset_minutes
 
     if table == "ATTLOG":
+        # A fully malformed body parses to 0 records: the reply is `OK: 0`
+        # (so the device doesn't resend forever) and the Stamp is still kept.
         records, _errors = adms.parse_attlog(body)
         taps = [(r.pin, adms.to_utc(r.local_time, offset), r.status, r.verify,
                  r.raw) for r in records]
         new_ids: list[int] = []
+        if dev.status == BiometricDeviceStatus.PENDING:
+            from sqlalchemy import func, select
+            from app.models.biometric import BiometricPunch, BiometricPunchState
+            held = (await db.execute(
+                select(func.count()).select_from(BiometricPunch).where(
+                    BiometricPunch.device_id == dev_id,
+                    BiometricPunch.state == BiometricPunchState.PENDING_DEVICE)
+            )).scalar() or 0
+            if held >= bio.MAX_PENDING_TAPS_PER_DEVICE:
+                log.warning("iclock: pending device %s holds %s taps; "
+                            "dropping a batch of %s", dev.serial, held,
+                            len(taps))
+                return _text(adms.ok_count(len(records)))
 
         async def _store():
             d = await db.get(BiometricDevice, dev_id,

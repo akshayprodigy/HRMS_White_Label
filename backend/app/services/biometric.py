@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -397,31 +397,55 @@ async def apply_pending(
 
 DEFAULT_UTC_OFFSET_MINUTES = 330  # IST; time rule biometric.default_utc_offset_minutes
 PERM_BIOMETRIC = "biometric manage"
+# Pending (unapproved) devices an attacker can create by inventing serials.
+# Task 7 may turn these into time rules.
+MAX_PENDING_DEVICES = 50
+MAX_PENDING_TAPS_PER_DEVICE = 20000
+CAP_ALERT_TITLE = "Biometric device registrations are being refused"
 
 
 class IpNotAllowed(Exception):
     """Device IP is outside the device's ip_allowlist."""
 
 
+_TRUSTED_NETS = [__import__("ipaddress").ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
+    "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10")]
+
+
+def _is_trusted_hop(addr: str) -> bool:
+    """RFC1918 / loopback / link-local only. (ipaddress.is_private is too wide:
+    it also covers documentation ranges such as 203.0.113.0/24.)"""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip.version == n.version and ip in n for n in _TRUSTED_NETS)
+
+
 def client_ip(client_host: Optional[str], forwarded_for: Optional[str]) -> Optional[str]:
     """The device's IP. Behind a trusted proxy (X-Forwarded-For present AND the
-    TCP peer is a private / loopback address) the first X-Forwarded-For entry
-    is used; anything else is the TCP peer."""
+    TCP peer is private / loopback) walk X-Forwarded-For from the RIGHT,
+    skipping trusted private / loopback hops, and return the first untrusted
+    entry (the left part is client-controlled and never believed past that
+    point). If every entry is private (a LAN device behind nginx, which sets
+    X-Forwarded-For to $remote_addr) the RIGHT-most entry is returned: it was
+    written by the nearest trusted proxy, unlike the forgeable left part. An
+    unparseable entry falls back to the TCP peer. A public peer: the header is
+    ignored."""
     import ipaddress
-    if client_host and forwarded_for:
+    if not (client_host and forwarded_for and _is_trusted_hop(client_host)):
+        return client_host
+    entries = [e.strip() for e in forwarded_for.split(",")]
+    for entry in reversed(entries):
         try:
-            peer = ipaddress.ip_address(client_host)
-            trusted = peer.is_private or peer.is_loopback
+            ipaddress.ip_address(entry)
         except ValueError:
-            trusted = False
-        if trusted:
-            first = forwarded_for.split(",")[0].strip()
-            try:
-                ipaddress.ip_address(first)
-                return first
-            except ValueError:
-                pass
-    return client_host
+            return client_host
+        if not _is_trusted_hop(entry):
+            return entry
+    return entries[-1]
 
 
 def ip_allowed(allowlist: Optional[str], ip: Optional[str]) -> bool:
@@ -458,20 +482,56 @@ async def _notify_managers(db, title: str, message: str, device_id: int) -> None
     seeding) plus active HR-role users."""
     from app.models.user import Permission, Role
     from app.services import roster as roster_svc
+    ids = set((await db.execute(
+        select(User.id).join(User.roles).join(Role.permissions)
+        .where(User.is_active.is_(True), Permission.name == PERM_BIOMETRIC)
+    )).scalars().all())
+    ids |= set((await db.execute(
+        select(User.id).join(User.roles)
+        .where(User.is_active.is_(True), Role.name == "HR")
+    )).scalars().all())
+    await roster_svc.notify_many(
+        db, [(uid, title, message, "biometric_device", str(device_id))
+             for uid in sorted(ids)])
+
+
+async def _notify_after_commit(db, title: str, message: str, device_id: int) -> None:
+    """Notify in its OWN transaction, after the device change is committed. A
+    failure (lock conflict, deadlock, ...) is logged and rolled back; it can
+    never undo the device or leave a ghost object."""
     try:
-        ids = set((await db.execute(
-            select(User.id).join(User.roles).join(Role.permissions)
-            .where(User.is_active.is_(True), Permission.name == PERM_BIOMETRIC)
-        )).scalars().all())
-        ids |= set((await db.execute(
-            select(User.id).join(User.roles)
-            .where(User.is_active.is_(True), Role.name == "HR")
-        )).scalars().all())
-        await roster_svc.notify_many(
-            db, [(uid, title, message, "biometric_device", str(device_id))
-                 for uid in sorted(ids)])
-    except Exception:  # never fail a device request over a notification
+        await _notify_managers(db, title, message, device_id)
+        await db.commit()
+    except Exception:
         log.warning("biometric manager notification failed", exc_info=True)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+
+async def _alert_cap(db, now) -> None:
+    """Tell HR (at most once an hour) that registrations are being refused."""
+    from datetime import timedelta
+    from app.models.notification import Notification
+    try:
+        recent = (await db.execute(select(func.count()).select_from(
+            Notification).where(
+            Notification.title == CAP_ALERT_TITLE,
+            Notification.created_at >= now - timedelta(hours=1)))).scalar()
+        if not recent:
+            await _notify_managers(
+                db, CAP_ALERT_TITLE,
+                f"{MAX_PENDING_DEVICES} biometric devices are already pending "
+                "approval, so new serials are being ignored. Approve or "
+                "disable unknown devices.", 0)
+            await db.commit()
+    except Exception:
+        log.warning("biometric cap alert failed", exc_info=True)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 async def _get_or_register_once(
@@ -481,6 +541,8 @@ async def _get_or_register_once(
     last_seen_at / last_ip. Commits (the registration, the notification and the
     heartbeat are durable before any tap processing).
 
+    - Returns None (nothing inserted) when MAX_PENDING_DEVICES pending devices
+      already exist and `sn` is new; HR is told at most once an hour.
     - Raises IpNotAllowed (touching nothing) for a known device whose
       allow-list excludes `ip`.
     - Two racing first calls: the unique serial + a savepoint insert yield one
@@ -493,6 +555,15 @@ async def _get_or_register_once(
         BiometricDevice.serial == sn))).scalars().first()
     created = False
     if dev is None:
+        pending = (await db.execute(
+            select(func.count()).select_from(BiometricDevice).where(
+                BiometricDevice.status == BiometricDeviceStatus.PENDING)
+        )).scalar() or 0
+        if pending >= MAX_PENDING_DEVICES:
+            log.warning("biometric: %s pending devices, refusing to register "
+                        "SN %s from %s", pending, sn, ip)
+            await _alert_cap(db, now)
+            return None
         dev = BiometricDevice(
             serial=sn, status=BiometricDeviceStatus.PENDING,
             utc_offset_minutes=await _default_offset(db),
@@ -509,11 +580,12 @@ async def _get_or_register_once(
             if dev is None:
                 raise
     if created:
-        await _notify_managers(
+        await db.commit()  # the device is durable before anything else
+        await _notify_after_commit(
             db, "New biometric device waiting for approval",
             f"New biometric device {sn} is waiting for approval"
             + (f" (from {ip})" if ip else ""), dev.id)
-        await db.commit()
+        await db.refresh(dev)  # a failed notify rolls back and expires it
         return dev
     if not ip_allowed(dev.ip_allowlist, ip):
         raise IpNotAllowed(sn)
@@ -530,12 +602,13 @@ async def _get_or_register_once(
                 BiometricDevice.offline_alerted_at.is_not(None))
             .values(offline_alerted_at=None))
         cleared = res.rowcount == 1
-    if cleared:
-        await _notify_managers(
-            db, "Biometric device back online",
-            f"Biometric device {dev.name or sn} ({sn}) is back online", dev_id)
     await db.commit()
     await db.refresh(dev)
+    if cleared:
+        await _notify_after_commit(
+            db, "Biometric device back online",
+            f"Biometric device {dev.name or sn} ({sn}) is back online", dev_id)
+        await db.refresh(dev)
     return dev
 
 

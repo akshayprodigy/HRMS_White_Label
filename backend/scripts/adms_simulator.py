@@ -1,7 +1,7 @@
 """Emulate a ZKTeco / eSSL ADMS device for QA.
 
     python scripts/adms_simulator.py --base http://localhost:8005 --sn SIM001 \
-        [--pins 101,102] [--date 2031-01-06] [--offset 330] [--repeat]
+        [--pins 101,102] [--date 2031-01-06] [--repeat]
 
 Steps: handshake, OPERLOG (USER lines), ATTLOG (an in ~09:0x and out ~18:0x
 local tap per pin), getrequest. --repeat re-sends the same ATTLOG to show
@@ -19,8 +19,6 @@ def main() -> None:
     ap.add_argument("--sn", default="SIM001")
     ap.add_argument("--pins", default="101,102")
     ap.add_argument("--date", default="2031-01-06")
-    ap.add_argument("--offset", type=int, default=330,
-                    help="device clock offset from UTC in minutes (informational)")
     ap.add_argument("--repeat", action="store_true")
     a = ap.parse_args()
     date.fromisoformat(a.date)

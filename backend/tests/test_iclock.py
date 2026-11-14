@@ -3,7 +3,7 @@
 DB-backed on the real dev DB, far-future dates (2031), full teardown."""
 import asyncio
 import uuid
-from datetime import date, time
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -67,6 +67,10 @@ async def world():
             uids = [u for u in uids if u]
             devs = list((await db.execute(select(BiometricDevice.id).where(
                 BiometricDevice.serial.like(f"IC{sfx}%")))).scalars().all())
+            await db.execute(delete(Notification).where(
+                Notification.title == bio.CAP_ALERT_TITLE,
+                Notification.created_at >= datetime.now(timezone.utc)
+                - timedelta(minutes=30)))
             if devs:
                 await db.execute(delete(Notification).where(
                     Notification.resource_type == "biometric_device",
@@ -150,6 +154,12 @@ async def _notifs(uid, device_serial):
 def test_client_ip_rule():
     f = bio.client_ip
     assert f("127.0.0.1", "203.0.113.5, 10.0.0.1") == "203.0.113.5"
+    # spoofed leftmost private entry is never believed
+    assert f("127.0.0.1", "10.0.0.5, 203.0.113.9") == "203.0.113.9"
+    assert f("127.0.0.1", "203.0.113.1, 10.0.0.5, 198.51.100.2") == "198.51.100.2"
+    assert f("127.0.0.1", "10.0.0.5, 192.168.1.1") == "192.168.1.1"  # all private: nearest hop
+    assert f("172.18.0.4", "10.2.3.4") == "10.2.3.4"  # LAN device behind nginx
+    assert f("127.0.0.1", "10.0.0.5, junk") == "127.0.0.1"
     assert f("10.1.2.3", "203.0.113.5") == "203.0.113.5"
     assert f("172.18.0.4", "198.51.100.7") == "198.51.100.7"
     assert f("8.8.8.8", "203.0.113.5") == "8.8.8.8"       # untrusted peer
@@ -330,7 +340,7 @@ async def test_concurrent_first_handshakes_one_device_one_notification(
         client, world):
     s = sn(world, "j")
     rs = await asyncio.gather(*[
-        client.get("/iclock/cdata", params={"SN": s}) for _ in range(2)])
+        client.get("/iclock/cdata", params={"SN": s}) for _ in range(8)])
     assert all(r.status_code == 200 and "GET OPTION FROM" in r.text for r in rs)
     async with SessionLocal() as db:
         n = (await db.execute(select(BiometricDevice).where(
@@ -359,3 +369,52 @@ async def test_apply_failure_does_not_fail_response(client, world, monkeypatch):
     counts = await bio.apply_pending(SessionLocal, pin=pin)
     assert sum(counts.values()) == 2
     assert len(await _attendance(uid)) == 1
+
+
+async def test_spoofed_xff_cannot_pass_allowlist(client, world):
+    s = sn(world, "l")
+    await client.get("/iclock/cdata", params={"SN": s})
+    await _set(s, ip_allowlist="10.0.0.0/8")
+    # attacker prepends a private IP; the right-most untrusted hop is public
+    r = await client.get("/iclock/cdata", params={"SN": s}, headers={
+        "X-Forwarded-For": "10.0.0.5, 203.0.113.9"})
+    assert (r.status_code, r.text) == (403, "ERROR")
+
+
+async def test_pending_device_cap(client, world, monkeypatch):
+    monkeypatch.setattr(bio, "MAX_PENDING_DEVICES", 0)
+    s = sn(world, "m")
+    for _ in range(2):
+        r = await client.get("/iclock/cdata", params={"SN": s})
+        assert (r.status_code, r.text) == (200, "OK")
+    assert await _dev(s) is None
+    async with SessionLocal() as db:
+        n = (await db.execute(select(Notification).where(
+            Notification.user_id == world["hr"],
+            Notification.title == bio.CAP_ALERT_TITLE))).scalars().all()
+    if world["has_hr"]:
+        assert len(n) == 1  # throttled to one per hour
+
+
+async def test_pending_taps_cap(client, world, monkeypatch):
+    monkeypatch.setattr(bio, "MAX_PENDING_TAPS_PER_DEVICE", 2)
+    s, pin = sn(world, "n"), world["pin"]
+    r = await client.post("/iclock/cdata", params={"SN": s, "table": "ATTLOG"},
+                          content=attlog(pin))
+    assert r.text == "OK: 2" and len(await _punches(pin)) == 2
+    r = await client.post("/iclock/cdata", params={"SN": s, "table": "ATTLOG"},
+                          content=attlog(pin, date(2031, 1, 8)))
+    assert r.text == "OK: 2" and len(await _punches(pin)) == 2
+
+
+async def test_notify_failure_does_not_undo_device(client, world, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+    from app.services import roster as roster_svc
+
+    async def boom(*a, **k):
+        raise OperationalError("x", {}, Exception(1020, "Record has changed"))
+    monkeypatch.setattr(roster_svc, "notify_many", boom)
+    s = sn(world, "o")
+    r = await client.get("/iclock/cdata", params={"SN": s})
+    assert r.status_code == 200 and f"GET OPTION FROM: {s}" in r.text
+    assert (await _dev(s)) is not None
