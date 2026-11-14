@@ -75,7 +75,7 @@ export const PunchLogTab: React.FC<{
       const r = await client.post<BackfillResp>(ENDPOINTS.BIOMETRIC.REPROCESS, body);
       toast.success(`Reprocessed: ${countsText(r.data.backfill ?? {})}`);
       if ((r.data.remaining ?? 0) > 0) {
-        backfill.start(r.data, { state: rState, device_id: deviceId ? Number(deviceId) : null, pin: pin.trim() || undefined });
+        backfill.start(r.data, { state: rState, device_id: deviceId ? Number(deviceId) : null, label: devices.find((d) => String(d.id) === deviceId)?.name || devices.find((d) => String(d.id) === deviceId)?.serial, pin: pin.trim() || undefined });
       }
       await load();
     } catch (err: any) {
@@ -174,8 +174,8 @@ export const PunchLogTab: React.FC<{
                   <td className="px-3 py-2 whitespace-nowrap text-gray-600">
                     {(p.device_id != null ? (devices.find((d) => d.id === p.device_id)?.name || p.device_serial) : null) ?? (p.import_batch ? `Import ${p.import_batch.slice(0, 8)}` : p.source)}
                   </td>
-                  <td className="px-3 py-2 font-mono">{p.pin}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 font-mono whitespace-nowrap">{p.pin}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
                     {p.user_name ? <>{p.user_name} <span className="text-xs text-gray-500">{p.employee_code}</span></> : <span className="text-gray-400">—</span>}
                   </td>
                   <td className="px-3 py-2">

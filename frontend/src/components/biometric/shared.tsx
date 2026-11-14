@@ -15,6 +15,7 @@ export interface BackfillScope {
   device_id?: number | null;
   pin?: string;
   import_batch?: string;
+  label?: string; // display name for the device (not part of the scope key)
 }
 
 interface BackfillState {
@@ -103,7 +104,7 @@ export const BackfillNotice: React.FC<{ ctl: ReturnType<typeof useBackfill> }> =
         const done = bf.remaining === 0;
         const label = [
           bf.scope.import_batch ? `import ${bf.scope.import_batch.slice(0, 8)}` : '',
-          bf.scope.device_id != null ? `device ${bf.scope.device_id}` : '',
+          bf.scope.device_id != null ? `device ${bf.scope.label || bf.scope.device_id}` : '',
           bf.scope.pin ? `PIN ${bf.scope.pin}` : '',
         ].filter(Boolean).join(', ');
         return (
@@ -205,8 +206,8 @@ export const EmployeePicker: React.FC<{
   );
 };
 
-export const Th: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
-  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
+export const Th: React.FC<{ children?: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
+  <th className={`${className} px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap`}>
     {children}
   </th>
 );

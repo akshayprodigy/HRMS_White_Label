@@ -39,7 +39,7 @@ export const DevicesTab: React.FC<{
     run(d.id, async () => {
       const r = await client.post<BackfillResp>(ENDPOINTS.BIOMETRIC.DEVICE_APPROVE(d.id));
       toast.success(`Device approved: ${countsText(r.data.backfill ?? {})}`);
-      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: d.id });
+      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: d.id, label: d.name || d.serial });
     }, 'Could not approve the device');
 
   const disable = (d: Device) =>
@@ -87,7 +87,7 @@ export const DevicesTab: React.FC<{
               <thead className="bg-gray-50">
                 <tr>
                   <Th>Device</Th><Th>Status</Th><Th>Health</Th><Th>Last seen</Th><Th>Last IP</Th>
-                  <Th>Pending taps</Th><Th>Unmapped PINs</Th><Th>Enrolled</Th><Th>Actions</Th>
+                  <Th>Pending taps</Th><Th>Unmapped PINs</Th><Th>Enrolled</Th><Th className="sticky right-0 bg-gray-50 border-l border-gray-100">Actions</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -116,7 +116,7 @@ export const DevicesTab: React.FC<{
                         <td className="px-3 py-2">{d.pending_punches}</td>
                         <td className="px-3 py-2">{d.unmapped_pins}</td>
                         <td className="px-3 py-2">{d.enrolled_users}</td>
-                        <td className="px-3 py-2">
+                        <td className="px-3 py-2 sticky right-0 bg-white border-l border-gray-100">
                           <div className="flex items-center gap-2 flex-wrap">
                             {(d.status === 'pending' || d.status === 'disabled') && (
                               <Button size="sm" onClick={() => approve(d)} isLoading={rowBusy} disabled={anyBusy}>

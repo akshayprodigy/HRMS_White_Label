@@ -7,7 +7,7 @@ import { errMsg } from '../schedule-delegations-utils';
 import { BackfillResp, Device, DeviceUser, MappingInfo, countsText } from './biometric-utils';
 import { EmpOpt, EmployeePicker, Th, inputCls, labelCls, useBackfill } from './shared';
 
-interface Pending409 { pin: string; emp: EmpOpt; msg: string }
+interface Pending409 { pin: string; emp: EmpOpt; cur: string }
 
 export const MappingTab: React.FC<{
   devices: Device[]; reloadDevices: () => Promise<void>;
@@ -28,6 +28,8 @@ export const MappingTab: React.FC<{
   const [newPin, setNewPin] = useState('');
   const [newEmp, setNewEmp] = useState<EmpOpt | null>(null);
   const devId = deviceId === '' ? null : Number(deviceId);
+  const devObj = devices.find((d) => d.id === devId);
+  const devLabel = devObj ? (devObj.name || devObj.serial) : undefined;
   const reqRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -70,7 +72,7 @@ export const MappingTab: React.FC<{
         device_id: devId, pin, user_id: emp.user_id, replace: doReplace,
       });
       toast.success(`PIN ${pin} mapped to ${emp.name}: ${countsText(r.data.backfill ?? {})}`);
-      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: devId, pin, state: 'pending' });
+      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: devId, pin, state: 'pending', label: devLabel });
       setPickingPin(null);
       setReplace(null);
       setNewPin('');
@@ -79,7 +81,7 @@ export const MappingTab: React.FC<{
     } catch (err: any) {
       const m409 = errMsg(err, 'This PIN is already mapped to another employee.');
       if (err?.response?.status === 409 && !doReplace && /already mapped/i.test(m409)) {
-        setReplace({ pin, emp, msg: m409 });
+        setReplace({ pin, emp, cur: /mapped to (.+?)\.?$/i.exec(m409)?.[1] ?? 'another employee' });
       } else {
         setError(errMsg(err, 'Could not map the PIN'));
       }
@@ -110,7 +112,7 @@ export const MappingTab: React.FC<{
     try {
       const r = await client.post<BackfillResp & { created: number }>(ENDPOINTS.BIOMETRIC.MAPPINGS_AUTO, { device_id: devId });
       toast.success(`Auto-mapped ${r.data.created} PIN(s): ${countsText(r.data.backfill ?? {})}`);
-      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: devId });
+      if ((r.data.remaining ?? 0) > 0) backfill.start(r.data, { device_id: devId, label: devLabel });
       await refreshAll();
     } catch (err: any) {
       setError(errMsg(err, 'Auto-map failed'));
@@ -141,7 +143,7 @@ export const MappingTab: React.FC<{
   const replaceBox = (pin: string) =>
     replace && replace.pin === pin ? (
       <div className="mt-2 p-2 rounded-lg bg-amber-50 text-sm text-amber-900 space-y-2">
-        <p>{replace.msg} Replace it with {replace.emp.name}?</p>
+        <p>PIN {pin} is mapped to {replace.cur} — replace with {replace.emp.name}?</p>
         <div className="flex gap-2">
           <Button size="sm" disabled={disabled} onClick={() => putMap(pin, replace.emp, true)}>Yes, replace</Button>
           <Button size="sm" variant="outline" disabled={disabled} onClick={() => setReplace(null)}>Cancel</Button>
@@ -270,7 +272,7 @@ export const MappingTab: React.FC<{
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {maps.length === 0 && (
-                    <tr><td colSpan={5} className="px-3 py-8 text-center text-gray-500">{loading ? 'Loading…' : 'No mappings yet.'}</td></tr>
+                    <tr><td colSpan={5} className="px-3 py-8 text-center text-gray-500">{loading ? 'Loading…' : q.trim() ? 'No mappings match your search.' : 'No mappings yet.'}</td></tr>
                   )}
                   {maps.map((m) => {
                     const dev = devices.find((d) => d.id === m.device_id);

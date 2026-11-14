@@ -446,9 +446,11 @@ async def put_mapping(body: MappingIn, db: deps.DBDep, me: deps.CurrentUser):
     if existing is not None:
         if existing.user_id != body.user_id:
             if not body.replace:
+                cur = (await _user_info(db, [existing.user_id])).get(
+                    existing.user_id, {})
                 raise HTTPException(
-                    409, "PIN is already mapped to another user; "
-                         "send replace=true to change it")
+                    409, f"PIN {pin} is already mapped to "
+                         f"{cur.get('user_name') or 'another user'}.")
             prev_user = existing.user_id
             existing.user_id = body.user_id
             existing.created_by_id = me_id
