@@ -1,4 +1,5 @@
 """Asset state service (Roadmap v2 Phase 5, Task 3). DB-backed; cleans up."""
+import asyncio
 import random
 import string
 import uuid
@@ -24,33 +25,33 @@ async def env():
     code = "T" + "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
     ids = {"users": [], "emps": [], "assets": [], "cat": None, "code": code}
     try:
-      async with SessionLocal() as db:
-          users = [User(email=f"svc_{sfx}_{i}@test.com", full_name=f"Svc {i}",
-                        hashed_password=get_password_hash("x"), is_active=True)
-                   for i in range(3)]
-          db.add_all(users)
-          await db.commit()
-          ids["users"] = [u.id for u in users]
-          emps = [
-              Employee(user_id=users[1].id, employee_id=f"SV{sfx}A", department="QA",
-                       designation="T", date_of_joining=date(2020, 1, 1),
-                       status=EmployeeStatus.ACTIVE),
-              Employee(user_id=users[2].id, employee_id=f"SV{sfx}B", department="QA",
-                       designation="T", date_of_joining=date(2020, 1, 1),
-                       status=EmployeeStatus.INACTIVE),
-          ]
-          cat = AssetCategory(name=f"SvcCat {sfx}", code=code)
-          db.add_all(emps + [cat])
-          await db.commit()
-          ids["emps"] = [e.id for e in emps]
-          ids["cat"] = cat.id
-          assets = [Asset(asset_tag=f"{code}-{i:06d}", category_id=cat.id,
-                          name=f"Laptop {i}", serial_no=f"SN{sfx}{i}")
-                    for i in range(1, 6)]
-          db.add_all(assets)
-          await db.commit()
-          ids["assets"] = [a.id for a in assets]
-      yield ids
+        async with SessionLocal() as db:
+            users = [User(email=f"svc_{sfx}_{i}@test.com", full_name=f"Svc {i}",
+                          hashed_password=get_password_hash("x"), is_active=True)
+                     for i in range(3)]
+            db.add_all(users)
+            await db.commit()
+            ids["users"] = [u.id for u in users]
+            emps = [
+                Employee(user_id=users[1].id, employee_id=f"SV{sfx}A", department="QA",
+                         designation="T", date_of_joining=date(2020, 1, 1),
+                         status=EmployeeStatus.ACTIVE),
+                Employee(user_id=users[2].id, employee_id=f"SV{sfx}B", department="QA",
+                         designation="T", date_of_joining=date(2020, 1, 1),
+                         status=EmployeeStatus.INACTIVE),
+            ]
+            cat = AssetCategory(name=f"SvcCat {sfx}", code=code)
+            db.add_all(emps + [cat])
+            await db.commit()
+            ids["emps"] = [e.id for e in emps]
+            ids["cat"] = cat.id
+            assets = [Asset(asset_tag=f"{code}-{i:06d}", category_id=cat.id,
+                            name=f"Laptop {i}", serial_no=f"SN{sfx}{i}")
+                      for i in range(1, 6)]
+            db.add_all(assets)
+            await db.commit()
+            ids["assets"] = [a.id for a in assets]
+        yield ids
     finally:
         async with SessionLocal() as db:
             await db.execute(delete(AuditLog).where(
@@ -263,3 +264,19 @@ async def test_next_asset_tag_edge(env):
         await db.flush()
         assert await svc.next_asset_tag(db, cat) == f"{c}-000021"
         await db.rollback()
+
+
+async def test_concurrent_allocate_distinct_assets_no_deadlock(env):
+    async def one(idx):
+        async with SessionLocal() as db:
+            asset = await svc.get_asset_for_update(db, env["assets"][idx])
+            await asyncio.sleep(0.3)  # both hold their asset lock
+            emp = await db.get(Employee, env["emps"][0])
+            actor = await db.get(User, env["users"][0])
+            await svc.allocate(db, asset=asset, employee=emp, actor=actor)
+            await asyncio.sleep(0.3)
+            await db.commit()
+    await asyncio.gather(one(3), one(4))
+    async with SessionLocal() as db:
+        rows = await svc.open_allocations_for_employee(db, env["emps"][0])
+        assert sorted(r.asset_id for r in rows) == sorted(env["assets"][3:5])

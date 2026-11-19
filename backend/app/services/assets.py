@@ -65,13 +65,19 @@ async def get_asset_for_update(db, asset_id) -> Asset:
     return asset
 
 
-async def open_allocation(db, asset_id) -> Optional[EmployeeAsset]:
+async def open_allocation(db, asset_id, *, lock: bool = False
+                          ) -> Optional[EmployeeAsset]:
+    """Open allocation for an asset. Use lock=True only when the caller updates
+    the row it finds; a locking read of an empty range takes a gap lock that
+    deadlocks concurrent inserts."""
+    q = (select(EmployeeAsset).where(
+        EmployeeAsset.asset_id == asset_id,
+        EmployeeAsset.status == "allocated")
+        .order_by(EmployeeAsset.id.desc()))
+    if lock:
+        q = q.with_for_update()
     return (await db.execute(
-        select(EmployeeAsset).where(
-            EmployeeAsset.asset_id == asset_id,
-            EmployeeAsset.status == "allocated")
-        .order_by(EmployeeAsset.id.desc()).with_for_update()
-        .execution_options(populate_existing=True))).scalars().first()
+        q.execution_options(populate_existing=True))).scalars().first()
 
 
 async def open_allocations_for_employee(db, employee_id) -> list[EmployeeAsset]:
@@ -118,7 +124,7 @@ async def return_asset(db, *, asset, actor, returned_date=None, condition=None,
             "A returned asset can only go to in_stock, in_repair or retired")
     if asset.status != AssetStatus.ALLOCATED:
         raise AssetStateError("Asset is not allocated")
-    alloc = await open_allocation(db, asset.id)
+    alloc = await open_allocation(db, asset.id, lock=True)
     if alloc is None:
         raise AssetStateError("Asset has no open allocation to return")
     rdate = returned_date or date.today()
@@ -153,7 +159,7 @@ async def mark_lost(db, *, asset, actor, remarks) -> Optional[EmployeeAsset]:
         "from_status": from_status, "to_status": AssetStatus.LOST,
         "remarks": remarks.strip()}
     if from_status == AssetStatus.ALLOCATED:
-        alloc = await open_allocation(db, asset.id)
+        alloc = await open_allocation(db, asset.id, lock=True)
         if alloc is not None:
             alloc.status = "lost"
             alloc.returned_date = date.today()
