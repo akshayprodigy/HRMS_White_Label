@@ -33,7 +33,7 @@ Branch: `feature/roadmap-v2-phase5`, created from `main` after `main` was fast-f
 - Run tests with `docker exec erp-united-exploration-dev-backend-1 python -m pytest tests/<file> -q -p no:cacheprovider`. The full suite excludes `tests/test_admin_auth.py` and `tests/test_leave_flows.py`. Its only known failures are the 2 in `test_hr_employees.py`.
 - **Test users must use `@test.com` emails.** An invalid email such as `@x.test` makes `GET /hr/employees` return 500 for everyone (known bug).
 - Locking helpers live in `backend/app/api/v1/endpoints/roster_common.py`: `lock_row`, `lock_row_retry`, `commit_or_409`.
-- Audit: `from app.api.v1.endpoints.hr import log_audit` (signature `log_audit(db, user_id, action, resource_type, resource_id, details, request)`; `request` may be `None`).
+- Audit: `hr.log_audit` **commits** and needs a real `request` — never call it inside a locked transaction. `services/assets.py` writes `AuditLog` rows itself (no commit); endpoints commit once via `commit_or_409`. The service must not import from `app/api/...` (hr.py imports the service).
 - Notifications: `roster_svc.notify_many(db, rows)` (`app/services/roster.py`), best-effort. Set `resource_type`, `resource_id` and `event_type` so the header bell can deep-link.
 - Time rules: `TIME_RULE_DEFAULTS` in `app/services/time_rules.py` (key → (default, description)) plus validation in the update function (pattern: `attendance.offline_max_hours`). Web tab: `frontend/src/components/workforce/time-rules-tab.tsx`.
 - Permission seeding follows `backend/alembic/versions/d8e9f0a1b2c3_grant_attendance_edit.py` (insert-if-absent + `INSERT IGNORE` grants; `FROM DUAL`).
@@ -272,7 +272,7 @@ Allowed transitions (anything else raises `AssetStateError` with a readable mess
 | retired | set_status (reinstate) | – | – | – | – |
 | lost | set_status (found) | – | – | – | – |
 
-Every transition calls `log_audit` with resource_type `"asset"`.
+Every transition adds an `AuditLog` row (resource_type `"asset"`) without committing.
 
 - [ ] **Step 1:** Write the tests (real DB, fixture creates 1 category, 2 employees, assets; teardown purges):
   - allocate → status allocated + one open allocation row with `identifier == asset_tag`
