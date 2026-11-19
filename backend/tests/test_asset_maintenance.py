@@ -185,3 +185,65 @@ async def test_unknown_404(api):
     r = await api.delete(f"{P}/maintenance/99999999", headers=api.hr)
     assert r.status_code == 404
 
+
+
+async def test_lost_move_to_repair_409(api, cat):
+    a = await mk(api, cat)
+    r = await api.post(f"{P}/{a['id']}/lost", headers=api.hr,
+                       json={"remarks": "stolen"})
+    assert r.status_code == 200, r.text
+    r = await post(api, a["id"], kind="repair", move_to_repair=True)
+    assert r.status_code == 409
+
+
+async def test_patch_null_future_and_vendor(api, cat):
+    a = await mk(api, cat)
+    m = (await post(api, a["id"], vendor="  ")).json()
+    assert m["vendor"] is None
+    fut = (date.today() + timedelta(days=3)).isoformat()
+    for js in ({"kind": None}, {"description": None}, {"cost_paise": None},
+               {"started_on": None}, {"started_on": fut},
+               {"completed_on": fut}):
+        r = await api.patch(f"{P}/maintenance/{m['id']}", headers=api.hr,
+                            json=js)
+        assert r.status_code == 422, (js, r.status_code)
+    r = await post(api, a["id"], completed_on=fut)
+    assert r.status_code == 422
+
+
+async def test_patch_completed_on_completes_and_no_reopen(api, cat):
+    a = await mk(api, cat)
+    m = (await post(api, a["id"], kind="repair", move_to_repair=True)).json()
+    r = await api.patch(f"{P}/maintenance/{m['id']}", headers=api.hr,
+                        json={"completed_on": TODAY})
+    assert r.status_code == 200 and r.json()["completed_on"] == TODAY
+    assert await status_of(api, a["id"]) == "in_stock"
+    r = await api.patch(f"{P}/maintenance/{m['id']}", headers=api.hr,
+                        json={"completed_on": None})
+    assert r.status_code == 422 and "reopened" in r.text
+
+
+async def test_delete_last_open_repair_returns_stock(api, cat):
+    a = await mk(api, cat)
+    m1 = (await post(api, a["id"], kind="repair", move_to_repair=True)).json()
+    m2 = (await post(api, a["id"], kind="repair", move_to_repair=True)).json()
+    r = await api.delete(f"{P}/maintenance/{m1['id']}", headers=api.hr)
+    assert r.status_code == 200
+    assert await status_of(api, a["id"]) == "in_repair"
+    r = await api.delete(f"{P}/maintenance/{m2['id']}", headers=api.hr)
+    assert r.status_code == 200
+    assert await status_of(api, a["id"]) == "in_stock"
+
+
+async def test_order_id_tiebreak(api, cat):
+    a = await mk(api, cat)
+    m1 = (await post(api, a["id"])).json()
+    m2 = (await post(api, a["id"])).json()
+    lst = (await api.get(f"{P}/{a['id']}/maintenance", headers=api.hr)).json()
+    assert [x["id"] for x in lst] == [m2["id"], m1["id"]]
+
+
+async def test_by_tag_not_shadowed(api, cat):
+    a = await mk(api, cat)
+    r = await api.get(f"{P}/by-tag/{a['asset_tag']}", headers=api.hr)
+    assert r.status_code == 200 and r.json()["id"] == a["id"]

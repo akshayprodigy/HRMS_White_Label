@@ -1,6 +1,6 @@
 """Asset maintenance log (Roadmap v2 Phase 5, Task 5). Mounted at /assets
-BEFORE the register router so /assets/maintenance/{mid} is never shadowed.
-Every route needs 'asset manage'.
+AFTER the register router so its static paths (by-tag, summary) win; nothing
+there shadows the two-segment /maintenance/{mid}. Every route needs 'asset manage'.
 
 Writes: lock asset row -> maintenance row -> service call -> commit_or_409
 once. Audit rows are added with db.add (never hr.log_audit: it commits)."""
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
 from app.api import deps
-from app.api.v1.endpoints.roster_common import commit_or_409
+from app.api.v1.endpoints.roster_common import commit_or_409, guard_conflicts
 from app.models.asset import Asset, AssetMaintenance, AssetStatus
 from app.models.audit import AuditLog
 from app.services import assets as svc
@@ -43,6 +43,7 @@ class MaintenanceIn(BaseModel):
     move_to_repair: bool = False
 
     _strip = field_validator("description")(_nonblank)
+    _vendor = field_validator("vendor")(lambda v: (v or "").strip() or None)
 
 
 class MaintenancePatch(BaseModel):
@@ -57,6 +58,7 @@ class MaintenancePatch(BaseModel):
     return_to_stock: bool = True
 
     _strip = field_validator("description")(_nonblank)
+    _vendor = field_validator("vendor")(lambda v: (v or "").strip() or None)
 
 
 def _out(m: AssetMaintenance) -> dict:
@@ -80,6 +82,8 @@ def _check_dates(started: date, completed: Optional[date],
         raise HTTPException(422, "Start date cannot be in the future")
     if completed is not None and completed < started:
         raise HTTPException(422, "Completion date cannot be before start date")
+    if completed is not None and completed > date.today():
+        raise HTTPException(422, "Completion date cannot be in the future")
 
 
 async def _lock_asset(db, asset_id: int) -> Asset:
@@ -106,6 +110,29 @@ async def _lock_entry(db, mid: int):
     return asset, m
 
 
+async def _return_if_no_open_repair(db, a, m, actor, remarks: str) -> bool:
+    """Asset back to stock when it is in_repair and no OTHER open repair
+    remains. Locking read: every inserter holds the asset row lock first."""
+    if a.status != AssetStatus.IN_REPAIR:
+        return False
+    other = (await db.execute(
+        select(AssetMaintenance.id).where(
+            AssetMaintenance.asset_id == a.id,
+            AssetMaintenance.kind == "repair",
+            AssetMaintenance.completed_on.is_(None),
+            AssetMaintenance.id != m.id).limit(1).with_for_update()
+    )).first()
+    if other is not None:
+        return False
+    try:
+        await svc.set_status(db, asset=a, actor=actor,
+                             to_status=AssetStatus.IN_STOCK, remarks=remarks)
+    except svc.AssetStateError as e:
+        await db.rollback()
+        raise HTTPException(409, str(e))
+    return True
+
+
 @router.get("/{asset_id}/maintenance")
 async def list_maintenance(db: deps.DBDep, asset_id: int) -> Any:
     if (await db.execute(select(Asset.id).where(
@@ -119,6 +146,7 @@ async def list_maintenance(db: deps.DBDep, asset_id: int) -> Any:
 
 
 @router.post("/{asset_id}/maintenance")
+@guard_conflicts
 async def add_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
                           asset_id: int, body: MaintenanceIn) -> Any:
     _check_dates(body.started_on, body.completed_on)
@@ -151,6 +179,7 @@ async def add_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
 
 
 @router.patch("/maintenance/{mid}")
+@guard_conflicts
 async def patch_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
                             mid: int, body: MaintenancePatch) -> Any:
     data = body.model_dump(exclude_unset=True)
@@ -163,8 +192,16 @@ async def patch_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
     if complete and m.completed_on is not None:
         await db.rollback()
         raise HTTPException(409, "Maintenance entry is already completed")
+    if m.completed_on is not None and "completed_on" in data \
+            and data["completed_on"] is None:
+        await db.rollback()
+        raise HTTPException(
+            422, "Completed maintenance can't be reopened")
     if complete and data.get("completed_on") is None:
         data["completed_on"] = date.today()
+    # setting completed_on on an open entry is a completion too
+    completing = m.completed_on is None and \
+        data.get("completed_on") is not None
     started = data.get("started_on", m.started_on)
     completed = data["completed_on"] if "completed_on" in data \
         else m.completed_on
@@ -177,30 +214,18 @@ async def patch_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
         setattr(m, k, v)
     await db.flush()
     returned = False
-    if complete and return_to_stock and a.status == AssetStatus.IN_REPAIR:
-        other = (await db.execute(
-            select(AssetMaintenance.id).where(
-                AssetMaintenance.asset_id == a.id,
-                AssetMaintenance.kind == "repair",
-                AssetMaintenance.completed_on.is_(None),
-                AssetMaintenance.id != m.id).limit(1))).first()
-        if other is None:
-            try:
-                await svc.set_status(db, asset=a, actor=current_user,
-                                     to_status=AssetStatus.IN_STOCK,
-                                     remarks="Maintenance completed")
-            except svc.AssetStateError as e:
-                await db.rollback()
-                raise HTTPException(409, str(e))
-            returned = True
+    if completing and return_to_stock:
+        returned = await _return_if_no_open_repair(
+            db, a, m, current_user, "Maintenance completed")
     _audit(db, current_user, "ASSET_MAINTENANCE_UPDATE", a.id, {
         "maintenance_id": m.id, "fields": sorted(data.keys()),
-        "completed": bool(complete), "returned_to_stock": returned})
+        "completed": completing, "returned_to_stock": returned})
     await commit_or_409(db)
     return _out(m)
 
 
 @router.delete("/maintenance/{mid}")
+@guard_conflicts
 async def delete_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
                              mid: int) -> Any:
     a, m = await _lock_entry(db, mid)
@@ -208,8 +233,15 @@ async def delete_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
         await db.rollback()
         raise HTTPException(
             409, "Maintenance records with cost or completion are kept")
-    _audit(db, current_user, "ASSET_MAINTENANCE_DELETE", a.id, {
-        "maintenance_id": m.id, "kind": m.kind})
+    was_repair = m.kind == "repair"
     await db.delete(m)
+    await db.flush()
+    returned = False
+    if was_repair:
+        returned = await _return_if_no_open_repair(
+            db, a, m, current_user, "Open repair entry deleted")
+    _audit(db, current_user, "ASSET_MAINTENANCE_DELETE", a.id, {
+        "maintenance_id": mid, "kind": m.kind,
+        "returned_to_stock": returned})
     await commit_or_409(db)
     return {"deleted": True, "id": mid}

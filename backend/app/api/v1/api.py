@@ -55,10 +55,10 @@ api_router.include_router(
 api_router.include_router(
     biometric.router, prefix="/biometric", tags=["biometric"])
 # Asset register: needs 'asset manage', NOT attendance-gated.
-# Registered first so /assets/maintenance/{mid} is not shadowed by /assets/{id}.
+api_router.include_router(assets.router, prefix="/assets", tags=["assets"])
+# After assets: /assets/by-tag/{tag} etc. must win over /{asset_id}/maintenance.
 api_router.include_router(
     asset_maintenance.router, prefix="/assets", tags=["assets"])
-api_router.include_router(assets.router, prefix="/assets", tags=["assets"])
 api_router.include_router(
     notification_actions.router, prefix="/notifications",
     tags=["notifications"])

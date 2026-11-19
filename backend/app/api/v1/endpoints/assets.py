@@ -15,7 +15,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
 from app.api import deps
-from app.api.v1.endpoints.roster_common import commit_or_409
+from app.api.v1.endpoints.roster_common import commit_or_409, guard_conflicts
 from app.models.asset import (
     Asset, AssetCategory, AssetMaintenance, AssetStatus,
 )
@@ -265,6 +265,7 @@ async def list_categories(db: deps.DBDep) -> Any:
 
 
 @router.post("/categories")
+@guard_conflicts
 async def create_category(db: deps.DBDep, body: CategoryIn) -> Any:
     name = body.name.strip()
     if not name:
@@ -281,6 +282,7 @@ async def create_category(db: deps.DBDep, body: CategoryIn) -> Any:
 
 
 @router.patch("/categories/{category_id}")
+@guard_conflicts
 async def patch_category(db: deps.DBDep, category_id: int,
                          body: CategoryPatch) -> Any:
     c = (await db.execute(select(AssetCategory).where(
@@ -409,6 +411,7 @@ async def list_assets(
 
 
 @router.post("")
+@guard_conflicts
 async def create_asset(db: deps.DBDep, current_user: deps.CurrentUser,
                        body: AssetIn) -> Any:
     cat = await _active_category(db, body.category_id)
@@ -449,6 +452,7 @@ async def get_asset(db: deps.DBDep, asset_id: int) -> Any:
 
 
 @router.patch("/{asset_id}")
+@guard_conflicts
 async def patch_asset(db: deps.DBDep, asset_id: int, body: AssetPatch) -> Any:
     a = await _lock(db, asset_id)
     data = body.model_dump(exclude_unset=True)
@@ -486,6 +490,7 @@ async def _transition(db, asset_id: int, fn) -> dict:
 
 
 @router.post("/{asset_id}/allocate")
+@guard_conflicts
 async def allocate(db: deps.DBDep, current_user: deps.CurrentUser,
                    asset_id: int, body: AllocateIn) -> Any:
     async def go(a):
@@ -499,6 +504,7 @@ async def allocate(db: deps.DBDep, current_user: deps.CurrentUser,
 
 
 @router.post("/{asset_id}/return")
+@guard_conflicts
 async def return_(db: deps.DBDep, current_user: deps.CurrentUser,
                   asset_id: int, body: ReturnIn) -> Any:
     async def go(a):
@@ -510,6 +516,7 @@ async def return_(db: deps.DBDep, current_user: deps.CurrentUser,
 
 
 @router.post("/{asset_id}/lost")
+@guard_conflicts
 async def lost(db: deps.DBDep, current_user: deps.CurrentUser,
                asset_id: int, body: LostIn) -> Any:
     async def go(a):
@@ -519,6 +526,7 @@ async def lost(db: deps.DBDep, current_user: deps.CurrentUser,
 
 
 @router.post("/{asset_id}/status")
+@guard_conflicts
 async def set_status(db: deps.DBDep, current_user: deps.CurrentUser,
                      asset_id: int, body: StatusIn) -> Any:
     async def go(a):
