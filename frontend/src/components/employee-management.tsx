@@ -55,6 +55,11 @@ import { EmergencyInfoCard } from './safety/emergency-info-card';
 import { NightConsentPanel } from './safety/night-consent-panel';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import type { UserRole } from '../types/erp';
+import { AssetFormDialog } from './assets/asset-form-dialog';
+import { AllocateFromRegisterDialog, RowActionDialog } from './assets/employee-asset-dialogs';
+import { OutstandingAssets } from './assets/outstanding-assets';
+import type { AssetDetail as RegAsset } from './assets/asset-utils';
+import { errMsg as assetErrMsg } from './schedule-delegations-utils';
 
 const errMsg = (err: any, fallback = 'Something went wrong'): string => {
   const detail = err?.response?.data?.detail;
@@ -2451,18 +2456,9 @@ const AssetsTab = ({ emp }: { emp: any }) => {
   const empId = emp?.id || emp?.employee_id_num;
   const [assets, setAssets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [dialog, setDialog] = useState<null | 'allocate' | 'new'>(null);
+  const [rowAction, setRowAction] = useState<null | { kind: 'return' | 'lost'; assetId: number; label: string }>(null);
   const [actioningId, setActioningId] = useState<number | null>(null);
-  const [form, setForm] = useState({
-    asset_type: '',
-    model: '',
-    identifier: '',
-    serial_no: '',
-    condition: '',
-    remarks: '',
-    issued_date: new Date().toISOString().slice(0, 10),
-  });
 
   const fetchAssets = async () => {
     if (!empId) return;
@@ -2480,40 +2476,23 @@ const AssetsTab = ({ emp }: { emp: any }) => {
 
   useEffect(() => { fetchAssets(); }, [empId]);
 
-  const resetForm = () => setForm({
-    asset_type: '', model: '', identifier: '', serial_no: '',
-    condition: '', remarks: '',
-    issued_date: new Date().toISOString().slice(0, 10),
-  });
-
-  const handleCreate = async () => {
-    if (!form.asset_type.trim() || !form.model.trim()) {
-      toast.error('Asset type and model are required');
-      return;
-    }
-    setSubmitting(true);
+  // A newly registered asset is allocated to this employee straight away.
+  const allocateNew = async (a: RegAsset) => {
+    setDialog(null);
     try {
-      await client.post(ENDPOINTS.HR.EMPLOYEE_ASSETS(empId), {
-        asset_type: form.asset_type.trim(),
-        model: form.model.trim(),
-        identifier: form.identifier.trim() || null,
-        serial_no: form.serial_no.trim() || null,
-        condition: form.condition.trim() || null,
-        remarks: form.remarks.trim() || null,
-        issued_date: form.issued_date || null,
-      });
-      toast.success('Asset assigned');
-      setShowForm(false);
-      resetForm();
-      fetchAssets();
+      await client.post(ENDPOINTS.ASSETS.ALLOCATE(a.id), { employee_id: Number(empId) });
+      toast.success(`${a.asset_tag} created and allocated`);
     } catch (err: any) {
-      toast.error(errMsg(err, 'Failed to assign asset'));
-    } finally {
-      setSubmitting(false);
+      toast.error(`${a.asset_tag} was created but could not be allocated: ${assetErrMsg(err, 'Failed')}`);
     }
+    fetchAssets();
   };
 
   const handleReturn = async (asset: any) => {
+    if (asset.asset_id) {
+      setRowAction({ kind: 'return', assetId: asset.asset_id, label: asset.identifier || asset.model });
+      return;
+    }
     if (!confirm(`Mark "${asset.model}" as returned?`)) return;
     setActioningId(asset.id);
     try {
@@ -2531,6 +2510,10 @@ const AssetsTab = ({ emp }: { emp: any }) => {
   };
 
   const handleMarkLost = async (asset: any) => {
+    if (asset.asset_id) {
+      setRowAction({ kind: 'lost', assetId: asset.asset_id, label: asset.identifier || asset.model });
+      return;
+    }
     if (!confirm(`Mark "${asset.model}" as lost? This is recorded in the audit log.`)) return;
     setActioningId(asset.id);
     try {
@@ -2560,59 +2543,22 @@ const AssetsTab = ({ emp }: { emp: any }) => {
 
   return (
     <div className="space-y-8 animate-in fade-in">
-       <Card className="p-8 border-slate-200 shadow-sm bg-white flex items-center justify-between">
+       <Card className="p-8 border-slate-200 shadow-sm bg-white flex items-center justify-between gap-4 flex-wrap">
           <div>
              <h4 className="text-xl font-black text-[#0F172A] tracking-tight uppercase">Assigned Corporate Assets</h4>
              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
                {assets.length} record{assets.length === 1 ? '' : 's'} • Inventory & resource tracking
              </p>
           </div>
-          <Button className="bg-blue-600 font-black uppercase text-[10px] tracking-widest h-11 px-8" onClick={() => setShowForm(s => !s)}>
-            <Plus className="mr-2" size={14} /> Assign Asset
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button variant="outline" className="h-11 px-6 font-black uppercase text-[10px] tracking-widest" onClick={() => setDialog('new')}>
+              Add new asset
+            </Button>
+            <Button className="bg-blue-600 font-black uppercase text-[10px] tracking-widest h-11 px-8" onClick={() => setDialog('allocate')}>
+              <Plus className="mr-2" size={14} /> Allocate from register
+            </Button>
+          </div>
        </Card>
-
-       {showForm && (
-         <Card className="p-8 border-blue-600 border-2 shadow-xl animate-in slide-in-from-top duration-300">
-            <h5 className="text-[10px] font-black text-blue-600 uppercase tracking-[0.2em] mb-6">New Asset Provisioning</h5>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-               <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase">Asset Type *</label>
-                  <Input value={form.asset_type} onChange={e => setForm(f => ({ ...f, asset_type: e.target.value }))} placeholder="Laptop, Phone, Monitor…" className="h-11 font-black" />
-               </div>
-               <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase">Model / Name *</label>
-                  <Input value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} placeholder="e.g. iPhone 15 Pro" className="h-11 font-black" />
-               </div>
-               <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase">Internal ID</label>
-                  <Input value={form.identifier} onChange={e => setForm(f => ({ ...f, identifier: e.target.value }))} placeholder="e.g. AST-PH-001" className="h-11 font-black" />
-               </div>
-               <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase">Serial Number</label>
-                  <Input value={form.serial_no} onChange={e => setForm(f => ({ ...f, serial_no: e.target.value }))} placeholder="Required for warranty" className="h-11 font-black" />
-               </div>
-               <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase">Condition on Issue</label>
-                  <Input value={form.condition} onChange={e => setForm(f => ({ ...f, condition: e.target.value }))} placeholder="e.g. Brand New" className="h-11 font-black" />
-               </div>
-               <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase">Issued Date</label>
-                  <Input type="date" value={form.issued_date} onChange={e => setForm(f => ({ ...f, issued_date: e.target.value }))} className="h-11 font-black" />
-               </div>
-               <div className="md:col-span-3 space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase">Remarks</label>
-                  <Input value={form.remarks} onChange={e => setForm(f => ({ ...f, remarks: e.target.value }))} placeholder="Anything HR or finance should know" className="h-11 font-black" />
-               </div>
-               <div className="md:col-span-3 flex justify-end gap-3">
-                  <Button variant="outline" className="h-11 px-6 font-black uppercase text-[10px]" onClick={() => { setShowForm(false); resetForm(); }} disabled={submitting}>Cancel</Button>
-                  <Button className="h-11 px-8 bg-blue-600 font-black uppercase text-[10px]" onClick={handleCreate} disabled={submitting}>
-                    {submitting ? <><Loader2 size={14} className="animate-spin mr-2" />Assigning…</> : 'Issue Asset'}
-                  </Button>
-               </div>
-            </div>
-         </Card>
-       )}
 
        {loading ? (
          <div className="p-12 flex justify-center"><Loader2 size={28} className="text-blue-600 animate-spin" /></div>
@@ -2620,7 +2566,7 @@ const AssetsTab = ({ emp }: { emp: any }) => {
          <Card className="p-16 border-slate-200 bg-white text-center">
            <HardDrive size={36} className="mx-auto text-slate-300 mb-3" />
            <p className="text-sm font-black text-slate-500 uppercase tracking-widest">No assets assigned</p>
-           <p className="text-xs font-bold text-slate-400 mt-1">Use "Assign Asset" to issue a laptop, phone, or other corporate hardware.</p>
+           <p className="text-xs font-bold text-slate-400 mt-1">Use "Allocate from register" to issue a laptop, phone, or other corporate hardware.</p>
          </Card>
        ) : (
          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -2638,9 +2584,10 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                      {asset.status}
                    </span>
                  </div>
-                 <h5 className="text-lg font-black text-[#0F172A] tracking-tight">{asset.model}</h5>
+                 {asset.identifier && <p className="text-lg font-black text-blue-700" data-testid="asset-tag">{asset.identifier}</p>}
+                 <h5 className="text-base font-black text-[#0F172A] tracking-tight">{asset.model}</h5>
                  <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mt-1">
-                   {asset.asset_type}{asset.identifier ? ` · ${asset.identifier}` : ''}
+                   {asset.asset_type}
                  </p>
                  <div className="mt-6 pt-6 border-t border-slate-50 grid grid-cols-2 gap-4">
                    <InfoItem label="Serial #" value={asset.serial_no || '—'} />
@@ -2652,7 +2599,7 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                    <p className="mt-4 text-[10px] text-slate-500 italic line-clamp-2" title={asset.remarks}>{asset.remarks}</p>
                  )}
                  <div className="mt-6 flex flex-col gap-2">
-                   {asset.status === 'allocated' && (
+                   {asset.status === 'allocated' ? (
                      <>
                        <Button
                          variant="ghost"
@@ -2660,7 +2607,7 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                          onClick={() => handleReturn(asset)}
                          disabled={busy}
                        >
-                         <Undo2 size={12} className="mr-2" /> Mark Returned
+                         <Undo2 size={12} className="mr-2" /> Return
                        </Button>
                        <Button
                          variant="ghost"
@@ -2671,20 +2618,32 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                          <AlertCircle size={12} className="mr-2" /> Mark Lost
                        </Button>
                      </>
+                   ) : (
+                     <Button
+                       variant="ghost"
+                       className="w-full h-9 text-[9px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50"
+                       onClick={() => handleDelete(asset)}
+                       disabled={busy}
+                     >
+                       <Trash2 size={12} className="mr-2" /> Remove Record
+                     </Button>
                    )}
-                   <Button
-                     variant="ghost"
-                     className="w-full h-9 text-[9px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50"
-                     onClick={() => handleDelete(asset)}
-                     disabled={busy}
-                   >
-                     <Trash2 size={12} className="mr-2" /> Remove Record
-                   </Button>
                  </div>
                </Card>
              );
            })}
          </div>
+       )}
+
+       {dialog === 'allocate' && (
+         <AllocateFromRegisterDialog empId={empId} onClose={() => setDialog(null)} onDone={() => { setDialog(null); fetchAssets(); }} />
+       )}
+       {dialog === 'new' && (
+         <AssetFormDialog onClose={() => setDialog(null)} onSaved={allocateNew} />
+       )}
+       {rowAction && (
+         <RowActionDialog kind={rowAction.kind} assetId={rowAction.assetId} label={rowAction.label}
+           onClose={() => setRowAction(null)} onDone={() => { setRowAction(null); fetchAssets(); }} />
        )}
     </div>
   );
@@ -3708,7 +3667,9 @@ const ExitManagementTab = ({ emp }: { emp: any }) => {
             </Button>
           )}
           {r.status === 'clearance' && exitData.all_cleared && (
-            <Button onClick={handleRelease} disabled={!!actionLoading} className="h-10 px-6 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase hover:bg-slate-800 disabled:opacity-50">
+            <Button onClick={handleRelease} disabled={!!actionLoading || (exitData.outstanding_assets?.length ?? 0) > 0}
+              title={(exitData.outstanding_assets?.length ?? 0) > 0 ? 'Return all assets before release' : undefined}
+              className="h-10 px-6 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase hover:bg-slate-800 disabled:opacity-50">
               <LogOut size={16} className="mr-2" /> Final Release
             </Button>
           )}
@@ -3723,6 +3684,7 @@ const ExitManagementTab = ({ emp }: { emp: any }) => {
             </Button>
           )}
         </div>
+        <OutstandingAssets items={exitData.outstanding_assets} hr />
         {r.hr_note && (
           <div className="mt-6 p-4 rounded-xl border border-slate-200 bg-slate-50">
             <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Latest HR note</p>

@@ -343,6 +343,7 @@ async def test_legacy_category_reuse_identifier_lost_and_null(api, world):
     assert r.status_code == 200, r.text
     first = r.json()
     assert first["identifier"] == f"AST-{sfx.upper()}"
+    assert first["asset_id"] is not None
     async with SessionLocal() as db:
         row = await db.get(EmployeeAsset, first["id"])
         a = await db.get(Asset, row.asset_id)

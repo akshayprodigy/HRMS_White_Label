@@ -40,6 +40,9 @@ import { toast } from 'sonner';
 import { UserRole } from '../types/erp';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
+import { MyAssetsSection } from './assets/my-assets-section';
+import { OutstandingAssets } from './assets/outstanding-assets';
+import { NavDetail, takeNav } from '../lib/pending-nav';
 
 const errMsg = (err: any, fallback = 'Something went wrong'): string => {
   const detail = err?.response?.data?.detail;
@@ -92,6 +95,22 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
       setExitData(res.data);
     } catch { /* no resignation */ }
   };
+
+  // Deep link: the employee's own asset_request notifications land here.
+  useEffect(() => {
+    const apply = (d: NavDetail | null | undefined) => {
+      if (d?.resourceType === 'asset_request') setActiveSection('assets');
+    };
+    apply(takeNav('profile')); // arrived before this page mounted
+    const h = (ev: Event) => {
+      const d = (ev as CustomEvent).detail as NavDetail | undefined;
+      if (d?.tab !== 'profile') return;
+      takeNav('profile');
+      apply(d);
+    };
+    window.addEventListener('erp:navigate', h);
+    return () => window.removeEventListener('erp:navigate', h);
+  }, []);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -1044,102 +1063,6 @@ const MyDocumentsSection = () => {
   );
 };
 
-const MyAssetsSection = () => {
-  const [assets, setAssets] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      try {
-        const res = await client.get(ENDPOINTS.HR.MY_ASSETS);
-        setAssets(res.data || []);
-      } catch (e: any) {
-        if (e?.response?.status !== 404) {
-          toast.error(errMsg(e, 'Failed to load assets'));
-        }
-        setAssets([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, []);
-
-  const tone: Record<string, string> = {
-    allocated: 'bg-blue-50 text-blue-700 border-blue-200',
-    returned: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    lost: 'bg-red-50 text-red-700 border-red-200',
-  };
-
-  return (
-    <div className="space-y-8">
-      <section>
-        <h3 className="text-[10px] font-black text-[#94A3B8] uppercase tracking-[0.2em]">My Assigned Assets</h3>
-        <p className="text-xs text-slate-400 mt-1">Hardware and equipment HR has issued to you. Read-only — contact HR if anything looks wrong.</p>
-      </section>
-
-      {loading ? (
-        <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 text-blue-600 animate-spin" /></div>
-      ) : assets.length === 0 ? (
-        <div className="p-12 bg-slate-50 rounded-3xl border border-dashed border-slate-200 text-center">
-          <Briefcase size={36} className="mx-auto text-slate-300 mb-3" />
-          <p className="text-sm font-black text-slate-500 uppercase tracking-widest">No assets on record</p>
-          <p className="text-xs text-slate-400 mt-1 font-medium">When HR issues you hardware, it will appear here.</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {assets.map(a => (
-            <Card key={a.id} className="p-6 border-slate-200 bg-white">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
-                  <Briefcase size={18} />
-                </div>
-                <span className={cn('text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full border', tone[a.status] || 'bg-slate-100 text-slate-700 border-slate-200')}>
-                  {a.status}
-                </span>
-              </div>
-              <p className="text-base font-black text-[#0F172A]">{a.model}</p>
-              <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mt-1">
-                {a.asset_type}{a.identifier ? ` · ${a.identifier}` : ''}
-              </p>
-              <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-2 gap-3 text-[11px] font-bold text-slate-500">
-                <div>
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Serial</p>
-                  <p className="text-slate-700 mt-0.5">{a.serial_no || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Issued</p>
-                  <p className="text-slate-700 mt-0.5">
-                    {a.issued_date ? new Date(a.issued_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
-                  </p>
-                </div>
-                {a.condition && (
-                  <div>
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Condition</p>
-                    <p className="text-slate-700 mt-0.5">{a.condition}</p>
-                  </div>
-                )}
-                {a.returned_date && (
-                  <div>
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Returned</p>
-                    <p className="text-slate-700 mt-0.5">
-                      {new Date(a.returned_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                    </p>
-                  </div>
-                )}
-              </div>
-              {a.remarks && (
-                <p className="mt-4 text-[10px] text-slate-500 italic line-clamp-2" title={a.remarks}>{a.remarks}</p>
-              )}
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
 const ResignationSection = ({ exitData, empProfile, onSubmitResignation, onWithdraw, onExitInterviewOpen, fetchExitData }: any) => {
   if (!exitData || !exitData.resignation) {
     // No active resignation — show submit button
@@ -1237,6 +1160,10 @@ const ResignationSection = ({ exitData, empProfile, onSubmitResignation, onWithd
               ))}
             </div>
           </div>
+        )}
+
+        {r.status !== 'released' && r.status !== 'withdrawn' && r.status !== 'rejected' && (
+          <div className="mb-6"><OutstandingAssets items={exitData.outstanding_assets} /></div>
         )}
 
         {/* Exit Interview Status */}

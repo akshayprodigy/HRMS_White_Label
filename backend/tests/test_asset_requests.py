@@ -378,3 +378,14 @@ async def test_concurrent_double_submit(api, world):
         n = len((await db.execute(select(AssetRequest.id).where(
             AssetRequest.category_id == world["cat"]["a"]))).all())
     assert n == 1
+
+
+async def test_employee_categories_active_only(api, world):
+    r = await api.get(f"{P}/categories", headers=api.plain)
+    assert r.status_code == 200, r.text
+    mine = {c["id"]: c for c in r.json() if str(world["sfx"]) in c["name"]}
+    assert set(mine) == {world["cat"]["a"], world["cat"]["b"]}
+    assert set(mine[world["cat"]["a"]]) == {"id", "name", "code"}
+    names = [c["name"] for c in r.json()]
+    assert names == sorted(names)
+    assert (await api.get(f"{P}/categories")).status_code == 401

@@ -5,7 +5,7 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { Modal } from './modal';
-import { Asset, AssetRequest, inputCls, labelCls, todayIso } from './asset-utils';
+import { Asset, AssetRequest, inputCls, labelCls, serverSafeToday } from './asset-utils';
 
 export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; onDone: () => void }> = ({ req, onClose, onDone }) => {
   const [all, setAll] = useState(false);
@@ -13,7 +13,7 @@ export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; on
   const [dq, setDq] = useState('');
   const [items, setItems] = useState<Asset[]>([]);
   const [pick, setPick] = useState<Asset | null>(null);
-  const [date, setDate] = useState(todayIso());
+  const [date, setDate] = useState(serverSafeToday());
   const [dateTouched, setDateTouched] = useState(false);
   const [listErr, setListErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -91,7 +91,7 @@ export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; on
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className={labelCls} htmlFor="fl-date">Issue date</label>
-          <input id="fl-date" type="date" max={todayIso()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
+          <input id="fl-date" type="date" max={serverSafeToday()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
         </div>
         <div>
           <label className={labelCls} htmlFor="fl-cond">Condition</label>

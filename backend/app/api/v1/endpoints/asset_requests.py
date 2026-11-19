@@ -205,6 +205,17 @@ async def create_request(
     return await _detail(db, rid)
 
 
+@router.get("/categories")
+async def request_categories(
+    db: deps.DBDep, current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """Active categories an employee may request from (declared before /{id})."""
+    rows = (await db.execute(
+        select(AssetCategory).where(AssetCategory.is_active.is_(True))
+        .order_by(AssetCategory.name))).scalars().all()
+    return [{"id": c.id, "name": c.name, "code": c.code} for c in rows]
+
+
 @router.get("/my")
 async def my_requests(
     db: deps.DBDep, current_user: User = Depends(deps.get_current_user),

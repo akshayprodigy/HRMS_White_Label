@@ -676,6 +676,7 @@ export const ENDPOINTS = {
     MAINTENANCE_ITEM: (mid: number) => `/assets/maintenance/${mid}`,
     REQUESTS: '/asset-requests',
     REQUESTS_MY: '/asset-requests/my',
+    REQUEST_CATEGORIES: '/asset-requests/categories',
     REQUEST_CANCEL: (id: number) => `/asset-requests/${id}/cancel`,
     REQUEST_DECIDE: (id: number) => `/asset-requests/${id}/decide`,
     REQUEST_FULFIL: (id: number) => `/asset-requests/${id}/fulfil`,

@@ -6,7 +6,7 @@ import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { EmpOpt, EmployeePicker } from '../biometric/shared';
 import { Modal } from './modal';
-import { AssetDetail, inputCls, labelCls, todayIso } from './asset-utils';
+import { AssetDetail, inputCls, labelCls, serverSafeToday } from './asset-utils';
 
 export type ActionKind = 'allocate' | 'return' | 'lost' | 'to_in_stock' | 'to_in_repair' | 'to_retired';
 
@@ -28,7 +28,7 @@ interface Props {
 
 export const AssetActionDialog: React.FC<Props> = ({ asset, kind, onClose, onDone }) => {
   const [emp, setEmp] = useState<EmpOpt | null>(null);
-  const [date, setDate] = useState(todayIso());
+  const [date, setDate] = useState(serverSafeToday());
   const [dateTouched, setDateTouched] = useState(false);
   const [condition, setCondition] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -98,7 +98,7 @@ export const AssetActionDialog: React.FC<Props> = ({ asset, kind, onClose, onDon
       {showDate && (
         <div>
           <label className={labelCls} htmlFor="aa-date">{kind === 'allocate' ? 'Issue date' : 'Return date'}</label>
-          <input id="aa-date" type="date" max={todayIso()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
+          <input id="aa-date" type="date" max={serverSafeToday()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
         </div>
       )}
       {showDate && (

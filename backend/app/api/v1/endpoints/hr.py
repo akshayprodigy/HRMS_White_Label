@@ -4127,6 +4127,7 @@ def _serialize_asset(a: EmployeeAsset) -> Dict[str, Any]:
     return {
         "id": a.id,
         "employee_id": a.employee_id,
+        "asset_id": a.asset_id,
         "asset_type": a.asset_type,
         "model": a.model,
         "identifier": a.identifier,
