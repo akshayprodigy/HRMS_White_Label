@@ -47,6 +47,7 @@ async def world():
                 role_id=role.id, permission_id=perm.id))
             await db.execute(insert(user_roles).values(
                 user_id=user.id, role_id=role.id))
+            await set_time_rules(db, {RULE: "30"})
             await db.commit()
             w.update(role_id=role.id, user_id=user.id, cat_id=cat.id,
                      perm_id=perm.id)
@@ -72,7 +73,7 @@ async def world():
                 await db.execute(delete(role_permissions).where(
                     role_permissions.c.role_id == w["role_id"]))
                 await db.execute(delete(Role).where(Role.id == w["role_id"]))
-            if created_perm:
+            if created_perm and w.get("perm_id"):
                 await db.execute(delete(Permission).where(
                     Permission.id == w["perm_id"]))
             row = await db.get(SystemSetting, RULE)
@@ -149,6 +150,30 @@ async def test_amc_included(world):
     assert a.amc_alert_for == exp and a.warranty_alert_for is None
 
 
+async def test_mixed_sides_amc_dedupe(world):
+    w = world
+    aid = await mk(w, 1, warranty_expiry=TODAY + timedelta(days=5),
+                   amc_expiry=TODAY + timedelta(days=60))
+    await run()
+    a = await get(aid)
+    assert a.amc_alert_for is None and a.warranty_alert_for is not None
+    assert len(await mine(w)) == 1
+
+    amc = TODAY + timedelta(days=7)
+    async with SessionLocal() as db:
+        x = await db.get(Asset, aid)
+        x.amc_expiry = amc
+        await db.commit()
+    await run()
+    ns = await mine(w)
+    assert len(ns) == 2
+    new = [n for n in ns if "AMC" in n.message]
+    assert len(new) == 1 and "warranty" not in new[0].message
+    assert (await get(aid)).amc_alert_for == amc
+    await run()
+    assert len(await mine(w)) == 2
+
+
 async def test_out_of_window_and_inactive_ignored(world):
     w = world
     ids = [
@@ -174,7 +199,7 @@ async def test_more_than_five_truncated(world):
     ns = await mine(w)
     assert len(ns) == 1
     assert "7 asset(s) expiring soon" in ns[0].title
-    assert ns[0].message.endswith("and 2 more")
+    assert ns[0].message.endswith("and 2 more expiries")
     assert ns[0].message.count("warranty") == 5
 
 

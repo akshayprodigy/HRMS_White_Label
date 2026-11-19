@@ -282,7 +282,7 @@ async def run_asset_expiry_alerts(db, today: Optional[date] = None) -> dict:
     n = hit_assets
     msg = ", ".join(entries[:5])
     if len(entries) > 5:
-        msg += f" and {len(entries) - 5} more"
+        msg += f" and {len(entries) - 5} more expiries"
     recipients = await asset_manager_user_ids(db)
     if not recipients:
         logger.warning("asset expiry alerts: %d asset(s) due but no asset "
