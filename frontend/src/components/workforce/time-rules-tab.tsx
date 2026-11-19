@@ -579,7 +579,7 @@ export const TimeRulesTab: React.FC = () => {
             <Clock3 size={15} className="text-blue-600" /> Assets
           </h3>
           <p className="text-[10px] font-bold text-slate-500 mt-1">
-            Health alerts and punch handling for Warranty and AMC expiry alerts. Whole numbers.
+            Warranty and AMC expiry alerts. Whole numbers.
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
