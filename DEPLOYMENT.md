@@ -195,6 +195,28 @@ Devices push attendance to `http(s)://<your-host>/iclock/cdata` using the ADMS (
 - **Offline alerts:** `biometric_device_offline_alerts` runs every 10 minutes and alerts HR once when an approved device has been silent for longer than `biometric.offline_minutes` (default 30). It needs `ENABLE_SCHEDULER=1`. The scheduler should run in only one process: with several Gunicorn workers, enable it on a single worker or container to avoid duplicate runs. Duplicates are harmless for these jobs but waste work.
 - **Other vendors:** any device without ADMS push can export a CSV/XLSX file. HR imports it on the **Import** tab: preview first, then import. Re-importing the same file is safe. The import route allows uploads up to 6 MB (`/api/v1/biometric/import` in nginx).
 
+## Asset management
+
+The asset register, allocations, maintenance log, employee asset requests and warranty/AMC alerts live under *Administration → Asset Management*. Employees see their assets and raise requests under *Profile → My Assets*.
+
+- **Rebuild the backend image.** The QR labels use `segno` (pure Python, added to `backend/requirements.txt`). An image built before this release will fail on `/assets/{id}/qr.svg`.
+- **Migration `e5a7c9b1d3f2`** (run `alembic upgrade head` as usual):
+  - Creates the `asset`, `asset_category`, `asset_maintenance` and `asset_request` tables, and links `employee_asset` (now the allocation history) to `asset`.
+  - **Backfills** one register entry per existing `employee_asset` row and one category per distinct asset type, matching names case-insensitively. Allocated rows stay allocated, lost rows stay lost, and returned rows become *in stock*.
+  - Seeds the **`asset manage`** permission and grants it to **HR** and **Super Admin**. Grant it to any other role (for example an IT role) that should run the register. Users without it can't see the allocate/return buttons on an employee's Assets tab.
+  - MariaDB DDL is not transactional. If the upgrade fails partway, drop the four new tables and the new `employee_asset` columns (`asset_id`, `allocated_by_id`, `returned_condition`, `returned_to_id`) before retrying. **Take a backup first**, as for any release.
+- **Asset request approvals:**
+  - **Default:** without further setup, requests wait for anyone holding `asset manage` to approve or reject them on the **Requests** tab.
+  - **Multi-step approval:** create an approval chain with entity type `asset_request` (*Approval Chains*). New requests then route through it, and approvers act from their approval queue.
+  - **Attendance gate:** the approval-chain screens are attendance-gated, so a non-superuser approver must be punched in to act.
+- **Expiry alerts:**
+  - The daily `asset_expiry_alerts` job (03:30 UTC, i.e. 09:00 IST) notifies `asset manage` holders about warranties and AMCs expiring within `assets.expiry_alert_days` (time rule, default 30, range 1-365, on the *Assets* card under Time Rules).
+  - Each expiry date is alerted once. Changing the date, for example after an AMC renewal, re-arms the alert.
+  - Requires `ENABLE_SCHEDULER=1`, as for the other jobs.
+- **Exit:** HR's *Final release* is blocked while the employee still holds an allocated asset. Return the asset, or mark it lost, first. Starting exit clearance adds a "Return assets: …" checklist item for the IT department.
+- **Dates:** the server uses its own date (UTC in the default containers) for "today". Asset forms leave issue/return dates to the server unless HR changes them, so issuing an asset after midnight IST works. An org-timezone setting is a known follow-up.
+- **Phones:** the web app's mobile layout (screens under 768px) doesn't include My Assets or Asset Management yet. Use a desktop browser, or the white-label mobile app once its asset screens ship.
+
 ## Resource Usage (Hostinger KVM 4)
 - **CPU**: 4 vCPU allows ~9 Gunicorn workers. Each worker handles dozens of concurrent requests.
 - **RAM**: 16 GB is extremely generous for this stack. MariaDB can be tuned for high performance with this headroom.
