@@ -204,6 +204,7 @@ export interface Notification {
   type: 'info' | 'warning' | 'success' | 'error';
   resource_type?: string;
   resource_id?: string;
+  event_type?: string;
   is_read: boolean;
   created_at: string;
 }

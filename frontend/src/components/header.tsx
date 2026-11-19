@@ -90,11 +90,22 @@ export const Header = ({ title, userName, userRole, avatarUrl, onLogout, onNavig
     employee: 'hr-directory',
     review: 'performance',
     performance: 'performance',
+    asset: 'asset-management',
+  };
+
+  // asset_request: manager events open the workspace, the employee's own
+  // decided/fulfilled events open their profile.
+  const resolveTab = (n: Notification): string | undefined => {
+    if (n.resource_type === 'asset_request') {
+      return n.event_type === 'asset_request_submitted' || n.event_type === 'asset_request_approved'
+        ? 'asset-management' : 'profile';
+    }
+    return n.resource_type ? NAV_MAP[n.resource_type] : undefined;
   };
 
   const handleNotificationClick = (n: Notification) => {
     if (!n.is_read) markRead(n.id);
-    const tab = n.resource_type ? NAV_MAP[n.resource_type] : undefined;
+    const tab = resolveTab(n);
     if (tab) {
       onNavigate?.(tab);
       // Carry the entity id so target screens can focus a specific row (F5).

@@ -4828,4 +4828,12 @@ html {
   .border-gray-100 { border-color: #f3f4f6; }
   .hover\:text-gray-800:hover { color: #1f2937; }
   .-mb-px { margin-bottom: -1px; }
+  /* Asset Management (hand-authored; no Tailwind build) */
+  .border-l-2 { border-left-width: 2px; border-left-style: solid; }
+  .h-28 { height: 7rem; }
+  .h-auto { height: auto; }
+  .pl-4 { padding-left: 1rem; }
+  @media (width >= 48rem) {
+    .md\:col-span-3 { grid-column: span 3 / span 3; }
+  }
 }

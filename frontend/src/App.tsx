@@ -37,6 +37,9 @@ import { LiveBoard } from './components/live-board';
 const BiometricDevices = React.lazy(() =>
   import('./components/biometric/biometric-devices').then((m) => ({ default: m.BiometricDevices }))
 );
+const AssetManagement = React.lazy(() =>
+  import('./components/assets/asset-management').then((m) => ({ default: m.AssetManagement }))
+);
 const FieldTeam = React.lazy(() =>
   import('./components/field-team').then((m) => ({ default: m.FieldTeam }))
 );
@@ -448,6 +451,12 @@ const App = () => {
             <FieldTeam />
           </Suspense>
         );
+      case 'asset-management':
+        return (
+          <Suspense fallback={<p className="p-8 text-sm text-gray-500">Loading…</p>}>
+            <AssetManagement />
+          </Suspense>
+        );
       case 'biometric-devices':
         return (
           <Suspense fallback={<p className="p-8 text-sm text-gray-500">Loading…</p>}>
@@ -614,6 +623,7 @@ const App = () => {
       'live-board': 'Live Board',
       'field-team': 'Field Team',
       'biometric-devices': 'Biometric Devices',
+      'asset-management': 'Asset Management',
       'emergency-broadcast': 'Emergency Broadcast',
       'geo-workspace': 'Geo Attendance',
       'overtime-admin': 'Overtime Administration',

@@ -40,6 +40,7 @@ import {
   Timer,
   ShieldAlert,
   Fingerprint,
+  Package,
 } from "lucide-react";
 import { cn } from "./ui-elements";
 import logoImg from "../assets/veliora-logo.png";
@@ -274,6 +275,13 @@ const menuItems: MenuItem[] = [
     icon: Fingerprint,
     roles: ["hr", "admin", "super admin"],
     group: "Time & Attendance",
+  },
+  {
+    id: "asset-management",
+    label: "Asset Management",
+    icon: Package,
+    roles: ["hr", "admin", "super admin"],
+    group: "Administration",
   },
   {
     id: "emergency-broadcast",

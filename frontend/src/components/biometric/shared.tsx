@@ -139,6 +139,8 @@ export const BackfillNotice: React.FC<{ ctl: ReturnType<typeof useBackfill> }> =
 };
 
 export interface EmpOpt {
+  /** Employee primary key (HR employees list `id`). */
+  id?: number;
   user_id: number;
   name: string;
   code: string;
@@ -164,6 +166,7 @@ export const EmployeePicker: React.FC<{
         setMatches(
           (r.data?.items ?? [])
             .map((x: any) => ({
+              id: x.id,
               user_id: x.user_id ?? x.user?.id,
               name: x.user?.full_name || x.user?.email || '',
               code: x.employee_id || '',
