@@ -15,7 +15,11 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
 from app.api import deps
-from app.api.v1.endpoints.roster_common import commit_or_409, guard_conflicts
+from sqlalchemy.exc import IntegrityError
+
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, guard_conflicts, plain_actor, retry_on_lock,
+)
 from app.models.asset import (
     Asset, AssetCategory, AssetMaintenance, AssetStatus,
 )
@@ -425,24 +429,41 @@ async def list_assets(
 @guard_conflicts
 async def create_asset(db: deps.DBDep, current_user: deps.CurrentUser,
                        body: AssetIn) -> Any:
-    cat = await _active_category(db, body.category_id)
-    if body.purchase_date and body.purchase_date > date.today():
-        raise HTTPException(422, "Purchase date cannot be in the future")
-    tag = (body.asset_tag or "").strip().upper()
-    if tag:
-        if not _TAG_RE.match(tag):
-            raise HTTPException(422, "Asset tag must be 3-32 characters of A-Z, 0-9, -")
-        if (await db.execute(select(Asset.id).where(
-                func.upper(Asset.asset_tag) == tag))).first():
+    actor = plain_actor(current_user)
+
+    async def fn():
+        explicit = (body.asset_tag or "").strip().upper()
+        if not explicit:
+            # First statement of the attempt: take the category lock before
+            # any consistent read so the snapshot is taken after the wait.
+            await db.execute(select(AssetCategory.id).where(
+                AssetCategory.id == body.category_id).with_for_update())
+        cat = await _active_category(db, body.category_id)
+        if body.purchase_date and body.purchase_date > date.today():
+            raise HTTPException(422, "Purchase date cannot be in the future")
+        tag = explicit
+        if tag:
+            if not _TAG_RE.match(tag):
+                raise HTTPException(
+                    422, "Asset tag must be 3-32 characters of A-Z, 0-9, -")
+            if (await db.execute(select(Asset.id).where(
+                    func.upper(Asset.asset_tag) == tag))).first():
+                raise HTTPException(409, "Asset tag already exists")
+        else:
+            tag = await svc.next_asset_tag(db, cat)
+        data = body.model_dump(exclude={"asset_tag", "category_id"})
+        a = Asset(asset_tag=tag, category_id=cat.id,
+                  status=AssetStatus.IN_STOCK, created_by_id=actor.id, **data)
+        db.add(a)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
             raise HTTPException(409, "Asset tag already exists")
-    else:
-        tag = await svc.next_asset_tag(db, cat)
-    data = body.model_dump(exclude={"asset_tag", "category_id"})
-    a = Asset(asset_tag=tag, category_id=cat.id, status=AssetStatus.IN_STOCK,
-              created_by_id=current_user.id, **data)
-    db.add(a)
-    await commit_or_409(db, "Asset tag already exists")
-    return await _detail(db, a.id)
+        return a.id
+
+    new_id = await retry_on_lock(db, fn, commit=True)
+    return await _detail(db, new_id)
 
 
 # ── detail / patch ───────────────────────────────────────────────────────
@@ -487,16 +508,21 @@ async def patch_asset(db: deps.DBDep, asset_id: int, body: AssetPatch) -> Any:
 
 # ── state transitions ────────────────────────────────────────────────────
 async def _transition(db, asset_id: int, fn) -> dict:
-    a = await _lock(db, asset_id)
-    try:
-        await fn(a)
-    except svc.AssetStateError as e:
-        await db.rollback()
-        raise HTTPException(409, str(e))
-    except LookupError as e:
-        await db.rollback()
-        raise HTTPException(404, str(e))
-    await commit_or_409(db)
+    """Lock the asset, apply fn, commit. A lock conflict retries on a fresh
+    snapshot, so the business state is re-evaluated (second allocate of the
+    same asset gets the proper 409, never a second success)."""
+    async def attempt():
+        a = await _lock(db, asset_id)
+        try:
+            await fn(a)
+        except svc.AssetStateError as e:
+            await db.rollback()
+            raise HTTPException(409, str(e))
+        except LookupError as e:
+            await db.rollback()
+            raise HTTPException(404, str(e))
+
+    await retry_on_lock(db, attempt, commit=True)
     return await _detail(db, asset_id)
 
 
@@ -504,11 +530,13 @@ async def _transition(db, asset_id: int, fn) -> dict:
 @guard_conflicts
 async def allocate(db: deps.DBDep, current_user: deps.CurrentUser,
                    asset_id: int, body: AllocateIn) -> Any:
+    actor = plain_actor(current_user)
+
     async def go(a):
         emp = await db.get(Employee, body.employee_id)
         if emp is None:
             raise LookupError("Employee not found")
-        await svc.allocate(db, asset=a, employee=emp, actor=current_user,
+        await svc.allocate(db, asset=a, employee=emp, actor=actor,
                            issued_date=body.issued_date,
                            condition=body.condition, remarks=body.remarks)
     return await _transition(db, asset_id, go)
@@ -518,9 +546,11 @@ async def allocate(db: deps.DBDep, current_user: deps.CurrentUser,
 @guard_conflicts
 async def return_(db: deps.DBDep, current_user: deps.CurrentUser,
                   asset_id: int, body: ReturnIn) -> Any:
+    actor = plain_actor(current_user)
+
     async def go(a):
         await svc.return_asset(
-            db, asset=a, actor=current_user, returned_date=body.returned_date,
+            db, asset=a, actor=actor, returned_date=body.returned_date,
             condition=body.condition, remarks=body.remarks,
             to_status=body.to_status)
     return await _transition(db, asset_id, go)
@@ -530,8 +560,10 @@ async def return_(db: deps.DBDep, current_user: deps.CurrentUser,
 @guard_conflicts
 async def lost(db: deps.DBDep, current_user: deps.CurrentUser,
                asset_id: int, body: LostIn) -> Any:
+    actor = plain_actor(current_user)
+
     async def go(a):
-        await svc.mark_lost(db, asset=a, actor=current_user,
+        await svc.mark_lost(db, asset=a, actor=actor,
                             remarks=body.remarks)
     return await _transition(db, asset_id, go)
 
@@ -540,7 +572,9 @@ async def lost(db: deps.DBDep, current_user: deps.CurrentUser,
 @guard_conflicts
 async def set_status(db: deps.DBDep, current_user: deps.CurrentUser,
                      asset_id: int, body: StatusIn) -> Any:
+    actor = plain_actor(current_user)
+
     async def go(a):
-        await svc.set_status(db, asset=a, actor=current_user,
+        await svc.set_status(db, asset=a, actor=actor,
                              to_status=body.to_status, remarks=body.remarks)
     return await _transition(db, asset_id, go)

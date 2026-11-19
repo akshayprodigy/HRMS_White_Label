@@ -262,3 +262,56 @@ async def test_complete_non_repair_keeps_in_repair(api, cat):
 async def test_by_tag_maintenance_is_404(api):
     r = await api.get(f"{P}/by-tag/maintenance", headers=api.hr)
     assert r.status_code == 404
+
+
+async def _clients(api, world, n):
+    import asyncio  # noqa: F401
+    from httpx import ASGITransport, AsyncClient
+    from app.api import deps
+    from app.main import create_app
+    from tests.test_assets_api import _login
+    out = []
+    for _ in range(n):
+        c = AsyncClient(transport=ASGITransport(app=create_app()),
+                        base_url="http://test")
+        c._transport.app.dependency_overrides[deps.verify_attendance] = \
+            lambda: None
+        c.hr = await _login(c, f"aapi_hr_{world['sfx']}@test.com")
+        out.append(c)
+    return out
+
+
+async def test_concurrent_complete_two_repairs(api, cat, world):
+    import asyncio
+    a = await mk(api, cat)
+    m1 = (await post(api, a["id"], kind="repair", move_to_repair=True)).json()
+    m2 = (await post(api, a["id"], kind="repair")).json()
+    cs = await _clients(api, world, 2)
+    try:
+        rs = await asyncio.gather(*[
+            c.patch(f"{P}/maintenance/{m['id']}", headers=c.hr,
+                    json={"complete": True})
+            for c, m in zip(cs, (m1, m2))])
+    finally:
+        for c in cs:
+            await c.aclose()
+    assert [r.status_code for r in rs] == [200, 200], [r.text for r in rs]
+    assert await status_of(api, a["id"]) == "in_stock"
+
+
+async def test_concurrent_allocate_same_asset_one_wins(api, cat, world):
+    import asyncio
+    a = await mk(api, cat)
+    cs = await _clients(api, world, 4)
+    try:
+        rs = await asyncio.gather(*[
+            c.post(f"{P}/{a['id']}/allocate", headers=c.hr,
+                   json={"employee_id": world["emp_id"]}) for c in cs])
+    finally:
+        for c in cs:
+            await c.aclose()
+    codes = sorted(r.status_code for r in rs)
+    assert codes == [200, 409, 409, 409], [r.text for r in rs]
+    for r in rs:
+        if r.status_code == 409:
+            assert "concurrently" not in r.text.lower(), r.text

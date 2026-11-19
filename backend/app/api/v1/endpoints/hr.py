@@ -4,7 +4,7 @@ import re
 import pandas as pd
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Dict, List
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, or_, case
@@ -4109,6 +4109,14 @@ class AssetCreate(BaseModel):
     asset_type: str
     model: str
     identifier: Optional[str] = None
+
+    @field_validator("model")
+    @classmethod
+    def _model_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("model must not be blank")
+        return v
+
     serial_no: Optional[str] = None
     issued_date: Optional[date] = None
     condition: Optional[str] = None

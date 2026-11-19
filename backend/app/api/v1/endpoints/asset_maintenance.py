@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
 from app.api import deps
-from app.api.v1.endpoints.roster_common import commit_or_409, guard_conflicts
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, guard_conflicts, plain_actor, retry_on_lock,
+)
 from app.models.asset import Asset, AssetMaintenance, AssetStatus
 from app.models.audit import AuditLog
 from app.services import assets as svc
@@ -149,79 +151,90 @@ async def list_maintenance(db: deps.DBDep, asset_id: int) -> Any:
 @guard_conflicts
 async def add_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
                           asset_id: int, body: MaintenanceIn) -> Any:
+    actor = plain_actor(current_user)
     _check_dates(body.started_on, body.completed_on)
     if body.move_to_repair and body.completed_on is not None:
         raise HTTPException(
             422, "Cannot open and complete a repair in one entry")
-    a = await _lock_asset(db, asset_id)
-    moved = False
-    if body.move_to_repair and a.status != AssetStatus.IN_REPAIR:
-        try:
-            await svc.set_status(db, asset=a, actor=current_user,
-                                 to_status=AssetStatus.IN_REPAIR,
-                                 remarks=body.description)
-        except svc.AssetStateError as e:
-            await db.rollback()
-            raise HTTPException(409, str(e))
-        moved = True
-    m = AssetMaintenance(
-        asset_id=a.id, kind=body.kind, description=body.description,
-        vendor=body.vendor, cost_paise=body.cost_paise,
-        started_on=body.started_on, completed_on=body.completed_on,
-        created_by_id=current_user.id)
-    db.add(m)
-    await db.flush()
-    _audit(db, current_user, "ASSET_MAINTENANCE_ADD", a.id, {
-        "maintenance_id": m.id, "kind": m.kind, "cost_paise": m.cost_paise,
-        "moved_to_repair": moved})
-    await commit_or_409(db)
-    return _out(m)
+
+    async def fn():
+        a = await _lock_asset(db, asset_id)
+        moved = False
+        if body.move_to_repair and a.status != AssetStatus.IN_REPAIR:
+            try:
+                await svc.set_status(db, asset=a, actor=actor,
+                                     to_status=AssetStatus.IN_REPAIR,
+                                     remarks=body.description)
+            except svc.AssetStateError as e:
+                await db.rollback()
+                raise HTTPException(409, str(e))
+            moved = True
+        m = AssetMaintenance(
+            asset_id=a.id, kind=body.kind, description=body.description,
+            vendor=body.vendor, cost_paise=body.cost_paise,
+            started_on=body.started_on, completed_on=body.completed_on,
+            created_by_id=actor.id)
+        db.add(m)
+        await db.flush()
+        _audit(db, actor, "ASSET_MAINTENANCE_ADD", a.id, {
+            "maintenance_id": m.id, "kind": m.kind,
+            "cost_paise": m.cost_paise, "moved_to_repair": moved})
+        return m.id
+
+    mid = await retry_on_lock(db, fn, commit=True)
+    return _out(await db.get(AssetMaintenance, mid, populate_existing=True))
 
 
 @router.patch("/maintenance/{mid}")
 @guard_conflicts
 async def patch_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
                             mid: int, body: MaintenancePatch) -> Any:
-    data = body.model_dump(exclude_unset=True)
-    complete = data.pop("complete", False)
-    return_to_stock = data.pop("return_to_stock", True)
+    actor = plain_actor(current_user)
+    raw = body.model_dump(exclude_unset=True)
     for k in ("kind", "description", "cost_paise", "started_on"):
-        if k in data and data[k] is None:
+        if k in raw and raw[k] is None:
             raise HTTPException(422, f"{k} cannot be null")
-    a, m = await _lock_entry(db, mid)
-    if complete and m.completed_on is not None:
-        await db.rollback()
-        raise HTTPException(409, "Maintenance entry is already completed")
-    if m.completed_on is not None and "completed_on" in data \
-            and data["completed_on"] is None:
-        await db.rollback()
-        raise HTTPException(
-            422, "Completed maintenance can't be reopened")
-    if complete and data.get("completed_on") is None:
-        data["completed_on"] = date.today()
-    # setting completed_on on an open entry is a completion too
-    completing = m.completed_on is None and \
-        data.get("completed_on") is not None
-    started = data.get("started_on", m.started_on)
-    completed = data["completed_on"] if "completed_on" in data \
-        else m.completed_on
-    try:
-        _check_dates(started, completed, check_future="started_on" in data)
-    except HTTPException:
-        await db.rollback()
-        raise
-    for k, v in data.items():
-        setattr(m, k, v)
-    await db.flush()
-    returned = False
-    if completing and return_to_stock and m.kind == "repair":
-        returned = await _return_if_no_open_repair(
-            db, a, m, current_user, "Maintenance completed")
-    _audit(db, current_user, "ASSET_MAINTENANCE_UPDATE", a.id, {
-        "maintenance_id": m.id, "fields": sorted(data.keys()),
-        "completed": completing, "returned_to_stock": returned})
-    await commit_or_409(db)
-    return _out(m)
+
+    async def fn():
+        data = dict(raw)
+        complete = data.pop("complete", False)
+        return_to_stock = data.pop("return_to_stock", True)
+        a, m = await _lock_entry(db, mid)
+        if complete and m.completed_on is not None:
+            await db.rollback()
+            raise HTTPException(409, "Maintenance entry is already completed")
+        if m.completed_on is not None and "completed_on" in data \
+                and data["completed_on"] is None:
+            await db.rollback()
+            raise HTTPException(
+                422, "Completed maintenance can't be reopened")
+        if complete and data.get("completed_on") is None:
+            data["completed_on"] = date.today()
+        # setting completed_on on an open entry is a completion too
+        completing = m.completed_on is None and \
+            data.get("completed_on") is not None
+        started = data.get("started_on", m.started_on)
+        completed = data["completed_on"] if "completed_on" in data \
+            else m.completed_on
+        try:
+            _check_dates(started, completed,
+                         check_future="started_on" in data)
+        except HTTPException:
+            await db.rollback()
+            raise
+        for k, v in data.items():
+            setattr(m, k, v)
+        await db.flush()
+        returned = False
+        if completing and return_to_stock and m.kind == "repair":
+            returned = await _return_if_no_open_repair(
+                db, a, m, actor, "Maintenance completed")
+        _audit(db, actor, "ASSET_MAINTENANCE_UPDATE", a.id, {
+            "maintenance_id": m.id, "fields": sorted(data.keys()),
+            "completed": completing, "returned_to_stock": returned})
+
+    await retry_on_lock(db, fn, commit=True)
+    return _out(await db.get(AssetMaintenance, mid, populate_existing=True))
 
 
 @router.delete("/maintenance/{mid}")

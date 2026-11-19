@@ -429,3 +429,28 @@ async def test_pagination_expiring_retired_and_bad_status(api, cat):
     r = await api.post(f"{P}/{ids[0]}/return", headers=api.hr,
                        json={"to_status": "lost"})
     assert r.status_code == 422
+
+
+async def test_concurrent_blank_tag_creates(api, world, cat):
+    import asyncio
+    clients = []
+    try:
+        for _ in range(5):
+            c = AsyncClient(transport=ASGITransport(app=create_app()),
+                            base_url="http://test")
+            c.app_ = c._transport.app
+            c.app_.dependency_overrides[deps.verify_attendance] = lambda: None
+            c.hr = await _login(c, f"aapi_hr_{world['sfx']}@test.com")
+            clients.append(c)
+        clients.append(api)
+        rs = await asyncio.gather(*[
+            c.post(P, headers=c.hr, json={
+                "category_id": cat["id"], "name": f"Race {i}"})
+            for i, c in enumerate(clients)])
+    finally:
+        for c in clients:
+            if c is not api:
+                await c.aclose()
+    assert [r.status_code for r in rs] == [200] * 6, [r.text for r in rs]
+    tags = [r.json()["asset_tag"] for r in rs]
+    assert len(set(tags)) == 6
