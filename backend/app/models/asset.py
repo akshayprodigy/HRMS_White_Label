@@ -97,10 +97,10 @@ class Asset(Base):
         "GeoFenceLocation")
     allocations: Mapped[List["EmployeeAsset"]] = relationship(
         "EmployeeAsset", back_populates="asset",
-        foreign_keys="EmployeeAsset.asset_id")
+        foreign_keys="EmployeeAsset.asset_id", passive_deletes="all")
     maintenance: Mapped[List["AssetMaintenance"]] = relationship(
         "AssetMaintenance", back_populates="asset",
-        cascade="all, delete-orphan")
+        cascade="all, delete-orphan", passive_deletes=True)
 
 
 class AssetMaintenance(Base):

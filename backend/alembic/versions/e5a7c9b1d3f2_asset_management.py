@@ -3,6 +3,11 @@
 
 Roadmap v2 Phase 5, Task 1.
 
+NOTE: MariaDB DDL is not transactional. If the upgrade fails midway, clean up
+manually before retrying: drop asset_request, asset_maintenance, asset,
+asset_category, and drop the asset_id / allocated_by_id / returned_condition /
+returned_to_id columns (and their FKs/index) from employee_asset.
+
 Revision ID: e5a7c9b1d3f2
 Revises: c4e8a2f6b1d9
 Create Date: 2026-11-19
@@ -26,7 +31,7 @@ def _code_for(name: str, used: set) -> str:
     if len(base) < 2:
         base = base.ljust(2, "X")
     code, n = base, 1
-    while code in used:
+    while code.upper() in used:
         n += 1
         code = f"{base}{n}"
     return code
@@ -174,31 +179,40 @@ def upgrade():
 
 def _backfill():
     bind = op.get_bind()
-    types = [r[0] for r in bind.execute(
-        sa.text("SELECT DISTINCT asset_type FROM employee_asset"))]
-    cat_by_type, used = {}, set()
-    for t in types:
-        name = (t or "").strip() or "Other"
-        if name in cat_by_type:
-            cat_by_type[t] = cat_by_type[name]
-            continue
-        code = _code_for(name, used)
-        used.add(code)
-        bind.execute(
-            sa.text("INSERT INTO asset_category (name, code, is_active, "
-                    "created_at) VALUES (:n, :c, 1, NOW())"),
-            {"n": name[:80], "c": code})
-        cid = bind.execute(sa.text(
-            "SELECT id FROM asset_category WHERE code = :c"), {"c": code}
-        ).scalar_one()
-        cat_by_type[name] = (cid, code)
-        cat_by_type[t] = (cid, code)
+    cat_cache, used = {}, set()
+
+    def resolve(raw):
+        name = ((raw or "").strip() or "Other")[:80]
+        if raw in cat_cache:
+            return cat_cache[raw]
+        # let the DB (collation-aware) decide whether the name already exists
+        found = bind.execute(
+            sa.text("SELECT id, code FROM asset_category WHERE name = :n"),
+            {"n": name}).first()
+        if found:
+            res = (found[0], found[1])
+            used.add(found[1].upper())
+        else:
+            code = _code_for(name, used)
+            used.add(code.upper())
+            bind.execute(
+                sa.text("INSERT INTO asset_category (name, code, is_active, "
+                        "created_at) VALUES (:n, :c, 1, NOW())"),
+                {"n": name, "c": code})
+            cid = bind.execute(sa.text(
+                "SELECT id FROM asset_category WHERE code = :c"), {"c": code}
+            ).scalar_one()
+            res = (cid, code)
+        cat_cache[raw] = res
+        return res
 
     rows = bind.execute(sa.text(
         "SELECT id, asset_type, model, serial_no, status, created_at "
         "FROM employee_asset ORDER BY id")).all()
     for rid, atype, model, serial, status, created_at in rows:
-        cid, code = cat_by_type[atype]
+        cid, code = resolve(atype)
+        # returned (or any other) -> in_stock is deliberate: returned devices
+        # went back to stock.
         astatus = {"allocated": "allocated", "lost": "lost"}.get(
             status, "in_stock")
         bind.execute(

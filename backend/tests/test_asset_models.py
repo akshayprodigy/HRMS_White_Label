@@ -81,6 +81,27 @@ async def test_asset_models_and_uniqueness():
             with pytest.raises(IntegrityError):
                 await db.commit()
             await db.rollback()
+
+            # RESTRICT: asset with an allocation cannot be deleted
+            a = await db.get(Asset, asset_id)
+            await db.delete(a)
+            with pytest.raises(IntegrityError):
+                await db.commit()
+            await db.rollback()
+
+            # CASCADE: maintenance rows vanish with their asset
+            a2 = Asset(asset_tag=f"{code}-000002", category_id=cat_id, name="m")
+            db.add(a2)
+            await db.commit()
+            db.add(AssetMaintenance(asset_id=a2.id, kind="service",
+                                    description="x", started_on=date.today()))
+            await db.commit()
+            a2_id = a2.id
+            await db.delete(await db.get(Asset, a2_id))
+            await db.commit()
+            left = (await db.execute(select(AssetMaintenance).where(
+                AssetMaintenance.asset_id == a2_id))).scalars().all()
+            assert left == []
     finally:
         async with SessionLocal() as db:
             if emp_id:
@@ -88,9 +109,8 @@ async def test_asset_models_and_uniqueness():
                     AssetRequest.employee_id == emp_id))
                 await db.execute(delete(EmployeeAsset).where(
                     EmployeeAsset.employee_id == emp_id))
-            if asset_id:
-                await db.execute(delete(Asset).where(Asset.id == asset_id))
             if cat_id:
+                await db.execute(delete(Asset).where(Asset.category_id == cat_id))
                 await db.execute(delete(AssetCategory).where(
                     AssetCategory.id == cat_id))
             if emp_id:
