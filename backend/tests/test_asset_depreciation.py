@@ -83,3 +83,14 @@ def test_month_end_purchase_documented():
     p = date(2026, 1, 31)
     assert months_between(p, date(2026, 2, 28)) == 0
     assert months_between(p, date(2026, 3, 31)) == 2
+
+
+def test_floor_division_remainder_and_default_life():
+    from datetime import date as _d
+    from app.services.asset_depreciation import book_value as _bv
+    r = _bv(cost_paise=1_000_000, salvage_paise=0, purchase_date=_d(2026, 1, 1),
+            life_months=None, on=_d(2026, 2, 1))
+    assert (r.life_months, r.months_elapsed, r.accumulated_paise, r.book_value_paise) == (36, 1, 27_777, 972_223)
+    r18 = _bv(cost_paise=1_000_000, salvage_paise=0, purchase_date=_d(2026, 1, 1),
+              life_months=None, on=_d(2027, 7, 1))
+    assert r18.accumulated_paise == 500_000 and r18.accumulated_paise + r18.book_value_paise == 1_000_000
