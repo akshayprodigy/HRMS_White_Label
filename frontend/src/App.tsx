@@ -33,6 +33,7 @@ import { LetterTemplatesHR } from './components/letter-templates';
 import { CelebrationsReport } from './components/celebrations-report';
 import { RosterPlanner } from './components/roster-planner';
 import { LiveBoard } from './components/live-board';
+import { stashNav, NavDetail } from './lib/pending-nav';
 // Lazy: pulls in leaflet, which should not weigh down the main bundle.
 const BiometricDevices = React.lazy(() =>
   import('./components/biometric/biometric-devices').then((m) => ({ default: m.BiometricDevices }))
@@ -357,9 +358,10 @@ const App = () => {
   // Lightweight navigation bridge for modules that don't receive onNavigate.
   useEffect(() => {
     const handler: EventListener = (event) => {
-      const detail = (event as CustomEvent<{ tab?: string }>).detail;
+      const detail = (event as CustomEvent<NavDetail>).detail;
       const tab = detail?.tab;
       if (typeof tab === 'string' && tab) {
+        stashNav(detail as NavDetail);
         setActiveTab(tab);
       }
     };

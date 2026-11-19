@@ -272,6 +272,7 @@ async def test_summary_and_depreciation(api, cat):
     assert d["depreciation"]["cost_paise"] == 240000
     assert 0 < d["depreciation"]["book_value_paise"] < 240000
     assert d["maintenance"] == [] and d["maintenance_cost_total_paise"] == 0
+    assert (d["effective_useful_life_months"], d["life_source"]) == (24, "category")
     after = (await api.get(f"{P}/summary", headers=api.hr)).json()
     assert set(after["by_status"]) == {
         "in_stock", "allocated", "in_repair", "retired", "lost"}
@@ -282,6 +283,13 @@ async def test_summary_and_depreciation(api, cat):
             == before["total_book_value_paise"] + d["depreciation"]["book_value_paise"])
     cnt = {c["id"]: c["count"] for c in after["by_category"]}
     assert cnt[cat["id"]] == 2
+    own = await mk(api, cat, useful_life_months=12)
+    assert (own["effective_useful_life_months"], own["life_source"]) == (12, "asset")
+    r = await api.patch(f"{P}/categories/{cat['id']}", headers=api.hr,
+                        json={"default_useful_life_months": None})
+    assert r.status_code == 200 and r.json()["default_useful_life_months"] is None
+    d2 = (await api.get(f"{P}/{a['id']}", headers=api.hr)).json()
+    assert (d2["effective_useful_life_months"], d2["life_source"]) == (36, "default")
 
 
 async def test_legacy_routes(api, world):

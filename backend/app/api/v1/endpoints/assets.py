@@ -150,8 +150,18 @@ def _bv(a: Asset, cat: AssetCategory):
         on=date.today())
 
 
+def _life_info(a: Asset, cat: AssetCategory) -> tuple:
+    from app.services.asset_depreciation import DEFAULT_LIFE_MONTHS
+    if a.useful_life_months:
+        return a.useful_life_months, "asset"
+    if cat.default_useful_life_months:
+        return cat.default_useful_life_months, "category"
+    return DEFAULT_LIFE_MONTHS, "default"
+
+
 def _asset_out(a: Asset, cat: AssetCategory, holder: Optional[dict]) -> dict:
     bv = _bv(a, cat)
+    eff, src = _life_info(a, cat)
     return {
         "id": a.id, "asset_tag": a.asset_tag, "name": a.name, "model": a.model,
         "serial_no": a.serial_no, "status": a.status,
@@ -161,6 +171,7 @@ def _asset_out(a: Asset, cat: AssetCategory, holder: Optional[dict]) -> dict:
         "purchase_cost_paise": a.purchase_cost_paise,
         "salvage_value_paise": a.salvage_value_paise,
         "useful_life_months": a.useful_life_months,
+        "effective_useful_life_months": eff, "life_source": src,
         "warranty_expiry": _iso(a.warranty_expiry),
         "amc_vendor": a.amc_vendor, "amc_expiry": _iso(a.amc_expiry),
         "notes": a.notes, "created_at": _iso(a.created_at),

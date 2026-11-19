@@ -27,6 +27,8 @@ export interface Asset {
   purchase_cost_paise: number | null;
   salvage_value_paise: number;
   useful_life_months: number | null;
+  effective_useful_life_months?: number;
+  life_source?: 'asset' | 'category' | 'default';
   warranty_expiry: string | null;
   amc_vendor: string | null;
   amc_expiry: string | null;
@@ -120,7 +122,7 @@ export const rupeesToPaise = (s: string): number | null => {
   if (!t) return null;
   const n = Number(t.replace(/,/g, ''));
   if (!Number.isFinite(n) || n < 0) return NaN;
-  return Math.round(n * 100);
+  return Math.round(Number((n * 100).toFixed(2)));
 };
 
 export const paiseToRupees = (p: number | null | undefined): string =>
@@ -146,6 +148,12 @@ export const daysUntil = (iso: string | null | undefined): number | null => {
 export const expiringSoon = (iso: string | null | undefined, days = 30): boolean => {
   const d = daysUntil(iso);
   return d != null && d >= 0 && d <= days;
+};
+
+export const lifeText = (a: Asset): string | null => {
+  if (a.effective_useful_life_months == null) return a.useful_life_months ? `${a.useful_life_months} months` : null;
+  const src = a.life_source === 'asset' ? '' : ` (${a.life_source} default)`;
+  return `${a.effective_useful_life_months} months${src}`;
 };
 
 export const holderText = (h: Holder | null): string =>

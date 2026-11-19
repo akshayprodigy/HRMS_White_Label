@@ -62,8 +62,9 @@ export const CategoriesDialog: React.FC<{ onClose: () => void; onChanged: () => 
   const saveEdit = async (c: AssetCategory) => {
     if (!eName.trim()) return setErr('Name is required.');
     if (!lifeOk(eLife)) return setErr('Default life must be a whole number of months greater than 0.');
-    const body: Record<string, unknown> = { name: eName.trim() };
-    if (eLife.trim()) body.default_useful_life_months = Number(eLife);
+    const body: Record<string, unknown> = {
+      name: eName.trim(), default_useful_life_months: eLife.trim() ? Number(eLife) : null,
+    };
     if (await run(() => client.patch(ENDPOINTS.ASSETS.CATEGORY(c.id), body), 'Category updated')) setEditId(null);
   };
 

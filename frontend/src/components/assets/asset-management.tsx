@@ -9,6 +9,7 @@ import { AssetDetailDialog } from './asset-detail-dialog';
 import { AssetFormDialog } from './asset-form-dialog';
 import { CategoriesDialog } from './categories-dialog';
 import { Summary, fmtInr } from './asset-utils';
+import { NavDetail, takeNav } from '../../lib/pending-nav';
 
 type Tab = 'register' | 'requests' | 'maintenance' | 'expiring';
 const TABS: { id: Tab; label: string }[] = [
@@ -52,11 +53,18 @@ export const AssetManagement: React.FC = () => {
   const bump = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   useEffect(() => {
-    const h = (ev: Event) => {
-      const d = (ev as CustomEvent).detail;
+    const apply = (d: NavDetail | null) => {
       if (d?.tab !== 'asset-management' || d?.resourceType !== 'asset') return;
       const id = Number(d.resourceId);
       if (Number.isInteger(id) && id > 0) { setTab('register'); setOpenId(id); }
+    };
+    apply(takeNav('asset-management')); // arrived before this page mounted
+    // App's listener stashes before this one runs; take so the stash clears.
+    const h = (ev: Event) => {
+      const d = (ev as CustomEvent).detail as NavDetail | undefined;
+      if (d?.tab !== 'asset-management') return;
+      takeNav('asset-management');
+      apply(d);
     };
     window.addEventListener('erp:navigate', h);
     return () => window.removeEventListener('erp:navigate', h);
@@ -110,7 +118,7 @@ export const AssetManagement: React.FC = () => {
       {tab === 'maintenance' && <ComingSoon name="Maintenance" />}
       {tab === 'expiring' && <ComingSoon name="Expiring" />}
 
-      {openId != null && <AssetDetailDialog assetId={openId} onClose={() => setOpenId(null)} onChanged={bump} />}
+      {openId != null && <AssetDetailDialog key={openId} assetId={openId} onClose={() => setOpenId(null)} onChanged={bump} />}
       {adding && <AssetFormDialog onClose={() => setAdding(false)} onSaved={(a) => { setAdding(false); bump(); setOpenId(a.id); }} />}
       {cats && <CategoriesDialog onClose={() => setCats(false)} onChanged={bump} />}
     </div>

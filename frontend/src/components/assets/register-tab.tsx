@@ -60,6 +60,11 @@ export const RegisterTab: React.FC<{
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
+  // Clamp to the last page when the total shrinks below the offset.
+  useEffect(() => {
+    if (!loading && total > 0 && offset >= total) setOffset(Math.floor((total - 1) / LIMIT) * LIMIT);
+  }, [total, offset, loading]);
+
   const end = Math.min(offset + LIMIT, total);
   return (
     <div className="space-y-4">

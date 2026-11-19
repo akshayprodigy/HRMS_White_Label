@@ -90,6 +90,7 @@ const LogForm: React.FC<{ asset: AssetDetail; onClose: () => void; onDone: () =>
 export const MaintenanceSection: React.FC<{ asset: AssetDetail; onChanged: () => void }> = ({ asset, onChanged }) => {
   const [logging, setLogging] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [confirmId, setConfirmId] = useState<number | null>(null);
 
   const act = async (id: number, fn: () => Promise<unknown>, ok: string) => {
     setBusyId(id);
@@ -101,6 +102,7 @@ export const MaintenanceSection: React.FC<{ asset: AssetDetail; onChanged: () =>
       toast.error(errMsg(e, 'Request failed'));
     } finally {
       setBusyId(null);
+      setConfirmId(null);
     }
   };
 
@@ -136,10 +138,17 @@ export const MaintenanceSection: React.FC<{ asset: AssetDetail; onChanged: () =>
                     Complete
                   </Button>
                 )}
-                <Button size="sm" variant="outline" disabled={busyId === m.id}
-                  onClick={() => act(m.id, () => client.delete(ENDPOINTS.ASSETS.MAINTENANCE_ITEM(m.id)), 'Maintenance deleted')}>
-                  Delete
-                </Button>
+                {confirmId === m.id ? (
+                  <>
+                    <Button size="sm" variant="danger" disabled={busyId === m.id}
+                      onClick={() => act(m.id, () => client.delete(ENDPOINTS.ASSETS.MAINTENANCE_ITEM(m.id)), 'Maintenance deleted')}>
+                      Confirm delete
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setConfirmId(null)}>Keep</Button>
+                  </>
+                ) : (
+                  <Button size="sm" variant="outline" disabled={busyId === m.id} onClick={() => setConfirmId(m.id)}>Delete</Button>
+                )}
               </div>
             </li>
           ))}

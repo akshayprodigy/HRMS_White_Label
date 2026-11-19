@@ -9,7 +9,7 @@ import { AssetFormDialog } from './asset-form-dialog';
 import { ActionKind, AssetActionDialog } from './allocate-return-dialogs';
 import { MaintenanceSection } from './maintenance-section';
 import {
-  AssetDetail, AssetStatus, STATUS_BADGE, STATUS_LABEL, expiringSoon, fmtDate, fmtInr, holderText,
+  AssetDetail, AssetStatus, STATUS_BADGE, STATUS_LABEL, expiringSoon, fmtDate, fmtInr, holderText, lifeText,
 } from './asset-utils';
 
 const ACTIONS: Record<AssetStatus, { kind: ActionKind; label: string }[]> = {
@@ -76,6 +76,7 @@ export const AssetDetailDialog: React.FC<{
 <div style="font-size:13px">${esc(a.name)}</div></body>`);
     w.document.close();
     w.focus();
+    w.onafterprint = () => w.close();
     w.print();
   };
 
@@ -113,7 +114,7 @@ export const AssetDetailDialog: React.FC<{
             <Field k="Purchase date" v={fmtDate(a.purchase_date)} />
             <Field k="Purchase cost" v={fmtInr(a.purchase_cost_paise)} />
             <Field k="Salvage value" v={fmtInr(a.salvage_value_paise)} />
-            <Field k="Useful life" v={a.useful_life_months ? `${a.useful_life_months} months` : null} />
+            <Field k="Useful life" v={lifeText(a)} />
             <Field k="Warranty expiry" v={fmtDate(a.warranty_expiry)} warn={expiringSoon(a.warranty_expiry)} />
             <Field k="AMC" v={a.amc_vendor ? `${a.amc_vendor} · ${fmtDate(a.amc_expiry)}` : fmtDate(a.amc_expiry)} warn={expiringSoon(a.amc_expiry)} />
             <div className="col-span-2 md:col-span-3"><Field k="Notes" v={a.notes} /></div>
