@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Card } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
@@ -18,20 +18,23 @@ export const ExpiringTab: React.FC<{ refreshKey: number; onOpen: (id: number) =>
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const seq = useRef(0);
   const load = useCallback(async () => {
+    const id = ++seq.current;
     setLoading(true);
     try {
       const r = await client.get<{ items: Asset[]; total: number }>(ENDPOINTS.ASSETS.LIST, {
         params: { expiring_within_days: Number(days), limit: 200 },
       });
+      if (id !== seq.current) return;
       const items = [...r.data.items].sort((a, b) => (nearest(a) ?? 9999) - (nearest(b) ?? 9999));
       setItems(items);
       setTotal(r.data.total);
       setError(null);
     } catch (e: any) {
-      setError(errMsg(e, 'Failed to load expiring assets'));
+      if (id === seq.current) setError(errMsg(e, 'Failed to load expiring assets'));
     } finally {
-      setLoading(false);
+      if (id === seq.current) setLoading(false);
     }
   }, [days]);
   useEffect(() => { load(); }, [load, refreshKey]);

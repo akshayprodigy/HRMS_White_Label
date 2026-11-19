@@ -6,7 +6,7 @@ import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { Modal } from './modal';
 import {
-  AssetDetail, KIND_LABEL, MaintKind, fmtDate, fmtInr, inputCls, labelCls, rupeesToPaise, todayIso,
+  AssetDetail, KIND_LABEL, MaintKind, fmtDate, fmtInr, inputCls, labelCls, rupeesToPaise, serverSafeToday,
 } from './asset-utils';
 
 const LogForm: React.FC<{ asset: AssetDetail; onClose: () => void; onDone: () => void }> = ({ asset, onClose, onDone }) => {
@@ -14,7 +14,7 @@ const LogForm: React.FC<{ asset: AssetDetail; onClose: () => void; onDone: () =>
   const [desc, setDesc] = useState('');
   const [vendor, setVendor] = useState('');
   const [cost, setCost] = useState('');
-  const [started, setStarted] = useState(todayIso());
+  const [started, setStarted] = useState(serverSafeToday());
   const [completed, setCompleted] = useState('');
   const [toRepair, setToRepair] = useState(false);
   const [busy, setBusy] = useState(false);

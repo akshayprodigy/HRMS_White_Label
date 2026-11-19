@@ -29,6 +29,7 @@ interface Props {
 export const AssetActionDialog: React.FC<Props> = ({ asset, kind, onClose, onDone }) => {
   const [emp, setEmp] = useState<EmpOpt | null>(null);
   const [date, setDate] = useState(todayIso());
+  const [dateTouched, setDateTouched] = useState(false);
   const [condition, setCondition] = useState('');
   const [remarks, setRemarks] = useState('');
   const [toStatus, setToStatus] = useState('in_stock');
@@ -41,10 +42,10 @@ export const AssetActionDialog: React.FC<Props> = ({ asset, kind, onClose, onDon
     if (kind === 'allocate') {
       if (!emp?.id) return setErr('Pick an employee.');
       url = ENDPOINTS.ASSETS.ALLOCATE(asset.id);
-      body = { employee_id: emp.id, issued_date: date || null, condition: condition.trim() || null, remarks: remarks.trim() || null };
+      body = { employee_id: emp.id, issued_date: dateTouched && date ? date : undefined, condition: condition.trim() || null, remarks: remarks.trim() || null };
     } else if (kind === 'return') {
       url = ENDPOINTS.ASSETS.RETURN(asset.id);
-      body = { returned_date: date || null, condition: condition.trim() || null, remarks: remarks.trim() || null, to_status: toStatus };
+      body = { returned_date: dateTouched && date ? date : undefined, condition: condition.trim() || null, remarks: remarks.trim() || null, to_status: toStatus };
     } else if (kind === 'lost') {
       if (remarks.trim().length < 3) return setErr('Remarks are required (at least 3 characters).');
       url = ENDPOINTS.ASSETS.LOST(asset.id);
@@ -97,7 +98,7 @@ export const AssetActionDialog: React.FC<Props> = ({ asset, kind, onClose, onDon
       {showDate && (
         <div>
           <label className={labelCls} htmlFor="aa-date">{kind === 'allocate' ? 'Issue date' : 'Return date'}</label>
-          <input id="aa-date" type="date" max={todayIso()} className={`${inputCls} w-full`} value={date} onChange={(e) => setDate(e.target.value)} />
+          <input id="aa-date" type="date" max={todayIso()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
         </div>
       )}
       {showDate && (

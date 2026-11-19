@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Badge, Button, Card } from '../ui-elements';
 import { client } from '../../api/client';
@@ -51,7 +51,6 @@ const DecideDialog: React.FC<{
 };
 
 export const RequestsTab: React.FC<{ refreshKey: number; onChanged: () => void }> = ({ refreshKey, onChanged }) => {
-  const [sel, setSel] = useState<string[]>(['pending', 'approved']);
   const [filter, setFilter] = useState('open');
   const [rows, setRows] = useState<AssetRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -59,27 +58,31 @@ export const RequestsTab: React.FC<{ refreshKey: number; onChanged: () => void }
   const [decide, setDecide] = useState<{ req: AssetRequest; action: 'approve' | 'reject' } | null>(null);
   const [fulfil, setFulfil] = useState<AssetRequest | null>(null);
 
-  useEffect(() => {
-    setSel(filter === 'open' ? ['pending', 'approved'] : filter === 'all' ? [...STATUSES] : [filter]);
-  }, [filter]);
+  const sel = useMemo(
+    () => (filter === 'open' ? ['pending', 'approved'] : filter === 'all' ? [...STATUSES] : [filter]),
+    [filter],
+  );
+  const seq = useRef(0);
 
   const load = useCallback(async () => {
+    const id = ++seq.current;
     setLoading(true);
     try {
       const r = await client.get<AssetRequest[]>(ENDPOINTS.ASSETS.REQUESTS, {
         params: { status: sel }, paramsSerializer: { indexes: null },
       });
+      if (id !== seq.current) return;
       setRows(r.data);
       setError(null);
     } catch (e: any) {
-      setError(errMsg(e, 'Failed to load requests'));
+      if (id === seq.current) setError(errMsg(e, 'Failed to load requests'));
     } finally {
-      setLoading(false);
+      if (id === seq.current) setLoading(false);
     }
   }, [sel]);
   useEffect(() => { load(); }, [load, refreshKey]);
 
-  const done = () => { setDecide(null); setFulfil(null); load(); onChanged(); };
+  const done = () => { setDecide(null); setFulfil(null); onChanged(); }; // bump -> refreshKey reloads
 
   return (
     <div className="space-y-4">
@@ -107,7 +110,7 @@ export const RequestsTab: React.FC<{ refreshKey: number; onChanged: () => void }
                   <div className="text-xs text-gray-500">{r.employee.emp_code}{r.employee.department ? ` · ${r.employee.department}` : ''}</div>
                 </td>
                 <td className="px-3 py-2">{r.category.name}</td>
-                <td className="px-3 py-2 max-w-xs truncate" title={r.reason}>{r.reason}</td>
+                <td className="px-3 py-2"><div className="max-w-xs truncate" title={r.reason}>{r.reason}</div></td>
                 <td className="px-3 py-2 whitespace-nowrap">{fmtDate(r.needed_by)}</td>
                 <td className="px-3 py-2">
                   <Badge variant={REQ_BADGE[r.status]}>{r.status}</Badge>

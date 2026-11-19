@@ -135,6 +135,13 @@ export const todayIso = (): string => {
   return `${d.getFullYear()}-${m}-${day}`;
 };
 
+/** Today as the (UTC) server sees it, never ahead of it: the earlier of local/UTC dates. */
+export const serverSafeToday = (): string => {
+  const utc = new Date().toISOString().slice(0, 10);
+  const loc = todayIso();
+  return loc < utc ? loc : utc;
+};
+
 /** Days from today to an ISO date (negative = past); null when no date. */
 export const daysUntil = (iso: string | null | undefined): number | null => {
   if (!iso) return null;

@@ -14,6 +14,9 @@ export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; on
   const [items, setItems] = useState<Asset[]>([]);
   const [pick, setPick] = useState<Asset | null>(null);
   const [date, setDate] = useState(todayIso());
+  const [dateTouched, setDateTouched] = useState(false);
+  const [listErr, setListErr] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [condition, setCondition] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -25,12 +28,13 @@ export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; on
 
   useEffect(() => {
     let live = true;
+    setLoaded(false);
     const params: Record<string, unknown> = { status: 'in_stock', limit: 50 };
     if (!all) params.category_id = req.category.id;
     if (dq) params.q = dq;
     client.get<{ items: Asset[] }>(ENDPOINTS.ASSETS.LIST, { params })
-      .then((r) => { if (live) { setItems(r.data.items); setErr(null); } })
-      .catch((e) => { if (live) setErr(errMsg(e, 'Could not load assets')); });
+      .then((r) => { if (live) { setItems(r.data.items); setListErr(null); setLoaded(true); } })
+      .catch((e) => { if (live) { setListErr(errMsg(e, 'Could not load assets')); setLoaded(true); } });
     return () => { live = false; };
   }, [all, dq, req.category.id]);
 
@@ -40,7 +44,7 @@ export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; on
     setErr(null);
     try {
       await client.post(ENDPOINTS.ASSETS.REQUEST_FULFIL(req.id), {
-        asset_id: pick.id, issued_date: date || null, condition: condition.trim() || null,
+        asset_id: pick.id, issued_date: dateTouched && date ? date : undefined, condition: condition.trim() || null,
         allow_other_category: pick.category.id !== req.category.id,
       });
       toast.success(`${pick.asset_tag} issued to ${req.employee.name}`);
@@ -66,11 +70,12 @@ export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; on
           <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />Show all categories
         </label>
       </div>
-      <ul className="max-h-56 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100">
-        {items.length === 0 && <li className="p-3 text-sm text-gray-500">No in-stock assets found.</li>}
+      {listErr && <p role="alert" className="text-sm text-red-700">{listErr}</p>}
+      <ul role="radiogroup" aria-label="In-stock assets" className="max-h-56 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100">
+        {loaded && !listErr && items.length === 0 && <li className="p-3 text-sm text-gray-500">No in-stock assets found.</li>}
         {items.map((a) => (
           <li key={a.id}>
-            <button type="button" aria-pressed={pick?.id === a.id} onClick={() => setPick(a)}
+            <button type="button" role="radio" aria-checked={pick?.id === a.id} onClick={() => setPick(a)}
               className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${pick?.id === a.id ? 'bg-indigo-50' : ''}`}>
               <span className="font-medium">{a.asset_tag}</span> {a.name}
               <span className="text-xs text-gray-500"> · {a.category.name}</span>
@@ -86,7 +91,7 @@ export const FulfilDialog: React.FC<{ req: AssetRequest; onClose: () => void; on
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className={labelCls} htmlFor="fl-date">Issue date</label>
-          <input id="fl-date" type="date" max={todayIso()} className={`${inputCls} w-full`} value={date} onChange={(e) => setDate(e.target.value)} />
+          <input id="fl-date" type="date" max={todayIso()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
         </div>
         <div>
           <label className={labelCls} htmlFor="fl-cond">Condition</label>
