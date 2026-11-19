@@ -4112,6 +4112,7 @@ class AssetCreate(BaseModel):
     issued_date: Optional[date] = None
     condition: Optional[str] = None
     remarks: Optional[str] = None
+    asset_id: Optional[int] = None
 
 
 class AssetUpdate(BaseModel):
@@ -4167,6 +4168,29 @@ async def list_employee_assets(
     return [_serialize_asset(a) for a in rows]
 
 
+async def _legacy_category(db, asset_type: str):
+    """Find (case-insensitive) or create the register category for a legacy
+    free-text asset type."""
+    from app.models.asset import AssetCategory
+    name = (asset_type or "").strip()[:80] or "Other"
+    cat = (await db.execute(select(AssetCategory).where(
+        func.lower(func.trim(AssetCategory.name)) == name.lower()
+    ))).scalars().first()
+    if cat:
+        return cat
+    base = "".join(ch for ch in name if ch.isascii() and ch.isalnum()).upper()[:3]
+    base = base.ljust(2, "X")
+    code, n = base, 0
+    while (await db.execute(select(AssetCategory.id).where(
+            func.lower(AssetCategory.code) == code.lower()))).first():
+        n += 1
+        code = f"{base}{n}"
+    cat = AssetCategory(name=name, code=code)
+    db.add(cat)
+    await db.flush()
+    return cat
+
+
 @router.post("/employees/{employee_id}/assets")
 async def allocate_employee_asset(
     *,
@@ -4176,33 +4200,38 @@ async def allocate_employee_asset(
     body: AssetCreate,
     current_user: User = Depends(deps.check_permissions([HR_WRITE])),
 ) -> Any:
+    from app.api.v1.endpoints.roster_common import commit_or_409
+    from app.models.asset import Asset, AssetStatus
+    from app.services import assets as asset_svc
     emp = await db.get(Employee, employee_id)
     if not emp:
         raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
 
-    asset = EmployeeAsset(
-        employee_id=employee_id,
-        asset_type=body.asset_type.strip()[:50] or "Other",
-        model=body.model.strip()[:150] or "Unknown",
-        identifier=(body.identifier or None),
-        serial_no=(body.serial_no or None),
-        issued_date=body.issued_date or date.today(),
-        condition=(body.condition or None),
-        remarks=(body.remarks or None),
-        status="allocated",
-        created_by_id=current_user.id,
-    )
-    db.add(asset)
-    await db.flush()
-    await log_audit(
-        db, current_user.id, "ALLOCATE", "employee_asset",
-        str(asset.id),
-        {"employee_id": employee_id, "model": asset.model, "type": asset.asset_type},
-        request,
-    )
-    await db.commit()
-    await db.refresh(asset)
-    return _serialize_asset(asset)
+    try:
+        if body.asset_id is not None:
+            try:
+                reg = await asset_svc.get_asset_for_update(db, body.asset_id)
+            except LookupError:
+                raise HTTPException(status_code=404, detail="Asset not found")
+        else:
+            cat = await _legacy_category(db, body.asset_type)
+            model = body.model.strip()[:150] or "Unknown"
+            reg = Asset(
+                asset_tag=await asset_svc.next_asset_tag(db, cat),
+                category_id=cat.id, name=model, model=model,
+                serial_no=(body.serial_no or None),
+                status=AssetStatus.IN_STOCK, created_by_id=current_user.id)
+            db.add(reg)
+            await db.flush()
+        alloc = await asset_svc.allocate(
+            db, asset=reg, employee=emp, actor=current_user,
+            issued_date=body.issued_date, condition=body.condition or None,
+            remarks=body.remarks or None)
+    except asset_svc.AssetStateError as e:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(e))
+    await commit_or_409(db)
+    return _serialize_asset(alloc)
 
 
 @router.patch("/assets/{asset_id}")
@@ -4226,6 +4255,44 @@ async def update_asset(
             status_code=400,
             detail="status must be one of: allocated, returned, lost",
         )
+
+    if asset.asset_id is not None:
+        from app.api.v1.endpoints.roster_common import commit_or_409
+        from app.services import assets as asset_svc
+        new_status = update_data.get("status")
+        try:
+            reg = await asset_svc.get_asset_for_update(db, asset.asset_id)
+            await db.refresh(asset)
+            if new_status == "allocated" and asset.status != "allocated":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Re-allocate from the asset register")
+            if new_status == "returned" and asset.status == "allocated":
+                await asset_svc.return_asset(
+                    db, asset=reg, actor=current_user,
+                    returned_date=update_data.get("returned_date"),
+                    condition=update_data.get("condition"),
+                    remarks=update_data.get("remarks"))
+            elif new_status == "lost" and asset.status == "allocated":
+                await asset_svc.mark_lost(
+                    db, asset=reg, actor=current_user,
+                    remarks=(update_data.get("remarks") or "").strip()
+                    or "Marked lost via employee record")
+            else:
+                if new_status and new_status != asset.status:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Change the status from the asset register")
+                for field in ("condition", "remarks", "returned_date"):
+                    if field in update_data:
+                        setattr(asset, field, update_data[field])
+        except asset_svc.AssetStateError as e:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail=str(e))
+        await commit_or_409(db)
+        await db.refresh(asset)
+        return _serialize_asset(asset)
+
     # If marking returned without a date, default to today.
     if update_data.get("status") == "returned" and not update_data.get("returned_date") and not asset.returned_date:
         update_data["returned_date"] = date.today()
@@ -4256,6 +4323,8 @@ async def delete_asset(
     asset = await db.get(EmployeeAsset, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+    if asset.asset_id is not None and asset.status == "allocated":
+        raise HTTPException(status_code=409, detail="Return the asset instead")
     emp_id = asset.employee_id
     await db.delete(asset)
     await log_audit(

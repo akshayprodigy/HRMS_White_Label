@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     roster_on_call, roster_acks, safety_profile,
     attendance_regularization, schedule_delegations, broadcasts, attendance_bulk,
     devices, notification_actions, attendance_offline, tracking, biometric,
+    assets,
 )
 
 api_router = APIRouter()
@@ -52,6 +53,8 @@ api_router.include_router(
 # Biometric device admin: needs 'biometric manage', NOT attendance-gated.
 api_router.include_router(
     biometric.router, prefix="/biometric", tags=["biometric"])
+# Asset register: needs 'asset manage', NOT attendance-gated.
+api_router.include_router(assets.router, prefix="/assets", tags=["assets"])
 api_router.include_router(
     notification_actions.router, prefix="/notifications",
     tags=["notifications"])
