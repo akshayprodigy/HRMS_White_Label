@@ -111,7 +111,7 @@ export const Header = ({ title, userName, userRole, avatarUrl, onLogout, onNavig
       // Carry the entity id so target screens can focus a specific row (F5).
       try {
         window.dispatchEvent(new CustomEvent('erp:navigate', {
-          detail: { tab, resourceType: n.resource_type, resourceId: (n as any).resource_id },
+          detail: { tab, resourceType: n.resource_type, resourceId: (n as any).resource_id, eventType: n.event_type },
         }));
       } catch { /* no-op */ }
     }

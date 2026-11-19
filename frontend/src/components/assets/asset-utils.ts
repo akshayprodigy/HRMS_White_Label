@@ -152,8 +152,26 @@ export const expiringSoon = (iso: string | null | undefined, days = 30): boolean
 
 export const lifeText = (a: Asset): string | null => {
   if (a.effective_useful_life_months == null) return a.useful_life_months ? `${a.useful_life_months} months` : null;
-  const src = a.life_source === 'asset' ? '' : ` (${a.life_source} default)`;
+  const src = a.life_source === 'category' ? ' (category default)' : a.life_source === 'default' ? ' (system default)' : '';
   return `${a.effective_useful_life_months} months${src}`;
+};
+
+export interface AssetRequest {
+  id: number;
+  status: 'pending' | 'approved' | 'rejected' | 'fulfilled' | 'cancelled';
+  category: { id: number; name: string };
+  reason: string;
+  needed_by: string | null;
+  routed_via: 'chain' | 'direct';
+  fulfilled_asset: { id: number; asset_tag: string; name: string } | null;
+  decision_note: string | null;
+  created_at: string | null;
+  decided_at: string | null;
+  employee: { id: number; name: string; emp_code: string | null; department: string | null };
+}
+
+export const REQ_BADGE: Record<AssetRequest['status'], 'success' | 'info' | 'warning' | 'error' | 'neutral'> = {
+  pending: 'warning', approved: 'info', rejected: 'error', fulfilled: 'success', cancelled: 'neutral',
 };
 
 export const holderText = (h: Holder | null): string =>

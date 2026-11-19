@@ -5,6 +5,9 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { RegisterTab } from './register-tab';
+import { RequestsTab } from './requests-tab';
+import { MaintenanceTab } from './maintenance-tab';
+import { ExpiringTab } from './expiring-tab';
 import { AssetDetailDialog } from './asset-detail-dialog';
 import { AssetFormDialog } from './asset-form-dialog';
 import { CategoriesDialog } from './categories-dialog';
@@ -18,10 +21,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'maintenance', label: 'Maintenance' },
   { id: 'expiring', label: 'Expiring' },
 ];
-
-const ComingSoon: React.FC<{ name: string }> = ({ name }) => (
-  <Card className="p-8 text-center text-sm text-gray-500">{name} is coming soon.</Card>
-);
 
 const Tile: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
   <Card className="p-4">
@@ -54,7 +53,10 @@ export const AssetManagement: React.FC = () => {
 
   useEffect(() => {
     const apply = (d: NavDetail | null) => {
-      if (d?.tab !== 'asset-management' || d?.resourceType !== 'asset') return;
+      if (d?.tab !== 'asset-management') return;
+      if (d.resourceType === 'asset_request') { setTab('requests'); return; }
+      if (d.resourceType !== 'asset') return;
+      if (d.eventType === 'asset_expiry') { setTab('expiring'); return; }
       const id = Number(d.resourceId);
       if (Number.isInteger(id) && id > 0) { setTab('register'); setOpenId(id); }
     };
@@ -114,9 +116,9 @@ export const AssetManagement: React.FC = () => {
       {tab === 'register' && (
         <RegisterTab refreshKey={refreshKey} onOpen={setOpenId} onAdd={() => setAdding(true)} onCategories={() => setCats(true)} />
       )}
-      {tab === 'requests' && <ComingSoon name="Requests" />}
-      {tab === 'maintenance' && <ComingSoon name="Maintenance" />}
-      {tab === 'expiring' && <ComingSoon name="Expiring" />}
+      {tab === 'requests' && <RequestsTab refreshKey={refreshKey} onChanged={bump} />}
+      {tab === 'maintenance' && <MaintenanceTab refreshKey={refreshKey} onOpen={setOpenId} onChanged={bump} />}
+      {tab === 'expiring' && <ExpiringTab refreshKey={refreshKey} onOpen={setOpenId} />}
 
       {openId != null && <AssetDetailDialog key={openId} assetId={openId} onClose={() => setOpenId(null)} onChanged={bump} />}
       {adding && <AssetFormDialog onClose={() => setAdding(false)} onSaved={(a) => { setAdding(false); bump(); setOpenId(a.id); }} />}
