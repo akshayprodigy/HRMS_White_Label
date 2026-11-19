@@ -247,3 +247,18 @@ async def test_by_tag_not_shadowed(api, cat):
     a = await mk(api, cat)
     r = await api.get(f"{P}/by-tag/{a['asset_tag']}", headers=api.hr)
     assert r.status_code == 200 and r.json()["id"] == a["id"]
+
+
+async def test_complete_non_repair_keeps_in_repair(api, cat):
+    a = await mk(api, cat)
+    await post(api, a["id"], kind="repair", move_to_repair=True)
+    svc_m = (await post(api, a["id"], kind="service")).json()
+    r = await api.patch(f"{P}/maintenance/{svc_m['id']}", headers=api.hr,
+                        json={"complete": True})
+    assert r.status_code == 200
+    assert await status_of(api, a["id"]) == "in_repair"
+
+
+async def test_by_tag_maintenance_is_404(api):
+    r = await api.get(f"{P}/by-tag/maintenance", headers=api.hr)
+    assert r.status_code == 404

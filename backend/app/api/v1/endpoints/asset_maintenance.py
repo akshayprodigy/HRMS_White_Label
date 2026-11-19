@@ -214,7 +214,7 @@ async def patch_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
         setattr(m, k, v)
     await db.flush()
     returned = False
-    if completing and return_to_stock:
+    if completing and return_to_stock and m.kind == "repair":
         returned = await _return_if_no_open_repair(
             db, a, m, current_user, "Maintenance completed")
     _audit(db, current_user, "ASSET_MAINTENANCE_UPDATE", a.id, {
