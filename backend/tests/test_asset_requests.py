@@ -389,3 +389,46 @@ async def test_employee_categories_active_only(api, world):
     names = [c["name"] for c in r.json()]
     assert names == sorted(names)
     assert (await api.get(f"{P}/categories")).status_code == 401
+
+
+async def test_concurrent_chain_act_vs_cancel(api, world, chain):
+    """Approver act racing the employee's cancel on one chained pending
+    request: never a 5xx; request and instance end in agreeing states."""
+    import asyncio
+    app = create_app()
+    app.dependency_overrides[deps.verify_attendance] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://test") as c2:
+        h2 = await _login(c2, f"areq_hr_{world['sfx']}@test.com")
+        async with SessionLocal() as db:
+            extra = []
+            for i in range(6):
+                c = AssetCategory(
+                    name=f"RaceCat{i} {world['sfx']}",
+                    code=f"Z{i}{world['sfx'][:4].upper()}", is_active=True)
+                db.add(c)
+                extra.append(c)
+            await db.commit()
+            cat_ids = [c.id for c in extra]
+        outcomes = set()
+        for cid in cat_ids:
+            r = await api.post(P, headers=api.emp, json={
+                "category_id": cid, "reason": "Need a laptop for work"})
+            assert r.status_code == 200, r.text
+            q = r.json()
+            assert q["routed_via"] == "chain"
+            ra, rc = await asyncio.gather(
+                c2.post("/api/v1/approval-chains/instances/"
+                        f"{q['approval_instance_id']}/act",
+                        headers=h2, json={"action": "approve"}),
+                api.post(f"{P}/{q['id']}/cancel", headers=api.emp))
+            assert ra.status_code < 500 and rc.status_code < 500, (
+                ra.text, rc.text)
+            async with SessionLocal() as db:
+                req = await db.get(AssetRequest, q["id"])
+                inst = await db.get(
+                    ChainedApprovalInstance, q["approval_instance_id"])
+                assert (req.status, inst.status) in (
+                    ("cancelled", "cancelled"), ("approved", "approved")), (
+                    req.status, inst.status, ra.text, rc.text)
+                outcomes.add(req.status)

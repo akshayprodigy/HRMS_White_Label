@@ -1061,6 +1061,8 @@ async def act_on_instance(
         select(ChainedApprovalInstance)
         .where(ChainedApprovalInstance.id == instance_id)
         .options(selectinload(ChainedApprovalInstance.step_instances))
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )).scalar_one_or_none()
     if not instance:
         raise HTTPException(404, "Instance not found")

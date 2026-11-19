@@ -952,6 +952,10 @@ async def notify(
                 type="info", resource_type=resource_type,
                 resource_id=resource_id,
             ))
+    except OperationalError as exc:
+        if is_lock_conflict(exc):
+            raise
+        logger.warning("roster notification failed", exc_info=True)
     except Exception:  # pragma: no cover
         logger.warning("roster notification failed", exc_info=True)
 
@@ -975,6 +979,10 @@ async def notify_many(db: AsyncSession, rows) -> None:
         async with db.begin_nested():
             db.add_all(objs)
         return
+    except OperationalError as exc:
+        if is_lock_conflict(exc):
+            raise
+        logger.warning("roster batch notification failed", exc_info=True)
     except Exception:  # pragma: no cover
         logger.warning("roster batch notification failed", exc_info=True)
     for (uid, title, msg, rtype, rid, *_rest) in rows:

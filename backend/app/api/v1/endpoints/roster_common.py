@@ -2,12 +2,15 @@
 import asyncio
 import functools
 import logging
+from types import SimpleNamespace
 from datetime import date as pydate
 from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.exc import DataError, IntegrityError, OperationalError
+from sqlalchemy.exc import (
+    DataError, IntegrityError, OperationalError, PendingRollbackError,
+)
 
 from app.models.employee import Employee
 from app.models.roster import (
@@ -108,6 +111,18 @@ async def commit_or_409(db, msg: str = CONFLICT_MSG) -> None:
         raise mapped from exc
 
 
+def _caused_by_lock_conflict(exc) -> bool:
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if (isinstance(cur, OperationalError)
+                and roster_svc.is_lock_conflict(cur)):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def guard_conflicts(fn):
     """Endpoint decorator: DB errors raised anywhere in the body (flush,
     autoflush, commit) that mean a lost race / bad data become 409/422 with
@@ -122,7 +137,22 @@ def guard_conflicts(fn):
             if mapped is None:
                 raise
             raise mapped from exc
+        except PendingRollbackError as exc:
+            # Session doomed by a swallowed lock conflict (1020/1213).
+            if not _caused_by_lock_conflict(exc):
+                raise
+            logger.warning("roster lock conflict (pending rollback)",
+                           exc_info=True)
+            await kwargs["db"].rollback()
+            raise HTTPException(
+                status_code=409, detail=CONFLICT_MSG) from exc
     return wrapper
+
+
+def plain_actor(user):
+    """Detached stand-in for the current user (only `.id`), safe to use
+    across a rollback inside a retry_on_lock body."""
+    return SimpleNamespace(id=user.id)
 
 
 async def retry_on_lock(db, fn, *, tries: int = 8, commit: bool = False):
