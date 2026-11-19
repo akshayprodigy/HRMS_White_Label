@@ -53,8 +53,7 @@ async def world():
         async with SessionLocal() as db:
             uids = list((await db.execute(select(User.id).where(
                 User.email.like(f"aapi\\_%\\_{sfx}@test.com")))).scalars().all())
-            cids = list((await db.execute(select(AssetCategory.id).where(
-                AssetCategory.code.like(f"T{sfx[:4].upper()}%")))).scalars().all())
+            cids = list(ids.get("cat_ids", []))
             aids = list((await db.execute(select(Asset.id).where(
                 Asset.category_id.in_(cids)))).scalars().all()) if cids else []
             eids = list((await db.execute(select(Employee.id).where(
@@ -119,6 +118,7 @@ async def cat(api, world):
         "name": f"Cat {world['sfx']}", "code": code,
         "default_useful_life_months": 24})
     assert r.status_code == 200, r.text
+    world.setdefault("cat_ids", []).append(r.json()["id"])
     return r.json()
 
 
@@ -236,7 +236,7 @@ async def test_return_and_lost(api, world, cat):
     assert r.status_code == 200 and r.json()["status"] == "in_stock"
     r = await api.post(f"{P}/{a['id']}/status", headers=api.hr,
                        json={"to_status": "lost"})
-    assert r.status_code == 409
+    assert r.status_code == 422
 
 
 async def test_patch_rejects_status(api, cat):
@@ -320,3 +320,103 @@ async def test_legacy_routes(api, world):
         n = (await db.execute(select(AssetCategory).where(
             AssetCategory.name.like(f"%Gadget {sfx}%")))).scalars().all()
         assert len(n) == 1
+
+
+async def test_legacy_category_reuse_identifier_lost_and_null(api, world):
+    sfx = world["sfx"]
+    L = f"/api/v1/hr/employees/{world['emp_id']}/assets"
+    r = await api.post(f"{P}/categories", headers=api.hr, json={
+        "name": f"Widget {sfx}", "code": f"W{sfx[:4].upper()}"})
+    cid = r.json()["id"]
+    world.setdefault("cat_ids", []).append(cid)
+    r = await api.post(L, headers=api.hr, json={
+        "asset_type": f"WIDGET {sfx}", "model": "W1",
+        "identifier": f"ast-{sfx}"})
+    assert r.status_code == 200, r.text
+    first = r.json()
+    assert first["identifier"] == f"AST-{sfx.upper()}"
+    async with SessionLocal() as db:
+        row = await db.get(EmployeeAsset, first["id"])
+        a = await db.get(Asset, row.asset_id)
+        assert a.category_id == cid and a.asset_tag == f"AST-{sfx.upper()}"
+    r = await api.post(L, headers=api.hr, json={
+        "asset_type": f"Widget {sfx}", "model": "W2",
+        "identifier": f"AST-{sfx}"})
+    assert r.status_code == 409
+    r = await api.post(L, headers=api.hr, json={
+        "asset_type": f"Widget {sfx}", "model": "W3",
+        "identifier": "bad id!"})
+    assert r.status_code == 200
+    async with SessionLocal() as db:
+        row = await db.get(EmployeeAsset, r.json()["id"])
+        a = await db.get(Asset, row.asset_id)
+        assert a.notes == "Legacy identifier: bad id!"
+        assert a.asset_tag.startswith("W")
+    # legacy lost path + edit-only patch
+    r = await api.patch(f"/api/v1/hr/assets/{first['id']}", headers=api.hr,
+                        json={"condition": "scratched"})
+    assert r.status_code == 200 and r.json()["condition"] == "scratched"
+    r = await api.patch(f"/api/v1/hr/assets/{first['id']}", headers=api.hr,
+                        json={"status": "lost"})
+    assert r.status_code == 200 and r.json()["status"] == "lost"
+    async with SessionLocal() as db:
+        row = await db.get(EmployeeAsset, first["id"])
+        assert (await db.get(Asset, row.asset_id)).status == "lost"
+    # legacy NULL asset_id row keeps old behaviour
+    async with SessionLocal() as db:
+        old = EmployeeAsset(employee_id=world["emp_id"], asset_type="Old",
+                            model="Old", status="allocated")
+        db.add(old)
+        await db.commit()
+        oid = old.id
+    r = await api.patch(f"/api/v1/hr/assets/{oid}", headers=api.hr,
+                        json={"status": "returned"})
+    assert r.status_code == 200 and r.json()["returned_date"]
+    r = await api.delete(f"/api/v1/hr/assets/{oid}", headers=api.hr)
+    assert r.status_code == 200
+
+
+async def test_category_patch_duplicate_and_blank(api, world, cat):
+    other = await api.post(f"{P}/categories", headers=api.hr, json={
+        "name": f"Second {world['sfx']}", "code": f"S{world['sfx'][:4].upper()}"})
+    world["cat_ids"].append(other.json()["id"])
+    r = await api.patch(f"{P}/categories/{other.json()['id']}", headers=api.hr,
+                        json={"name": f"cat {world['sfx']}"})
+    assert r.status_code == 409
+    r = await api.patch(f"{P}/categories/{other.json()['id']}", headers=api.hr,
+                        json={"name": "   "})
+    assert r.status_code == 422
+    r = await api.post(f"{P}/categories", headers=api.hr,
+                       json={"name": "  ", "code": "ABCD"})
+    assert r.status_code == 422
+    r = await api.post(P, headers=api.hr, json={
+        "category_id": cat["id"], "name": "   "})
+    assert r.status_code == 422
+
+
+async def test_pagination_expiring_retired_and_bad_status(api, cat):
+    soon = (date.today() + timedelta(days=5)).isoformat()
+    ids = [(await mk(api, cat))["id"] for _ in range(3)]
+    r = await api.get(P, headers=api.hr, params={
+        "category_id": cat["id"], "limit": 2, "offset": 0})
+    j = r.json()
+    assert j["total"] == 3 and len(j["items"]) == 2
+    r = await api.get(P, headers=api.hr, params={
+        "category_id": cat["id"], "limit": 2, "offset": 2})
+    assert len(r.json()["items"]) == 1
+    keep = await mk(api, cat, warranty_expiry=soon)
+    gone = await mk(api, cat, warranty_expiry=soon)
+    r = await api.post(f"{P}/{gone['id']}/status", headers=api.hr,
+                       json={"to_status": "retired"})
+    assert r.status_code == 200
+    r = await api.get(P, headers=api.hr, params={
+        "category_id": cat["id"], "expiring_within_days": 30})
+    assert [i["id"] for i in r.json()["items"]] == [keep["id"]]
+    r = await api.get(P, headers=api.hr, params={"status": "bogus"})
+    assert r.status_code == 422
+    r = await api.post(f"{P}/{ids[0]}/status", headers=api.hr,
+                       json={"to_status": "bogus"})
+    assert r.status_code == 422
+    r = await api.post(f"{P}/{ids[0]}/return", headers=api.hr,
+                       json={"to_status": "lost"})
+    assert r.status_code == 422

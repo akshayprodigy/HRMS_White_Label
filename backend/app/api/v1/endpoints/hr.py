@@ -74,6 +74,7 @@ from app.schemas.employee import EmployeeCreateWithUser
 from app.schemas.user import UserLinkRead
 from app.schemas.user import RoleSchema, UserRolesUpdate
 from app.core.security import get_password_hash
+from app.api.v1.endpoints.roster_common import commit_or_409, guard_conflicts
 
 router = APIRouter()
 
@@ -4170,37 +4171,49 @@ async def list_employee_assets(
 
 async def _legacy_category(db, asset_type: str):
     """Find (case-insensitive) or create the register category for a legacy
-    free-text asset type."""
+    free-text asset type. A lost insert race re-selects once, else 409."""
+    from sqlalchemy.exc import IntegrityError
     from app.models.asset import AssetCategory
     name = (asset_type or "").strip()[:80] or "Other"
-    cat = (await db.execute(select(AssetCategory).where(
-        func.lower(func.trim(AssetCategory.name)) == name.lower()
-    ))).scalars().first()
+
+    async def find():
+        return (await db.execute(select(AssetCategory).where(
+            func.lower(func.trim(AssetCategory.name)) == name.lower()
+        ))).scalars().first()
+
+    cat = await find()
     if cat:
         return cat
     base = "".join(ch for ch in name if ch.isascii() and ch.isalnum()).upper()[:3]
     base = base.ljust(2, "X")
-    code, n = base, 0
-    while (await db.execute(select(AssetCategory.id).where(
-            func.lower(AssetCategory.code) == code.lower()))).first():
-        n += 1
-        code = f"{base}{n}"
-    cat = AssetCategory(name=name, code=code)
-    db.add(cat)
-    await db.flush()
-    return cat
+    for _ in range(2):
+        code, n = base, 0
+        while (await db.execute(select(AssetCategory.id).where(
+                func.lower(AssetCategory.code) == code.lower()))).first():
+            n += 1
+            code = f"{base}{n}"
+        try:
+            async with db.begin_nested():
+                cat = AssetCategory(name=name, code=code)
+                db.add(cat)
+                await db.flush()
+            return cat
+        except IntegrityError:
+            cat = await find()
+            if cat:
+                return cat
+    raise HTTPException(status_code=409, detail="Category changed concurrently; retry")
 
 
 @router.post("/employees/{employee_id}/assets")
+@guard_conflicts
 async def allocate_employee_asset(
     *,
     db: deps.DBDep,
-    request: Request,
     employee_id: int,
     body: AssetCreate,
     current_user: User = Depends(deps.check_permissions([HR_WRITE])),
 ) -> Any:
-    from app.api.v1.endpoints.roster_common import commit_or_409
     from app.models.asset import Asset, AssetStatus
     from app.services import assets as asset_svc
     emp = await db.get(Employee, employee_id)
@@ -4216,8 +4229,20 @@ async def allocate_employee_asset(
         else:
             cat = await _legacy_category(db, body.asset_type)
             model = body.model.strip()[:150] or "Unknown"
+            ident = (body.identifier or "").strip()
+            tag = ident.upper()
+            notes = None
+            if ident and re.match(r"^[A-Z0-9-]{3,32}$", tag):
+                if (await db.execute(select(Asset.id).where(
+                        func.upper(Asset.asset_tag) == tag))).first():
+                    raise HTTPException(
+                        status_code=409, detail="Asset tag already exists")
+            else:
+                if ident:
+                    notes = f"Legacy identifier: {ident}"
+                tag = await asset_svc.next_asset_tag(db, cat)
             reg = Asset(
-                asset_tag=await asset_svc.next_asset_tag(db, cat),
+                asset_tag=tag, notes=notes,
                 category_id=cat.id, name=model, model=model,
                 serial_no=(body.serial_no or None),
                 status=AssetStatus.IN_STOCK, created_by_id=current_user.id)
@@ -4257,12 +4282,16 @@ async def update_asset(
         )
 
     if asset.asset_id is not None:
-        from app.api.v1.endpoints.roster_common import commit_or_409
         from app.services import assets as asset_svc
         new_status = update_data.get("status")
         try:
             reg = await asset_svc.get_asset_for_update(db, asset.asset_id)
-            await db.refresh(asset)
+            asset = (await db.execute(
+                select(EmployeeAsset).where(EmployeeAsset.id == asset_id)
+                .with_for_update().execution_options(populate_existing=True)
+            )).scalars().first()
+            if asset is None:
+                raise HTTPException(status_code=404, detail="Asset not found")
             if new_status == "allocated" and asset.status != "allocated":
                 raise HTTPException(
                     status_code=409,
@@ -4286,6 +4315,11 @@ async def update_asset(
                 for field in ("condition", "remarks", "returned_date"):
                     if field in update_data:
                         setattr(asset, field, update_data[field])
+                db.add(AuditLog(
+                    user_id=current_user.id, action="UPDATE",
+                    resource_type="employee_asset", resource_id=str(asset_id),
+                    details={k: (v.isoformat() if isinstance(v, date) else v)
+                             for k, v in update_data.items()}))
         except asset_svc.AssetStateError as e:
             await db.rollback()
             raise HTTPException(status_code=409, detail=str(e))

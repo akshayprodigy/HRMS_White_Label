@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 import segno
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
@@ -40,11 +40,22 @@ def _iso(d) -> Optional[str]:
     return d.isoformat() if d else None
 
 
+def _nonblank(v):
+    if v is None:
+        return v
+    v = v.strip()
+    if not v:
+        raise ValueError("must not be blank")
+    return v
+
+
 # ── schemas ──────────────────────────────────────────────────────────────
 class CategoryIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     code: str
     default_useful_life_months: Optional[int] = Field(default=None, gt=0)
+
+    _strip_name = field_validator("name")(_nonblank)
 
 
 class CategoryPatch(BaseModel):
@@ -52,6 +63,8 @@ class CategoryPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     default_useful_life_months: Optional[int] = Field(default=None, gt=0)
     is_active: Optional[bool] = None
+
+    _strip_name = field_validator("name")(_nonblank)
 
 
 class AssetIn(BaseModel):
@@ -72,6 +85,8 @@ class AssetIn(BaseModel):
     amc_expiry: Optional[date] = None
     notes: Optional[str] = None
 
+    _strip_name = field_validator("name")(_nonblank)
+
 
 class AssetPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -91,6 +106,8 @@ class AssetPatch(BaseModel):
     amc_expiry: Optional[date] = None
     notes: Optional[str] = None
 
+    _strip_name = field_validator("name")(_nonblank)
+
 
 class AllocateIn(BaseModel):
     employee_id: int
@@ -103,7 +120,7 @@ class ReturnIn(BaseModel):
     returned_date: Optional[date] = None
     condition: Optional[str] = Field(default=None, max_length=50)
     remarks: Optional[str] = None
-    to_status: str = "in_stock"
+    to_status: Literal["in_stock", "in_repair", "retired"] = "in_stock"
 
 
 class LostIn(BaseModel):
@@ -111,7 +128,7 @@ class LostIn(BaseModel):
 
 
 class StatusIn(BaseModel):
-    to_status: Literal["in_stock", "allocated", "in_repair", "retired", "lost"]
+    to_status: Literal["in_stock", "in_repair", "retired"]
     remarks: Optional[str] = None
 
 
@@ -335,7 +352,8 @@ async def by_tag(db: deps.DBDep, tag: str) -> Any:
 @router.get("")
 async def list_assets(
     db: deps.DBDep,
-    status: Optional[str] = None,
+    status: Optional[Literal[
+        "in_stock", "allocated", "in_repair", "retired", "lost"]] = None,
     category_id: Optional[int] = None,
     location_id: Optional[int] = None,
     q: Optional[str] = None,
@@ -369,6 +387,8 @@ async def list_assets(
     if expiring_within_days is not None:
         today = date.today()
         end = today + timedelta(days=expiring_within_days)
+        conds.append(Asset.status.notin_(
+            [AssetStatus.RETIRED, AssetStatus.LOST]))
         conds.append(or_(Asset.warranty_expiry.between(today, end),
                          Asset.amc_expiry.between(today, end)))
     total = (await db.execute(
