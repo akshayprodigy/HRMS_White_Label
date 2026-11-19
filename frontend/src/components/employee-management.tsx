@@ -1508,7 +1508,7 @@ const EmployeeDetails = ({
             <h2 className="text-3xl font-black text-[#0F172A] tracking-tighter uppercase">{emp.user.full_name}</h2>
             <div className="flex items-center gap-3 mt-1">
                <Badge variant="info" className="text-[9px] font-black uppercase tracking-widest">{emp.designation}</Badge>
-               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Asset ID: {emp.employee_id}</span>
+               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Employee ID: {emp.employee_id}</span>
             </div>
           </div>
         </div>
@@ -2459,6 +2459,20 @@ const AssetsTab = ({ emp }: { emp: any }) => {
   const [dialog, setDialog] = useState<null | 'allocate' | 'new'>(null);
   const [rowAction, setRowAction] = useState<null | { kind: 'return' | 'lost'; assetId: number; label: string }>(null);
   const [actioningId, setActioningId] = useState<number | null>(null);
+  const [allocatingNew, setAllocatingNew] = useState(false);
+  // Register actions need "asset manage"; superusers always have it. Hidden until /auth/me resolves.
+  const [canManage, setCanManage] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    client.get(ENDPOINTS.AUTH.ME).then((r) => {
+      const me = r.data || {};
+      const ok = Boolean(me.is_superuser) || (me.roles || []).some((ro: any) =>
+        (ro?.permissions || []).some((pm: any) => pm?.name === 'asset manage'));
+      if (live) setCanManage(ok);
+    }).catch(() => { if (live) setCanManage(false); });
+    return () => { live = false; };
+  }, []);
 
   const fetchAssets = async () => {
     if (!empId) return;
@@ -2479,11 +2493,14 @@ const AssetsTab = ({ emp }: { emp: any }) => {
   // A newly registered asset is allocated to this employee straight away.
   const allocateNew = async (a: RegAsset) => {
     setDialog(null);
+    setAllocatingNew(true);
     try {
       await client.post(ENDPOINTS.ASSETS.ALLOCATE(a.id), { employee_id: Number(empId) });
       toast.success(`${a.asset_tag} created and allocated`);
     } catch (err: any) {
       toast.error(`${a.asset_tag} was created but could not be allocated: ${assetErrMsg(err, 'Failed')}`);
+    } finally {
+      setAllocatingNew(false);
     }
     fetchAssets();
   };
@@ -2550,14 +2567,16 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                {assets.length} record{assets.length === 1 ? '' : 's'} • Inventory & resource tracking
              </p>
           </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" className="h-11 px-6 font-black uppercase text-[10px] tracking-widest" onClick={() => setDialog('new')}>
-              Add new asset
-            </Button>
-            <Button className="bg-blue-600 font-black uppercase text-[10px] tracking-widest h-11 px-8" onClick={() => setDialog('allocate')}>
-              <Plus className="mr-2" size={14} /> Allocate from register
-            </Button>
-          </div>
+          {canManage && (
+            <div className="flex items-center gap-3">
+              <Button variant="outline" className="h-11 px-6 font-black uppercase text-[10px] tracking-widest" disabled={allocatingNew} onClick={() => setDialog('new')}>
+                Add new asset
+              </Button>
+              <Button className="bg-blue-600 font-black uppercase text-[10px] tracking-widest h-11 px-8" disabled={allocatingNew} onClick={() => setDialog('allocate')}>
+                <Plus className="mr-2" size={14} /> Allocate from register
+              </Button>
+            </div>
+          )}
        </Card>
 
        {loading ? (
@@ -2599,7 +2618,7 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                    <p className="mt-4 text-[10px] text-slate-500 italic line-clamp-2" title={asset.remarks}>{asset.remarks}</p>
                  )}
                  <div className="mt-6 flex flex-col gap-2">
-                   {asset.status === 'allocated' ? (
+                   {asset.status === 'allocated' ? ((asset.asset_id && !canManage) ? null : (
                      <>
                        <Button
                          variant="ghost"
@@ -2618,7 +2637,7 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                          <AlertCircle size={12} className="mr-2" /> Mark Lost
                        </Button>
                      </>
-                   ) : (
+                   )) : (
                      <Button
                        variant="ghost"
                        className="w-full h-9 text-[9px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50"
@@ -2639,7 +2658,7 @@ const AssetsTab = ({ emp }: { emp: any }) => {
          <AllocateFromRegisterDialog empId={empId} onClose={() => setDialog(null)} onDone={() => { setDialog(null); fetchAssets(); }} />
        )}
        {dialog === 'new' && (
-         <AssetFormDialog onClose={() => setDialog(null)} onSaved={allocateNew} />
+         <AssetFormDialog suppressCreatedToast onClose={() => setDialog(null)} onSaved={allocateNew} />
        )}
        {rowAction && (
          <RowActionDialog kind={rowAction.kind} assetId={rowAction.assetId} label={rowAction.label}

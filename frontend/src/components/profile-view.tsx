@@ -105,7 +105,8 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
     const h = (ev: Event) => {
       const d = (ev as CustomEvent).detail as NavDetail | undefined;
       if (d?.tab !== 'profile') return;
-      takeNav('profile');
+      // App's listener may run after this one; clear the stash once it has stashed.
+      queueMicrotask(() => takeNav('profile'));
       apply(d);
     };
     window.addEventListener('erp:navigate', h);

@@ -13,11 +13,13 @@ interface Props {
   asset?: AssetDetail | null; // present = edit
   onClose: () => void;
   onSaved: (a: AssetDetail) => void;
+  /** Skip the built-in 'created' toast (caller shows its own, e.g. create-then-allocate). */
+  suppressCreatedToast?: boolean;
 }
 
 const orNull = (s: string) => s.trim() || null;
 
-export const AssetFormDialog: React.FC<Props> = ({ asset, onClose, onSaved }) => {
+export const AssetFormDialog: React.FC<Props> = ({ asset, onClose, onSaved, suppressCreatedToast }) => {
   const edit = !!asset;
   const [cats, setCats] = useState<AssetCategory[]>([]);
   const [f, setF] = useState({
@@ -80,7 +82,8 @@ export const AssetFormDialog: React.FC<Props> = ({ asset, onClose, onSaved }) =>
       const r = edit
         ? await client.patch<AssetDetail>(ENDPOINTS.ASSETS.DETAIL(asset!.id), body)
         : await client.post<AssetDetail>(ENDPOINTS.ASSETS.LIST, body);
-      toast.success(edit ? 'Asset updated' : `Asset ${r.data.asset_tag} created`);
+      if (edit) toast.success('Asset updated');
+      else if (!suppressCreatedToast) toast.success(`Asset ${r.data.asset_tag} created`);
       onSaved(r.data);
     } catch (e: any) {
       setErr(errMsg(e, 'Could not save the asset'));

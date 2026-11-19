@@ -142,6 +142,18 @@ export const serverSafeToday = (): string => {
   return loc < utc ? loc : utc;
 };
 
+/**
+ * Earliest date that is not in the past as the server sees it: the LATER of the
+ * local and UTC dates. (serverSafeToday takes the earlier, for not-in-future
+ * inputs; a min-date input needs the opposite bound or a user west/east of UTC
+ * could pick a date the server rejects as past.)
+ */
+export const clientSafeMinToday = (): string => {
+  const utc = new Date().toISOString().slice(0, 10);
+  const loc = todayIso();
+  return loc > utc ? loc : utc;
+};
+
 /** Days from today to an ISO date (negative = past); null when no date. */
 export const daysUntil = (iso: string | null | undefined): number | null => {
   if (!iso) return null;

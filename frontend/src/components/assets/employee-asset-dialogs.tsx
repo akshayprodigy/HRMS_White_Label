@@ -42,6 +42,9 @@ export const AllocateFromRegisterDialog: React.FC<{
     return () => { live = false; };
   }, [dq]);
 
+  // The selection may not be in the new result list: clear it.
+  useEffect(() => { setPick(null); }, [dq]);
+
   const submit = async () => {
     if (!pick) return setErr('Choose an asset to allocate.');
     setBusy(true);

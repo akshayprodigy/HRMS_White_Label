@@ -5,16 +5,9 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { Modal } from './modal';
-import { inputCls, labelCls, todayIso } from './asset-utils';
+import { inputCls, labelCls, clientSafeMinToday } from './asset-utils';
 
 interface Cat { id: number; name: string; code: string }
-
-// Earliest "not in the past" date as the server sees it: the later of local/UTC.
-const minNeededBy = (): string => {
-  const utc = new Date().toISOString().slice(0, 10);
-  const loc = todayIso();
-  return loc > utc ? loc : utc;
-};
 
 export const RequestAssetDialog: React.FC<{ onClose: () => void; onDone: () => void }> = ({ onClose, onDone }) => {
   const [cats, setCats] = useState<Cat[]>([]);
@@ -71,7 +64,7 @@ export const RequestAssetDialog: React.FC<{ onClose: () => void; onDone: () => v
       </div>
       <div>
         <label className={labelCls} htmlFor="ra-needed">Needed by (optional)</label>
-        <input id="ra-needed" type="date" min={minNeededBy()} className={`${inputCls} w-full`} value={needed} onChange={(e) => setNeeded(e.target.value)} />
+        <input id="ra-needed" type="date" min={clientSafeMinToday()} className={`${inputCls} w-full`} value={needed} onChange={(e) => setNeeded(e.target.value)} />
       </div>
       {err && <p role="alert" className="text-sm text-red-700">{err}</p>}
       <div className="flex justify-end gap-2">
