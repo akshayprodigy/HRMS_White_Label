@@ -180,6 +180,15 @@ class InitiateClearance(BaseModel):
     clearances: List[ClearanceRequestCreate]
 
 
+class OutstandingAsset(BaseModel):
+    allocation_id: int
+    asset_id: Optional[int] = None
+    asset_tag: Optional[str] = None
+    name: str
+    category: Optional[str] = None
+    issued_date: Optional[date] = None
+
+
 # ─── Combined Exit Details ────────────────────────────────────
 
 class ExitDetailsRead(BaseModel):
@@ -188,3 +197,4 @@ class ExitDetailsRead(BaseModel):
     clearance_requests: List[ClearanceRequestRead] = []
     days_remaining: Optional[int] = None
     all_cleared: bool = False
+    outstanding_assets: List[OutstandingAsset] = []

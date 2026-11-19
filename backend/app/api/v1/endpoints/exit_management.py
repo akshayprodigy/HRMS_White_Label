@@ -31,8 +31,11 @@ from app.schemas.exit_management import (
     ExitInterviewSubmit, ExitInterviewHRRemarks, ExitInterviewRead,
     ClearanceRequestCreate, ClearanceRequestRead,
     ClearanceAction, InitiateClearance,
-    ExitDetailsRead, ClearanceItemRead,
+    ExitDetailsRead, ClearanceItemRead, OutstandingAsset,
 )
+from app.models.asset import Asset, AssetCategory
+from app.models.employee_asset import EmployeeAsset
+from app.services import assets as asset_svc
 
 router = APIRouter()
 
@@ -65,6 +68,33 @@ def _clearance_to_read(c: ClearanceRequest) -> ClearanceRequestRead:
         for i in (c.items or [])
     ]
     return data
+
+
+async def outstanding_assets(db, employee_id: int) -> List[OutstandingAsset]:
+    """Open asset allocations (register-linked and legacy) held by an employee."""
+    open_ids = [a.id for a in
+                await asset_svc.open_allocations_for_employee(db, employee_id)]
+    if not open_ids:
+        return []
+    rows = (await db.execute(
+        select(EmployeeAsset, Asset, AssetCategory)
+        .outerjoin(Asset, Asset.id == EmployeeAsset.asset_id)
+        .outerjoin(AssetCategory, AssetCategory.id == Asset.category_id)
+        .where(EmployeeAsset.id.in_(open_ids))
+        .order_by(EmployeeAsset.id)
+        .execution_options(populate_existing=True)
+    )).all()
+    return [
+        OutstandingAsset(
+            allocation_id=alloc.id,
+            asset_id=alloc.asset_id,
+            asset_tag=(asset.asset_tag if asset else None) or alloc.identifier,
+            name=(asset.name if asset else None) or alloc.model,
+            category=(cat.name if cat else None) or alloc.asset_type,
+            issued_date=alloc.issued_date,
+        )
+        for alloc, asset, cat in rows
+    ]
 
 
 async def _get_employee_for_user(db, user_id: int) -> Employee:
@@ -335,6 +365,8 @@ async def get_my_resignation(
         ],
         days_remaining=max(0, days_remaining),
         all_cleared=all_cleared,
+        outstanding_assets=await outstanding_assets(
+            db, resignation.employee_id),
     )
 
 
@@ -454,6 +486,8 @@ async def get_exit_details(
         ],
         days_remaining=max(0, days_remaining),
         all_cleared=all_cleared,
+        outstanding_assets=await outstanding_assets(
+            db, resignation.employee_id),
     )
 
 
@@ -869,6 +903,28 @@ async def initiate_clearance(
         )
         created.append(cr)
 
+    held = await outstanding_assets(db, resignation.employee_id)
+    if held and created:
+        already = (await db.execute(
+            select(ClearanceItem.id)
+            .join(ClearanceRequest,
+                  ClearanceRequest.id == ClearanceItem.clearance_request_id)
+            .where(ClearanceRequest.resignation_id == resignation.id,
+                   ClearanceItem.item_name.like("Return assets:%"))
+            .limit(1)
+        )).first()
+        if already is None:
+            label = "Return assets: " + ", ".join(
+                a.asset_tag or a.name for a in held)
+            if len(label) > 255:
+                label = label[:254] + "…"
+            target = next(
+                (c for c in created
+                 if (c.department or "").strip().lower() == "it"),
+                created[0])
+            db.add(ClearanceItem(
+                clearance_request_id=target.id, item_name=label))
+
     await db.commit()
 
     # Re-fetch with items
@@ -1002,6 +1058,14 @@ async def final_release(
         raise HTTPException(
             status_code=400,
             detail=f"Pending clearances from: {depts}"
+        )
+
+    held = await outstanding_assets(db, resignation.employee_id)
+    if held:
+        raise HTTPException(
+            status_code=400,
+            detail="Assets not returned: " + ", ".join(
+                a.asset_tag or a.name for a in held)
         )
 
     resignation.status = ResignationStatus.RELEASED
