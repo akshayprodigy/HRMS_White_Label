@@ -76,19 +76,21 @@ async def outstanding_assets(db, employee_id: int, *, lock: bool = False
     """Open asset allocations (register-linked and legacy) held by an employee.
     lock=True takes row locks on the allocation rows only (used by the release
     gate); MariaDB has no FOR UPDATE OF, so the lock is a separate plain read."""
+    q = (select(EmployeeAsset, Asset, AssetCategory)
+         .outerjoin(Asset, Asset.id == EmployeeAsset.asset_id)
+         .outerjoin(AssetCategory, AssetCategory.id == Asset.category_id)
+         .order_by(EmployeeAsset.id)
+         .execution_options(populate_existing=True))
     if lock:
-        if not await asset_svc.open_allocations_for_employee(
-                db, employee_id, lock=True):
+        locked_ids = [a.id for a in await asset_svc.open_allocations_for_employee(
+            db, employee_id, lock=True)]
+        if not locked_ids:
             return []
-    rows = (await db.execute(
-        select(EmployeeAsset, Asset, AssetCategory)
-        .outerjoin(Asset, Asset.id == EmployeeAsset.asset_id)
-        .outerjoin(AssetCategory, AssetCategory.id == Asset.category_id)
-        .where(EmployeeAsset.employee_id == employee_id,
-               EmployeeAsset.status == "allocated")
-        .order_by(EmployeeAsset.id)
-        .execution_options(populate_existing=True)
-    )).all()
+        q = q.where(EmployeeAsset.id.in_(locked_ids))
+    else:
+        q = q.where(EmployeeAsset.employee_id == employee_id,
+                    EmployeeAsset.status == "allocated")
+    rows = (await db.execute(q)).all()
     return [
         OutstandingAsset(
             allocation_id=alloc.id,
@@ -213,6 +215,7 @@ async def _auto_advance_notice_period(db) -> None:
 # ─── Employee: Submit Resignation ─────────────────────────────
 
 @router.post("/resign", response_model=ResignationRead)
+@guard_conflicts
 async def submit_resignation(
     *,
     db: deps.DBDep,
@@ -273,6 +276,7 @@ async def submit_resignation(
 # ─── Employee: Withdraw Resignation ──────────────────────────
 
 @router.post("/resign/withdraw", response_model=ResignationRead)
+@guard_conflicts
 async def withdraw_resignation(
     *,
     db: deps.DBDep,
@@ -378,6 +382,7 @@ async def get_my_resignation(
 # ─── Employee: Submit Exit Interview ──────────────────────────
 
 @router.post("/resign/exit-interview", response_model=ExitInterviewRead)
+@guard_conflicts
 async def submit_exit_interview(
     *,
     db: deps.DBDep,
@@ -502,6 +507,7 @@ async def get_exit_details(
     "/resignations/{resignation_id}/accept",
     response_model=ResignationRead,
 )
+@guard_conflicts
 async def accept_resignation(
     *,
     db: deps.DBDep,
@@ -548,6 +554,7 @@ async def accept_resignation(
     "/resignations/{resignation_id}/reject",
     response_model=ResignationRead,
 )
+@guard_conflicts
 async def reject_resignation(
     *,
     db: deps.DBDep,
@@ -623,6 +630,7 @@ EXPEDITABLE_STATES = (
     "/resignations/{resignation_id}/cancel",
     response_model=ResignationRead,
 )
+@guard_conflicts
 async def cancel_resignation(
     *,
     db: deps.DBDep,
@@ -692,6 +700,7 @@ async def cancel_resignation(
     "/resignations/{resignation_id}/expedite",
     response_model=ResignationRead,
 )
+@guard_conflicts
 async def expedite_resignation(
     *,
     db: deps.DBDep,
@@ -786,6 +795,7 @@ async def expedite_resignation(
     "/resignations/{resignation_id}/request-exit-interview",
     response_model=ResignationRead,
 )
+@guard_conflicts
 async def request_exit_interview(
     *,
     db: deps.DBDep,
@@ -824,6 +834,7 @@ async def request_exit_interview(
     "/resignations/{resignation_id}/exit-interview/remarks",
     response_model=ExitInterviewRead,
 )
+@guard_conflicts
 async def add_exit_interview_remarks(
     *,
     db: deps.DBDep,
@@ -857,6 +868,7 @@ async def add_exit_interview_remarks(
     "/resignations/{resignation_id}/clearance",
     response_model=List[ClearanceRequestRead],
 )
+@guard_conflicts
 async def initiate_clearance(
     *,
     db: deps.DBDep,
@@ -956,6 +968,7 @@ async def initiate_clearance(
     "/clearance/{clearance_id}/action",
     response_model=ClearanceRequestRead,
 )
+@guard_conflicts
 async def action_clearance(
     *,
     db: deps.DBDep,

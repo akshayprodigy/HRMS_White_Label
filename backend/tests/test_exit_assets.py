@@ -319,13 +319,11 @@ async def test_release_sees_allocation_committed_after_snapshot(world):
         await b_db.commit()
         await a_db.execute(select(Employee.id).where(
             Employee.id == world["eid"]).with_for_update())
-        # snapshot isolation: the locking read either sees the new allocation
-        # (400 path) or fails with 1020 (guard_conflicts -> 409). Never empty.
-        try:
-            held = await outstanding_assets(a_db, world["eid"], lock=True)
-            assert len(held) == 1
-        except OperationalError as e:
-            assert e.orig.args[0] in (1020, 1213)
+        # snapshot isolation: the locking read fails with 1020 (which
+        # guard_conflicts maps to 409) rather than returning a stale empty set.
+        with pytest.raises(OperationalError) as ei:
+            await outstanding_assets(a_db, world["eid"], lock=True)
+        assert ei.value.orig.args[0] == 1020
         await a_db.rollback()
 
 
