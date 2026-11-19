@@ -97,7 +97,7 @@ class Asset(Base):
     model: str(150) nullable
     serial_no: str(100) nullable, index        # NOT unique (licences / legacy data)
     status: str(16) default "in_stock", index
-    location_id: FK location.id SET NULL nullable
+    location_id: FK geofence_location.id SET NULL nullable   # office sites (GeoFenceLocation); no `location` table exists
     vendor: str(150) nullable
     invoice_no: str(64) nullable
     purchase_date: date nullable
