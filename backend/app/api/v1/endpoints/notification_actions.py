@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api import deps
+from app.api.v1.endpoints.roster_common import guard_conflicts
 from app.models.approval import ApprovalItem, ApprovalStatus
 from app.models.notification import Notification
 from app.schemas.approval import ApprovalAction
@@ -34,8 +35,9 @@ class NotificationActionIn(BaseModel):
 
 
 @router.post("/actions")
+@guard_conflicts  # a lost race on the approval (1020/1213) -> 409, not 500
 async def notification_action(
-    body: NotificationActionIn, request: Request, db: deps.DBDep,
+    *, body: NotificationActionIn, request: Request, db: deps.DBDep,
     me: deps.CurrentUser,
 ):
     n = await db.get(Notification, body.notification_id)
