@@ -22,36 +22,35 @@ from app.services.assets import AssetStateError
 async def env():
     sfx = uuid.uuid4().hex[:8]
     code = "T" + "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    ids = {"users": [], "emps": [], "assets": [], "cat": None}
-    async with SessionLocal() as db:
-        users = [User(email=f"svc_{sfx}_{i}@test.com", full_name=f"Svc {i}",
-                      hashed_password=get_password_hash("x"), is_active=True)
-                 for i in range(3)]
-        db.add_all(users)
-        await db.commit()
-        ids["users"] = [u.id for u in users]
-        emps = [
-            Employee(user_id=users[1].id, employee_id=f"SV{sfx}A", department="QA",
-                     designation="T", date_of_joining=date(2020, 1, 1),
-                     status=EmployeeStatus.ACTIVE),
-            Employee(user_id=users[2].id, employee_id=f"SV{sfx}B", department="QA",
-                     designation="T", date_of_joining=date(2020, 1, 1),
-                     status=EmployeeStatus.INACTIVE),
-        ]
-        cat = AssetCategory(name=f"SvcCat {sfx}", code=code)
-        db.add_all(emps + [cat])
-        await db.commit()
-        ids["emps"] = [e.id for e in emps]
-        ids["cat"] = cat.id
-        assets = [Asset(asset_tag=f"{code}-{i:06d}", category_id=cat.id,
-                        name=f"Laptop {i}", serial_no=f"SN{sfx}{i}")
-                  for i in range(1, 6)]
-        db.add_all(assets)
-        await db.commit()
-        ids["assets"] = [a.id for a in assets]
-    ids["code"] = code
+    ids = {"users": [], "emps": [], "assets": [], "cat": None, "code": code}
     try:
-        yield ids
+      async with SessionLocal() as db:
+          users = [User(email=f"svc_{sfx}_{i}@test.com", full_name=f"Svc {i}",
+                        hashed_password=get_password_hash("x"), is_active=True)
+                   for i in range(3)]
+          db.add_all(users)
+          await db.commit()
+          ids["users"] = [u.id for u in users]
+          emps = [
+              Employee(user_id=users[1].id, employee_id=f"SV{sfx}A", department="QA",
+                       designation="T", date_of_joining=date(2020, 1, 1),
+                       status=EmployeeStatus.ACTIVE),
+              Employee(user_id=users[2].id, employee_id=f"SV{sfx}B", department="QA",
+                       designation="T", date_of_joining=date(2020, 1, 1),
+                       status=EmployeeStatus.INACTIVE),
+          ]
+          cat = AssetCategory(name=f"SvcCat {sfx}", code=code)
+          db.add_all(emps + [cat])
+          await db.commit()
+          ids["emps"] = [e.id for e in emps]
+          ids["cat"] = cat.id
+          assets = [Asset(asset_tag=f"{code}-{i:06d}", category_id=cat.id,
+                          name=f"Laptop {i}", serial_no=f"SN{sfx}{i}")
+                    for i in range(1, 6)]
+          db.add_all(assets)
+          await db.commit()
+          ids["assets"] = [a.id for a in assets]
+      yield ids
     finally:
         async with SessionLocal() as db:
             await db.execute(delete(AuditLog).where(
@@ -222,3 +221,45 @@ async def test_open_allocations_for_employee_and_audit(env):
         await db.commit()
         assert await _audit_actions(db, a2.id) == ["ASSET_ALLOCATE", "ASSET_LOST"]
         assert await _audit_actions(db, env["assets"][2]) == ["ASSET_STATUS"]
+
+
+async def test_review_edge_cases(env):
+    async with SessionLocal() as db:
+        asset, emp, actor = await _ctx(db, env)
+        with pytest.raises(AssetStateError):
+            await svc.return_asset(db, asset=asset, actor=actor)
+        with pytest.raises(AssetStateError):
+            await svc.allocate(db, asset=asset, employee=emp, actor=actor,
+                               issued_date=date.today() + timedelta(days=2))
+        await svc.allocate(db, asset=asset, employee=emp, actor=actor)
+        with pytest.raises(AssetStateError):
+            await svc.return_asset(db, asset=asset, actor=actor,
+                                   returned_date=date.today() + timedelta(days=2))
+        # legacy open row without asset_id
+        legacy = EmployeeAsset(employee_id=emp.id, asset_type="Old", model="m",
+                               status="allocated")
+        db.add(legacy)
+        await db.flush()
+        rows = await svc.open_allocations_for_employee(db, emp.id)
+        assert legacy.id in [r.id for r in rows] and len(rows) == 2
+        a2, _, _ = await _ctx(db, env, idx=1)
+        await svc.set_status(db, asset=a2, actor=actor, to_status="retired")
+        with pytest.raises(AssetStateError):
+            await svc.mark_lost(db, asset=a2, actor=actor, remarks="x")
+        await db.rollback()
+
+
+async def test_next_asset_tag_edge(env):
+    async with SessionLocal() as db:
+        cat = await db.get(AssetCategory, env["cat"])
+        c = cat.code
+        db.add_all([
+            Asset(asset_tag=f"{c}-9", category_id=cat.id, name="a"),
+            Asset(asset_tag=f"{c}-000010", category_id=cat.id, name="b"),
+        ])
+        await db.flush()
+        assert await svc.next_asset_tag(db, cat) == f"{c}-000011"
+        db.add(Asset(asset_tag=f"{c.lower()}-000020", category_id=cat.id, name="c"))
+        await db.flush()
+        assert await svc.next_asset_tag(db, cat) == f"{c}-000021"
+        await db.rollback()

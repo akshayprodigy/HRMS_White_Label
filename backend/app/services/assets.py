@@ -37,15 +37,21 @@ def _append(existing: Optional[str], new: Optional[str]) -> Optional[str]:
 
 
 async def next_asset_tag(db, category) -> str:
+    """Next tag for the category. Locks the category row and reads tags with
+    FOR UPDATE; callers must keep the transaction open until the asset insert
+    is committed."""
+    await db.execute(select(AssetCategory.id).where(
+        AssetCategory.id == category.id).with_for_update())
     prefix = f"{category.code}-"
     esc = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     tags = (await db.execute(
-        select(Asset.asset_tag).where(Asset.asset_tag.like(f"{esc}%", escape="\\"))
+        select(Asset.asset_tag).where(Asset.asset_tag.like(f"{esc}%", escape="\\")).with_for_update()
     )).scalars().all()
     top = 0
     for t in tags:
         suffix = t[len(prefix):]
-        if t.startswith(prefix) and suffix.isdigit():
+        if (t[:len(prefix)].upper() == prefix.upper()
+                and suffix.isascii() and suffix.isdigit()):
             top = max(top, int(suffix))
     return f"{category.code}-{top + 1:06d}"
 
@@ -64,7 +70,8 @@ async def open_allocation(db, asset_id) -> Optional[EmployeeAsset]:
         select(EmployeeAsset).where(
             EmployeeAsset.asset_id == asset_id,
             EmployeeAsset.status == "allocated")
-        .order_by(EmployeeAsset.id.desc()))).scalars().first()
+        .order_by(EmployeeAsset.id.desc()).with_for_update()
+        .execution_options(populate_existing=True))).scalars().first()
 
 
 async def open_allocations_for_employee(db, employee_id) -> list[EmployeeAsset]:
@@ -84,6 +91,8 @@ async def allocate(db, *, asset, employee, actor, issued_date=None,
         raise AssetStateError("Asset already has an open allocation")
     if employee.status == EmployeeStatus.INACTIVE:
         raise AssetStateError("Cannot allocate an asset to an inactive employee")
+    if issued_date and issued_date > date.today():
+        raise AssetStateError("Issue date cannot be in the future")
     category = await db.get(AssetCategory, asset.category_id)
     alloc = EmployeeAsset(
         employee_id=employee.id, asset_id=asset.id, status="allocated",
@@ -107,10 +116,14 @@ async def return_asset(db, *, asset, actor, returned_date=None, condition=None,
     if to_status not in _RETURN_TARGETS:
         raise AssetStateError(
             "A returned asset can only go to in_stock, in_repair or retired")
+    if asset.status != AssetStatus.ALLOCATED:
+        raise AssetStateError("Asset is not allocated")
     alloc = await open_allocation(db, asset.id)
     if alloc is None:
         raise AssetStateError("Asset has no open allocation to return")
     rdate = returned_date or date.today()
+    if rdate > date.today():
+        raise AssetStateError("Return date cannot be in the future")
     if alloc.issued_date and rdate < alloc.issued_date:
         raise AssetStateError("Return date cannot be before the issue date")
     from_status = asset.status
@@ -147,6 +160,8 @@ async def mark_lost(db, *, asset, actor, remarks) -> Optional[EmployeeAsset]:
             alloc.remarks = _append(alloc.remarks, remarks)
             details["employee_id"] = alloc.employee_id
             details["allocation_id"] = alloc.id
+        else:
+            details["orphaned_allocation"] = True
     asset.status = AssetStatus.LOST
     await db.flush()
     _audit(db, actor, "ASSET_LOST", asset, details)
