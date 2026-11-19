@@ -234,6 +234,12 @@ __all__ = [
     "UserNotificationPreference",
     "UserQuietHours",
     "NotificationDelivery",
+    "AssetCategory",
+    "Asset",
+    "AssetMaintenance",
+    "AssetRequest",
+    "AssetStatus",
+    "AssetRequestStatus",
 ]
 from .coverage_gap import CoverageGap, GapSource, GapStatus
 from .approver_delegation import ApproverDelegation
@@ -247,4 +253,8 @@ from .location import (
 from .biometric import (
     BiometricDevice, BiometricDeviceUser, BiometricUserMap, BiometricPunch,
     BiometricDeviceStatus, BiometricPunchState,
+)
+from .asset import (
+    AssetCategory, Asset, AssetMaintenance, AssetRequest,
+    AssetStatus, AssetRequestStatus,
 )

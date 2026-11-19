@@ -39,6 +39,7 @@ class ChainEntityType:
     TRAVEL = "travel"
     SHIFT_CHANGE = "shift_change"
     SALARY_REVISION = "salary_revision"  # W11: multi-stage revision approval
+    ASSET_REQUEST = "asset_request"
     # future consumers add strings here (do NOT re-use for existing
     # leave/OT/revision flows — those live on the legacy engine).
 

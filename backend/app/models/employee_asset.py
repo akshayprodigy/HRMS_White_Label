@@ -7,6 +7,7 @@ from app.db.base_class import Base
 if TYPE_CHECKING:
     from .employee import Employee
     from .user import User
+    from .asset import Asset
 
 
 class EmployeeAsset(Base):
@@ -40,5 +41,26 @@ class EmployeeAsset(Base):
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )
 
+    asset_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("asset.id", ondelete="RESTRICT"),
+        nullable=True, index=True,
+    )
+    allocated_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    returned_condition: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )
+    returned_to_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+
     employee: Mapped["Employee"] = relationship("Employee")
-    created_by: Mapped[Optional["User"]] = relationship("User")
+    created_by: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[created_by_id])
+    allocated_by: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[allocated_by_id])
+    returned_to: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[returned_to_id])
+    asset: Mapped[Optional["Asset"]] = relationship(
+        "Asset", back_populates="allocations", foreign_keys=[asset_id])
