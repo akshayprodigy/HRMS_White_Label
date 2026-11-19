@@ -49,7 +49,7 @@ def _iso(d) -> Optional[str]:
 class RequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category_id: int
-    reason: str
+    reason: str = Field(max_length=1000)
     needed_by: Optional[date] = None
 
     @field_validator("reason")
@@ -164,7 +164,7 @@ async def create_request(
     dup = (await db.execute(select(AssetRequest.id).where(
         AssetRequest.employee_id == emp.id,
         AssetRequest.category_id == cat.id,
-        AssetRequest.status.in_(OPEN)).limit(1))).first()
+        AssetRequest.status.in_(OPEN)).limit(1).with_for_update())).first()
     if dup:
         raise HTTPException(
             409, "You already have an open request for this category")
@@ -178,15 +178,16 @@ async def create_request(
         ApprovalChain.is_active.is_(True)).limit(1))).first() is not None
     auto_approved = False
     if chain_exists:
-        # instantiate_for_entity commits internally (persisting the request).
+        # commit=False: request, instance, stamp, audit and notifications all
+        # commit once below, with the employee lock held throughout.
         inst = await instantiate_for_entity(
             db=db, entity_type=ChainEntityType.ASSET_REQUEST,
             entity_id=req.id, submitter=current_user, amount_paise=0,
-            department=emp.department, context={"category": cat.name})
+            department=emp.department, context={"category": cat.name}, commit=False)
         req.approval_instance_id = inst.id
         if inst.status == ChainedApprovalStatus.APPROVED:
             req.status = AssetRequestStatus.APPROVED
-            req.decided_at = _now()
+            req.decided_at = _now()  # decided_by_id stays NULL: system auto-approve
             auto_approved = True
     _audit(db, current_user, "ASSET_REQUEST_CREATE", req, {
         "category_id": cat.id, "routed_via": "chain" if chain_exists else "direct",
@@ -225,26 +226,33 @@ async def cancel_request(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     emp = await _get_my_employee_or_404(db, current_user)
-    req = await _lock_request(db, request_id, employee_id=emp.id)
-    if req.status != AssetRequestStatus.PENDING:
-        raise HTTPException(409, f"Request is {req.status}; only pending can be cancelled")
-    if req.approval_instance_id:
+    # Lock order matches the chain act route: instance -> request.
+    peek = (await db.execute(select(AssetRequest.approval_instance_id).where(
+        AssetRequest.id == request_id,
+        AssetRequest.employee_id == emp.id))).first()
+    if peek is None:
+        raise HTTPException(404, "Asset request not found")
+    inst = None
+    if peek[0]:
         inst = (await db.execute(
             select(ChainedApprovalInstance)
-            .where(ChainedApprovalInstance.id == req.approval_instance_id)
+            .where(ChainedApprovalInstance.id == peek[0])
             .options(selectinload(ChainedApprovalInstance.step_instances))
             .with_for_update().execution_options(populate_existing=True)
         )).scalars().first()
-        if inst is not None:
-            if inst.status != ChainedApprovalStatus.PENDING:
-                raise HTTPException(409, "Request is already being finalised")
-            inst.status = ChainedApprovalStatus.CANCELLED
-            inst.finalized_at = _now()
-            for si in inst.step_instances:
-                if si.status == StepInstanceStatus.PENDING:
-                    si.status = StepInstanceStatus.SKIPPED
-                    si.comment = "cancelled_by_requester"
-                    si.actioned_at = _now()
+    req = await _lock_request(db, request_id, employee_id=emp.id)
+    if req.status != AssetRequestStatus.PENDING:
+        raise HTTPException(409, f"Request is {req.status}; only pending can be cancelled")
+    if inst is not None:
+        if inst.status != ChainedApprovalStatus.PENDING:
+            raise HTTPException(409, "Request is already being finalised")
+        inst.status = ChainedApprovalStatus.CANCELLED
+        inst.finalized_at = _now()
+        for si in inst.step_instances:
+            if si.status == StepInstanceStatus.PENDING:
+                si.status = StepInstanceStatus.SKIPPED
+                si.comment = "cancelled_by_requester"
+                si.actioned_at = _now()
     req.status = AssetRequestStatus.CANCELLED
     _audit(db, current_user, "ASSET_REQUEST_CANCEL", req, {})
     await commit_or_409(db)
@@ -286,7 +294,12 @@ async def decide_request(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     req = await _lock_request(db, request_id)
-    if req.approval_instance_id:
+    if req.approval_instance_id or (await db.execute(
+            select(ChainedApprovalInstance.id).where(
+                ChainedApprovalInstance.entity_type
+                == ChainEntityType.ASSET_REQUEST,
+                ChainedApprovalInstance.entity_id == req.id).limit(1)
+    )).first():
         raise HTTPException(409, "Decide in the approval queue")
     if req.status != AssetRequestStatus.PENDING:
         raise HTTPException(409, f"Request is already {req.status}")

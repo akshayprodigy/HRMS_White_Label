@@ -30,6 +30,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
+from app.api.v1.endpoints.roster_common import guard_conflicts
 from app.services.approval_sla import is_overdue, next_due
 from app.services.approver_delegation import delegator_ids, user_names
 from app.services.self_approval import guard_self_approval
@@ -692,6 +693,7 @@ async def instantiate_for_entity(
     amount_paise: int,
     department: Optional[str],
     context: Optional[Dict[str, Any]] = None,
+    commit: bool = True,
 ) -> ChainedApprovalInstance:
     """Public helper — the endpoint layer of *other* modules (expenses.py,
     travel.py, ...) calls this to create the approval instance for their
@@ -699,7 +701,8 @@ async def instantiate_for_entity(
 
     Returns a persisted ChainedApprovalInstance (already committed). The
     caller should stamp `entity.approval_instance_id = instance.id` and
-    commit again.
+    commit again. With commit=False the instance is only flushed (id and
+    status populated) and the caller commits.
     """
     chains = (await db.execute(
         select(ApprovalChain).where(
@@ -830,7 +833,10 @@ async def instantiate_for_entity(
                 resource_id=str(instance.id),
                 event_type="approval_pending",
             ))
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
     return instance
 
 
@@ -941,14 +947,14 @@ async def _entity_summary(
         ar = (await db.execute(
             select(AssetRequest).where(AssetRequest.id == entity_id)
         )).scalar_one_or_none()
-        if not ar or ar.status != AssetRequestStatus.PENDING:
+        if not ar:
             return None
         emp = await db.get(_Emp, ar.employee_id)
         emp_user = await db.get(User, emp.user_id) if emp else None
         cat = await db.get(AssetCategory, ar.category_id)
         return {
             "kind": "asset_request",
-            "id": ar.id,
+            "id": ar.id, "status": ar.status,
             "title": (
                 f"Asset request: {emp_user.full_name if emp_user else '?'}"
                 f" — {cat.name if cat else '?'}"
@@ -1005,6 +1011,9 @@ async def my_queue(
         summary = await _entity_summary(
             db, inst.entity_type, inst.entity_id
         )
+        if (summary and summary.get("kind") == "asset_request"
+                and summary.get("status") != "pending"):
+            continue
         acting = (
             {"user_id": si.approver_user_id,
              "name": names.get(si.approver_user_id)}
@@ -1029,9 +1038,14 @@ async def act_on_step(
     request: Request,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    return await act_on_instance(
-        db, instance_id, payload.action, payload.comment, request,
-        current_user)
+    # Decorator form breaks FastAPI's string-annotation resolution under
+    # `from __future__ import annotations`, so wrap an inner closure.
+    async def _run(*, db):
+        return await act_on_instance(
+            db, instance_id, payload.action, payload.comment, request,
+            current_user)
+
+    return await guard_conflicts(_run)(db=db)
 
 
 async def act_on_instance(

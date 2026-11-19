@@ -359,3 +359,22 @@ async def test_chain_path(api, world, chain):
         assert inst.status == "cancelled" and inst.finalized_at is not None
     r = await api.get("/api/v1/approval-chains/my-queue", headers=api.hr)
     assert all(x["instance"]["id"] != r3["approval_instance_id"] for x in r.json())
+
+
+async def test_concurrent_double_submit(api, world):
+    import asyncio
+    app = create_app()
+    app.dependency_overrides[deps.verify_attendance] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://test") as c2:
+        h2 = await _login(c2, f"areq_emp_{world['sfx']}@test.com")
+        body = {"category_id": world["cat"]["a"], "reason": "Need a laptop now"}
+        r1, r2 = await asyncio.gather(
+            api.post(P, headers=api.emp, json=body),
+            c2.post(P, headers=h2, json=body))
+    assert sorted([r1.status_code, r2.status_code]) == [200, 409], (
+        r1.text, r2.text)
+    async with SessionLocal() as db:
+        n = len((await db.execute(select(AssetRequest.id).where(
+            AssetRequest.category_id == world["cat"]["a"]))).all())
+    assert n == 1
