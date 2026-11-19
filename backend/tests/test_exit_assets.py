@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
+from sqlalchemy.exc import OperationalError
 
 from app.api import deps
 from app.core.security import get_password_hash
@@ -286,3 +287,95 @@ async def test_initiate_no_assets_no_item(api, world):
                        headers=api.hr, json=_body(world, ["Finance"]))
     assert r.status_code == 200, r.text
     assert _asset_items(r.json()) == []
+
+
+# ── write-skew: release vs allocate ────────────────────────────────────────
+async def _new_asset(world, suffix):
+    async with SessionLocal() as db:
+        a = Asset(asset_tag=f"EX{world['sfx'].upper()}{suffix}",
+                  category_id=world["cat"], name=f"Laptop {suffix}",
+                  status="in_stock")
+        db.add(a)
+        await db.commit()
+        return a.id
+
+
+async def _allocate_in(db, world, asset_id):
+    a = await svc.get_asset_for_update(db, asset_id)
+    emp = await db.get(Employee, world["eid"])
+    actor = await db.get(User, world["uid"]["hr"])
+    await svc.allocate(db, asset=a, employee=emp, actor=actor)
+
+
+async def test_release_sees_allocation_committed_after_snapshot(world):
+    """A snapshots, B allocates+commits, A then runs release's gate with its
+    lock order: it must see the allocation (400 path), not release."""
+    from sqlalchemy import func
+    from app.api.v1.endpoints.exit_management import outstanding_assets
+    aid = await _new_asset(world, "S1")
+    async with SessionLocal() as a_db, SessionLocal() as b_db:
+        await a_db.execute(select(func.count(EmployeeAsset.id)))  # snapshot
+        await _allocate_in(b_db, world, aid)
+        await b_db.commit()
+        await a_db.execute(select(Employee.id).where(
+            Employee.id == world["eid"]).with_for_update())
+        # snapshot isolation: the locking read either sees the new allocation
+        # (400 path) or fails with 1020 (guard_conflicts -> 409). Never empty.
+        try:
+            held = await outstanding_assets(a_db, world["eid"], lock=True)
+            assert len(held) == 1
+        except OperationalError as e:
+            assert e.orig.args[0] in (1020, 1213)
+        await a_db.rollback()
+
+
+async def test_allocate_waits_for_release_then_rejected(world):
+    """A holds the employee lock (release in progress, no assets seen);
+    B's allocate blocks on the employee, and after A deactivates + commits,
+    B is rejected instead of creating an allocation for a released employee."""
+    import asyncio
+    aid = await _new_asset(world, "S2")
+    a_db = SessionLocal()
+    b_db = SessionLocal()
+    try:
+        await a_db.execute(select(Employee.id).where(
+            Employee.id == world["eid"]).with_for_update())
+        from app.api.v1.endpoints.exit_management import outstanding_assets
+        assert await outstanding_assets(a_db, world["eid"], lock=True) == []
+
+        async def b():
+            try:
+                await _allocate_in(b_db, world, aid)
+                await b_db.commit()
+                return "allocated"
+            except svc.AssetStateError as e:
+                await b_db.rollback()
+                return str(e)
+            except Exception as e:  # lock conflict also acceptable
+                await b_db.rollback()
+                return f"conflict:{type(e).__name__}"
+        t = asyncio.create_task(b())
+        await asyncio.sleep(0.5)
+        assert not t.done()  # blocked on the employee row
+        emp = await a_db.get(Employee, world["eid"])
+        emp.status = "inactive"
+        await a_db.commit()
+        out = await asyncio.wait_for(t, 10)
+        assert out != "allocated", out
+    finally:
+        await a_db.close()
+        await b_db.close()
+    async with SessionLocal() as db:
+        assert not (await db.execute(select(EmployeeAsset.id).where(
+            EmployeeAsset.employee_id == world["eid"]))).first()
+
+
+async def test_allocate_to_inactive_employee_api_409(api, world):
+    aid = await _new_asset(world, "S3")
+    async with SessionLocal() as db:
+        emp = await db.get(Employee, world["eid"])
+        emp.status = "inactive"
+        await db.commit()
+    r = await api.post(f"/api/v1/assets/{aid}/allocate", headers=api.hr,
+                       json={"employee_id": world["eid"]})
+    assert r.status_code == 409, r.text

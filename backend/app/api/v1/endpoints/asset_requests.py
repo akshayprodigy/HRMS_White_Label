@@ -327,6 +327,14 @@ async def fulfil_request(
     request_id: int, payload: FulfilIn, db: deps.DBDep,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
+    # Lock order employee -> request -> asset, matching create_request
+    # (employee -> request rows) and allocate() (asset -> employee).
+    peek = (await db.execute(select(AssetRequest.employee_id).where(
+        AssetRequest.id == request_id))).first()
+    if peek is None:
+        raise HTTPException(404, "Asset request not found")
+    await db.execute(select(Employee.id).where(Employee.id == peek[0])
+                     .with_for_update())
     req = await _lock_request(db, request_id)
     if req.status != AssetRequestStatus.APPROVED:
         raise HTTPException(409, f"Request is {req.status}; only approved can be fulfilled")

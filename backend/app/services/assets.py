@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.models.asset import Asset, AssetCategory, AssetStatus
 from app.models.audit import AuditLog
-from app.models.employee import EmployeeStatus
+from app.models.employee import Employee, EmployeeStatus
 from app.models.employee_asset import EmployeeAsset
 
 
@@ -80,12 +80,16 @@ async def open_allocation(db, asset_id, *, lock: bool = False
         q.execution_options(populate_existing=True))).scalars().first()
 
 
-async def open_allocations_for_employee(db, employee_id) -> list[EmployeeAsset]:
+async def open_allocations_for_employee(db, employee_id, *, lock: bool = False
+                                        ) -> list[EmployeeAsset]:
+    q = (select(EmployeeAsset).where(
+        EmployeeAsset.employee_id == employee_id,
+        EmployeeAsset.status == "allocated")
+        .order_by(EmployeeAsset.id))
+    if lock:
+        q = q.with_for_update()
     return list((await db.execute(
-        select(EmployeeAsset).where(
-            EmployeeAsset.employee_id == employee_id,
-            EmployeeAsset.status == "allocated")
-        .order_by(EmployeeAsset.id))).scalars().all())
+        q.execution_options(populate_existing=True))).scalars().all())
 
 
 async def allocate(db, *, asset, employee, actor, issued_date=None,
@@ -95,6 +99,13 @@ async def allocate(db, *, asset, employee, actor, issued_date=None,
             f"Only in-stock assets can be allocated (asset is {asset.status})")
     if await open_allocation(db, asset.id) is not None:
         raise AssetStateError("Asset already has an open allocation")
+    # Locking re-read (lock order: asset -> employee -> allocation insert) so
+    # this serialises with exit release, which locks the employee first.
+    employee = (await db.execute(
+        select(Employee).where(Employee.id == employee.id).with_for_update()
+        .execution_options(populate_existing=True))).scalars().first()
+    if employee is None:
+        raise AssetStateError("Employee not found")
     if employee.status == EmployeeStatus.INACTIVE:
         raise AssetStateError("Cannot allocate an asset to an inactive employee")
     if issued_date and issued_date > date.today():

@@ -36,6 +36,7 @@ from app.schemas.exit_management import (
 from app.models.asset import Asset, AssetCategory
 from app.models.employee_asset import EmployeeAsset
 from app.services import assets as asset_svc
+from app.api.v1.endpoints.roster_common import guard_conflicts
 
 router = APIRouter()
 
@@ -70,17 +71,21 @@ def _clearance_to_read(c: ClearanceRequest) -> ClearanceRequestRead:
     return data
 
 
-async def outstanding_assets(db, employee_id: int) -> List[OutstandingAsset]:
-    """Open asset allocations (register-linked and legacy) held by an employee."""
-    open_ids = [a.id for a in
-                await asset_svc.open_allocations_for_employee(db, employee_id)]
-    if not open_ids:
-        return []
+async def outstanding_assets(db, employee_id: int, *, lock: bool = False
+                             ) -> List[OutstandingAsset]:
+    """Open asset allocations (register-linked and legacy) held by an employee.
+    lock=True takes row locks on the allocation rows only (used by the release
+    gate); MariaDB has no FOR UPDATE OF, so the lock is a separate plain read."""
+    if lock:
+        if not await asset_svc.open_allocations_for_employee(
+                db, employee_id, lock=True):
+            return []
     rows = (await db.execute(
         select(EmployeeAsset, Asset, AssetCategory)
         .outerjoin(Asset, Asset.id == EmployeeAsset.asset_id)
         .outerjoin(AssetCategory, AssetCategory.id == Asset.category_id)
-        .where(EmployeeAsset.id.in_(open_ids))
+        .where(EmployeeAsset.employee_id == employee_id,
+               EmployeeAsset.status == "allocated")
         .order_by(EmployeeAsset.id)
         .execution_options(populate_existing=True)
     )).all()
@@ -903,8 +908,14 @@ async def initiate_clearance(
         )
         created.append(cr)
 
+    # Item text is a snapshot at initiation; the release check is the real
+    # gate. The prefix match intentionally also matches an HR-entered item.
+    # Lock the resignation row so concurrent calls don't both add the item.
     held = await outstanding_assets(db, resignation.employee_id)
     if held and created:
+        await db.execute(
+            select(Resignation.id).where(Resignation.id == resignation.id)
+            .with_for_update())
         already = (await db.execute(
             select(ClearanceItem.id)
             .join(ClearanceRequest,
@@ -1029,6 +1040,7 @@ async def my_clearance_tasks(
     "/resignations/{resignation_id}/release",
     response_model=ResignationRead,
 )
+@guard_conflicts
 async def final_release(
     *,
     db: deps.DBDep,
@@ -1060,7 +1072,13 @@ async def final_release(
             detail=f"Pending clearances from: {depts}"
         )
 
-    held = await outstanding_assets(db, resignation.employee_id)
+    # Lock order: employee -> allocations -> mutations. allocate() locks the
+    # employee too, so an allocation cannot slip in between this check and the
+    # deactivation (write skew under snapshot isolation).
+    await db.execute(
+        select(Employee.id).where(Employee.id == resignation.employee_id)
+        .with_for_update().execution_options(populate_existing=True))
+    held = await outstanding_assets(db, resignation.employee_id, lock=True)
     if held:
         raise HTTPException(
             status_code=400,
