@@ -146,9 +146,10 @@ export const MaintenanceSection: React.FC<{ asset: AssetDetail; onChanged: () =>
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => setConfirmId(null)}>Keep</Button>
                   </>
-                ) : (
+                ) : (!m.completed_on && !m.cost_paise) ? (
+                  // Backend keeps completed or costed records (409), so only offer delete on open zero-cost ones.
                   <Button size="sm" variant="outline" disabled={busyId === m.id} onClick={() => setConfirmId(m.id)}>Delete</Button>
-                )}
+                ) : null}
               </div>
             </li>
           ))}
