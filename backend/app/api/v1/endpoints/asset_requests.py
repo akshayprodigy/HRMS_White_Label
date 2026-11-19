@@ -338,8 +338,11 @@ async def fulfil_request(
     request_id: int, payload: FulfilIn, db: deps.DBDep,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    # Lock order employee -> request -> asset, matching create_request
-    # (employee -> request rows) and allocate() (asset -> employee).
+    # Lock order here is employee -> request -> asset (matches create_request:
+    # employee -> request rows). Direct allocate() locks asset -> employee, so
+    # a fulfil racing a direct allocate of the same asset/employee can cross;
+    # that resolves as a deadlock/lock conflict (1213/1020), mapped to 409 by
+    # guard_conflicts / retry_on_lock.
     peek = (await db.execute(select(AssetRequest.employee_id).where(
         AssetRequest.id == request_id))).first()
     if peek is None:

@@ -111,7 +111,18 @@ async def commit_or_409(db, msg: str = CONFLICT_MSG) -> None:
         raise mapped from exc
 
 
+_LOCK_CONFLICT_MARKERS = ("(1020,", "(1213,")
+
+
 def _caused_by_lock_conflict(exc) -> bool:
+    # SQLAlchemy 2.0 does not chain the original error onto
+    # PendingRollbackError, but its message embeds the original exception
+    # text, e.g. "... due to a previous exception during flush: (asyncmy.errors
+    # .OperationalError) (1020, ...)". Match narrowly on the MariaDB codes.
+    if isinstance(exc, PendingRollbackError):
+        msg = str(exc)
+        if any(m in msg for m in _LOCK_CONFLICT_MARKERS):
+            return True
     seen = set()
     cur = exc
     while cur is not None and id(cur) not in seen:

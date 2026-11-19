@@ -18,12 +18,13 @@ from app.api import deps
 from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.endpoints.roster_common import (
-    commit_or_409, guard_conflicts, plain_actor, retry_on_lock,
+    _errno, commit_or_409, guard_conflicts, plain_actor, retry_on_lock,
 )
 from app.models.asset import (
     Asset, AssetCategory, AssetMaintenance, AssetStatus,
 )
 from app.models.employee import Employee
+from app.models.geofence import GeoFenceLocation
 from app.models.employee_asset import EmployeeAsset
 from app.models.user import User
 from app.services import assets as svc
@@ -32,6 +33,7 @@ from app.services.asset_depreciation import book_value
 PERM_ASSET = "asset manage"
 router = APIRouter(dependencies=[Depends(deps.check_permissions([PERM_ASSET]))])
 
+MAX_PAISE = 2_000_000_000  # 32-bit INT column
 _TAG_RE = re.compile(r"^[A-Z0-9-]{3,32}$")
 _CODE_RE = re.compile(r"^[A-Z0-9]{2,10}$")
 _MASTER = ("model", "serial_no", "location_id", "vendor", "invoice_no",
@@ -42,6 +44,13 @@ _MASTER = ("model", "serial_no", "location_id", "vendor", "invoice_no",
 
 def _iso(d) -> Optional[str]:
     return d.isoformat() if d else None
+
+
+async def _check_location(db, location_id) -> None:
+    if location_id is not None and (await db.execute(
+            select(GeoFenceLocation.id).where(
+                GeoFenceLocation.id == location_id))).first() is None:
+        raise HTTPException(422, "Location not found")
 
 
 def _nonblank(v):
@@ -81,8 +90,9 @@ class AssetIn(BaseModel):
     vendor: Optional[str] = Field(default=None, max_length=150)
     invoice_no: Optional[str] = Field(default=None, max_length=64)
     purchase_date: Optional[date] = None
-    purchase_cost_paise: Optional[int] = Field(default=None, ge=0)
-    salvage_value_paise: int = Field(default=0, ge=0)
+    purchase_cost_paise: Optional[int] = Field(
+        default=None, ge=0, le=MAX_PAISE)
+    salvage_value_paise: int = Field(default=0, ge=0, le=MAX_PAISE)
     useful_life_months: Optional[int] = Field(default=None, gt=0)
     warranty_expiry: Optional[date] = None
     amc_vendor: Optional[str] = Field(default=None, max_length=150)
@@ -102,8 +112,10 @@ class AssetPatch(BaseModel):
     vendor: Optional[str] = Field(default=None, max_length=150)
     invoice_no: Optional[str] = Field(default=None, max_length=64)
     purchase_date: Optional[date] = None
-    purchase_cost_paise: Optional[int] = Field(default=None, ge=0)
-    salvage_value_paise: Optional[int] = Field(default=None, ge=0)
+    purchase_cost_paise: Optional[int] = Field(
+        default=None, ge=0, le=MAX_PAISE)
+    salvage_value_paise: Optional[int] = Field(
+        default=None, ge=0, le=MAX_PAISE)
     useful_life_months: Optional[int] = Field(default=None, gt=0)
     warranty_expiry: Optional[date] = None
     amc_vendor: Optional[str] = Field(default=None, max_length=150)
@@ -374,7 +386,7 @@ async def list_assets(
     category_id: Optional[int] = None,
     location_id: Optional[int] = None,
     q: Optional[str] = None,
-    expiring_within_days: Optional[int] = Query(default=None, ge=0),
+    expiring_within_days: Optional[int] = Query(default=None, ge=0, le=3650),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
@@ -441,6 +453,7 @@ async def create_asset(db: deps.DBDep, current_user: deps.CurrentUser,
         cat = await _active_category(db, body.category_id)
         if body.purchase_date and body.purchase_date > date.today():
             raise HTTPException(422, "Purchase date cannot be in the future")
+        await _check_location(db, body.location_id)
         tag = explicit
         if tag:
             if not _TAG_RE.match(tag):
@@ -457,9 +470,11 @@ async def create_asset(db: deps.DBDep, current_user: deps.CurrentUser,
         db.add(a)
         try:
             await db.flush()
-        except IntegrityError:
+        except IntegrityError as exc:
             await db.rollback()
-            raise HTTPException(409, "Asset tag already exists")
+            if _errno(exc) == 1062:
+                raise HTTPException(409, "Asset tag already exists")
+            raise
         return a.id
 
     new_id = await retry_on_lock(db, fn, commit=True)
@@ -497,6 +512,8 @@ async def patch_asset(db: deps.DBDep, asset_id: int, body: AssetPatch) -> Any:
         data.pop("name", None)
     if data.get("salvage_value_paise") is None:
         data.pop("salvage_value_paise", None)
+    if data.get("location_id") is not None:
+        await _check_location(db, data["location_id"])
     pd = data.get("purchase_date")
     if pd and pd > date.today():
         raise HTTPException(422, "Purchase date cannot be in the future")

@@ -1666,6 +1666,40 @@ async def _gather_employee_delete_blockers(db, user_id: int) -> list[dict]:
             "status": tk.status,
         })
 
+    from app.models.asset import Asset, AssetRequest
+    held = (await db.execute(
+        select(EmployeeAsset.asset_id, EmployeeAsset.id)
+        .join(Employee, Employee.id == EmployeeAsset.employee_id)
+        .where(Employee.user_id == user_id,
+               EmployeeAsset.status == "allocated")
+    )).all()
+    if held:
+        tag_rows = (await db.execute(
+            select(Asset.asset_tag).where(
+                Asset.id.in_([h[0] for h in held if h[0] is not None]))
+        )).scalars().all() if any(h[0] is not None for h in held) else []
+        tags = ", ".join(sorted(tag_rows))
+        blockers.append({
+            "type": "allocated_assets",
+            "count": len(held),
+            "message": f"Return {len(held)} asset(s) first"
+                       + (f" (tags: {tags})" if tags else ""),
+        })
+
+    open_reqs = (await db.execute(
+        select(func.count(AssetRequest.id))
+        .join(Employee, Employee.id == AssetRequest.employee_id)
+        .where(
+            Employee.user_id == user_id,
+            AssetRequest.status.in_(["pending", "approved"]))
+    )).scalar() or 0
+    if open_reqs:
+        blockers.append({
+            "type": "open_asset_requests",
+            "count": open_reqs,
+            "message": f"{open_reqs} open asset request(s)",
+        })
+
     return blockers
 
 
@@ -4269,6 +4303,7 @@ async def allocate_employee_asset(
 
 
 @router.patch("/assets/{asset_id}")
+@guard_conflicts
 async def update_asset(
     *,
     db: deps.DBDep,
@@ -4356,6 +4391,7 @@ async def update_asset(
 
 
 @router.delete("/assets/{asset_id}")
+@guard_conflicts
 async def delete_asset(
     *,
     db: deps.DBDep,
@@ -4366,8 +4402,10 @@ async def delete_asset(
     asset = await db.get(EmployeeAsset, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    if asset.asset_id is not None and asset.status == "allocated":
-        raise HTTPException(status_code=409, detail="Return the asset instead")
+    if asset.asset_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Register history is kept; the asset stays in the register")
     emp_id = asset.employee_id
     await db.delete(asset)
     await log_audit(

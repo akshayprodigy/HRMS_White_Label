@@ -39,7 +39,7 @@ class MaintenanceIn(BaseModel):
     kind: Kind
     description: str = Field(min_length=1)
     vendor: Optional[str] = Field(default=None, max_length=150)
-    cost_paise: int = Field(default=0, ge=0)
+    cost_paise: int = Field(default=0, ge=0, le=2_000_000_000)
     started_on: date
     completed_on: Optional[date] = None
     move_to_repair: bool = False
@@ -53,7 +53,7 @@ class MaintenancePatch(BaseModel):
     kind: Optional[Kind] = None
     description: Optional[str] = Field(default=None, min_length=1)
     vendor: Optional[str] = Field(default=None, max_length=150)
-    cost_paise: Optional[int] = Field(default=None, ge=0)
+    cost_paise: Optional[int] = Field(default=None, ge=0, le=2_000_000_000)
     started_on: Optional[date] = None
     completed_on: Optional[date] = None
     complete: bool = False

@@ -1123,6 +1123,9 @@ export const EmployeeManagement = ({ userRole = 'employee' }: { userRole?: UserR
                               <span className="text-slate-500"> — open BD lead ({b.stage})</span>
                             </>
                           )}
+                          {(b.type === 'allocated_assets' || b.type === 'open_asset_requests') && (
+                            <span className="text-slate-700">{b.message}</span>
+                          )}
                           {b.type === 'task_assignee' && (
                             <>
                               <span className="font-black text-slate-900">{b.title}</span>
@@ -2637,7 +2640,7 @@ const AssetsTab = ({ emp }: { emp: any }) => {
                          <AlertCircle size={12} className="mr-2" /> Mark Lost
                        </Button>
                      </>
-                   )) : (
+                   )) : asset.asset_id ? null : (
                      <Button
                        variant="ghost"
                        className="w-full h-9 text-[9px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50"

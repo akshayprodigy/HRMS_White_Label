@@ -317,7 +317,8 @@ async def test_legacy_routes(api, world):
                         json={"status": "allocated"})
     assert r.status_code == 409
     r = await api.delete(f"/api/v1/hr/assets/{alloc['id']}", headers=api.hr)
-    assert r.status_code == 200
+    assert r.status_code == 409
+    assert "Register history is kept" in r.json()["error"]["message"]
     r = await api.get(f"{P}/{aid}", headers=api.hr)
     assert r.status_code == 200
     # second call reuses the category (case-insensitive)
@@ -454,3 +455,117 @@ async def test_concurrent_blank_tag_creates(api, world, cat):
     assert [r.status_code for r in rs] == [200] * 6, [r.text for r in rs]
     tags = [r.json()["asset_tag"] for r in rs]
     assert len(set(tags)) == 6
+
+
+async def test_employee_delete_blockers_for_assets(api, world, cat):
+    from app.models.asset import AssetRequest
+    a = await mk(api, cat)
+    r = await api.post(f"{P}/{a['id']}/allocate", headers=api.hr,
+                       json={"employee_id": world["emp_id"]})
+    assert r.status_code == 200, r.text
+    B = f"/api/v1/hr/employees/{world['emp_id']}/delete-blockers"
+    r = await api.get(B, headers=api.hr)
+    bl = [b for b in r.json()["blockers"] if b["type"] == "allocated_assets"]
+    assert len(bl) == 1 and bl[0]["count"] == 1
+    assert "Return 1 asset(s) first" in bl[0]["message"]
+    assert a["asset_tag"] in bl[0]["message"]
+    r = await api.delete(f"/api/v1/hr/employees/{world['emp_id']}",
+                         headers=api.hr)
+    assert r.status_code == 409
+    assert any(b["type"] == "allocated_assets"
+               for b in r.json()["error"]["message"]["blockers"])
+    r = await api.post(f"{P}/{a['id']}/return", headers=api.hr, json={})
+    assert r.status_code == 200, r.text
+    r = await api.get(B, headers=api.hr)
+    assert not [b for b in r.json()["blockers"]
+                if b["type"] == "allocated_assets"]
+    async with SessionLocal() as db:
+        req = AssetRequest(employee_id=world["emp_id"],
+                           category_id=cat["id"], reason="need",
+                           status="pending")
+        db.add(req)
+        await db.commit()
+        rid = req.id
+    try:
+        r = await api.get(B, headers=api.hr)
+        ob = [b for b in r.json()["blockers"]
+              if b["type"] == "open_asset_requests"]
+        assert len(ob) == 1 and "1 open asset request(s)" in ob[0]["message"]
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(AssetRequest).where(
+                AssetRequest.id == rid))
+            await db.commit()
+    r = await api.get(B, headers=api.hr)
+    assert not [b for b in r.json()["blockers"]
+                if b["type"] == "open_asset_requests"]
+
+
+async def test_location_validation_and_bounds(api, world, cat):
+    r = await api.post(P, headers=api.hr, json={
+        "category_id": cat["id"], "name": "L", "location_id": 2_000_000_000})
+    assert r.status_code == 422 and r.json()["error"]["message"] == "Location not found"
+    a = await mk(api, cat)
+    r = await api.patch(f"{P}/{a['id']}", headers=api.hr,
+                        json={"location_id": 2_000_000_000})
+    assert r.status_code == 422 and r.json()["error"]["message"] == "Location not found"
+    for f in ("purchase_cost_paise", "salvage_value_paise"):
+        r = await api.post(P, headers=api.hr, json={
+            "category_id": cat["id"], "name": "B", f: 2_000_000_001})
+        assert r.status_code == 422, r.text
+        r = await api.patch(f"{P}/{a['id']}", headers=api.hr,
+                            json={f: 2_000_000_001})
+        assert r.status_code == 422, r.text
+    b = await mk(api, cat, purchase_cost_paise=2_000_000_000)
+    assert b["purchase_cost_paise"] == 2_000_000_000
+    r = await api.get(P, headers=api.hr,
+                      params={"expiring_within_days": 3651})
+    assert r.status_code == 422
+    r = await api.get(P, headers=api.hr, params={"expiring_within_days": 3650})
+    assert r.status_code == 200
+    r = await api.post(f"/api/v1/assets/{a['id']}/maintenance",
+                       headers=api.hr, json={
+                           "kind": "repair", "description": "x",
+                           "cost_paise": 2_000_000_001,
+                           "started_on": date.today().isoformat()})
+    assert r.status_code == 422, r.text
+
+
+def test_lock_conflict_detection_on_pending_rollback():
+    from sqlalchemy.exc import PendingRollbackError
+    from app.api.v1.endpoints.roster_common import _caused_by_lock_conflict
+    ok = PendingRollbackError(
+        "This Session's transaction has been rolled back due to a previous "
+        "exception during flush. (Background on this error at: "
+        "https://sqlalche.me/e/20/7s2a). Original exception was: "
+        "(asyncmy.errors.OperationalError) (1020, \"Record has changed\")")
+    dl = PendingRollbackError("... (asyncmy.errors.OperationalError) (1213, 'Deadlock')")
+    other = PendingRollbackError("... (asyncmy.errors.IntegrityError) (1062, 'Duplicate')")
+    assert _caused_by_lock_conflict(ok) and _caused_by_lock_conflict(dl)
+    assert not _caused_by_lock_conflict(other)
+
+
+async def test_guard_maps_pending_rollback_to_409():
+    from fastapi import HTTPException
+    from sqlalchemy.exc import PendingRollbackError
+    from app.api.v1.endpoints.roster_common import guard_conflicts
+
+    class FakeDB:
+        rolled = False
+
+        async def rollback(self):
+            self.rolled = True
+
+    @guard_conflicts
+    async def boom(*, db):
+        raise PendingRollbackError("x (1020, 'Record has changed')")
+
+    @guard_conflicts
+    async def other(*, db):
+        raise PendingRollbackError("x unrelated")
+    db = FakeDB()
+    with pytest.raises(HTTPException) as ei:
+        await boom(db=db)
+    assert ei.value.status_code == 409 and db.rolled
+    with pytest.raises(PendingRollbackError):
+        await other(db=FakeDB())

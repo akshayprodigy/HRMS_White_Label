@@ -207,28 +207,44 @@ def _backfill():
         return res
 
     rows = bind.execute(sa.text(
-        "SELECT id, asset_type, model, serial_no, status, created_at "
-        "FROM employee_asset ORDER BY id")).all()
-    for rid, atype, model, serial, status, created_at in rows:
+        "SELECT id, asset_type, model, serial_no, status, created_at, "
+        "identifier FROM employee_asset ORDER BY id")).all()
+    for rid, atype, model, serial, status, created_at, ident in rows:
         cid, code = resolve(atype)
         # returned (or any other) -> in_stock is deliberate: returned devices
         # went back to stock.
         astatus = {"allocated": "allocated", "lost": "lost"}.get(
             status, "in_stock")
+        # Carry the legacy identifier over: as the tag when it is a valid,
+        # unused tag; otherwise preserved in notes (generated tag kept).
+        ident = (ident or "").strip()
+        want_tag, notes = None, None
+        if ident:
+            cand = ident.upper()
+            if re.match(r"^[A-Z0-9-]{3,32}$", cand):
+                clash = bind.execute(sa.text(
+                    "SELECT 1 FROM asset WHERE asset_tag = :t"),
+                    {"t": cand}).first()
+                if clash is None:
+                    want_tag = cand
+            if want_tag is None:
+                notes = f"Legacy identifier: {ident}"
         bind.execute(
             sa.text(
                 "INSERT INTO asset (asset_tag, category_id, name, model, "
-                "serial_no, status, salvage_value_paise, created_at, "
+                "serial_no, status, salvage_value_paise, notes, created_at, "
                 "updated_at) VALUES (:tag, :cid, :name, :model, :serial, "
-                ":status, 0, :ca, :ca)"),
-            {"tag": f"TMP-{rid}", "cid": cid, "name": model, "model": model,
-             "serial": serial, "status": astatus, "ca": created_at})
+                ":status, 0, :notes, :ca, :ca)"),
+            {"tag": want_tag or f"TMP-{rid}", "cid": cid, "name": model,
+             "model": model, "serial": serial, "status": astatus,
+             "notes": notes, "ca": created_at})
         aid = bind.execute(sa.text(
             "SELECT id FROM asset WHERE asset_tag = :t"),
-            {"t": f"TMP-{rid}"}).scalar_one()
-        bind.execute(sa.text(
-            "UPDATE asset SET asset_tag = :t WHERE id = :i"),
-            {"t": f"{code}-{aid:06d}", "i": aid})
+            {"t": want_tag or f"TMP-{rid}"}).scalar_one()
+        if want_tag is None:
+            bind.execute(sa.text(
+                "UPDATE asset SET asset_tag = :t WHERE id = :i"),
+                {"t": f"{code}-{aid:06d}", "i": aid})
         bind.execute(sa.text(
             "UPDATE employee_asset SET asset_id = :a WHERE id = :i"),
             {"a": aid, "i": rid})
