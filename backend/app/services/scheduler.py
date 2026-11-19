@@ -820,6 +820,26 @@ register_job(JobSpec(
 ))
 
 
+async def _job_asset_expiry_alerts(session: AsyncSession) -> Dict[str, Any]:
+    from app.services.assets import run_asset_expiry_alerts
+    out = await run_asset_expiry_alerts(session)
+    await session.commit()
+    return out
+
+
+register_job(JobSpec(
+    name="asset_expiry_alerts",
+    display_name="Asset warranty/AMC expiry alerts",
+    description=(
+        "Daily 09:00 IST: alert asset managers once per expiry date when an "
+        "asset's warranty or AMC expires within `assets.expiry_alert_days`. "
+        "Retired / lost assets and already-expired dates are ignored."
+    ),
+    default_cadence_cron="30 3 * * *",
+    fn=_job_asset_expiry_alerts,
+))
+
+
 async def _job_overtime_recompute_yesterday(session: AsyncSession) -> Dict[str, Any]:
     """Recompute OT + night allowance for a lookback window of
     yesterday-2 .. yesterday (UTC) for every attendance row that has a

@@ -66,6 +66,7 @@ const BIOMETRIC_FIELDS: { key: string; label: string; hint: string; min: number;
   { key: 'biometric.offline_minutes', label: 'Device Offline After (minutes)', hint: 'A device is offline, and HR is alerted, when it has not called in for this long (range 5–1440)', min: 5, max: 1440 },
   { key: 'biometric.default_utc_offset_minutes', label: 'New Device Clock Offset (minutes)', hint: 'Clock offset given to newly registered devices; 330 = IST (range -720 to 840)', min: -720, max: 840 },
   { key: 'biometric.dedupe_seconds', label: 'Duplicate Tap Window (seconds)', hint: 'Taps this close to the first punch are treated as duplicates (range 0–3600)', min: 0, max: 3600 },
+  { key: 'assets.expiry_alert_days', label: 'Asset expiry alert (days)', hint: 'Asset managers are alerted this many days before a warranty or AMC expires (range 1–365)', min: 1, max: 365 },
 ];
 
 const SELFIE_REQUIRED_KEY = 'attendance.selfie_required';
@@ -541,7 +542,7 @@ export const TimeRulesTab: React.FC = () => {
             <Clock3 size={15} className="text-blue-600" /> Biometric devices
           </h3>
           <p className="text-[10px] font-bold text-slate-500 mt-1">
-            Health alerts and punch handling for ADMS biometric devices. Whole numbers.
+            Health alerts and punch handling for ADMS biometric devices, plus asset expiry alerts. Whole numbers.
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

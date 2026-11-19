@@ -82,6 +82,11 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Taps this close to the first punch are treated as duplicates "
         "(0-3600 seconds)",
     ),
+    "assets.expiry_alert_days": (
+        "30",
+        "Alert asset managers this many days before warranty/AMC expiry "
+        "(1-365)",
+    ),
     "tracking.retention_days": (
         "30",
         "Delete live-location pings (and tracking alerts) older than this "
@@ -215,7 +220,8 @@ async def set_time_rules(
         updates["attendance.offline_max_hours"] = sv
     for key, lo, hi in (("biometric.offline_minutes", 5, 1440),
                         ("biometric.default_utc_offset_minutes", -720, 840),
-                        ("biometric.dedupe_seconds", 0, 3600)):
+                        ("biometric.dedupe_seconds", 0, 3600),
+                        ("assets.expiry_alert_days", 1, 365)):
         v = updates.get(key)
         if v is not None:
             sv = str(v).strip()

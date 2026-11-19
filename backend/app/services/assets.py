@@ -5,10 +5,11 @@ This is the ONLY place that may set ``Asset.status``. Callers must obtain the
 transition. Nothing here commits; endpoints commit (and map AssetStateError
 to HTTP 409, LookupError to 404).
 """
-from datetime import date
+import logging
+from datetime import date, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.models.asset import Asset, AssetCategory, AssetStatus
 from app.models.audit import AuditLog
@@ -222,3 +223,72 @@ async def asset_manager_user_ids(db) -> list[int]:
         .where(User.is_active.is_(True), Permission.name == "asset manage")
     )).scalars().all()
     return sorted(set(sup) | set(perm))
+
+
+logger = logging.getLogger(__name__)
+
+
+async def _expiry_alert_days(db) -> int:
+    from app.services.time_rules import get_time_rules
+    try:
+        v = int(str((await get_time_rules(db)).get(
+            "assets.expiry_alert_days", 30)).strip())
+        return v if 1 <= v <= 365 else 30
+    except (TypeError, ValueError):
+        return 30
+
+
+async def run_asset_expiry_alerts(db, today: Optional[date] = None) -> dict:
+    """One notification per asset manager per run listing assets whose
+    warranty/AMC expires within the alert window. Candidate rows are locked
+    FOR UPDATE (a concurrent runner blocks, then its locking read sees our
+    committed stamps). Dedupe stamps record the expiry date alerted for, so a
+    changed expiry alerts again. Does NOT commit; the caller does."""
+    from app.services import roster as roster_svc
+    today = today or date.today()
+    window_end = today + timedelta(days=await _expiry_alert_days(db))
+    w_hit = and_(Asset.warranty_expiry.between(today, window_end),
+                 or_(Asset.warranty_alert_for.is_(None),
+                     Asset.warranty_alert_for != Asset.warranty_expiry))
+    a_hit = and_(Asset.amc_expiry.between(today, window_end),
+                 or_(Asset.amc_alert_for.is_(None),
+                     Asset.amc_alert_for != Asset.amc_expiry))
+    assets = (await db.execute(
+        select(Asset).where(
+            Asset.status.notin_([AssetStatus.RETIRED, AssetStatus.LOST]),
+            or_(w_hit, a_hit))
+        .order_by(Asset.id).with_for_update()
+    )).scalars().all()
+    if not assets:
+        return {"assets": 0, "recipients": 0}
+
+    entries: list[str] = []
+    hit_assets = 0
+    for a in assets:
+        hit = False
+        if a.warranty_expiry and today <= a.warranty_expiry <= window_end \
+                and a.warranty_alert_for != a.warranty_expiry:
+            entries.append(f"{a.asset_tag} warranty {a.warranty_expiry.isoformat()}")
+            a.warranty_alert_for = a.warranty_expiry
+            hit = True
+        if a.amc_expiry and today <= a.amc_expiry <= window_end \
+                and a.amc_alert_for != a.amc_expiry:
+            entries.append(f"{a.asset_tag} AMC {a.amc_expiry.isoformat()}")
+            a.amc_alert_for = a.amc_expiry
+            hit = True
+        hit_assets += hit
+    await db.flush()
+
+    n = hit_assets
+    msg = ", ".join(entries[:5])
+    if len(entries) > 5:
+        msg += f" and {len(entries) - 5} more"
+    recipients = await asset_manager_user_ids(db)
+    if not recipients:
+        logger.warning("asset expiry alerts: %d asset(s) due but no asset "
+                       "managers to notify", n)
+    else:
+        await roster_svc.notify_many(db, [
+            (uid, f"{n} asset(s) expiring soon", msg, "asset",
+             str(assets[0].id), "asset_expiry") for uid in recipients])
+    return {"assets": n, "recipients": len(recipients)}
