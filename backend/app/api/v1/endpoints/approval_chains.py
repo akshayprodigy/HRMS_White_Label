@@ -933,6 +933,29 @@ async def _entity_summary(
             "effective_from": rev.effective_from,
             "amount_paise": int(round(rev.new_ctc * 100)),
         }
+    if entity_type == ChainEntityType.ASSET_REQUEST:
+        from app.models.asset import (
+            AssetCategory, AssetRequest, AssetRequestStatus,
+        )
+        from app.models.employee import Employee as _Emp
+        ar = (await db.execute(
+            select(AssetRequest).where(AssetRequest.id == entity_id)
+        )).scalar_one_or_none()
+        if not ar or ar.status != AssetRequestStatus.PENDING:
+            return None
+        emp = await db.get(_Emp, ar.employee_id)
+        emp_user = await db.get(User, emp.user_id) if emp else None
+        cat = await db.get(AssetCategory, ar.category_id)
+        return {
+            "kind": "asset_request",
+            "id": ar.id,
+            "title": (
+                f"Asset request: {emp_user.full_name if emp_user else '?'}"
+                f" — {cat.name if cat else '?'}"
+            ),
+            "reason": ar.reason, "needed_by": ar.needed_by,
+            "employee_id": ar.employee_id, "amount_paise": 0,
+        }
     return {"kind": entity_type, "id": entity_id}
 
 
@@ -1138,6 +1161,25 @@ async def act_on_instance(
                     if outcome.next_status == ChainedApprovalStatus.APPROVED
                     else RevisionStatus.REJECTED
                 )
+        elif instance.entity_type == ChainEntityType.ASSET_REQUEST:
+            from app.models.asset import AssetRequest, AssetRequestStatus
+            areq = (await db.execute(
+                select(AssetRequest).where(
+                    AssetRequest.id == instance.entity_id)
+            )).scalar_one_or_none()
+            if areq and areq.status == AssetRequestStatus.PENDING:
+                approved = (
+                    outcome.next_status == ChainedApprovalStatus.APPROVED)
+                areq.status = (
+                    AssetRequestStatus.APPROVED if approved
+                    else AssetRequestStatus.REJECTED)
+                areq.decided_by_id = current_user.id
+                areq.decided_at = datetime.now(timezone.utc)
+                if approved:
+                    from app.api.v1.endpoints.asset_requests import (
+                        notify_managers_ready,
+                    )
+                    await notify_managers_ready(db, areq)
         # Notify submitter.
         if instance.submitter_id:
             db.add(Notification(

@@ -198,3 +198,16 @@ async def set_status(db, *, asset, actor, to_status, remarks=None) -> None:
     _audit(db, actor, "ASSET_STATUS", asset, {
         "from_status": from_status, "to_status": to_status,
         "remarks": (remarks or "").strip() or None})
+
+
+async def asset_manager_user_ids(db) -> list[int]:
+    """Active users who can manage assets: superusers plus holders of the
+    'asset manage' permission through any role."""
+    from app.models.user import Permission, Role, User
+    sup = (await db.execute(select(User.id).where(
+        User.is_active.is_(True), User.is_superuser.is_(True)))).scalars().all()
+    perm = (await db.execute(
+        select(User.id).join(User.roles).join(Role.permissions)
+        .where(User.is_active.is_(True), Permission.name == "asset manage")
+    )).scalars().all()
+    return sorted(set(sup) | set(perm))

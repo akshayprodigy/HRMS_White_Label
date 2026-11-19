@@ -17,6 +17,7 @@ from app.api.v1.endpoints import (
     attendance_regularization, schedule_delegations, broadcasts, attendance_bulk,
     devices, notification_actions, attendance_offline, tracking, biometric,
     asset_maintenance,
+    asset_requests,
     assets,
 )
 
@@ -59,6 +60,10 @@ api_router.include_router(assets.router, prefix="/assets", tags=["assets"])
 # After assets: /assets/by-tag/{tag} etc. must win over /{asset_id}/maintenance.
 api_router.include_router(
     asset_maintenance.router, prefix="/assets", tags=["assets"])
+# Employee asset requests: employee routes need only login, manager routes
+# 'asset manage'; NOT attendance-gated.
+api_router.include_router(
+    asset_requests.router, prefix="/asset-requests", tags=["asset-requests"])
 api_router.include_router(
     notification_actions.router, prefix="/notifications",
     tags=["notifications"])
