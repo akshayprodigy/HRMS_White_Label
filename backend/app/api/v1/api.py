@@ -18,11 +18,12 @@ from app.api.v1.endpoints import (
     devices, notification_actions, attendance_offline, tracking, biometric,
     asset_maintenance,
     asset_requests,
-    assets,
+    assets, meta,
 )
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["health"])
+api_router.include_router(meta.router, prefix="/meta", tags=["meta"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(
     attendance_regularization.router,

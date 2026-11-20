@@ -67,6 +67,11 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "Offline-captured punches are accepted only if captured within this "
         "many hours of syncing (1-72); they are flagged for HR review",
     ),
+    "org.timezone": (
+        "Asia/Kolkata",
+        "IANA timezone used to read shift times and 'today' "
+        "(UTC = legacy behaviour)",
+    ),
     "biometric.offline_minutes": (
         "30",
         "A device is offline when it has not called in for this many "
@@ -218,6 +223,17 @@ async def set_time_rules(
                 "attendance.offline_max_hours must be a whole number "
                 "between 1 and 72")
         updates["attendance.offline_max_hours"] = sv
+    tzv = updates.get("org.timezone")
+    if tzv is not None:
+        from zoneinfo import available_timezones
+        sv = str(tzv).strip()
+        if sv.upper() == "UTC":
+            sv = "UTC"
+        elif sv not in available_timezones():
+            raise ValueError(
+                "org.timezone must be 'UTC' or a valid IANA timezone "
+                "name, e.g. Asia/Kolkata")
+        updates["org.timezone"] = sv
     for key, lo, hi in (("biometric.offline_minutes", 5, 1440),
                         ("biometric.default_utc_offset_minutes", -720, 840),
                         ("biometric.dedupe_seconds", 0, 3600),

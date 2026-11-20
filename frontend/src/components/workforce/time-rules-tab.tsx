@@ -75,6 +75,15 @@ const ASSET_FIELDS: { key: string; label: string; hint: string; min: number; max
 const SELFIE_REQUIRED_KEY = 'attendance.selfie_required';
 const OFFLINE_HOURS_KEY = 'attendance.offline_max_hours';
 const RETENTION_KEY = 'attendance.selfie_retention_days';
+const TIMEZONE_KEY = 'org.timezone';
+const COMMON_TIMEZONES = [
+  'Asia/Kolkata',
+  'Asia/Dubai',
+  'Asia/Singapore',
+  'Europe/London',
+  'America/New_York',
+  'UTC',
+];
 
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-slate-200 text-sm text-[#0F172A] ' +
@@ -131,6 +140,10 @@ export const TimeRulesTab: React.FC = () => {
         return;
       }
     }
+    if (!(rules[TIMEZONE_KEY] ?? '').toString().trim()) {
+      toast.error('Organisation timezone is required (e.g. Asia/Kolkata or UTC)');
+      return;
+    }
     const offH = (rules[OFFLINE_HOURS_KEY] ?? '').toString().trim();
     if (!/^\d+$/.test(offH) || Number(offH) < 1 || Number(offH) > 72) {
       toast.error('Offline punch window must be a whole number of hours from 1 to 72');
@@ -175,6 +188,42 @@ export const TimeRulesTab: React.FC = () => {
 
   return (
     <div className="max-w-2xl space-y-4">
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
+        <div>
+          <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+            <Clock3 size={15} className="text-blue-600" /> Organisation
+          </h3>
+          <p className="text-[10px] font-bold text-slate-500 mt-1">
+            Shift times and "today" are read in this timezone. Set UTC to keep
+            the legacy behaviour.
+          </p>
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor={TIMEZONE_KEY}
+            className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+          >
+            Timezone
+          </label>
+          <input
+            id={TIMEZONE_KEY}
+            type="text"
+            list="org-timezone-options"
+            className={inputCls}
+            placeholder="e.g. Asia/Kolkata"
+            value={rules[TIMEZONE_KEY] ?? ''}
+            onChange={(e) => setRules({ ...rules, [TIMEZONE_KEY]: e.target.value })}
+          />
+          <datalist id="org-timezone-options">
+            {COMMON_TIMEZONES.map((z) => (
+              <option key={z} value={z} />
+            ))}
+          </datalist>
+          <p className="text-[9px] font-bold text-slate-400">
+            IANA timezone name (e.g. Asia/Kolkata) or UTC
+          </p>
+        </div>
+      </Card>
       <Card className="p-6 border-slate-200 bg-white space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div>
