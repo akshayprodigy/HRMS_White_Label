@@ -67,6 +67,7 @@ from app.services.salary_calculator import calculate_salary
 from app.services.attendance_lock import assert_attendance_editable
 from app.services import employment_type as employment_type_service
 from app.services import holidays as holidays_svc
+from app.services import optional_holidays as optional_holidays_svc
 from app.schemas.attendance import (
     AttendanceCorrectionCreate, AttendanceCorrectionRead,
     AttendanceCorrectionUpdate, AttendanceRead,
@@ -2480,15 +2481,20 @@ _TRUE = {"true", "1", "yes"}
 _FALSE = {"false", "0", "no"}
 
 
+def _norm_name(n: str | None) -> str:
+    return " ".join((n or "").split()).casefold()
+
+
 @router.post("/holidays/import")
+@guard_conflicts
 async def import_holidays(
     db: deps.DBDep,
     file: UploadFile = File(...),
     current_user: User = Depends(deps.check_permissions([HR_WRITE])),
 ) -> Any:
     """CSV `name,date,location,is_optional` (dates YYYY-MM-DD). Rows identical
-    on (date, normalised location, name) are skipped, also against rows
-    already in the calendar."""
+    on (date, normalised location, whitespace/case-normalised name) are
+    skipped, also against rows already in the calendar."""
     import csv
     import io
     raw = await file.read(HOLIDAY_IMPORT_MAX_BYTES + 1)
@@ -2498,26 +2504,27 @@ async def import_holidays(
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise HTTPException(422, "CSV must be UTF-8")
-    rd = csv.DictReader(io.StringIO(text))
-    hdr = [(h or "").strip().lower() for h in (rd.fieldnames or [])]
-    need = ["name", "date", "location", "is_optional"]
-    if any(c not in hdr for c in need):
-        raise HTTPException(
-            422, "CSV header must include name,date,location,is_optional")
     rows = []
-    for r in rd:
-        rows.append({(k or "").strip().lower(): (v or "").strip()
-                     for k, v in r.items() if k is not None})
-        if len(rows) > HOLIDAY_IMPORT_MAX_ROWS:
-            raise HTTPException(422, "CSV has more than 1000 rows")
-    existing = {
-        (d, holidays_svc.norm_loc(loc), (n or "").strip().casefold())
-        for d, loc, n in (await db.execute(select(
-            HolidayCalendar.date, HolidayCalendar.location,
-            HolidayCalendar.name))).all()}
-    created, skipped, errors = 0, 0, []
+    try:
+        rd = csv.DictReader(io.StringIO(text, newline=""))
+        hdr = [(h or "").strip().lower() for h in (rd.fieldnames or [])]
+        need = ["name", "date", "location", "is_optional"]
+        if any(c not in hdr for c in need):
+            raise HTTPException(
+                422, "CSV header must include name,date,location,is_optional")
+        for r in rd:
+            rows.append({(k or "").strip().lower(): (v or "").strip()
+                         for k, v in r.items()
+                         if k is not None and isinstance(v, (str, type(None)))})
+            if len(rows) > HOLIDAY_IMPORT_MAX_ROWS:
+                raise HTTPException(422, "CSV has more than 1000 rows")
+    except csv.Error as e:
+        raise HTTPException(422, f"Malformed CSV: {e}")
+    parsed = []
+    errors: list = []
     for i, r in enumerate(rows, start=2):  # row 1 is the header
-        name, loc = r.get("name", ""), " ".join(r.get("location", "").split())
+        name = " ".join(r.get("name", "").split())
+        loc = " ".join(r.get("location", "").split())
         if not name or len(name) > 100:
             errors.append({"row": i, "error": "name is required (max 100 chars)"})
             continue
@@ -2529,6 +2536,9 @@ async def import_holidays(
         except ValueError:
             errors.append({"row": i, "error": "date must be YYYY-MM-DD"})
             continue
+        if not 2000 <= d.year <= 2100:
+            errors.append({"row": i, "error": "year must be between 2000 and 2100"})
+            continue
         opt = r.get("is_optional", "").lower()
         if opt in _TRUE:
             is_opt = True
@@ -2537,7 +2547,19 @@ async def import_holidays(
         else:
             errors.append({"row": i, "error": "is_optional must be true/false/1/0/yes/no"})
             continue
-        key = (d, holidays_svc.norm_loc(loc), name.casefold())
+        parsed.append((name, d, loc, is_opt))
+    existing = set()
+    dates = sorted({p[1] for p in parsed})
+    if dates:
+        existing = {
+            (d, holidays_svc.norm_loc(loc), _norm_name(n))
+            for d, loc, n in (await db.execute(select(
+                HolidayCalendar.date, HolidayCalendar.location,
+                HolidayCalendar.name).where(
+                    HolidayCalendar.date.in_(dates)))).all()}
+    created, skipped = 0, 0
+    for name, d, loc, is_opt in parsed:
+        key = (d, holidays_svc.norm_loc(loc), _norm_name(name))
         if key in existing:
             skipped += 1
             continue
@@ -2545,7 +2567,12 @@ async def import_holidays(
         db.add(HolidayCalendar(name=name, date=d, location=loc,
                                is_optional=is_opt))
         created += 1
-    await db.commit()
+    db.add(AuditLog(user_id=current_user.id, action="HOLIDAY_IMPORT",
+                    resource_type="holiday_calendar", resource_id="import",
+                    details={"created": created, "skipped": skipped,
+                             "errors": len(errors),
+                             "filename": file.filename}))
+    await commit_or_409(db)
     return {"created": created, "skipped": skipped, "errors": errors}
 
 
@@ -2563,6 +2590,7 @@ async def holiday_locations(
 
 
 @router.delete("/holidays/{holiday_id}")
+@guard_conflicts
 async def delete_holiday(
     *,
     db: deps.DBDep,
@@ -2572,12 +2600,14 @@ async def delete_holiday(
     obj = await db.get(HolidayCalendar, holiday_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Holiday not found")
+    await optional_holidays_svc.prepare_holiday_delete(db, obj, current_user)
     await db.delete(obj)
-    await db.commit()
+    await commit_or_409(db)
     return {"status": "success"}
 
 
 @router.put("/holidays/{holiday_id}", response_model=HolidayCalendarRead)
+@guard_conflicts
 async def update_holiday(
     *,
     db: deps.DBDep,
@@ -2588,9 +2618,13 @@ async def update_holiday(
     obj = await db.get(HolidayCalendar, holiday_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Holiday not found")
+    old = {"date": obj.date, "is_optional": bool(obj.is_optional),
+           "location": obj.location}
     for field, value in obj_in.model_dump().items():
         setattr(obj, field, value)
-    await db.commit()
+    await optional_holidays_svc.reconcile_holiday_update(
+        db, obj, old, current_user)
+    await commit_or_409(db)
     await db.refresh(obj)
     obj.matching_employee_count = await holidays_svc.matching_employee_count(
         db, obj.location)

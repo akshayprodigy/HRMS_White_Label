@@ -1234,7 +1234,8 @@ async def act_on_instance(
                     )
                     await notify_managers_ready(db, areq)
         # Notify submitter.
-        if instance.submitter_id:
+        if (instance.submitter_id
+                and instance.entity_type != ChainEntityType.OPTIONAL_HOLIDAY):
             db.add(Notification(
                 user_id=instance.submitter_id,
                 title=(

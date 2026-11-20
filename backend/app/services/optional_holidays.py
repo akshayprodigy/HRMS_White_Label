@@ -62,9 +62,11 @@ async def used(db, user_id: int, year: int, *, lock: bool = False) -> int:
 
 
 async def create_pick(db, *, user, holiday_id: int, reason) -> OptionalHolidayPick:
+    """The CALLER must hold the user-row lock (taken at the start of a fresh
+    transaction, before any consistent read) so the plain, user-scoped
+    duplicate/quota read below is race-free without locking other users'
+    pick rows."""
     uid = user.id
-    # Serialise this user's picks so quota/duplicate checks are race-free.
-    await db.execute(select(User.id).where(User.id == uid).with_for_update())
     hol = await db.get(HolidayCalendar, holiday_id)
     if hol is None:
         raise HTTPException(404, "Holiday not found")
@@ -74,15 +76,15 @@ async def create_pick(db, *, user, holiday_id: int, reason) -> OptionalHolidayPi
         raise HTTPException(422, "This holiday is not available for your location")
     if hol.date < await local_today(db):
         raise HTTPException(422, "date has passed")
-    dup = (await db.execute(select(OptionalHolidayPick.id).where(
-        OptionalHolidayPick.user_id == uid,
-        OptionalHolidayPick.holiday_id == hol.id,
-        OptionalHolidayPick.status.in_(PickStatus.ACTIVE)
-    ).limit(1).with_for_update())).first()
-    if dup:
+    ids = [r[0] for r in (await db.execute(
+        select(OptionalHolidayPick.holiday_id).where(
+            OptionalHolidayPick.user_id == uid,
+            OptionalHolidayPick.year == hol.date.year,
+            OptionalHolidayPick.status.in_(PickStatus.ACTIVE)))).all()]
+    if hol.id in ids:
         raise HTTPException(409, "You already picked this holiday")
     q = await quota(db)
-    if await used(db, uid, hol.date.year, lock=True) >= q:
+    if len(ids) >= q:
         raise HTTPException(409, f"optional holiday quota ({q}) used")
     pick = OptionalHolidayPick(
         holiday_id=hol.id, user_id=uid, year=hol.date.year,
@@ -93,17 +95,27 @@ async def create_pick(db, *, user, holiday_id: int, reason) -> OptionalHolidayPi
     return pick
 
 
+def audit_create(db, actor_id, pick, routed_via: str) -> None:
+    _audit(db, actor_id, "OPTIONAL_HOLIDAY_CREATE", pick, {
+        "holiday_id": pick.holiday_id, "year": pick.year,
+        "routed_via": routed_via})
+
+
 def _audit(db, actor_id, action, pick, details) -> None:
     db.add(AuditLog(user_id=actor_id, action=action, resource_type=RT,
                     resource_id=str(pick.id), details=details))
 
 
 async def _locked(db, hol: HolidayCalendar) -> None:
+    await _locked_date(db, hol.date)
+
+
+async def _locked_date(db, d) -> None:
     try:
-        await assert_attendance_editable(db, hol.date)
+        await assert_attendance_editable(db, d, fresh=True)
     except HTTPException as e:
         if e.status_code == 409:
-            raise HTTPException(409, "payroll period locked")
+            raise HTTPException(409, f"payroll period locked: {e.detail}")
         raise
 
 
@@ -113,7 +125,9 @@ async def finalize(db, pick: OptionalHolidayPick, *, approved: bool,
     if pick.status != PickStatus.PENDING:
         raise HTTPException(409, f"Pick is already {pick.status}")
     hol = await db.get(HolidayCalendar, pick.holiday_id)
-    if approved and hol is not None:
+    if approved:
+        if hol is None or not hol.is_optional:
+            raise HTTPException(409, "holiday is no longer an optional holiday")
         await _locked(db, hol)
     pick.status = PickStatus.APPROVED if approved else PickStatus.REJECTED
     pick.decided_by_id = getattr(actor, "id", None)
@@ -131,9 +145,28 @@ async def finalize(db, pick: OptionalHolidayPick, *, approved: bool,
     return pick
 
 
-async def cancel(db, pick: OptionalHolidayPick, *, actor,
-                 is_hr: bool) -> OptionalHolidayPick:
-    """`pick` must already be row-locked (and its chain instance, if any)."""
+async def close_instance(db, inst) -> None:
+    """Cancel a (locked) pending chain instance and skip its pending steps."""
+    if inst is None or inst.status != ChainedApprovalStatus.PENDING:
+        return
+    now = datetime.now(timezone.utc)
+    inst.status = ChainedApprovalStatus.CANCELLED
+    inst.finalized_at = now
+    sis = (await db.execute(
+        select(ChainedApprovalStepInstance).where(
+            ChainedApprovalStepInstance.instance_id == inst.id,
+            ChainedApprovalStepInstance.status == StepInstanceStatus.PENDING)
+        .execution_options(populate_existing=True))).scalars().all()
+    for si in sis:
+        si.status = StepInstanceStatus.SKIPPED
+        si.comment = "cancelled_by_requester"
+        si.actioned_at = now
+
+
+async def cancel(db, pick: OptionalHolidayPick, *, actor, is_hr: bool,
+                 inst=None) -> OptionalHolidayPick:
+    """`pick` must already be row-locked; `inst` is its chain instance, also
+    locked by the caller (instance first, then pick), or None when direct."""
     if pick.status not in PickStatus.ACTIVE:
         raise HTTPException(409, f"Pick is {pick.status}; cannot cancel")
     hol = await db.get(HolidayCalendar, pick.holiday_id)
@@ -144,31 +177,100 @@ async def cancel(db, pick: OptionalHolidayPick, *, actor,
             raise HTTPException(409, "date has passed")
     if pick.status == PickStatus.APPROVED and hol is not None:
         await _locked(db, hol)
-    inst = (await db.execute(
-        select(ChainedApprovalInstance).where(
-            ChainedApprovalInstance.entity_type
-            == ChainEntityType.OPTIONAL_HOLIDAY,
-            ChainedApprovalInstance.entity_id == pick.id,
-            ChainedApprovalInstance.status == ChainedApprovalStatus.PENDING)
-        .with_for_update().execution_options(populate_existing=True)
-    )).scalars().first()
-    if inst is not None:
-        now = datetime.now(timezone.utc)
-        inst.status = ChainedApprovalStatus.CANCELLED
-        inst.finalized_at = now
-        sis = (await db.execute(
-            select(ChainedApprovalStepInstance).where(
-                ChainedApprovalStepInstance.instance_id == inst.id,
-                ChainedApprovalStepInstance.status
-                == StepInstanceStatus.PENDING)
-            .execution_options(populate_existing=True))).scalars().all()
-        for si in sis:
-            si.status = StepInstanceStatus.SKIPPED
-            si.comment = "cancelled_by_requester"
-            si.actioned_at = now
+    await close_instance(db, inst)
     pick.status = PickStatus.CANCELLED
     _audit(db, actor.id, "OPTIONAL_HOLIDAY_CANCEL", pick, {"is_hr": is_hr})
     return pick
+
+
+async def _active_picks(db, holiday_id: int):
+    return (await db.execute(
+        select(OptionalHolidayPick).where(
+            OptionalHolidayPick.holiday_id == holiday_id,
+            OptionalHolidayPick.status.in_(PickStatus.ACTIVE))
+        .execution_options(populate_existing=True))).scalars().all()
+
+
+async def _pending_instance(db, pick_id: int):
+    return (await db.execute(
+        select(ChainedApprovalInstance).where(
+            ChainedApprovalInstance.entity_type
+            == ChainEntityType.OPTIONAL_HOLIDAY,
+            ChainedApprovalInstance.entity_id == pick_id,
+            ChainedApprovalInstance.status == ChainedApprovalStatus.PENDING)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
+
+
+async def reconcile_holiday_update(db, hol: HolidayCalendar, old: dict,
+                                   actor) -> None:
+    """Keep picks consistent after HR edits a holiday (call before commit,
+    after the new values are set). `old` = {date,is_optional,location}.
+    Rules (kept deliberately simple):
+      * active picks get year = new date's year;
+      * PENDING picks that are no longer eligible (holiday became mandatory,
+        or its location no longer matches the employee) are cancelled and
+        their pending chain instance closed;
+      * APPROVED picks on a holiday that became mandatory are cancelled (it
+        applies to everyone anyway and the quota slot is freed);
+      * other APPROVED picks that fall ineligible, or whose date moved into a
+        payroll-locked month, are left approved and flagged in the audit log
+        (pay is never changed silently)."""
+    new = {"date": hol.date, "is_optional": bool(hol.is_optional),
+           "location": hol.location}
+    if all(old[k] == new[k] for k in new):
+        return
+    for p in await _active_picks(db, hol.id):
+        p.year = hol.date.year
+        eligible = bool(hol.is_optional) and holidays_svc.applies(
+            hol.location, await user_location(db, p.user_id))
+        detail = {"holiday_id": hol.id, "old": {k: str(v) for k, v in old.items()},
+                  "new": {k: str(v) for k, v in new.items()}}
+        if p.status == PickStatus.PENDING and not eligible:
+            await close_instance(db, await _pending_instance(db, p.id))
+            p.status = PickStatus.CANCELLED
+            _audit(db, getattr(actor, "id", None), "OPTIONAL_HOLIDAY_AUTO_CANCEL", p, detail)
+            await roster_svc.notify_many(db, [(
+                p.user_id, "Optional holiday pick cancelled",
+                f"Your pick for {hol.name} was cancelled because the holiday "
+                "changed.", RT, str(p.id), "optional_holiday_decided")])
+        elif p.status == PickStatus.APPROVED and not hol.is_optional:
+            p.status = PickStatus.CANCELLED
+            _audit(db, getattr(actor, "id", None), "OPTIONAL_HOLIDAY_AUTO_CANCEL", p, detail)
+        elif p.status == PickStatus.APPROVED:
+            flag = None
+            if not eligible:
+                flag = "no longer eligible"
+            elif old["date"] != hol.date:
+                try:
+                    await _locked_date(db, hol.date)
+                except HTTPException:
+                    flag = "date moved into a payroll-locked month"
+            if flag:
+                _audit(db, getattr(actor, "id", None), "OPTIONAL_HOLIDAY_PICK_FLAGGED", p,
+                       {**detail, "note": flag})
+
+
+async def prepare_holiday_delete(db, hol: HolidayCalendar, actor) -> None:
+    """Before deleting a holiday: refuse (409) when an approved pick sits in
+    a payroll-locked month; close pending chain instances of its picks and
+    write an audit row (the picks themselves cascade-delete)."""
+    picks = (await db.execute(
+        select(OptionalHolidayPick).where(
+            OptionalHolidayPick.holiday_id == hol.id)
+        .execution_options(populate_existing=True))).scalars().all()
+    if any(p.status == PickStatus.APPROVED for p in picks):
+        await _locked(db, hol)
+    for p in picks:
+        if p.status == PickStatus.PENDING:
+            await close_instance(db, await _pending_instance(db, p.id))
+    db.add(AuditLog(user_id=getattr(actor, "id", None), action="HOLIDAY_DELETE",
+                    resource_type="holiday_calendar", resource_id=str(hol.id),
+                    details={"name": hol.name, "date": hol.date.isoformat(),
+                             "location": hol.location,
+                             "picks_removed": [
+                                 {"id": p.id, "user_id": p.user_id,
+                                  "status": p.status} for p in picks]}))
 
 
 async def direct_approver_ids(db, employee_user_id: int) -> list[int]:

@@ -36,7 +36,7 @@ LOCKED = date(2032, 6, 15)
 QKEY = OH.QUOTA_KEY
 
 
-async def _cleanup(sfx):
+async def _cleanup(sfx, run_ids=()):
     async with SessionLocal() as db:
         uids = list((await db.execute(select(User.id).where(
             User.email.like(f"oh\\_%\\_{sfx}@test.com")))).scalars().all())
@@ -75,8 +75,9 @@ async def _cleanup(sfx):
         # CSV-import rows
         await db.execute(delete(HolidayCalendar).where(
             HolidayCalendar.name.like(f"%{sfx}%")))
-        await db.execute(delete(PayrollRun).where(
-            PayrollRun.month == LOCKED.month, PayrollRun.year == LOCKED.year))
+        if run_ids:
+            await db.execute(delete(PayrollRun).where(
+                PayrollRun.id.in_(list(run_ids))))
         if uids:
             await db.execute(delete(Notification).where(Notification.user_id.in_(uids)))
             await db.execute(delete(AuditLog).where(AuditLog.user_id.in_(uids)))
@@ -89,7 +90,7 @@ async def _cleanup(sfx):
 @pytest.fixture
 async def world():
     sfx = uuid.uuid4().hex[:8]
-    w: dict = {"sfx": sfx}
+    w: dict = {"sfx": sfx, "runs": []}
     async with SessionLocal() as db:
         row = await db.get(SystemSetting, QKEY)
         w["saved_quota"] = (row.value, row.description) if row else None
@@ -101,19 +102,22 @@ async def world():
     try:
         async with SessionLocal() as db:
             us = {}
-            for n in ("hr", "mgr", "emp", "emp2", "pune", "plain"):
+            for n in ("hr", "mgr", "emp", "emp2", "pune", "plain",
+                      "lv", "ro", "su"):
                 us[n] = User(email=f"oh_{n}_{sfx}@test.com",
                              full_name=f"Oh {n} {sfx}",
                              hashed_password=get_password_hash("x"),
                              is_active=True)
             db.add_all(us.values())
             await db.flush()
+            us["su"].is_superuser = True
             us["emp"].manager_id = us["mgr"].id
             us["emp2"].manager_id = us["mgr"].id
-            role = (await db.execute(
-                select(Role).where(Role.name == "HR"))).scalars().first()
-            await db.execute(insert(user_roles).values(
-                user_id=us["hr"].id, role_id=role.id))
+            for who, rname in (("hr", "HR"), ("lv", "PM"), ("ro", "COO")):
+                role = (await db.execute(
+                    select(Role).where(Role.name == rname))).scalars().first()
+                await db.execute(insert(user_roles).values(
+                    user_id=us[who].id, role_id=role.id))
             for n, loc in (("emp", "Mumbai"), ("emp2", "Mumbai"),
                            ("pune", "Pune"), ("plain", "Mumbai")):
                 db.add(Employee(
@@ -138,7 +142,7 @@ async def world():
             w["h"] = {k: h.id for k, h in hs.items()}
         yield w
     finally:
-        await _cleanup(sfx)
+        await _cleanup(sfx, w["runs"])
         async with SessionLocal() as db:
             row = await db.get(SystemSetting, QKEY)
             sv = w["saved_quota"]
@@ -164,7 +168,8 @@ async def api(world):
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://test") as c:
         s = world["sfx"]
-        for n in ("hr", "mgr", "emp", "emp2", "pune", "plain"):
+        for n in ("hr", "mgr", "emp", "emp2", "pune", "plain", "lv", "ro",
+                  "su"):
             setattr(c, n, await _login(c, f"oh_{n}_{s}@test.com"))
         yield c
 
@@ -184,7 +189,7 @@ async def test_quota_and_cancel_frees(api, world):
     r = await api.post(f"{P}/picks/{r1.json()['id']}/cancel", headers=api.emp)
     assert r.status_code == 200 and r.json()["status"] == "cancelled"
     assert (await pick(api, world, "m3")).status_code == 201
-    # cancelled can be re-picked once quota allows
+    # cancelling an already-cancelled pick is a 409
     r = await api.post(f"{P}/picks/{r1.json()['id']}/cancel", headers=api.emp)
     assert r.status_code == 409
 
@@ -285,12 +290,27 @@ async def test_cancel_rules(api, world):
         assert D1 not in res[world["uid"]["emp"]]
 
 
+async def mk_run(world, d=LOCKED):
+    async with SessionLocal() as db:
+        run = PayrollRun(month=d.month, year=d.year,
+                         status=PayrollRunStatus.FINALIZED)
+        db.add(run)
+        await db.commit()
+        world["runs"].append(run.id)
+        return run.id
+
+
+async def drop_runs(world):
+    async with SessionLocal() as db:
+        await db.execute(delete(PayrollRun).where(
+            PayrollRun.id.in_(world["runs"])))
+        await db.commit()
+    world["runs"].clear()
+
+
 async def test_locked_period(api, world):
     pid = (await pick(api, world, "lock")).json()["id"]
-    async with SessionLocal() as db:
-        db.add(PayrollRun(month=LOCKED.month, year=LOCKED.year,
-                          status=PayrollRunStatus.FINALIZED))
-        await db.commit()
+    await mk_run(world)
     r = await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
                        json={"approve": True})
     assert r.status_code == 409 and "payroll period locked" in r.text
@@ -298,17 +318,11 @@ async def test_locked_period(api, world):
     r = await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
                        json={"approve": False})
     assert r.status_code == 200
-    async with SessionLocal() as db:
-        await db.execute(delete(PayrollRun).where(
-            PayrollRun.month == LOCKED.month, PayrollRun.year == LOCKED.year))
-        await db.commit()
+    await drop_runs(world)
     pid2 = (await pick(api, world, "lock")).json()["id"]
     await api.post(f"{P}/picks/{pid2}/decide", headers=api.mgr,
                    json={"approve": True})
-    async with SessionLocal() as db:
-        db.add(PayrollRun(month=LOCKED.month, year=LOCKED.year,
-                          status=PayrollRunStatus.FINALIZED))
-        await db.commit()
+    await mk_run(world)
     r = await api.post(f"{P}/picks/{pid2}/cancel", headers=api.hr)
     assert r.status_code == 409 and "payroll period locked" in r.text
 
@@ -494,3 +508,249 @@ async def test_csv_import_caps(api, world):
     async with SessionLocal() as db:
         assert not (await db.execute(select(HolidayCalendar.id).where(
             HolidayCalendar.name.like(f"X% {sfx}")))).first()
+
+
+# ── review-fix coverage ──────────────────────────────────────────────────
+async def _second_client(world, who):
+    app = create_app()
+    app.dependency_overrides[deps.verify_attendance] = lambda: None
+    c = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    h = await _login(c, f"oh_{who}_{world['sfx']}@test.com")
+    return c, h
+
+
+async def audit_actions(pid):
+    async with SessionLocal() as db:
+        return {a.action for a in (await db.execute(select(AuditLog).where(
+            AuditLog.resource_type == "optional_holiday",
+            AuditLog.resource_id == str(pid)))).scalars().all()}
+
+
+async def test_different_users_same_holiday_concurrently(api, world):
+    c2, h2 = await _second_client(world, "emp2")
+    try:
+        r1, r2 = await asyncio.gather(
+            api.post(f"{P}/picks", headers=api.emp,
+                     json={"holiday_id": world["h"]["m1"]}),
+            c2.post(f"{P}/picks", headers=h2,
+                    json={"holiday_id": world["h"]["m1"]}))
+    finally:
+        await c2.aclose()
+    assert (r1.status_code, r2.status_code) == (201, 201), (r1.text, r2.text)
+    assert "OPTIONAL_HOLIDAY_CREATE" in await audit_actions(r1.json()["id"])
+    assert r1.json()["routed_via"] == "direct"
+
+
+async def test_decide_vs_cancel_race(api, world):
+    pid = (await pick(api, world, "m1")).json()["id"]
+    c2, h2 = await _second_client(world, "mgr")
+    try:
+        rd, rc = await asyncio.gather(
+            c2.post(f"{P}/picks/{pid}/decide", headers=h2,
+                    json={"approve": True}),
+            api.post(f"{P}/picks/{pid}/cancel", headers=api.emp))
+    finally:
+        await c2.aclose()
+    assert rd.status_code in (200, 409) and rc.status_code in (200, 409), (
+        rd.text, rc.text)
+    async with SessionLocal() as db:
+        st = (await db.get(OptionalHolidayPick, pid)).status
+    assert st in ("approved", "cancelled")
+    if rd.status_code == 409:
+        assert st == "cancelled"
+
+
+async def test_chain_act_vs_cancel_race(api, world, chain):
+    q = (await pick(api, world, "m1")).json()
+    r = await api.get("/api/v1/approval-chains/my-queue", headers=api.hr)
+    iid = next(x["instance"]["id"] for x in r.json()
+               if x["entity"]["kind"] == "optional_holiday"
+               and x["entity"]["id"] == q["id"])
+    c2, h2 = await _second_client(world, "hr")
+    try:
+        ra, rc = await asyncio.gather(
+            c2.post(f"/api/v1/approval-chains/instances/{iid}/act",
+                    headers=h2, json={"action": "approve"}),
+            api.post(f"{P}/picks/{q['id']}/cancel", headers=api.emp))
+    finally:
+        await c2.aclose()
+    assert ra.status_code < 500 and rc.status_code < 500, (ra.text, rc.text)
+    async with SessionLocal() as db:
+        pk = await db.get(OptionalHolidayPick, q["id"])
+        inst = await db.get(ChainedApprovalInstance, iid)
+        assert pk.status in ("approved", "cancelled")
+        assert inst.status in ("approved", "cancelled")
+        if inst.status == "cancelled":
+            assert pk.status == "cancelled"
+
+
+def _hol_body(world, key, **kw):
+    base = {"M1": ("m1", D1, "Mumbai"), }
+    name = f"OHol {key} {world['sfx']}"
+    d = {"name": name, "date": {"m1": D1, "m2": D2, "lock": LOCKED}[key].isoformat(),
+         "location": "Mumbai", "is_optional": True}
+    d.update(kw)
+    return d
+
+
+async def _approved(api, world, key, who):
+    pid = (await pick(api, world, key, who=who)).json()["id"]
+    r = await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
+                       json={"approve": True})
+    assert r.status_code == 200, r.text
+    return pid
+
+
+async def _status(pid):
+    async with SessionLocal() as db:
+        return (await db.get(OptionalHolidayPick, pid)).status
+
+
+async def test_holiday_made_mandatory_cancels_picks(api, world):
+    pend = (await pick(api, world, "m1", who="emp")).json()["id"]
+    appr = await _approved(api, world, "m1", "emp2")
+    r = await api.put(f"/api/v1/hr/holidays/{world['h']['m1']}", headers=api.hr,
+                      json=_hol_body(world, "m1", is_optional=False))
+    assert r.status_code == 200, r.text
+    assert await _status(pend) == "cancelled"
+    assert await _status(appr) == "cancelled"
+    assert "OPTIONAL_HOLIDAY_AUTO_CANCEL" in await audit_actions(pend)
+    # now applies to everyone as a mandatory holiday; quota freed
+    async with SessionLocal() as db:
+        res = await H.holidays_for(db, [world["uid"]["emp2"]], D1, D1)
+        assert D1 in res[world["uid"]["emp2"]]
+        assert not res[world["uid"]["emp2"]][D1].is_optional
+
+
+async def test_holiday_location_change(api, world):
+    pend = (await pick(api, world, "m1", who="emp")).json()["id"]
+    appr = await _approved(api, world, "m1", "emp2")
+    r = await api.put(f"/api/v1/hr/holidays/{world['h']['m1']}", headers=api.hr,
+                      json=_hol_body(world, "m1", location="Pune"))
+    assert r.status_code == 200, r.text
+    assert await _status(pend) == "cancelled"
+    assert await _status(appr) == "approved"     # never silently altered
+    assert "OPTIONAL_HOLIDAY_PICK_FLAGGED" in await audit_actions(appr)
+    # the active pick stays listed in /my so used matches
+    r = await api.get(f"{P}/my?year=2032", headers=api.emp2)
+    assert r.json()["used"] == 1
+    assert any(h["pick"] and h["pick"]["id"] == appr
+               for h in r.json()["holidays"])
+
+
+async def test_holiday_date_change_updates_pick_year(api, world):
+    pid = (await pick(api, world, "m1")).json()["id"]
+    r = await api.put(f"/api/v1/hr/holidays/{world['h']['m1']}", headers=api.hr,
+                      json=_hol_body(world, "m1", date="2033-03-10"))
+    assert r.status_code == 200, r.text
+    async with SessionLocal() as db:
+        assert (await db.get(OptionalHolidayPick, pid)).year == 2033
+    r = await api.get(f"{P}/my?year=2033", headers=api.emp)
+    assert r.json()["used"] == 1
+
+
+async def test_edit_closes_chain_instance(api, world, chain):
+    q = (await pick(api, world, "m1")).json()
+    r = await api.put(f"/api/v1/hr/holidays/{world['h']['m1']}", headers=api.hr,
+                      json=_hol_body(world, "m1", is_optional=False))
+    assert r.status_code == 200, r.text
+    async with SessionLocal() as db:
+        inst = (await db.execute(select(ChainedApprovalInstance).where(
+            ChainedApprovalInstance.entity_type == "optional_holiday",
+            ChainedApprovalInstance.entity_id == q["id"]))).scalars().one()
+        assert inst.status == "cancelled"
+        assert (await db.get(OptionalHolidayPick, q["id"])).status == "cancelled"
+
+
+async def test_delete_holiday_rules(api, world, chain):
+    q = (await pick(api, world, "m1")).json()
+    r = await api.delete(f"/api/v1/hr/holidays/{world['h']['m1']}",
+                         headers=api.hr)
+    assert r.status_code == 200, r.text
+    async with SessionLocal() as db:
+        inst = (await db.execute(select(ChainedApprovalInstance).where(
+            ChainedApprovalInstance.entity_type == "optional_holiday",
+            ChainedApprovalInstance.entity_id == q["id"]))).scalars().one()
+        assert inst.status == "cancelled"
+        assert (await db.get(OptionalHolidayPick, q["id"])) is None
+        a = (await db.execute(select(AuditLog).where(
+            AuditLog.action == "HOLIDAY_DELETE",
+            AuditLog.resource_id == str(world["h"]["m1"])))).scalars().all()
+        assert len(a) == 1
+
+
+async def test_delete_blocked_by_locked_approved_pick(api, world):
+    await _approved(api, world, "lock", "emp")
+    await mk_run(world)
+    r = await api.delete(f"/api/v1/hr/holidays/{world['h']['lock']}",
+                         headers=api.hr)
+    assert r.status_code == 409 and "locked" in r.text
+    await drop_runs(world)
+    r = await api.delete(f"/api/v1/hr/holidays/{world['h']['lock']}",
+                         headers=api.hr)
+    assert r.status_code == 200
+
+
+async def test_finalize_requires_still_optional(api, world):
+    pid = await _insert_pick(world, "mand", "emp", "pending")
+    r = await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
+                       json={"approve": True})
+    assert r.status_code == 409 and "optional" in r.text
+    r = await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
+                       json={"approve": False})
+    assert r.status_code == 200
+
+
+async def test_leave_approve_and_superuser(api, world):
+    p1 = (await pick(api, world, "m1")).json()["id"]
+    p2 = (await pick(api, world, "m2")).json()["id"]
+    for who in ("lv", "su", "ro"):
+        r = await api.get(f"{P}/picks?year=2032", headers=getattr(api, who))
+        assert r.status_code == 200, who
+        row = next(x for x in r.json() if x["id"] == p1)
+        assert row["routed_via"] == "direct"
+    assert (await api.post(f"{P}/picks/{p1}/decide", headers=api.lv,
+                           json={"approve": True})).status_code == 200
+    assert (await api.post(f"{P}/picks/{p2}/decide", headers=api.su,
+                           json={"approve": True})).status_code == 200
+    # read-only HR cannot cancel someone else's pick -> 404; cannot decide
+    p3 = await _insert_pick(world, "m3", "emp", "pending")
+    assert (await api.post(f"{P}/picks/{p3}/cancel", headers=api.ro)
+            ).status_code == 404
+    assert (await api.post(f"{P}/picks/{p3}/decide", headers=api.ro,
+                           json={"approve": True})).status_code == 403
+
+
+async def test_csv_hardening(api, world):
+    sfx = world["sfx"]
+    imp = "/api/v1/hr/holidays/import"
+    f = lambda b: {"file": ("h.csv", b, "text/csv")}  # noqa: E731
+    body = ("﻿name,date,location,is_optional\r\n"
+            f"\"Imp Q, one {sfx}\",2033-03-01,\"New  York\",TRUE\r\n"
+            f"Imp  W {sfx},2033-03-02,All,yes\r\n"
+            f"Old {sfx},1999-01-01,All,no\r\n").encode("utf-8")
+    r = await api.post(imp, headers=api.hr, files=f(body))
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert (b["created"], b["skipped"]) == (2, 0)
+    assert [e["row"] for e in b["errors"]] == [4]
+    async with SessionLocal() as db:
+        rows = (await db.execute(select(HolidayCalendar).where(
+            HolidayCalendar.name.like(f"%{sfx}")))).scalars().all()
+        names = {r.name: r.location for r in rows if r.name.startswith("Imp")}
+        assert names == {f"Imp Q, one {sfx}": "New York",
+                         f"Imp W {sfx}": "All"}
+    # whitespace/case-normalised name dedupes against the DB row
+    r = await api.post(imp, headers=api.hr, files=f(
+        f"name,date,location,is_optional\nimp w  {sfx},2033-03-02,all,0\n"
+        .encode()))
+    assert r.json()["skipped"] == 1 and r.json()["created"] == 0
+    # oversized field -> 422, not 500
+    big = ("name,date,location,is_optional\n"
+           f"\"{'x' * 200000}\",2033-03-03,All,0\n").encode()
+    assert (await api.post(imp, headers=api.hr, files=f(big))).status_code == 422
+    async with SessionLocal() as db:
+        n = (await db.execute(select(AuditLog).where(
+            AuditLog.action == "HOLIDAY_IMPORT",
+            AuditLog.user_id == world["uid"]["hr"]))).scalars().all()
+        assert n
