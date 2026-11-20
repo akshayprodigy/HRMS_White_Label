@@ -27,6 +27,10 @@ from .recruitment import ManpowerRequisition, Applicant, Interview
 from .department import Department
 from .onboarding import OnboardingProcess, OnboardingTask
 from .system import SystemSetting
+from .optional_holiday import OptionalHolidayPick, PickStatus
+from .work_location import (
+    WorkLocationRequest, WorkLocationKind, DayPortion, WorkLocationStatus,
+)
 from .exit_management import (
     Resignation, ExitInterview, ClearanceRequest, ClearanceItem
 )
@@ -240,6 +244,12 @@ __all__ = [
     "AssetRequest",
     "AssetStatus",
     "AssetRequestStatus",
+    "OptionalHolidayPick",
+    "PickStatus",
+    "WorkLocationRequest",
+    "WorkLocationKind",
+    "DayPortion",
+    "WorkLocationStatus",
 ]
 from .coverage_gap import CoverageGap, GapSource, GapStatus
 from .approver_delegation import ApproverDelegation

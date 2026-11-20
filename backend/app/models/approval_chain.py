@@ -40,6 +40,8 @@ class ChainEntityType:
     SHIFT_CHANGE = "shift_change"
     SALARY_REVISION = "salary_revision"  # W11: multi-stage revision approval
     ASSET_REQUEST = "asset_request"
+    OPTIONAL_HOLIDAY = "optional_holiday"
+    WORK_LOCATION = "work_location"
     # future consumers add strings here (do NOT re-use for existing
     # leave/OT/revision flows — those live on the legacy engine).
 
