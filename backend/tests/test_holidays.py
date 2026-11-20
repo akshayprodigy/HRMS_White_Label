@@ -347,6 +347,11 @@ async def test_holiday_endpoints_report_matching_count(world):
 ALLOW = {
     "services/holidays.py",
     "api/v1/endpoints/hr.py",   # holiday CRUD + GET /hr/holidays listing
+    # optional-pick catalogue lookups (is_optional/date/location of the
+    # holiday being picked/listed); pay/attendance decisions still go
+    # through services.holidays
+    "services/optional_holidays.py",
+    "api/v1/endpoints/holidays.py",
 }
 
 

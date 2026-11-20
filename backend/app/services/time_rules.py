@@ -72,6 +72,10 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "IANA timezone used to read shift times and 'today' "
         "(UTC = legacy behaviour)",
     ),
+    "holidays.optional_quota_per_year": (
+        "2",
+        "Optional holidays an employee may pick per calendar year (0-20)",
+    ),
     "holidays.default_location": (
         "HQ",
         "Location assumed for employees (and users) with no location set, "
@@ -164,6 +168,7 @@ LOCK_INT_CAPS: Dict[str, int] = {
     "schedule.lock_days": 30, "approvals.sla_hours": 720,
 }
 CALLBACK_MODES = ("none", "comp_off", "allowance")
+HOLIDAY_INT_CAPS: Dict[str, int] = {"holidays.optional_quota_per_year": 20}
 LEAVE_INT_CAPS: Dict[str, int] = {
     "leave.emergency_backdate_days": 31,
     "leave.emergency_proof_days": 60,
@@ -206,7 +211,8 @@ async def set_time_rules(
             )
         updates["attendance.weekoff_comp_off_enabled"] = str(wk).strip()
     for key, cap in {
-        **SCHEDULE_INT_CAPS, **LEAVE_INT_CAPS, **LOCK_INT_CAPS
+        **SCHEDULE_INT_CAPS, **LEAVE_INT_CAPS, **LOCK_INT_CAPS,
+        **HOLIDAY_INT_CAPS,
     }.items():
         v = updates.get(key)
         if v is not None:

@@ -2455,9 +2455,14 @@ async def create_holiday(
 async def list_holidays(
     db: deps.DBDep,
     location: Optional[str] = None,
+    year: Optional[int] = Query(None, ge=2000, le=2100),
     current_user: User = Depends(deps.get_current_user)
 ) -> Any:
     query = select(HolidayCalendar)
+    if year:
+        query = query.where(
+            HolidayCalendar.date >= date(year, 1, 1),
+            HolidayCalendar.date <= date(year, 12, 31))
     if location:
         query = query.where(
             or_(
@@ -2467,6 +2472,81 @@ async def list_holidays(
         )
     result = await db.execute(query)
     return result.scalars().all()
+
+
+HOLIDAY_IMPORT_MAX_ROWS = 1000
+HOLIDAY_IMPORT_MAX_BYTES = 1024 * 1024
+_TRUE = {"true", "1", "yes"}
+_FALSE = {"false", "0", "no"}
+
+
+@router.post("/holidays/import")
+async def import_holidays(
+    db: deps.DBDep,
+    file: UploadFile = File(...),
+    current_user: User = Depends(deps.check_permissions([HR_WRITE])),
+) -> Any:
+    """CSV `name,date,location,is_optional` (dates YYYY-MM-DD). Rows identical
+    on (date, normalised location, name) are skipped, also against rows
+    already in the calendar."""
+    import csv
+    import io
+    raw = await file.read(HOLIDAY_IMPORT_MAX_BYTES + 1)
+    if len(raw) > HOLIDAY_IMPORT_MAX_BYTES:
+        raise HTTPException(413, "CSV larger than 1 MB")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(422, "CSV must be UTF-8")
+    rd = csv.DictReader(io.StringIO(text))
+    hdr = [(h or "").strip().lower() for h in (rd.fieldnames or [])]
+    need = ["name", "date", "location", "is_optional"]
+    if any(c not in hdr for c in need):
+        raise HTTPException(
+            422, "CSV header must include name,date,location,is_optional")
+    rows = []
+    for r in rd:
+        rows.append({(k or "").strip().lower(): (v or "").strip()
+                     for k, v in r.items() if k is not None})
+        if len(rows) > HOLIDAY_IMPORT_MAX_ROWS:
+            raise HTTPException(422, "CSV has more than 1000 rows")
+    existing = {
+        (d, holidays_svc.norm_loc(loc), (n or "").strip().casefold())
+        for d, loc, n in (await db.execute(select(
+            HolidayCalendar.date, HolidayCalendar.location,
+            HolidayCalendar.name))).all()}
+    created, skipped, errors = 0, 0, []
+    for i, r in enumerate(rows, start=2):  # row 1 is the header
+        name, loc = r.get("name", ""), " ".join(r.get("location", "").split())
+        if not name or len(name) > 100:
+            errors.append({"row": i, "error": "name is required (max 100 chars)"})
+            continue
+        if not loc or len(loc) > 100:
+            errors.append({"row": i, "error": "location is required (max 100 chars)"})
+            continue
+        try:
+            d = datetime.strptime(r.get("date", ""), "%Y-%m-%d").date()
+        except ValueError:
+            errors.append({"row": i, "error": "date must be YYYY-MM-DD"})
+            continue
+        opt = r.get("is_optional", "").lower()
+        if opt in _TRUE:
+            is_opt = True
+        elif opt in _FALSE or opt == "":
+            is_opt = False
+        else:
+            errors.append({"row": i, "error": "is_optional must be true/false/1/0/yes/no"})
+            continue
+        key = (d, holidays_svc.norm_loc(loc), name.casefold())
+        if key in existing:
+            skipped += 1
+            continue
+        existing.add(key)
+        db.add(HolidayCalendar(name=name, date=d, location=loc,
+                               is_optional=is_opt))
+        created += 1
+    await db.commit()
+    return {"created": created, "skipped": skipped, "errors": errors}
 
 
 @router.get("/holidays/locations")

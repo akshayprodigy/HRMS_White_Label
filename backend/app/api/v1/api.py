@@ -18,7 +18,7 @@ from app.api.v1.endpoints import (
     devices, notification_actions, attendance_offline, tracking, biometric,
     asset_maintenance,
     asset_requests,
-    assets, meta,
+    assets, meta, holidays,
 )
 
 api_router = APIRouter()
@@ -332,3 +332,7 @@ api_router.include_router(
     tags=["approver-delegations"],
     dependencies=[Depends(deps.verify_attendance)],
 )
+
+# Optional holiday picks: NOT attendance-gated (employee self-service).
+api_router.include_router(
+    holidays.router, prefix="/holidays", tags=["holidays"])

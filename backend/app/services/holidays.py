@@ -58,10 +58,23 @@ def effective_location(
 async def _approved_pick_holiday_ids(
     db, user_ids: list[int], start: date, end: date,
 ) -> dict[int, set[int]]:
-    """HOOK (Phase 6A Task 6): user_id -> ids of optional holidays the user
-    has an APPROVED pick for. Until picks exist, optional holidays never
-    apply, so this returns an empty mapping."""
-    return {}
+    """user_id -> ids of optional holidays the user has an APPROVED pick for
+    whose date falls in [start, end] (one query per 1000 users)."""
+    from app.models.optional_holiday import OptionalHolidayPick, PickStatus
+    out: dict[int, set[int]] = {}
+    for i in range(0, len(user_ids), 1000):
+        rows = (await db.execute(
+            select(OptionalHolidayPick.user_id, OptionalHolidayPick.holiday_id)
+            .join(HolidayCalendar,
+                  HolidayCalendar.id == OptionalHolidayPick.holiday_id)
+            .where(OptionalHolidayPick.user_id.in_(user_ids[i:i + 1000]),
+                   OptionalHolidayPick.status == PickStatus.APPROVED,
+                   HolidayCalendar.date >= start,
+                   HolidayCalendar.date <= end)
+        )).all()
+        for u, h in rows:
+            out.setdefault(u, set()).add(h)
+    return out
 
 
 async def holidays_for(

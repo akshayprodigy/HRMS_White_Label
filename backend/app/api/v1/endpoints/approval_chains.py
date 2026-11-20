@@ -940,6 +940,27 @@ async def _entity_summary(
             "effective_from": rev.effective_from,
             "amount_paise": int(round(rev.new_ctc * 100)),
         }
+    if entity_type == ChainEntityType.OPTIONAL_HOLIDAY:
+        from app.models.optional_holiday import OptionalHolidayPick as _Pick
+        from app.services import optional_holidays as _oh
+        pk = (await db.execute(
+            select(_Pick).where(_Pick.id == entity_id)
+        )).scalar_one_or_none()
+        if not pk:
+            return None
+        hol = await _oh.holiday_of(db, pk)
+        pu = await db.get(User, pk.user_id)
+        return {
+            "kind": "optional_holiday",
+            "id": pk.id, "status": pk.status,
+            "title": (
+                f"Optional holiday: {hol.name if hol else '?'} "
+                f"{hol.date.isoformat() if hol else ''}"
+            ).strip(),
+            "employee_name": pu.full_name if pu else None,
+            "reason": pk.reason,
+            "holiday_date": hol.date if hol else None,
+        }
     if entity_type == ChainEntityType.ASSET_REQUEST:
         from app.models.asset import (
             AssetCategory, AssetRequest,
@@ -1178,6 +1199,21 @@ async def act_on_instance(
                     if outcome.next_status == ChainedApprovalStatus.APPROVED
                     else RevisionStatus.REJECTED
                 )
+        elif instance.entity_type == ChainEntityType.OPTIONAL_HOLIDAY:
+            from app.models.optional_holiday import (
+                OptionalHolidayPick, PickStatus,
+            )
+            from app.services import optional_holidays as oh_svc
+            pk = (await db.execute(
+                select(OptionalHolidayPick).where(
+                    OptionalHolidayPick.id == instance.entity_id)
+                .with_for_update().execution_options(populate_existing=True)
+            )).scalar_one_or_none()
+            if pk and pk.status == PickStatus.PENDING:
+                await oh_svc.finalize(
+                    db, pk, actor=current_user, note=None,
+                    approved=(outcome.next_status
+                              == ChainedApprovalStatus.APPROVED))
         elif instance.entity_type == ChainEntityType.ASSET_REQUEST:
             from app.models.asset import AssetRequest, AssetRequestStatus
             areq = (await db.execute(
