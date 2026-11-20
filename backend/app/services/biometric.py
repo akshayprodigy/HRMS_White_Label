@@ -651,15 +651,24 @@ def ip_allowed(allowlist: Optional[str], ip: Optional[str]) -> bool:
     return False
 
 
-async def _default_offset(db) -> int:
+async def default_offset(db) -> int:
+    """Clock offset for new devices / imports: an explicit
+    biometric.default_utc_offset_minutes wins; blank or missing follows the
+    org timezone's current offset; 330 is the last-resort fallback."""
+    from app.services.org_time import org_tz, utc_offset_minutes
     from app.services.time_rules import get_time_rules
     try:
-        v = int(str((await get_time_rules(db)).get(
-            "biometric.default_utc_offset_minutes",
-            DEFAULT_UTC_OFFSET_MINUTES)).strip())
+        raw = str((await get_time_rules(db)).get(
+            "biometric.default_utc_offset_minutes", "") or "").strip()
+        if raw == "":
+            return utc_offset_minutes(await org_tz(db))
+        v = int(raw)
         return v if -720 <= v <= 840 else DEFAULT_UTC_OFFSET_MINUTES
     except (TypeError, ValueError):
         return DEFAULT_UTC_OFFSET_MINUTES
+
+
+_default_offset = default_offset
 
 
 async def _notify_managers(db, title: str, message: str, device_id: int) -> None:

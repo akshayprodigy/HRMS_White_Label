@@ -93,13 +93,12 @@ const RESULT_LABEL: Record<BulkResult['status'], string> = {
 
 /** Client-side mirror of the bulk-mark time rules (attendance_bulk.py):
  * HH:MM punch-out <= punch-in means "next day" (night shift), equal is an
- * error, the span is capped at 24 h and punch-in may not be in the future.
+ * error and the span is capped at 24 h. "Punch-in in the future" is checked
+ * by the server only (times are org-local, which the browser cannot assume).
  * Returns an error message, or null when valid. */
 export const validateMarkTimes = (
   punchIn: string,
-  punchOut: string,
-  workDates: string[],
-  now: Date = new Date()
+  punchOut: string
 ): string | null => {
   const m = /^(\d{2}):(\d{2})$/.exec(punchIn);
   if (!m) return 'Enter the punch-in time.';
@@ -111,12 +110,6 @@ export const validateMarkTimes = (
     if (outMin === inMin) return 'Punch-out must be after punch-in.';
     const span = outMin > inMin ? outMin - inMin : outMin + 24 * 60 - inMin;
     if (span > 24 * 60) return 'Punch-out must be within 24 hours of punch-in.';
-  }
-  for (const d of workDates) {
-    const t = Date.parse(`${d}T${punchIn}:00Z`);
-    if (Number.isFinite(t) && t > now.getTime() + 5 * 60_000) {
-      return `Punch-in cannot be in the future (${d} ${punchIn} UTC).`;
-    }
   }
   return null;
 };
@@ -268,7 +261,7 @@ export const LiveBoard: React.FC = () => {
       setMarkError('Enter a reason of at least 5 characters.');
       return;
     }
-    const timeErr = validateMarkTimes(punchIn, punchOut, Array.from(new Set(selectedRows.map((r) => r.work_date))));
+    const timeErr = validateMarkTimes(punchIn, punchOut);
     if (timeErr) {
       setMarkError(timeErr);
       return;

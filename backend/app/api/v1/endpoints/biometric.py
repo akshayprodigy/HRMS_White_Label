@@ -602,11 +602,7 @@ async def reprocess(body: ReprocessIn, db: deps.DBDep, me: deps.CurrentUser):
 # ---------------- CSV / Excel import (Task 6) ----------------
 
 async def _default_offset_minutes(db) -> int:
-    try:
-        return int((await get_time_rules(db)).get(
-            "biometric.default_utc_offset_minutes", 330))
-    except (TypeError, ValueError):
-        return 330
+    return await bio_svc.default_offset(db)
 
 
 async def _read_import_form(request: Request, db):

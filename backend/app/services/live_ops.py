@@ -32,7 +32,7 @@ from app.services.absence_lop import (
     default_offs_from_rules, is_non_working_day, load_holidays,
 )
 from app.services.effective_shift import effective_shifts_for_range
-from app.services.org_time import local_to_utc, local_today_for, org_tz
+from app.services.org_time import local_today_for, org_tz, shift_window
 from app.services.time_rules import get_schedule_rules, get_time_rules
 
 logger = logging.getLogger(__name__)
@@ -57,9 +57,13 @@ def shift_bounds(
     """Nominal (start, end) of `shift` for `work_date`, UTC-aware; `tz` is
     the org timezone the shift's wall-clock times are expressed in. An
     overnight shift ends on the next calendar day."""
-    end_date = work_date + timedelta(days=1) if shift.is_overnight else work_date
-    return (local_to_utc(work_date, shift.start_time, tz),
-            local_to_utc(end_date, shift.end_time, tz))
+    start, end = shift_window(work_date, shift.start_time, shift.end_time, tz)
+    if shift.is_overnight and shift.end_time > shift.start_time:
+        # flagged overnight but wall-clock end > start (legacy/odd data):
+        # honour the flag, end on the next calendar day
+        end = shift_window(work_date + timedelta(days=1), shift.start_time,
+                           shift.end_time, tz)[1]
+    return start, end
 
 
 def classify(

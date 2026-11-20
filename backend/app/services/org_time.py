@@ -1,8 +1,8 @@
 """Org timezone: the ONLY place shift wall-clock times and "today" are
 interpreted. Storage stays UTC. org.timezone=UTC reproduces pre-6A behaviour.
 
-Note: org_tz() reads the time rules (one query) on every call; batch callers
-should resolve it once per request/job, not per row."""
+Note: org_tz() is memoised in `db.info["org_tz"]` (one query per session);
+set_time_rules clears it on the session that changes org.timezone."""
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, available_timezones
 
 DEFAULT_TZ = "Asia/Kolkata"
 RULE_KEY = "org.timezone"
+INFO_KEY = "org_tz"
 
 
 def tz_from_name(name: Optional[str]) -> tzinfo:
@@ -28,9 +29,14 @@ def tz_name(tz: tzinfo) -> str:
 
 async def org_tz(db, user=None) -> tzinfo:
     """`user` reserved for per-location timezones (later Platform slice)."""
+    cached = db.info.get(INFO_KEY)
+    if cached is not None:
+        return cached
     from app.services.time_rules import get_time_rules
     rules = await get_time_rules(db)
-    return tz_from_name(rules.get(RULE_KEY, DEFAULT_TZ))
+    tz = tz_from_name(rules.get(RULE_KEY, DEFAULT_TZ))
+    db.info[INFO_KEY] = tz  # memoised per session; set_time_rules clears it
+    return tz
 
 
 def _aware(dt: datetime) -> datetime:

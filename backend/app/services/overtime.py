@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from enum import Enum
 from typing import Optional, Protocol
+
+from app.services.org_time import local_to_utc
 
 # ----- single documented constants ----------------------------------
 
@@ -284,17 +286,15 @@ def compute_overtime(
 # ----- night-shift allowance ----------------------------------------
 
 
-def _combine(d: date, t: time, tz: timezone = timezone.utc) -> datetime:
-    return datetime(d.year, d.month, d.day,
-                    t.hour, t.minute, t.second, t.microsecond,
-                    tzinfo=tz)
+def _combine(d: date, t: time, tz: tzinfo = timezone.utc) -> datetime:
+    return local_to_utc(d, t, tz)
 
 
 def _night_window_for_workdate(
     work_date: date,
     start_t: time,
     end_t: time,
-    tz: timezone = timezone.utc,
+    tz: tzinfo = timezone.utc,
 ) -> tuple[datetime, datetime]:
     """Build the (start_dt, end_dt) of the night window for a work_date.
 
@@ -315,7 +315,7 @@ def night_minutes_in_window(
     work_date: date,
     night_start: time,
     night_end: time,
-    tz: timezone = timezone.utc,
+    tz: tzinfo = timezone.utc,
 ) -> int:
     """Minutes of [punch_in, punch_out] that fall inside the night window
     for `work_date`. Cross-midnight safe.
@@ -350,7 +350,7 @@ def compute_night_allowance(
     punch_out: Optional[datetime],
     work_date: date,
     rule: Optional[NightRuleLike],
-    tz: timezone = timezone.utc,
+    tz: tzinfo = timezone.utc,
 ) -> NightAllowanceComputation:
     """Returns zero when no rule, no punches, or below min_night_minutes."""
     if rule is None or punch_in is None or punch_out is None:

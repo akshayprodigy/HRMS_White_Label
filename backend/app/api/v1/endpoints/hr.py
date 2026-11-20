@@ -3,6 +3,7 @@ import json
 import re
 import pandas as pd
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as dt_time
 from typing import Any, Optional, Dict, List
 from pydantic import BaseModel, field_validator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
@@ -488,11 +489,13 @@ async def get_hr_dashboard_stats(
     )
     onboarding_count = (await db.execute(onboarding_query)).scalar() or 0
 
-    # Attendance trends: last 5 business days, split by on-time vs late.
-    # NOTE: captured_at is stored as timezone-aware datetime (UTC). We currently
-    # classify on-time vs late using the stored timestamp's clock time.
-    on_time_cutoff = "10:00:00"  # HH:MM:SS
-    today = datetime.now(timezone.utc).date()
+    # Attendance trends: last 5 business days (org-local), split by on-time
+    # (first punch <= 10:00 org-local) vs late.
+    from app.services.org_time import (
+        local_date, local_to_utc, local_today_for, org_tz,
+    )
+    tz = await org_tz(db)
+    today = local_today_for(tz)
     business_days: List[date] = []
     cursor = today
     while len(business_days) < 5:
@@ -500,37 +503,24 @@ async def get_hr_dashboard_stats(
             business_days.append(cursor)
         cursor = cursor - timedelta(days=1)
     business_days_sorted = sorted(business_days)
+    lo = local_to_utc(business_days_sorted[0], dt_time.min, tz)
+    hi = local_to_utc(business_days_sorted[-1] + timedelta(days=1), dt_time.min, tz)
+    cutoffs = {d: local_to_utc(d, dt_time(10, 0), tz) for d in business_days_sorted}
 
-    attendance_agg_query = (
-        select(
-            func.date(Attendance.captured_at).label("d"),
-            func.sum(
-                case(
-                    (func.time(Attendance.captured_at) <= on_time_cutoff, 1),
-                    else_=0,
-                )
-            ).label("on_time"),
-            func.sum(
-                case(
-                    (func.time(Attendance.captured_at) > on_time_cutoff, 1),
-                    else_=0,
-                )
-            ).label("late"),
-            func.count(Attendance.id).label("total"),
-        )
-        .where(func.date(Attendance.captured_at).in_(business_days_sorted))
-        .group_by(func.date(Attendance.captured_at))
-    )
-
-    attendance_rows = (await db.execute(attendance_agg_query)).all()
-    attendance_by_day: Dict[date, Dict[str, int]] = {
-        row.d: {
-            "on_time": int(row.on_time or 0),
-            "late": int(row.late or 0),
-            "total": int(row.total or 0),
-        }
-        for row in attendance_rows
-    }
+    cap_rows = (await db.execute(
+        select(Attendance.captured_at).where(
+            Attendance.captured_at >= lo, Attendance.captured_at < hi)
+    )).scalars().all()
+    attendance_by_day: Dict[date, Dict[str, int]] = {}
+    for cap in cap_rows:
+        cap_utc = cap if cap.tzinfo else cap.replace(tzinfo=timezone.utc)
+        d = local_date(cap_utc, tz)
+        if d not in cutoffs:
+            continue
+        agg = attendance_by_day.setdefault(
+            d, {"on_time": 0, "late": 0, "total": 0})
+        agg["total"] += 1
+        agg["on_time" if cap_utc <= cutoffs[d] else "late"] += 1
 
     attendance_trends: List[Dict[str, Any]] = []
     for d in business_days_sorted:
@@ -2217,10 +2207,9 @@ async def attendance_correction_action(
                 db.add(attendance)
         else:
             # Create new attendance record
-            from datetime import time, datetime, timezone
             from app.services.org_time import local_to_utc, org_tz
             captured_at = local_to_utc(
-                corr.date, time(9, 0), await org_tz(db)
+                corr.date, dt_time(9, 0), await org_tz(db)
             )
             # New record: trust the work_date from the correction request if
             # provided; otherwise fall back to the calendar date in `date`.
@@ -2304,9 +2293,12 @@ async def edit_attendance_times(
 
     await assert_attendance_editable(db, att.work_date)
 
-    new_in = as_utc(obj_in.punch_in_time) or as_utc(att.captured_at)
+    from app.services.org_time import org_tz
+    tz = await org_tz(db)
+    new_in = (_hr_entered_utc(obj_in.punch_in_time, tz)
+              or as_utc(att.captured_at))
     new_out = (
-        as_utc(obj_in.punch_out_time)
+        _hr_entered_utc(obj_in.punch_out_time, tz)
         if obj_in.punch_out_time is not None
         else as_utc(att.punch_out_time)
     )
@@ -2350,6 +2342,17 @@ async def edit_attendance_times(
     return att
 
 
+def _hr_entered_utc(dt: Optional[datetime], tz) -> Optional[datetime]:
+    """HR-entered datetimes: naive input is org-local wall-clock; aware / Z
+    input is honoured as given."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        from app.services.org_time import local_to_utc
+        return local_to_utc(dt.date(), dt.time(), tz)
+    return dt
+
+
 @router.post("/attendance/manual", response_model=AttendanceRead)
 async def create_manual_attendance(
     *,
@@ -2371,8 +2374,10 @@ async def create_manual_attendance(
         raise HTTPException(status_code=404, detail="User not found")
 
     from app.services.manual_attendance import create_manual_attendance_row
-    punch_in = as_utc(obj_in.punch_in_time)
-    punch_out = as_utc(obj_in.punch_out_time)
+    from app.services.org_time import org_tz
+    tz = await org_tz(db)
+    punch_in = _hr_entered_utc(obj_in.punch_in_time, tz)
+    punch_out = _hr_entered_utc(obj_in.punch_out_time, tz)
     att = await create_manual_attendance_row(
         db, current_user, obj_in.user_id, obj_in.work_date,
         punch_in, punch_out, reason, mode="manual")

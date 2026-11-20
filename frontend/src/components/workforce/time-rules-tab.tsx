@@ -62,9 +62,9 @@ const APPROVAL_FIELDS: { key: string; label: string; hint: string; max: number }
   { key: 'approvals.sla_hours', label: 'Approval SLA (hours)', hint: 'An approval step still pending after this long escalates to the approver\'s manager (else HR). 0 = no SLA / no escalation (range 0–720)', max: 720 },
 ];
 
-const BIOMETRIC_FIELDS: { key: string; label: string; hint: string; min: number; max: number }[] = [
+const BIOMETRIC_FIELDS: { key: string; label: string; hint: string; min: number; max: number; optional?: boolean }[] = [
   { key: 'biometric.offline_minutes', label: 'Device Offline After (minutes)', hint: 'A device is offline, and HR is alerted, when it has not called in for this long (range 5–1440)', min: 5, max: 1440 },
-  { key: 'biometric.default_utc_offset_minutes', label: 'New Device Clock Offset (minutes)', hint: 'Clock offset given to newly registered devices; 330 = IST (range -720 to 840)', min: -720, max: 840 },
+  { key: 'biometric.default_utc_offset_minutes', label: 'New Device Clock Offset (minutes)', hint: 'Clock offset given to newly registered devices; 330 = IST (range -720 to 840). Leave blank to follow the organisation timezone', min: -720, max: 840, optional: true },
   { key: 'biometric.dedupe_seconds', label: 'Duplicate Tap Window (seconds)', hint: 'Taps this close to the first punch are treated as duplicates (range 0–3600)', min: 0, max: 3600 },
 ];
 
@@ -135,6 +135,7 @@ export const TimeRulesTab: React.FC = () => {
     }
     for (const f of [...BIOMETRIC_FIELDS, ...ASSET_FIELDS]) {
       const raw = (rules[f.key] ?? '').toString().trim();
+      if (raw === '' && 'optional' in f && f.optional) continue;
       if (!/^-?\d+$/.test(raw) || Number(raw) < f.min || Number(raw) > f.max) {
         toast.error(`${f.label} must be a whole number from ${f.min} to ${f.max}`);
         return;
@@ -453,6 +454,7 @@ export const TimeRulesTab: React.FC = () => {
                 min={0}
                 max={f.max}
                 step={1}
+                placeholder={'optional' in f && f.optional ? 'follow org timezone' : undefined}
                 className={inputCls}
                 value={rules[f.key] ?? ''}
                 onChange={(e) => setRules({ ...rules, [f.key]: e.target.value })}
@@ -544,6 +546,7 @@ export const TimeRulesTab: React.FC = () => {
                 min={0}
                 max={f.max}
                 step={1}
+                placeholder={'optional' in f && f.optional ? 'follow org timezone' : undefined}
                 className={inputCls}
                 value={rules[f.key] ?? ''}
                 onChange={(e) => setRules({ ...rules, [f.key]: e.target.value })}
@@ -578,6 +581,7 @@ export const TimeRulesTab: React.FC = () => {
                 min={0}
                 max={f.max}
                 step={1}
+                placeholder={'optional' in f && f.optional ? 'follow org timezone' : undefined}
                 className={inputCls}
                 value={rules[f.key] ?? ''}
                 onChange={(e) => setRules({ ...rules, [f.key]: e.target.value })}
@@ -612,6 +616,7 @@ export const TimeRulesTab: React.FC = () => {
                 min={f.min}
                 max={f.max}
                 step={1}
+                placeholder={'optional' in f && f.optional ? 'follow org timezone' : undefined}
                 className={inputCls}
                 value={rules[f.key] ?? ''}
                 onChange={(e) => setRules({ ...rules, [f.key]: e.target.value })}
@@ -646,6 +651,7 @@ export const TimeRulesTab: React.FC = () => {
                 min={f.min}
                 max={f.max}
                 step={1}
+                placeholder={'optional' in f && f.optional ? 'follow org timezone' : undefined}
                 className={inputCls}
                 value={rules[f.key] ?? ''}
                 onChange={(e) => setRules({ ...rules, [f.key]: e.target.value })}

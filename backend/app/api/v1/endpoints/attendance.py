@@ -19,7 +19,7 @@ from app.models.shift import ShiftTemplate
 from app.models.user import Role, User as UserModel
 from app.services.comp_off_accrual import create_comp_off_accrual
 from app.services.effective_shift import effective_shift_on
-from app.services.org_time import org_tz
+from app.services.org_time import tz_from_name
 from app.services.geofence import (
     EnforcementMode,
     GeoDecision,
@@ -82,13 +82,6 @@ from app.services.punch import (  # noqa: E402,F401
     record_punch_in,
     record_punch_out,
 )
-
-
-def _utc_day_bounds(d: date) -> tuple[datetime, datetime]:
-    start = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
-    end = start + timedelta(days=1) - timedelta(microseconds=1)
-    return start, end
-
 
 
 @router.post("/mark", response_model=AttendanceRead)
@@ -287,7 +280,7 @@ async def get_all_attendance(
     # Section Q: org time rules. Employees with no shift snapshot are
     # evaluated against the org-default virtual shift.
     rules = await get_time_rules(db)
-    tz = await org_tz(db)
+    tz = tz_from_name(rules.get("org.timezone"))
     evaluate = flags_enabled(rules)
     default_shift = build_default_shift(rules)
 

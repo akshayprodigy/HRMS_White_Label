@@ -78,9 +78,9 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "minutes (5-1440)",
     ),
     "biometric.default_utc_offset_minutes": (
-        "330",
+        "",
         "Clock offset in minutes given to newly registered biometric "
-        "devices (-720 to 840; 330 = IST)",
+        "devices (-720 to 840; 330 = IST). Blank = follow the org timezone",
     ),
     "biometric.dedupe_seconds": (
         "120",
@@ -234,11 +234,16 @@ async def set_time_rules(
                 "org.timezone must be 'UTC' or a valid IANA timezone "
                 "name, e.g. Asia/Kolkata")
         updates["org.timezone"] = sv
+        db.info.pop("org_tz", None)  # drop org_tz() memo on this session
     for key, lo, hi in (("biometric.offline_minutes", 5, 1440),
                         ("biometric.default_utc_offset_minutes", -720, 840),
                         ("biometric.dedupe_seconds", 0, 3600),
                         ("assets.expiry_alert_days", 1, 365)):
         v = updates.get(key)
+        if (key == "biometric.default_utc_offset_minutes"
+                and v is not None and str(v).strip() == ""):
+            updates[key] = ""  # blank = follow org timezone
+            continue
         if v is not None:
             sv = str(v).strip()
             body = sv[1:] if sv[:1] == "-" and lo < 0 else sv

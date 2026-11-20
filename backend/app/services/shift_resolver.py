@@ -43,9 +43,11 @@ Rules
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from enum import Enum
 from typing import Optional, Protocol
+
+from app.services.org_time import local_date, local_to_utc
 
 # How far before a shift's nominal start we are willing to count a punch
 # as "for that shift". Two hours is a generous default that handles
@@ -106,34 +108,22 @@ class WorkDateAttribution:
 # --- date / time plumbing -----------------------------------------------
 
 
-def _local_date(ts: datetime, tz: timezone = timezone.utc) -> date:
-    """Local calendar date for a TZ-aware timestamp.
-
-    Storage convention in this project is UTC; the "local" date for
-    attribution is the same UTC date for now. Once a per-employee or
-    org timezone setting is introduced, this is the single point that
-    needs to change.
-    """
-    if ts.tzinfo is None:
-        # Treat naive as UTC. Callers should pass aware datetimes, but
-        # do not crash on legacy data.
-        return ts.date()
-    return ts.astimezone(tz).date()
+def _local_date(ts: datetime, tz: tzinfo = timezone.utc) -> date:
+    """Local calendar date of `ts` in `tz` (naive timestamps are UTC);
+    delegates to org_time.local_date."""
+    return local_date(ts, tz)
 
 
-def _combine(d: date, t: time, tz: timezone = timezone.utc) -> datetime:
-    """Build a TZ-aware datetime from a date and a wall-clock time."""
-    return datetime(
-        d.year, d.month, d.day, t.hour, t.minute, t.second, t.microsecond,
-        tzinfo=tz,
-    )
+def _combine(d: date, t: time, tz: tzinfo = timezone.utc) -> datetime:
+    """UTC-aware instant of wall-clock `t` on `d` in `tz` (DST-safe)."""
+    return local_to_utc(d, t, tz)
 
 
 def compute_window(
     shift: ShiftLike,
     work_date: date,
     early_in_buffer: timedelta = DEFAULT_EARLY_IN_BUFFER,
-    tz: timezone = timezone.utc,
+    tz: tzinfo = timezone.utc,
 ) -> ShiftWindow:
     """Return the punch window for `shift` evaluated as the *work_date* shift.
 
@@ -166,7 +156,7 @@ def resolve_work_date(
     today_shift: Optional[ShiftLike],
     yesterday_shift: Optional[ShiftLike],
     early_in_buffer: timedelta = DEFAULT_EARLY_IN_BUFFER,
-    tz: timezone = timezone.utc,
+    tz: tzinfo = timezone.utc,
 ) -> WorkDateAttribution:
     """Pick the work-date for a punch.
 
@@ -273,7 +263,7 @@ def late_in_minutes(
     punch_in: datetime,
     work_date: date,
     shift: Optional[ShiftLike],
-    tz: timezone = timezone.utc,
+    tz: tzinfo = timezone.utc,
 ) -> int:
     """Minutes the employee was late, evaluated against shift.start_time +
     grace_in_minutes. 0 when on time or when no shift is provided.
@@ -291,7 +281,7 @@ def early_out_minutes(
     punch_out: Optional[datetime],
     work_date: date,
     shift: Optional[ShiftLike],
-    tz: timezone = timezone.utc,
+    tz: tzinfo = timezone.utc,
 ) -> int:
     """Minutes the employee left early, evaluated against shift.end_time
     on work_date (or work_date+1 for overnight shifts), minus

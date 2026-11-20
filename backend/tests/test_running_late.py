@@ -442,3 +442,21 @@ async def test_not_blocked_by_attendance_gate(world, clock):
         assert r.status_code == 200, r.text
         assert (await c.get(f"{settings.API_V1_STR}/roster/my/week",
                             headers=h)).status_code == 403
+
+
+async def test_ist_eta_hhmm_is_org_local(client, world, clock):
+    """Phase 6A Task 2: unpinned -> eta_hhmm/messages in org-local time."""
+    from app.services.time_rules import set_time_rules
+    async with SessionLocal() as db:
+        await set_time_rules(db, {"org.timezone": "Asia/Kolkata"})
+    i = world["ids"]
+    # IST today for the clock's instant; shift 00:00-23:59 IST that day
+    from app.services.org_time import local_today_for
+    from zoneinfo import ZoneInfo
+    today = local_today_for(ZoneInfo("Asia/Kolkata"), clock())
+    await _roster(i["emp"], today, i["t_day"])
+    h = await _login(client, f"rl_emp_{world['sfx']}@t.com")
+    r = await client.post(URL, headers=h, json={"minutes_late": 5})
+    assert r.status_code == 200, r.text
+    # clock 12:00Z == 17:30 IST; +5 min -> 17:35 IST
+    assert r.json()["notice"]["eta_hhmm"] == "17:35"

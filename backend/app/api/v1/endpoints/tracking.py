@@ -24,6 +24,7 @@ from app.models.user import Role, User
 from app.services import location_tracking as lt
 from app.services import live_ops
 from app.services import roster as roster_svc
+from app.services.org_time import local_today
 
 router = APIRouter()
 
@@ -177,7 +178,7 @@ async def my_trail(
     db: deps.DBDep, me: deps.CurrentUser,
     work_date: Optional[pydate] = Query(default=None, alias="date"),
 ):
-    d = work_date or datetime.now(timezone.utc).date()
+    d = work_date or await local_today(db)
     return await _trail(db, me.id, d)
 
 
@@ -255,7 +256,7 @@ async def trail(
     db: deps.DBDep, me: deps.CurrentUser, user_id: int,
     work_date: Optional[pydate] = Query(default=None, alias="date"),
 ):
-    d = work_date or datetime.now(timezone.utc).date()
+    d = work_date or await local_today(db)
     if user_id == me.id:
         return await _trail(db, user_id, d)
     allowed = await roster_svc.manageable_subset(db, me, {user_id})

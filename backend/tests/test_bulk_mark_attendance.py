@@ -453,3 +453,62 @@ async def test_lock_conflict_aborts_batch_with_409_no_false_results(client, worl
             Attendance.user_id.in_([w["ids"][t] for t in ("e1", "e2", "e3")])
         ))).scalars().all()
         assert n == [], [(a.user_id, a.mode, str(a.work_date)) for a in n]
+
+
+# ---- Phase 6A Task 2: org-local entry (this file is otherwise pinned UTC) ----
+
+
+async def _set_ist():
+    from app.services.time_rules import set_time_rules
+    async with SessionLocal() as db:
+        await set_time_rules(db, {"org.timezone": "Asia/Kolkata"})
+
+
+async def _row_for(uid, d):
+    async with SessionLocal() as db:
+        return (await db.execute(select(Attendance).where(
+            Attendance.user_id == uid, Attendance.work_date == d))
+        ).scalars().first()
+
+
+def _utc(a):
+    return a.replace(tzinfo=timezone.utc) if a.tzinfo is None else a
+
+
+async def test_ist_bulk_mark_entered_time_is_org_local(client, world):
+    await _set_ist()
+    hr = await _login(client, world["email"]("hr"))
+    b = body(world, ["e1"], OLD_A)
+    b["punch_in_time"] = "09:00"
+    r = await client.post(API, json=b, headers=hr)
+    assert r.status_code == 200, r.text
+    a = await _row_for(world["ids"]["e1"], OLD_A)
+    assert _utc(a.captured_at) == datetime(2018, 4, 10, 3, 30, tzinfo=timezone.utc)
+
+
+async def test_ist_hr_manual_and_patch_naive_is_org_local(client, world):
+    await _set_ist()
+    hr = await _login(client, world["email"]("hr"))
+    uid = world["ids"]["e1"]
+    r = await client.post(MANUAL, headers=hr, json={
+        "user_id": uid, "work_date": OLD_B.isoformat(),
+        "punch_in_time": "2018-04-11T09:00:00",
+        "punch_out_time": "2018-04-11T17:00:00Z", "reason": "forgot to punch"})
+    assert r.status_code == 200, r.text
+    a = await _row_for(uid, OLD_B)
+    assert _utc(a.captured_at) == datetime(2018, 4, 11, 3, 30, tzinfo=timezone.utc)
+    # aware / Z input is honoured as given
+    assert _utc(a.punch_out_time) == datetime(2018, 4, 11, 17, 0, tzinfo=timezone.utc)
+    from app.services.shift_resolver import late_in_minutes
+    from app.services.org_time import org_tz
+    async with SessionLocal() as db:
+        shift = await db.get(ShiftTemplate, world["ids"]["tpl"])
+        tz = await org_tz(db)
+    assert late_in_minutes(_utc(a.captured_at), OLD_B, shift, tz) == 0
+    # PATCH with naive times
+    r = await client.patch(
+        f"{settings.API_V1_STR}/hr/attendance/{a.id}", headers=hr, json={
+            "punch_in_time": "2018-04-11T09:30:00", "reason": "fix time"})
+    assert r.status_code == 200, r.text
+    a = await _row_for(uid, OLD_B)
+    assert _utc(a.captured_at) == datetime(2018, 4, 11, 4, 0, tzinfo=timezone.utc)

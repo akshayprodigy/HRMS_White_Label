@@ -38,7 +38,9 @@ async def get_reports_summary(
         )
 
     # 1. Attendance Compliance (Last 7 days)
-    seven_days_ago = datetime.now(timezone.utc).date() - timedelta(days=7)
+    from app.services.org_time import local_date, local_to_utc, local_today_for
+    tz = await org_tz(db)
+    seven_days_ago = local_today_for(tz) - timedelta(days=7)
 
     total_active_users_result = await db.execute(
         select(func.count(User.id)).where(User.is_active.is_(True))
@@ -46,25 +48,22 @@ async def get_reports_summary(
     # Avoid div by zero
     total_active_users = total_active_users_result.scalar() or 1
 
-    attendance_query = select(
-        func.date(Attendance.captured_at).label("date"),
-        func.count(func.distinct(Attendance.user_id)).label("present_count")
-    ).where(
-        func.date(Attendance.captured_at) >= seven_days_ago
-    ).group_by(
-        func.date(Attendance.captured_at)
-    ).order_by(
-        func.date(Attendance.captured_at).desc()
-    )
-
-    attendance_results = await db.execute(attendance_query)
+    from datetime import time as _t
+    cap_rows = (await db.execute(
+        select(Attendance.user_id, Attendance.captured_at).where(
+            Attendance.captured_at >= local_to_utc(seven_days_ago, _t.min, tz)
+        ))).all()
+    by_day: dict = {}
+    for uid, cap in cap_rows:
+        cap_utc = cap if cap.tzinfo else cap.replace(tzinfo=timezone.utc)
+        by_day.setdefault(local_date(cap_utc, tz), set()).add(uid)
     attendance_compliance = []
-    for res in attendance_results:
-        percentage = round((res.present_count / total_active_users) * 100, 2)
+    for day, users in sorted(by_day.items(), reverse=True):
+        percentage = round((len(users) / total_active_users) * 100, 2)
         attendance_compliance.append(AttendanceCompliance(
-            date=res.date,
+            date=day,
             total_employees=total_active_users,
-            present_count=res.present_count,
+            present_count=len(users),
             compliance_percentage=percentage
         ))
 

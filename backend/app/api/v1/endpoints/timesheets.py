@@ -676,6 +676,11 @@ async def build_project_utilization_response(
     )
 
 
+from app.services.org_time import (  # noqa: E402
+    local_date, local_to_utc, local_today, local_today_for, org_tz,
+)
+
+
 def as_utc_aware(dt: datetime) -> datetime:
     """Normalize DB datetimes to UTC-aware.
 
@@ -691,7 +696,6 @@ async def get_user_logged_seconds_on_date(
     db: deps.DBDep, user_id: int, target_date: date
 ) -> int:
     """Calculate total seconds logged by user on a specific org-local date."""
-    from app.services.org_time import local_to_utc, local_today_for, org_tz
     tz = await org_tz(db)
     day_start = local_to_utc(target_date, datetime.min.time(), tz)
     day_end = local_to_utc(target_date + timedelta(days=1), datetime.min.time(), tz)
@@ -759,7 +763,7 @@ async def get_timer_status(
         capped_duration = MAX_DAILY_SECONDS
         # Check already logged today to cap correctly
         logged_today = await get_user_logged_seconds_on_date(
-            db, current_user.id, date.today()
+            db, current_user.id, await local_today(db)
         )
         final_duration = max(0, min(capped_duration, MAX_DAILY_SECONDS - logged_today))
 
@@ -823,7 +827,7 @@ async def start_timer(
     
     # Check 9 hour daily limit
     current_total = await get_user_logged_seconds_on_date(
-        db, current_user.id, date.today()
+        db, current_user.id, await local_today(db)
     )
     if current_total >= MAX_DAILY_SECONDS:
         raise HTTPException(
@@ -968,7 +972,7 @@ async def resume_timer(
     
     # Check 9 hour daily limit
     current_total = await get_user_logged_seconds_on_date(
-        db, current_user.id, date.today()
+        db, current_user.id, await local_today(db)
     )
     if current_total >= MAX_DAILY_SECONDS:
         raise HTTPException(
@@ -1035,7 +1039,7 @@ async def stop_timer(
     
     # Enforce 9 hour limit on stopping (cap duration)
     logged_on_date = await get_user_logged_seconds_on_date(
-        db, current_user.id, date.today()
+        db, current_user.id, await local_today(db)
     )
     if logged_on_date > MAX_DAILY_SECONDS:
         excess = logged_on_date - MAX_DAILY_SECONDS
@@ -1101,7 +1105,7 @@ async def create_manual_entry(
     
     # Check 9 hour daily limit
     current_total = await get_user_logged_seconds_on_date(
-        db, current_user.id, entry_in.start_at.date()
+        db, current_user.id, local_date(as_utc_aware(entry_in.start_at), await org_tz(db))
     )
     if current_total + duration > MAX_DAILY_SECONDS:
         remaining = max(0, MAX_DAILY_SECONDS - current_total)

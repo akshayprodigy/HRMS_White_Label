@@ -113,7 +113,6 @@ async def windows_for(
     on work dates in [d_from, d_to]; the window is the shift +/- 30 min
     (an overnight shift ends the next calendar day)."""
     from app.services.live_ops import shift_bounds
-    from app.services.org_time import org_tz
     tz = await org_tz(db)
     eff = await effective_shifts_for_range(db, [user_id], d_from, d_to)
     emp = (await db.execute(
@@ -336,7 +335,8 @@ async def _send_exit_alert(db, user_id, wd, ping, now):
     u = await db.get(User, user_id)
     name = (u.full_name or u.email) if u else f"User {user_id}"
     recips = (await _alert_recipients(
-        db, [SimpleNamespace(user_id=user_id)], now.date())).get(user_id, set())
+        db, [SimpleNamespace(user_id=user_id)],
+        local_today_for(await org_tz(db), now))).get(user_id, set())
     await roster_svc.notify_many(db, [
         (rid, "Employee left work area",
          f"{name} appears to be outside their assigned work area during "

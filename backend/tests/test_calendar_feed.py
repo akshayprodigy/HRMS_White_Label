@@ -293,3 +293,19 @@ async def test_public_base_url_beats_forwarded(client, world, monkeypatch):
     r = await client.post(f"{ROSTER}/my/calendar-feed", headers={
         **h, "X-Forwarded-Host": "other.io"})
     assert r.json()["url"].startswith("https://hr.example.com/api/v1/calendar/")
+
+
+async def test_ist_feed_emits_utc_stamps(client, world):
+    """Phase 6A Task 2: unpinned from UTC -> 09:00 IST is 03:30Z."""
+    from app.services.time_rules import set_time_rules
+    async with SessionLocal() as db:
+        await set_time_rules(db, {"org.timezone": "Asia/Kolkata"})
+    w = world
+    h = await _login(client, w["email"])
+    url = (await client.post(f"{ROSTER}/my/calendar-feed", headers=h)).json()["url"]
+    body = (await client.get(_path(url))).text
+    d = w["today"] + timedelta(days=2)
+    assert f"DTSTART:{d:%Y%m%d}T033000Z" in body
+    n = w["today"] + timedelta(days=3)  # 22:00 IST == 16:30Z, ends 00:30Z next day
+    assert f"DTSTART:{n:%Y%m%d}T163000Z" in body
+    assert f"DTEND:{n + timedelta(days=1):%Y%m%d}T003000Z" in body

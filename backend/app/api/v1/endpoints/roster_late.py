@@ -57,13 +57,13 @@ async def _relevant_row(db, uid: int, now: datetime):
     return r
 
 
-def _out(n: Optional[LateNotice], row=None) -> dict:
+def _out(n: Optional[LateNotice], row=None, tz=timezone.utc) -> dict:
     if n is None or n.cleared_at is not None:
         return {"notice": None}
     return {"notice": {
         "work_date": n.work_date.isoformat(),
         "expected_at": _aware(n.expected_at).isoformat(),
-        "eta_hhmm": _aware(n.expected_at).strftime("%H:%M"),
+        "eta_hhmm": _aware(n.expected_at).astimezone(tz).strftime("%H:%M"),
         "reason": n.reason,
         "created_at": _aware(n.created_at).isoformat(),
     }}
@@ -84,7 +84,7 @@ async def get_running_late(
         LateNotice.work_date == r.work_date))).scalar_one_or_none()
     can = (r.punch_in is None and r.status != live_ops.LiveStatus.ON_LEAVE
            and now < r.end)
-    return {**_out(n), "can_post": can, "work_date": r.work_date.isoformat(),
+    return {**_out(n, tz=await org_tz(db)), "can_post": can, "work_date": r.work_date.isoformat(),
             "shift_name": r.shift_name, "shift_start": r.start.isoformat(),
             "shift_end": r.end.isoformat()}
 
@@ -178,7 +178,7 @@ async def _post(db, uid: int, who: str, body: RunningLate) -> Any:
             + (f" Reason: {reason}" if reason else ""), n)
     await db.commit()
     await db.refresh(n)
-    return _out(n)
+    return _out(n, tz=tz)
 
 
 @router.delete("/my/running-late")
