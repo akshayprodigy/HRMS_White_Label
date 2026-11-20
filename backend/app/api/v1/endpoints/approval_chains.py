@@ -961,6 +961,23 @@ async def _entity_summary(
             "reason": pk.reason,
             "holiday_date": hol.date if hol else None,
         }
+    if entity_type == ChainEntityType.WORK_LOCATION:
+        from app.models.work_location import WorkLocationRequest as _Wl
+        from app.services import work_location as _wl
+        wr = (await db.execute(
+            select(_Wl).where(_Wl.id == entity_id)
+        )).scalar_one_or_none()
+        if not wr:
+            return None
+        wu = await db.get(User, wr.user_id)
+        return {
+            "kind": "work_location",
+            "id": wr.id, "status": wr.status,
+            "title": _wl.req_summary(wr),
+            "employee_name": wu.full_name if wu else None,
+            "reason": wr.purpose,
+            "start_date": wr.start_date, "end_date": wr.end_date,
+        }
     if entity_type == ChainEntityType.ASSET_REQUEST:
         from app.models.asset import (
             AssetCategory, AssetRequest,
@@ -1214,6 +1231,21 @@ async def act_on_instance(
                     db, pk, actor=current_user, note=None,
                     approved=(outcome.next_status
                               == ChainedApprovalStatus.APPROVED))
+        elif instance.entity_type == ChainEntityType.WORK_LOCATION:
+            from app.models.work_location import (
+                WorkLocationRequest, WorkLocationStatus,
+            )
+            from app.services import work_location as wl_svc
+            wq = (await db.execute(
+                select(WorkLocationRequest).where(
+                    WorkLocationRequest.id == instance.entity_id)
+                .with_for_update().execution_options(populate_existing=True)
+            )).scalar_one_or_none()
+            if wq and wq.status == WorkLocationStatus.PENDING:
+                await wl_svc.finalize(
+                    db, wq, actor=current_user, note=None,
+                    approved=(outcome.next_status
+                              == ChainedApprovalStatus.APPROVED))
         elif instance.entity_type == ChainEntityType.ASSET_REQUEST:
             from app.models.asset import AssetRequest, AssetRequestStatus
             areq = (await db.execute(
@@ -1235,7 +1267,9 @@ async def act_on_instance(
                     await notify_managers_ready(db, areq)
         # Notify submitter.
         if (instance.submitter_id
-                and instance.entity_type != ChainEntityType.OPTIONAL_HOLIDAY):
+                and instance.entity_type not in (
+                    ChainEntityType.OPTIONAL_HOLIDAY,
+                    ChainEntityType.WORK_LOCATION)):
             db.add(Notification(
                 user_id=instance.submitter_id,
                 title=(

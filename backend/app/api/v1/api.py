@@ -18,7 +18,7 @@ from app.api.v1.endpoints import (
     devices, notification_actions, attendance_offline, tracking, biometric,
     asset_maintenance,
     asset_requests,
-    assets, meta, holidays,
+    assets, meta, holidays, work_location,
 )
 
 api_router = APIRouter()
@@ -336,3 +336,8 @@ api_router.include_router(
 # Optional holiday picks: NOT attendance-gated (employee self-service).
 api_router.include_router(
     holidays.router, prefix="/holidays", tags=["holidays"])
+
+# Work-location requests (on-duty / client visit / WFH): NOT attendance-gated.
+api_router.include_router(
+    work_location.router, prefix="/work-location-requests",
+    tags=["work-location"])
