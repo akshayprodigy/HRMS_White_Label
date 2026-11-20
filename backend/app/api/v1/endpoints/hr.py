@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from fastapi.responses import FileResponse
 
-from app.services.org_time import local_today
+from app.services.org_time import local_to_utc, local_today, org_tz
 from app.core.datetime_utils import as_utc
 from app.api import deps
 from app.core.config import settings
@@ -538,23 +538,19 @@ async def get_hr_dashboard_stats(
         )
 
     # Leave requisition trends: last 6 months count (excluding drafts/cancelled).
-    now = datetime.now(timezone.utc)
-    current_month_index = now.year * 12 + (now.month - 1)
+    _ltoday = await local_today(db)
+    _tz = await org_tz(db)
+    current_month_index = _ltoday.year * 12 + (_ltoday.month - 1)
     start_month_index = current_month_index - 5
     end_month_index = current_month_index + 1
 
-    start_month = datetime(
-        start_month_index // 12,
-        (start_month_index % 12) + 1,
-        1,
-        tzinfo=timezone.utc,
-    )
-    end_month = datetime(
-        end_month_index // 12,
-        (end_month_index % 12) + 1,
-        1,
-        tzinfo=timezone.utc,
-    )
+    now = datetime.now(timezone.utc)
+    start_month = local_to_utc(
+        date(start_month_index // 12, (start_month_index % 12) + 1, 1),
+        dt_time(0, 0), _tz)
+    end_month = local_to_utc(
+        date(end_month_index // 12, (end_month_index % 12) + 1, 1),
+        dt_time(0, 0), _tz)
 
     leave_agg_query = (
         select(
@@ -2742,8 +2738,7 @@ async def generate_employee_letter(
 
     # Generate reference number
     from datetime import datetime as dt_cls
-    now = dt_cls.now(timezone.utc)
-    year_str = now.strftime("%Y")
+    year_str = str((await local_today(db)).year)
     count_q = select(func.count(EmployeeLetter.id)).where(
         EmployeeLetter.letter_type == body.letter_type
     )
@@ -2754,7 +2749,7 @@ async def generate_employee_letter(
     # Build template data from employee + overrides
     template_data = {
         "reference_number": ref_number,
-        "date": (body.date or now.date()).isoformat(),
+        "date": (body.date or await local_today(db)).isoformat(),
         "employee_name": emp.user.full_name if emp.user else "",
         "employee_code": emp.employee_id,
         "designation": body.designation or emp.designation,
@@ -2865,7 +2860,7 @@ async def download_letter(
 async def _next_letter_ref(db, letter_type: str) -> str:
     """UEIPL/<PREFIX>/<year>/<0000> — same scheme as built-in letters."""
     from datetime import datetime as _dt
-    year_str = _dt.now(timezone.utc).strftime("%Y")
+    year_str = str((await local_today(db)).year)
     count = (await db.execute(
         select(func.count(EmployeeLetter.id)).where(
             EmployeeLetter.letter_type == letter_type
@@ -4061,7 +4056,7 @@ async def bulk_generate_celebration_letters(
         existing = {(r[0], r[1]) for r in rows}
 
     from datetime import datetime as _dt
-    year_str = _dt.now(timezone.utc).strftime("%Y")
+    year_str = str((await local_today(db)).year)
     prefix = letter_type.upper().replace("_", "-")
     base = (await db.execute(
         select(func.count(EmployeeLetter.id)).where(
@@ -4450,8 +4445,7 @@ async def confirm_employee(
     if not emp:
         raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
 
-    now = datetime.now(timezone.utc)
-    emp.confirmation_date = body.confirmation_date or now.date()
+    emp.confirmation_date = body.confirmation_date or await local_today(db)
     if body.probation_end_date:
         emp.probation_end_date = body.probation_end_date
 

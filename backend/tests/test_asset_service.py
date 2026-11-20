@@ -6,6 +6,7 @@ import uuid
 from datetime import date, timedelta
 
 import pytest
+from _tz import org_today  # noqa: E402
 from sqlalchemy import delete, select
 
 from app.core.security import get_password_hash
@@ -88,7 +89,7 @@ async def test_allocate_and_audit(env):
         assert asset.status == AssetStatus.ALLOCATED
         assert alloc.identifier == asset.asset_tag
         assert alloc.allocated_by_id == actor.id
-        assert alloc.status == "allocated" and alloc.issued_date == date.today()
+        assert alloc.status == "allocated" and alloc.issued_date == org_today()
         open_ = await svc.open_allocation(db, asset.id)
         assert open_.id == alloc.id
         assert await _audit_actions(db, asset.id) == ["ASSET_ALLOCATE"]
@@ -118,7 +119,7 @@ async def test_return_default_and_repair(env):
                                        condition="good")
         assert asset.status == AssetStatus.IN_STOCK
         assert alloc.status == "returned"
-        assert alloc.returned_date == date.today()
+        assert alloc.returned_date == org_today()
         assert alloc.returned_condition == "good"
         assert alloc.returned_to_id == actor.id
         assert await svc.open_allocation(db, asset.id) is None
@@ -134,7 +135,7 @@ async def test_return_default_and_repair(env):
             await svc.return_asset(db, asset=a2, actor=actor, to_status="lost")
         with pytest.raises(AssetStateError):
             await svc.return_asset(db, asset=a2, actor=actor,
-                                   returned_date=date.today() - timedelta(days=5))
+                                   returned_date=org_today() - timedelta(days=5))
         await db.rollback()
 
 
@@ -153,7 +154,7 @@ async def test_mark_lost(env):
             await svc.mark_lost(db, asset=asset, actor=actor, remarks="  ")
         res = await svc.mark_lost(db, asset=asset, actor=actor, remarks="stolen")
         assert res.id == alloc.id and alloc.status == "lost"
-        assert alloc.returned_date == date.today()
+        assert alloc.returned_date == org_today()
         assert asset.status == AssetStatus.LOST
         with pytest.raises(AssetStateError):
             await svc.mark_lost(db, asset=asset, actor=actor, remarks="again")
@@ -231,11 +232,11 @@ async def test_review_edge_cases(env):
             await svc.return_asset(db, asset=asset, actor=actor)
         with pytest.raises(AssetStateError):
             await svc.allocate(db, asset=asset, employee=emp, actor=actor,
-                               issued_date=date.today() + timedelta(days=2))
+                               issued_date=org_today() + timedelta(days=2))
         await svc.allocate(db, asset=asset, employee=emp, actor=actor)
         with pytest.raises(AssetStateError):
             await svc.return_asset(db, asset=asset, actor=actor,
-                                   returned_date=date.today() + timedelta(days=2))
+                                   returned_date=org_today() + timedelta(days=2))
         # legacy open row without asset_id
         legacy = EmployeeAsset(employee_id=emp.id, asset_type="Old", model="m",
                                status="allocated")

@@ -24,8 +24,8 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import and_, or_, select
+from pydantic import BaseModel, Field
+from sqlalchemy import and_, select
 from sqlalchemy.orm import selectinload
 
 from app.services.org_time import local_today
@@ -642,7 +642,7 @@ async def _drop_absent_approvers(
     caller will surface it to HR via the existing 'no_eligible_approver'
     audit path.
     """
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
     from app.models.attendance import Attendance
     from app.services.approval_engine import (
         AbsenceCheck, filter_absent_approvers,
@@ -942,7 +942,7 @@ async def _entity_summary(
         }
     if entity_type == ChainEntityType.ASSET_REQUEST:
         from app.models.asset import (
-            AssetCategory, AssetRequest, AssetRequestStatus,
+            AssetCategory, AssetRequest,
         )
         from app.models.employee import Employee as _Emp
         ar = (await db.execute(

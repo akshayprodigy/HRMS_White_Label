@@ -159,7 +159,7 @@ async def get_reports_summary(
 
 import io as _io
 from calendar import monthrange as _monthrange
-from datetime import date as _date, timedelta as _td
+from datetime import date as _date
 from typing import Any as _Any, List as _List, Optional as _Opt
 
 from fastapi import Query as _Query, Request as _Request
@@ -1232,7 +1232,7 @@ async def run_report(
             },
         )
     if format == "pdf":
-        blob = _rx.render_pdf(result, title=title)
+        blob = _rx.render_pdf(result, title=title, tz=await org_tz(db))
         return _Stream(
             _io.BytesIO(blob), media_type="application/pdf",
             headers={

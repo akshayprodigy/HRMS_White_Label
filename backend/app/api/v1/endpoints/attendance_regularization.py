@@ -1,7 +1,7 @@
 """Attendance regularization: employees request a punch fix, a manager or
 HR (ATTENDANCE_EDIT) approves it, and the Attendance row is corrected."""
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -21,7 +21,7 @@ from app.schemas.attendance_regularization import (
 )
 from app.services.attendance_lock import assert_attendance_editable
 from app.services.effective_shift import effective_shift_on
-from app.services.org_time import local_date, org_tz
+from app.services.org_time import local_date, local_today, org_tz
 from app.services.self_approval import guard_self_approval
 
 logger = logging.getLogger(__name__)
@@ -91,11 +91,8 @@ async def create_regularization(
     obj_in: RegularizationCreate,
     current_user: deps.CurrentUser,
 ) -> Any:
-    # Dates are UTC end-to-end (see shift_resolver / attendance work_date).
-    # Allow work_date up to UTC today + 1 so users just past midnight local
-    # time can still pick their local "today".
     now = datetime.now(timezone.utc)
-    if obj_in.work_date > now.date() + timedelta(days=1):
+    if obj_in.work_date > await local_today(db):
         raise HTTPException(422, "work_date cannot be in the future.")
     punch_in = as_utc(obj_in.requested_punch_in)
     punch_out = as_utc(obj_in.requested_punch_out)

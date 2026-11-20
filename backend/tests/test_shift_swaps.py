@@ -4,6 +4,7 @@ import uuid
 from datetime import date, time, timedelta, datetime, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -35,8 +36,7 @@ from app.services.time_rules import set_time_rules
 
 SW = f"{settings.API_V1_STR}/roster/swaps"
 PW = "test@12345"
-from app.services.org_time import local_today_for, tz_from_name  # noqa: E402
-TODAY = local_today_for(tz_from_name("Asia/Kolkata"))  # org default tz
+TODAY = org_today()
 D = TODAY + timedelta(days=10)
 
 

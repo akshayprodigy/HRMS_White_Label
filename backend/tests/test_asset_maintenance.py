@@ -1,6 +1,7 @@
 """Asset maintenance log (Roadmap v2 Phase 5, Task 5). Real dev DB, full teardown."""
 from datetime import date, timedelta
 
+from _tz import org_today  # noqa: E402
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
@@ -8,8 +9,8 @@ from app.models.asset import AssetMaintenance
 from app.models.audit import AuditLog
 from tests.test_assets_api import P, api, cat, mk, world  # noqa: F401
 
-TODAY = date.today().isoformat()
-YEST = (date.today() - timedelta(days=1)).isoformat()
+TODAY = org_today().isoformat()
+YEST = (org_today() - timedelta(days=1)).isoformat()
 
 
 def body(**kw):
@@ -114,15 +115,15 @@ async def test_move_to_repair_state_rules(api, cat, world):
 
 async def test_validation(api, cat):
     a = await mk(api, cat)
-    fut = (date.today() + timedelta(days=2)).isoformat()
-    for kw in ({"completed_on": (date.today() - timedelta(days=5)).isoformat()},
+    fut = (org_today() + timedelta(days=2)).isoformat()
+    for kw in ({"completed_on": (org_today() - timedelta(days=5)).isoformat()},
                {"started_on": fut}, {"cost_paise": -1}, {"kind": "bogus"},
                {"description": "   "}):
         r = await post(api, a["id"], **kw)
         assert r.status_code == 422, (kw, r.status_code)
     m = (await post(api, a["id"])).json()
     r = await api.patch(f"{P}/maintenance/{m['id']}", headers=api.hr,
-                        json={"completed_on": (date.today() - timedelta(days=5)
+                        json={"completed_on": (org_today() - timedelta(days=5)
                                                ).isoformat()})
     assert r.status_code == 422
 
@@ -200,7 +201,7 @@ async def test_patch_null_future_and_vendor(api, cat):
     a = await mk(api, cat)
     m = (await post(api, a["id"], vendor="  ")).json()
     assert m["vendor"] is None
-    fut = (date.today() + timedelta(days=3)).isoformat()
+    fut = (org_today() + timedelta(days=3)).isoformat()
     for js in ({"kind": None}, {"description": None}, {"cost_paise": None},
                {"started_on": None}, {"started_on": fut},
                {"completed_on": fut}):

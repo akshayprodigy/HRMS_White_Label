@@ -44,7 +44,6 @@ class Attendance(Base):
     # D+1. shift_template_id is a snapshot of the shift evaluated against.
     work_date: Mapped[pydate] = mapped_column(
         Date, nullable=False, index=True,
-        default=lambda: datetime.now(timezone.utc).date(),
     )
     shift_template_id: Mapped[Optional[int]] = mapped_column(
         Integer,

@@ -67,3 +67,13 @@ async def test_scheduler_job_uses_org_yesterday(ist_frozen):
         res = await REGISTRY["overtime_recompute_yesterday"].fn(db)
     # org today = 03-06 -> yesterday = 03-05 (UTC would have said 03-04)
     assert res["work_date"] == "2031-03-05"
+
+
+def test_org_today_helper_is_tomorrows_utc_date_at_2000z():
+    from _tz import TEST_TZ, org_today
+    from app.services.org_time import local_today_for, tz_from_name
+    tz = tz_from_name(TEST_TZ)
+    assert local_today_for(tz, now=FROZEN).isoformat() == "2031-03-06"
+    assert FROZEN.date().isoformat() == "2031-03-05"
+    # org_today() is exactly local_today_for(TEST_TZ) of the real clock
+    assert org_today() == local_today_for(tz)

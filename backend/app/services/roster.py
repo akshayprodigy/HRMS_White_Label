@@ -1051,7 +1051,8 @@ async def publish_drafts(
     base: Dict[Tuple[int, pydate], Cell] = {}
     locked: set = set()
     if lock_days:
-        win = [d for d in todo if in_lock_window(d.work_date, lock_days, await local_today(db))]
+        today = await local_today(db)
+        win = [d for d in todo if in_lock_window(d.work_date, lock_days, today)]
         base = await assignment_cells(
             db, {(d.employee_id, d.work_date) for d in win})
         locked = await lock_guard(db, actor, [

@@ -4,6 +4,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -115,7 +116,7 @@ async def test_create_ok_and_my_list(client, world):
 async def test_validation_errors(client, world):
     _, em = world
     h = await _login(client, em["emp"])
-    fut = date.today() + timedelta(days=2)
+    fut = org_today() + timedelta(days=2)
     assert (await client.post(f"{BASE}/", json=_body(fut), headers=h)
             ).status_code == 422
     bad = _body()
@@ -325,7 +326,7 @@ async def test_punch_in_on_next_day_ok(client, world):
 async def test_future_punch_in_422(client, world):
     _, em = world
     he = await _login(client, em["emp"])
-    today = datetime.now(timezone.utc).date()
+    today = org_today()
     fut = datetime.now(timezone.utc) + timedelta(hours=3)
     b = {"work_date": fut.date().isoformat(),
          "requested_punch_in": fut.isoformat(), "reason": "x"}

@@ -208,7 +208,7 @@ def render_xlsx(result: ReportResult, *, stream: bool = False) -> bytes:
 # ============================================================
 
 
-def render_pdf(result: ReportResult, *, title: str) -> bytes:
+def render_pdf(result: ReportResult, *, title: str, tz=None) -> bytes:
     """PDF via reportlab. Landscape when >6 columns."""
     try:
         from reportlab.lib import colors
@@ -239,9 +239,14 @@ def render_pdf(result: ReportResult, *, title: str) -> bytes:
             parts.append(f"Period: {result.meta['period']}")
         if "row_count" in result.meta:
             parts.append(f"Rows: {result.meta['row_count']}")
-        parts.append(
-            f"Generated: {datetime.now().strftime('%d %b %Y %H:%M')}"
-        )
+        from datetime import timezone as _utc
+        from app.services.org_time import local_now, tz_name
+        if tz is None:
+            gen = datetime.now(_utc.utc).strftime('%d %b %Y %H:%M UTC')
+        else:
+            gen = (local_now(tz).strftime('%d %b %Y %H:%M ')
+                   + tz_name(tz))
+        parts.append(f"Generated: {gen}")
         story.append(Paragraph(" · ".join(parts), styles["Normal"]))
     story.append(Spacer(1, 6 * mm))
 

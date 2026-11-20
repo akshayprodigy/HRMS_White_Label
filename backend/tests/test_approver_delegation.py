@@ -1,6 +1,7 @@
 """Out-of-office approval delegation (Roadmap v2 Phase 2, Task 6)."""
 from datetime import date, datetime, timedelta, timezone
 
+from _tz import org_today  # noqa: E402
 from sqlalchemy import select
 
 from _appr_world import (  # noqa: F401
@@ -13,7 +14,7 @@ from app.models.audit import AuditLog
 from app.models.leave import LeaveRequest, LeaveStatus
 
 API = settings.API_V1_STR
-TODAY = date.today()
+TODAY = org_today()
 
 
 async def _inbox(client, h):

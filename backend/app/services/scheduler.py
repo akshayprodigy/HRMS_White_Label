@@ -27,7 +27,6 @@ below.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -438,7 +437,7 @@ async def _job_sweep_notifications_for_delivery(
     """
     from app.models.notification import Notification
     from app.models.notification_channel import (
-        DeliveryStatus, NotificationDelivery,
+        NotificationDelivery,
     )
     from app.services.notifications_delivery import dispatch_notification
 
@@ -575,7 +574,6 @@ async def _job_birthday_anniversary_reminders(session: AsyncSession) -> Dict[str
     in-app + templated notification to every active HR / Super Admin user,
     deep-linked to the employee (resource_type='employee').
     """
-    from datetime import date
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
     from app.services.notifications_delivery import notify

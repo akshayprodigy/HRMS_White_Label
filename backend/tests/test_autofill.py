@@ -5,6 +5,7 @@ from datetime import date, time, timedelta, datetime, timezone
 from types import SimpleNamespace as NS
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -228,7 +229,7 @@ def test_perf_smoke():
 
 ROSTER = f"{settings.API_V1_STR}/roster"
 PW = "test@12345"
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 
 
 @pytest.fixture

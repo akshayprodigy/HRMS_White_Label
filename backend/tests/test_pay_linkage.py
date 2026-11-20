@@ -12,6 +12,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -473,7 +474,7 @@ async def test_nightly_job_retries_punch_opened_on_earlier_night(world):
     fn = REGISTRY["overtime_recompute_yesterday"].fn
     i = world["ids"]
     await _deactivate_org_rule(world)
-    d1 = datetime.now(UTC).date() - timedelta(days=2)
+    d1 = org_today() - timedelta(days=2)
     aid = await _punch(i["wd"], d1, i["t_day"], at(d1, 9), None)
     async with SessionLocal() as db:
         await fn(db)
@@ -511,7 +512,7 @@ async def test_payroll_locked_entry_untouched_by_recompute_and_job(world):
     fn = REGISTRY["overtime_recompute_yesterday"].fn
     i = world["ids"]
     await _deactivate_org_rule(world)
-    yday = datetime.now(UTC).date() - timedelta(days=1)
+    yday = org_today() - timedelta(days=1)
     run_ids = []
     try:
         for tag, d in (("wd", MON), ("wo", yday)):

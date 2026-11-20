@@ -7,6 +7,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from openpyxl import Workbook
 from sqlalchemy import delete, insert, select, update
@@ -130,7 +131,7 @@ def _set_base(d: date) -> None:
 
 
 def _default_base() -> date:
-    d = datetime.now(timezone.utc).date() - timedelta(days=3)
+    d = org_today() - timedelta(days=3)
     while d.weekday() >= 5:
         d -= timedelta(days=1)
     return d

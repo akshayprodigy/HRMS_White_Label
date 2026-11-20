@@ -4,6 +4,7 @@ import uuid
 from datetime import date, time, timedelta, datetime, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -28,7 +29,7 @@ from app.models.user import User
 DR = f"{settings.API_V1_STR}/roster/drops"
 OS = f"{settings.API_V1_STR}/roster/open-shifts"
 PW = "test@12345"
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 D = TODAY + timedelta(days=10)
 
 

@@ -31,6 +31,8 @@ import re
 import smtplib
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
+
+from app.services.org_time import local_now, org_tz
 from email.message import EmailMessage
 from typing import Any, Dict, Iterable, List, Optional, Set
 
@@ -733,8 +735,10 @@ async def dispatch_notification(
             )
             session.add(row)
             continue
+        # Quiet hours are recipient wall-clock: evaluate in the org timezone.
+        lnow = local_now(await org_tz(session), now)
         if qh and is_within_quiet_hours(
-            now=now, quiet_from=qh.quiet_from, quiet_to=qh.quiet_to,
+            now=lnow, quiet_from=qh.quiet_from, quiet_to=qh.quiet_to,
         ):
             # Delay until the window closes.
             row = NotificationDelivery(
@@ -743,7 +747,8 @@ async def dispatch_notification(
                 recipient_user_id=recipient_user_id,
                 channel=channel, status=DeliveryStatus.QUEUED,
                 context_json=context,
-                next_retry_at=_next_after_quiet(now, qh.quiet_to),
+                next_retry_at=_next_after_quiet(lnow, qh.quiet_to).astimezone(
+                    now.tzinfo or timezone.utc),
             )
             session.add(row)
             await session.flush()
@@ -775,9 +780,10 @@ async def dispatch_notification(
 
 
 def _next_after_quiet(now: datetime, quiet_to: Optional[time]) -> datetime:
+    """`now` is org-local (aware); the result is in the same zone."""
     if quiet_to is None:
         return now + timedelta(minutes=30)
-    target = now.replace(
+    target = now.replace(  # org-local wall-clock
         hour=quiet_to.hour, minute=quiet_to.minute,
         second=0, microsecond=0,
     )

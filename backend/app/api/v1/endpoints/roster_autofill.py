@@ -2,7 +2,7 @@
 written; the client applies accepted suggestions through POST /roster/bulk
 (status=draft, overwrite=False)."""
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 

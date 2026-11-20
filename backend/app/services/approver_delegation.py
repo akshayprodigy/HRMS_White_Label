@@ -8,10 +8,10 @@ Dates are UTC calendar days (product convention).
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Dict, Optional
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 
 from app.services.org_time import local_today
 from app.models.approver_delegation import ApproverDelegation

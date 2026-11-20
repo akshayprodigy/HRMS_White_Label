@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 from _cleanup import purge_users_by_email_like
+from _tz import org_today  # noqa: E402
 from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.models.user import User, Role, user_roles
@@ -58,8 +59,8 @@ async def _scenarios(unique_suffix):
         leave_a = LeaveRequest(
             employee_id=emp_with_man.id, 
             leave_type_id=ltype.id, 
-            start_date=date.today(), 
-            end_date=date.today(), 
+            start_date=org_today(), 
+            end_date=org_today(), 
             status=LeaveStatus.SUBMITTED,
             reason="Test Reason",
             created_by_user_id=emp_with_man.id
@@ -108,8 +109,8 @@ async def _scenarios(unique_suffix):
         leave_b = LeaveRequest(
             employee_id=emp_no_man.id, 
             leave_type_id=ltype.id, 
-            start_date=date.today(), 
-            end_date=date.today(), 
+            start_date=org_today(), 
+            end_date=org_today(), 
             status=LeaveStatus.SUBMITTED,
             reason="Test Reason",
             created_by_user_id=emp_no_man.id

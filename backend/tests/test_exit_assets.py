@@ -3,6 +3,7 @@ import uuid
 from datetime import date
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
 from sqlalchemy.exc import OperationalError
@@ -103,7 +104,7 @@ async def world():
             await db.flush()
             res = Resignation(
                 employee_id=emp.id, reason="personal", status="clearance",
-                resignation_date=date.today(), last_working_day=date.today(),
+                resignation_date=org_today(), last_working_day=org_today(),
                 notice_period_days=30)
             db.add(res)
             await db.flush()

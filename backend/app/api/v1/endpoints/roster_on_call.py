@@ -12,7 +12,7 @@ paid allowance). Creating/changing a day in the past is limited to the last
 7 days for managers; roster admins may go further back; any past day in a
 month whose payroll run has locked attendance is refused.
 """
-from datetime import date as pydate, datetime, time as dtime, timedelta, timezone
+from datetime import date as pydate, time as dtime, timedelta
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query

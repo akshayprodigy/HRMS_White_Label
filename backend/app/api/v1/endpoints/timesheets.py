@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, timedelta, date
+from datetime import datetime, timezone, timedelta, date, time as dtime
 from typing import Any, Optional, Annotated, Dict, Set, Tuple
 from fastapi import APIRouter, HTTPException, Request, Depends, status
 from sqlalchemy import select, and_, func, or_
@@ -84,21 +84,21 @@ async def require_project_manager(
         )
 
 
-def get_range_window(range: str) -> Tuple[datetime, datetime]:
-    now = datetime.now(timezone.utc)
+async def get_range_window(
+    db: deps.DBDep, range: str,
+) -> Tuple[datetime, datetime]:
+    """[start, end) UTC instants of the current org-local week/month."""
+    tz = await org_tz(db)
+    today = local_today_for(tz)
     if range == "weekly":
-        start_dt = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        end_dt = start_dt + timedelta(days=7)
-        return start_dt, end_dt
-
-    start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if start_dt.month == 12:
-        end_dt = start_dt.replace(year=start_dt.year + 1, month=1)
+        first = today - timedelta(days=today.weekday())
+        last = first + timedelta(days=7)
     else:
-        end_dt = start_dt.replace(month=start_dt.month + 1)
-    return start_dt, end_dt
+        first = today.replace(day=1)
+        last = (first.replace(year=first.year + 1, month=1)
+                if first.month == 12 else first.replace(month=first.month + 1))
+    return (local_to_utc(first, dtime(0, 0), tz),
+            local_to_utc(last, dtime(0, 0), tz))
 
 
 async def get_user_name_map(
@@ -263,12 +263,13 @@ async def fetch_time_entries(
 
 
 def init_daily_map(
-    *, start_dt: datetime, end_dt: datetime
+    *, start_dt: datetime, end_dt: datetime, tz,
 ) -> dict[date, dict[str, Any]]:
     daily_map: dict[date, dict[str, Any]] = {}
-    curr = start_dt
-    while curr < end_dt:
-        daily_map[curr.date()] = {"total": 0, "entries": []}
+    curr = local_date(start_dt, tz)
+    last = local_date(end_dt, tz)
+    while curr < last:
+        daily_map[curr] = {"total": 0, "entries": []}
         curr += timedelta(days=1)
     return daily_map
 
@@ -277,13 +278,14 @@ def accumulate_timesheet_entries(
     *,
     entries: list[TimeEntry],
     daily_map: dict[date, dict[str, Any]],
+    tz,
 ) -> tuple[int, dict[int, dict[str, Any]]]:
     project_totals: dict[int, dict[str, Any]] = {}
     total_seconds = 0
 
     for entry in entries:
         total_seconds += entry.duration_seconds
-        day_date = entry.start_at.date()
+        day_date = local_date(entry.start_at, tz)
         if day_date in daily_map:
             daily_map[day_date]["total"] += entry.duration_seconds
             daily_map[day_date]["entries"].append(entry)
@@ -343,17 +345,19 @@ async def build_my_timesheet_response(
     user_id: int,
     range: str,
 ) -> TimesheetRead:
-    start_dt, end_dt = get_range_window(range)
+    start_dt, end_dt = await get_range_window(db, range)
     entries = await fetch_time_entries(
         db,
         user_id=user_id,
         start_dt=start_dt,
         end_dt=end_dt,
     )
-    daily_map = init_daily_map(start_dt=start_dt, end_dt=end_dt)
+    tz = await org_tz(db)
+    daily_map = init_daily_map(start_dt=start_dt, end_dt=end_dt, tz=tz)
     total_seconds, project_totals = accumulate_timesheet_entries(
         entries=entries,
         daily_map=daily_map,
+        tz=tz,
     )
     await enrich_timesheet_project_names(
         db,
@@ -496,7 +500,7 @@ async def build_my_work_utilization_response(
     user_id: int,
     range: str,
 ) -> MyWorkUtilizationResponse:
-    start_dt, end_dt = get_range_window(range)
+    start_dt, end_dt = await get_range_window(db, range)
 
     task_q = select(Task).where(Task.assignee_id == user_id)
     subtask_q = select(Subtask).where(Subtask.assignee_id == user_id)
@@ -632,7 +636,7 @@ async def build_project_utilization_response(
     project: Project,
     range: str,
 ) -> ProjectUtilizationResponse:
-    start_dt, end_dt = get_range_window(range)
+    start_dt, end_dt = await get_range_window(db, range)
     tasks, subtasks = await fetch_project_tasks_and_subtasks(
         db, project_id=project.id
     )

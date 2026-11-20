@@ -3,6 +3,7 @@ import uuid
 from datetime import date, timedelta
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
 
@@ -173,7 +174,7 @@ async def test_create_tags(api, cat):
     assert r.status_code == 409
     r = await api.post(P, headers=api.hr, json={
         "category_id": cat["id"], "name": "d",
-        "purchase_date": (date.today() + timedelta(days=5)).isoformat()})
+        "purchase_date": (org_today() + timedelta(days=5)).isoformat()})
     assert r.status_code == 422
 
 
@@ -203,8 +204,8 @@ async def test_allocate_flow_and_filters(api, world, cat):
 
 
 async def test_expiring_filter(api, cat):
-    soon = (date.today() + timedelta(days=10)).isoformat()
-    far = (date.today() + timedelta(days=200)).isoformat()
+    soon = (org_today() + timedelta(days=10)).isoformat()
+    far = (org_today() + timedelta(days=200)).isoformat()
     a = await mk(api, cat, warranty_expiry=soon)
     await mk(api, cat, amc_expiry=far)
     r = await api.get(P, headers=api.hr, params={
@@ -264,9 +265,9 @@ async def test_qr_and_by_tag(api, cat):
 
 async def test_summary_and_depreciation(api, cat):
     before = (await api.get(f"{P}/summary", headers=api.hr)).json()
-    pd = (date.today() - timedelta(days=400)).isoformat()
+    pd = (org_today() - timedelta(days=400)).isoformat()
     a = await mk(api, cat, purchase_date=pd, purchase_cost_paise=240000,
-                 warranty_expiry=(date.today() + timedelta(days=5)).isoformat())
+                 warranty_expiry=(org_today() + timedelta(days=5)).isoformat())
     await mk(api, cat)
     d = (await api.get(f"{P}/{a['id']}", headers=api.hr)).json()
     assert d["depreciation"]["cost_paise"] == 240000
@@ -405,7 +406,7 @@ async def test_category_patch_duplicate_and_blank(api, world, cat):
 
 
 async def test_pagination_expiring_retired_and_bad_status(api, cat):
-    soon = (date.today() + timedelta(days=5)).isoformat()
+    soon = (org_today() + timedelta(days=5)).isoformat()
     ids = [(await mk(api, cat))["id"] for _ in range(3)]
     r = await api.get(P, headers=api.hr, params={
         "category_id": cat["id"], "limit": 2, "offset": 0})
@@ -527,7 +528,7 @@ async def test_location_validation_and_bounds(api, world, cat):
                        headers=api.hr, json={
                            "kind": "repair", "description": "x",
                            "cost_paise": 2_000_000_001,
-                           "started_on": date.today().isoformat()})
+                           "started_on": org_today().isoformat()})
     assert r.status_code == 422, r.text
 
 

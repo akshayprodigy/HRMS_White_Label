@@ -9,6 +9,14 @@ from app.db.session import SessionLocal
 from app.models.system import SystemSetting
 
 KEY = "org.timezone"
+TEST_TZ = "Asia/Kolkata"   # the org timezone the suite runs under (conftest.py)
+
+
+def org_today():
+    """The org's business 'today' (TEST_TZ) -- use instead of date.today() /
+    datetime.now(UTC).date() for dates that mean the org's calendar day."""
+    from app.services.org_time import local_today_for, tz_from_name
+    return local_today_for(tz_from_name(TEST_TZ))
 
 
 @pytest.fixture(autouse=True)

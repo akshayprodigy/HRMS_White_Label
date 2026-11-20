@@ -4,6 +4,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -23,7 +24,7 @@ from app.services import roster as svc
 
 BASE = f"{settings.API_V1_STR}/roster/delegations"
 PW = "test@12345"
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 
 
 @pytest.fixture

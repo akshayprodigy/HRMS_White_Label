@@ -4,6 +4,7 @@ from datetime import date, time, timedelta, datetime, timezone
 from types import SimpleNamespace as NS
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -26,7 +27,7 @@ from app.services.availability import AvailabilityDay, expand_availability
 
 ROSTER = f"{settings.API_V1_STR}/roster"
 PW = "test@12345"
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 D = date(2030, 3, 4)  # Monday
 
 

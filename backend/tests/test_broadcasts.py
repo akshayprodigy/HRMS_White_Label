@@ -207,7 +207,10 @@ async def test_on_shift_audience(world, monkeypatch):
 
 async def test_send_creates_everything_and_bypasses_quiet_hours(client, world):
     ids = world["ids"]
-    now = datetime.now(timezone.utc)
+    # quiet hours are org-local wall-clock
+    from _tz import TEST_TZ
+    from app.services.org_time import local_now, tz_from_name
+    now = local_now(tz_from_name(TEST_TZ))
     async with SessionLocal() as db:
         db.add(UserQuietHours(user_id=ids["e1"], quiet_from=(now - timedelta(hours=1)).time(),
                               quiet_to=(now + timedelta(hours=1)).time(), hard_opt_out=True))
@@ -235,7 +238,10 @@ async def test_send_creates_everything_and_bypasses_quiet_hours(client, world):
 
 async def test_other_categories_still_respect_quiet_hours_and_optout(world):
     ids = world["ids"]
-    now = datetime.now(timezone.utc)
+    # quiet hours are org-local wall-clock
+    from _tz import TEST_TZ
+    from app.services.org_time import local_now, tz_from_name
+    now = local_now(tz_from_name(TEST_TZ))
     async with SessionLocal() as db:
         db.add(UserQuietHours(user_id=ids["e1"], quiet_from=(now - timedelta(hours=1)).time(),
                               quiet_to=(now + timedelta(hours=1)).time()))

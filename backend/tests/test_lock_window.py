@@ -4,6 +4,7 @@ import uuid
 from datetime import date, time, timedelta, datetime, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -40,7 +41,7 @@ from app.services import time_rules
 
 R = f"{settings.API_V1_STR}/roster"
 PW = "test@12345"
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 LOCK = 5
 W = TODAY + timedelta(days=2)      # inside the window
 W2 = TODAY + timedelta(days=3)

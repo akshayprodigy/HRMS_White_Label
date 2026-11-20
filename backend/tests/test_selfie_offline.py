@@ -4,6 +4,7 @@ import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
 
@@ -34,7 +35,7 @@ from app.services.time_rules import get_time_rules, set_time_rules
 API = settings.API_V1_STR
 ATT = f"{API}/attendance"
 PW = "test@12345"
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 IN_FENCE = (22.5726, 88.3639)
 OUT_FENCE = (22.6200, 88.4000)
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64

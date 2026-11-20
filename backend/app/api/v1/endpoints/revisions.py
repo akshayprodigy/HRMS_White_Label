@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
-from app.services.org_time import local_today
+from app.services.org_time import local_date, local_today, org_tz
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.approval import ApprovalItem, ApprovalStatus, ApprovalStep
@@ -763,7 +763,7 @@ async def _apply_one(
     )
     n = (await db.execute(count_q)).scalar() or 0
     ref_prefix = letter_type.upper().replace("_", "-")
-    year_str = datetime.now(timezone.utc).strftime("%Y")
+    year_str = str((await local_today(db)).year)
     ref_number = f"UEIPL/{ref_prefix}/{year_str}/{n + 1:04d}"
 
     old_d = await db.get(Designation, rev.old_designation_id) if rev.old_designation_id else None
@@ -773,7 +773,7 @@ async def _apply_one(
 
     template_data = {
         "reference_number": ref_number,
-        "date": rev.applied_at.date().isoformat(),
+        "date": local_date(rev.applied_at, await org_tz(db)).isoformat(),
         "employee_name": emp.user.full_name if emp.user else "",
         "employee_code": emp.employee_id,
         "department": emp.department,

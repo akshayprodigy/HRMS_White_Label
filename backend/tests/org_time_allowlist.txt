@@ -1,5 +1,3 @@
 # relative/path.py:substring-of-line  # reason   (paths relative to backend/app)
-services/org_time.py:  # the org-time helpers themselves
 api/v1/endpoints/bd.py:  # BD sales module, out of scope for attendance/HR/pay time
-services/bd.py:  # BD sales module, out of scope
 services/schedule_rules.py:datetime.combine  # naive org-local wall-clock spans compared only with each other (documented)

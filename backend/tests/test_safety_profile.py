@@ -2,6 +2,7 @@
 (Roadmap v2 Phase 2, Task 8)."""
 from datetime import date, datetime, timedelta, timezone
 
+from _tz import org_today  # noqa: E402
 from sqlalchemy import select
 
 from _safety_world import API, add_entry, client, login, world  # noqa: F401
@@ -122,7 +123,7 @@ async def test_team_contacts_scope_and_no_gender(client, world):
 
 async def test_transport_toggle(client, world):
     ids = world["ids"]
-    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    tomorrow = org_today() + timedelta(days=1)
     pub = await add_entry(ids["f"], tomorrow, ids["day"])
     drf = await add_entry(ids["m"], D, ids["day"], status=RosterStatus.DRAFT)
     off = await add_entry(ids["plain"], D, None, off=True)

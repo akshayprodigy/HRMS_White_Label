@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.models.audit import AuditLog
 from app.models.recruitment import (
@@ -35,7 +36,7 @@ async def create_requisition(
     # 1. Generate unique request ID
     count_query = await db.execute(select(func.count(ManpowerRequisition.id)))
     count = count_query.scalar() or 0
-    req_id = f"REQ-{datetime.now().year}-{count + 1:04d}"
+    req_id = f"REQ-{(await local_today(db)).year}-{count + 1:04d}"
 
     # 2. Create requisition in draft
     db_req = ManpowerRequisition(

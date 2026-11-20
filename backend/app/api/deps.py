@@ -5,7 +5,7 @@ from jose import jwt, JWTError
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from app.core.config import settings
 from app.db.session import SessionLocal
@@ -82,9 +82,11 @@ async def verify_attendance(
     if current_user.is_superuser:
         return current_user
 
-    now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    today = now.date()
+    from datetime import time as _time
+    from app.services.org_time import local_to_utc, local_today_for, org_tz
+    tz = await org_tz(db)
+    today = local_today_for(tz)
+    today_start = local_to_utc(today, _time(0, 0), tz)
 
     # 24x7 rule: a night-shift punch-in is attributed to YESTERDAY's
     # work_date, so a plain captured_at >= today check locks the

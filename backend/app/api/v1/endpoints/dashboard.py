@@ -8,10 +8,10 @@ the underlying page or report.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
@@ -19,8 +19,7 @@ from app.services.org_time import local_today
 from app.api import deps
 from app.models.approval import ApprovalItem, ApprovalStatus, ApprovalStep
 from app.models.approval_chain import (
-    ChainedApprovalInstance, ChainedApprovalStatus,
-    ChainedApprovalStepInstance, StepInstanceStatus,
+    ChainedApprovalInstance, ChainedApprovalStepInstance, StepInstanceStatus,
 )
 from app.models.attendance import Attendance
 from app.models.employee import Employee
@@ -36,9 +35,8 @@ from app.models.performance import (
 from app.models.tax import DeclarationStatus, EmployeeTaxDeclaration
 from app.models.user import User
 from app.services.dashboard import (
-    WIDGET_CATALOG, RoleName, WidgetDescriptor, build_role_posture,
+    WIDGET_CATALOG, WidgetDescriptor, build_role_posture,
     merge_widget_sets, sum_pending_counts, visible_user_ids,
-    widgets_for_dashboards,
 )
 
 
@@ -493,7 +491,6 @@ async def _wp_hr_flagged_attendance(db, user, posture) -> dict:
 
 
 async def _wp_hr_out_of_policy_expenses(db, user, posture) -> dict:
-    from app.models.expense import ExpenseLineItem
     rows = (await db.execute(
         select(func.count(ExpenseClaim.id)).where(
             and_(

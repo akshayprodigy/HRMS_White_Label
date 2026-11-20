@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 
 import httpx
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -284,7 +285,10 @@ async def test_push_rows_only_for_users_with_active_tokens(world):
 
 
 async def _quiet(w, tag, hard=False, around_now=True):
-    now = datetime.now(timezone.utc)
+    # quiet hours are org-local wall-clock
+    from _tz import TEST_TZ
+    from app.services.org_time import local_now, tz_from_name
+    now = local_now(tz_from_name(TEST_TZ))
     async with SessionLocal() as db:
         db.add(UserQuietHours(
             user_id=w["ids"][tag],
@@ -684,7 +688,7 @@ async def test_action_open_shift_claim(client, world):
     async with SessionLocal() as db:
         adm = await db.get(User, world["ids"]["adm"])
         s = await os_svc.create_open_shift(
-            db, adm, work_date=date.today() + timedelta(days=20),
+            db, adm, work_date=org_today() + timedelta(days=20),
             shift_template_id=world["tpl"], department=world["dx"], slots=1)
         await db.commit()
         sid = s.id

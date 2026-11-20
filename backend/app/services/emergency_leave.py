@@ -24,7 +24,7 @@ from typing import Iterable, List, Optional
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.services.org_time import local_today
+from app.services.org_time import local_date, local_today, org_tz
 from app.models.coverage_gap import CoverageGap, GapSource, GapStatus
 from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
 from app.models.notification import Notification
@@ -296,7 +296,7 @@ async def proof_check_job(
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    today = now.date()
+    today = local_date(now, await org_tz(db))
     uids = list(user_ids) if user_ids is not None else None
     reminded = await _send_reminders(db, today, uids)
     await db.commit()

@@ -3,6 +3,7 @@ import uuid
 from datetime import date
 
 import pytest
+from _tz import org_today  # noqa: E402
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -47,7 +48,7 @@ async def test_asset_models_and_uniqueness():
 
             db.add(AssetMaintenance(asset_id=asset_id, kind="repair",
                                     description="screen", cost_paise=1000,
-                                    started_on=date.today()))
+                                    started_on=org_today()))
             alloc = EmployeeAsset(
                 employee_id=emp_id, asset_type="Laptop", model="Test laptop",
                 asset_id=asset_id, allocated_by_id=user_id)
@@ -94,7 +95,7 @@ async def test_asset_models_and_uniqueness():
             db.add(a2)
             await db.commit()
             db.add(AssetMaintenance(asset_id=a2.id, kind="service",
-                                    description="x", started_on=date.today()))
+                                    description="x", started_on=org_today()))
             await db.commit()
             a2_id = a2.id
             await db.delete(await db.get(Asset, a2_id))

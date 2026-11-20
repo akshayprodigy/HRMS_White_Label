@@ -8,6 +8,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
 
@@ -230,7 +231,7 @@ async def mk_delegation(w, user, delegate, *, starts=None, ends=None,
     async with SessionLocal() as db:
         d = ApproverDelegation(
             user_id=ids[user], delegate_id=ids[delegate],
-            starts_on=starts or date.today() - timedelta(days=1),
+            starts_on=starts or org_today() - timedelta(days=1),
             ends_on=ends, only_when_on_leave=only_leave,
             revoked_at=datetime.now(timezone.utc) if revoked else None)
         db.add(d)

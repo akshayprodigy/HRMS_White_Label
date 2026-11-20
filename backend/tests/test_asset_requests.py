@@ -3,6 +3,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
 
@@ -215,9 +216,9 @@ async def test_create_validation(api, world):
     assert (await submit(api, world)).status_code == 409
     assert (await submit(api, world, key="off")).status_code == 422
     assert (await submit(api, world, key="b", reason="  ab  ")).status_code == 422
-    past = (date.today() - timedelta(days=1)).isoformat()
+    past = (org_today() - timedelta(days=1)).isoformat()
     assert (await submit(api, world, key="b", needed_by=past)).status_code == 422
-    fut = (date.today() + timedelta(days=5)).isoformat()
+    fut = (org_today() + timedelta(days=5)).isoformat()
     assert (await submit(api, world, key="b", needed_by=fut)).status_code == 200
     r = await api.post(P, headers=api.emp, json={
         "category_id": 99999999, "reason": "need something"})

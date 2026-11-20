@@ -385,7 +385,7 @@ async def purge_pings(session, now: Optional[datetime] = None) -> Dict[str, Any]
     pings = await _purge_batched(
         session, LocationPing, LocationPing.captured_at < cutoff)
     alerts = await _purge_batched(
-        session, TrackingAlert, TrackingAlert.work_date < cutoff.date())
+        session, TrackingAlert, TrackingAlert.work_date < local_date(cutoff, await org_tz(session)))
     return {"retention_days": days, "pings_deleted": pings,
             "alerts_deleted": alerts}
 

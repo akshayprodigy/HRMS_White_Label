@@ -1,4 +1,5 @@
 import pytest
+from _tz import org_today  # noqa: E402
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import date, timedelta
@@ -90,8 +91,8 @@ async def test_leave_approval_flow_scenario_a(db: AsyncSession):
     leave_req = LeaveRequest(
         employee_id=empa.id,
         leave_type_id=lt.id,
-        start_date=date.today() + timedelta(days=1),
-        end_date=date.today() + timedelta(days=2),
+        start_date=org_today() + timedelta(days=1),
+        end_date=org_today() + timedelta(days=2),
         reason="Vacation",
         status=LeaveStatus.SUBMITTED,
         created_by_user_id=empa.id
@@ -211,8 +212,8 @@ async def test_leave_approval_flow_scenario_b(db: AsyncSession):
     leave_req = LeaveRequest(
         employee_id=empb.id,
         leave_type_id=lt.id,
-        start_date=date.today() + timedelta(days=5),
-        end_date=date.today() + timedelta(days=5), # 1 day
+        start_date=org_today() + timedelta(days=5),
+        end_date=org_today() + timedelta(days=5), # 1 day
         reason="Sick",
         status=LeaveStatus.SUBMITTED,
         created_by_user_id=empb.id

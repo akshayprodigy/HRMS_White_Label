@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace as NS
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
@@ -35,7 +36,7 @@ from app.services.time_rules import (
 ROSTER = f"{settings.API_V1_STR}/roster"
 PW = "test@12345"
 D = date(2030, 1, 7)  # Monday
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 
 NIGHT = NS(start_time=time(22), end_time=time(6), is_overnight=True, break_minutes=0)
 LATE = NS(start_time=time(14), end_time=time(22), is_overnight=False, break_minutes=0)

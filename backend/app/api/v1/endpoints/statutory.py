@@ -710,7 +710,9 @@ async def list_filings(
             select(PayrollRun).where(PayrollRun.id.in_(run_ids))
         )).scalars().all()
     }
-    return [_build_filing_read(r, run=runs.get(r.payroll_run_id), today=await local_today(db)) for r in rows]
+    today = await local_today(db)
+    return [_build_filing_read(r, run=runs.get(r.payroll_run_id), today=today)
+            for r in rows]
 
 
 @router.get("/filings/{fid}/download")

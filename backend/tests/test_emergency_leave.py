@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
 
@@ -36,7 +37,7 @@ API = settings.API_V1_STR
 PW = "test@12345"
 PERMS = ("leave approve", "employee leave write", "employee leave read")
 RULE_KEYS = ("leave.emergency_backdate_days", "leave.emergency_proof_days")
-TODAY = datetime.now(timezone.utc).date()
+TODAY = org_today()
 
 
 def dn(n):

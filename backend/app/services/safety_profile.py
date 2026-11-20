@@ -1,9 +1,9 @@
 """Emergency profile data + night-shift consent (Phase 2 Task 8)."""
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Iterable, List, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.employee import Employee
