@@ -175,11 +175,6 @@ async def set_profile(db: AsyncSession, user_id: int, data: dict) -> Employee:
 
 # ---- night-shift consent ----
 
-def utc_today() -> date:
-    """The single 'today' for consent logic (UTC, like the rest of the roster)."""
-    return datetime.now(timezone.utc).date()
-
-
 async def apply_refusal(db: AsyncSession, refusal: NightShiftConsent) -> None:
     """A recorded refusal (consent_given=False) supersedes earlier grants that
     overlap its window: a grant that started before it is end-dated to the day
@@ -201,8 +196,8 @@ async def apply_refusal(db: AsyncSession, refusal: NightShiftConsent) -> None:
     await db.flush()
 
 
-def consent_dict(c: NightShiftConsent, today: Optional[date] = None) -> dict:
-    today = today or utc_today()
+def consent_dict(c: NightShiftConsent, today: date) -> dict:
+    """`today` is the org-local date (callers pass local_today(db))."""
     active = (c.consent_given and c.valid_from <= today
               and (c.valid_to is None or c.valid_to >= today))
     return {"id": c.id, "user_id": c.user_id, "consent_given": c.consent_given,

@@ -55,12 +55,13 @@ def build_employee_context(
     *,
     reference_number: Optional[str] = None,
     letter_date: Optional[date_cls] = None,
+    today: date_cls,
     overrides: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
     """Assemble the {{token}} -> value map from the employee record,
     its user, and company constants. `overrides` (HR-supplied extra
     context) is applied last so it wins over the derived values."""
-    ld = letter_date or date_cls.today()
+    ld = letter_date or today
     salary = getattr(emp, "salary", None)
     ctx: Dict[str, str] = {
         "employee_name": (getattr(user, "full_name", None) or "") if user else "",
@@ -79,7 +80,7 @@ def build_employee_context(
         "hr_signatory": HR_SIGNATORY,
         "hr_designation": HR_DESIGNATION,
         "reference_number": reference_number or "",
-        "today": _fmt_date(date_cls.today()),
+        "today": _fmt_date(today),
         "date": _fmt_date(ld),
     }
     if overrides:

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.api.v1.endpoints.roster_common import guard_conflicts
@@ -650,7 +651,7 @@ async def _drop_absent_approvers(
     if not approver_ids or window_days <= 0:
         return approver_ids
 
-    today = _date.today()
+    today = await local_today(db)
     since = today - _td(days=window_days)
     rows = (await db.execute(
         select(Attendance.user_id, Attendance.work_date).where(

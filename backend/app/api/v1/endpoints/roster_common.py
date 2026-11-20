@@ -12,6 +12,7 @@ from sqlalchemy.exc import (
     DataError, IntegrityError, OperationalError, PendingRollbackError,
 )
 
+from app.services.org_time import local_today
 from app.models.employee import Employee
 from app.models.roster import (
     RosterEntry, RosterStatus,
@@ -332,8 +333,9 @@ async def write_cells(
     lock_days = (await get_lock_rules(db))["lock_days"]
     if lock_days and cells:
         win = []
+        _today = await local_today(db)
         for (uid, wd, tpl_id, week_off) in cells:
-            if not roster_svc.in_lock_window(wd, lock_days):
+            if not roster_svc.in_lock_window(wd, lock_days, _today):
                 continue
             prior = existing_map.get((uid, wd))
             can_pub = uid in pub

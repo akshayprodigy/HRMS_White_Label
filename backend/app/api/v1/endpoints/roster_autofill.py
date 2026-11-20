@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.roster_common import check_window
 from app.models.coverage_requirement import CoverageRequirement
@@ -77,7 +78,7 @@ async def autofill_preview(
         roster_svc.working_cells(entries, asgs, templates, meta, w_start, w_end),
         templates)
 
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)
             if start + timedelta(days=i) >= today]
     cov = schedule_rules.compute_coverage(

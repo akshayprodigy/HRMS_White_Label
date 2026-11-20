@@ -24,6 +24,7 @@ from typing import Iterable, List, Optional
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app.services.org_time import local_today
 from app.models.coverage_gap import CoverageGap, GapSource, GapStatus
 from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
 from app.models.notification import Notification
@@ -40,15 +41,11 @@ HR_NOTIFY_CAP = 25
 REMINDER_TITLE = "Leave proof due tomorrow"
 
 
-def _today() -> date:
-    return datetime.now(timezone.utc).date()
-
-
 async def check_backdate(
     db, start_date: date, today: Optional[date] = None,
 ) -> None:
     """400 when start_date is older than `leave.emergency_backdate_days`."""
-    today = today or _today()
+    today = today or await local_today(db)
     rules = await get_emergency_leave_rules(db)
     oldest = today - timedelta(days=rules["backdate_days"])
     if start_date < oldest:
@@ -96,7 +93,7 @@ async def open_gaps_for_leave(
     from app.services import roster as roster_svc
     from app.services.effective_shift import effective_shifts_for_range
 
-    today = today or _today()
+    today = today or await local_today(db)
     first = max(leave.start_date, today)
     last = min(leave.end_date, first + timedelta(days=GAP_SPAN_CAP_DAYS))
     if last < first:

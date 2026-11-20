@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import HR_READ, HR_WRITE, log_audit
 from app.api.v1.endpoints.roster_common import (
@@ -252,7 +253,8 @@ async def list_consents(
         .order_by(NightShiftConsent.valid_from.desc(), NightShiftConsent.id.desc())
     )).scalars().all()
     await _audit(db, request, current_user, "safety.consent.list", user_id)
-    return [svc.consent_dict(c) for c in rows]
+    today = await local_today(db)
+    return [svc.consent_dict(c, today) for c in rows]
 
 
 @hr_router.post("/employees/{user_id}/night-consents", status_code=201)
@@ -282,7 +284,7 @@ async def create_consent(
     await db.refresh(c)
     await _audit(db, request, current_user, "safety.consent.create", user_id,
                  {"consent_id": c.id, "consent_given": c.consent_given})
-    return svc.consent_dict(c)
+    return svc.consent_dict(c, await local_today(db))
 
 
 @hr_router.post("/employees/{user_id}/night-consents/{consent_id}/end")
@@ -300,7 +302,7 @@ async def end_consent(
     ).scalars().first()
     if c is None:
         raise HTTPException(404, "Consent not found")
-    today = svc.utc_today()
+    today = await local_today(db)
     end = body.valid_to
     if end is None:
         if c.valid_from > today:
@@ -315,7 +317,7 @@ async def end_consent(
     await db.refresh(c)
     await _audit(db, request, current_user, "safety.consent.end", user_id,
                  {"consent_id": c.id})
-    return svc.consent_dict(c)
+    return svc.consent_dict(c, await local_today(db))
 
 
 # ------------------------------ roster -------------------------------

@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.employee import Employee
@@ -502,7 +503,7 @@ async def project_for_employee(
     if emp.user_id != current_user.id and not _user_can_view_all(current_user):
         raise HTTPException(403, "Not authorized")
 
-    fy = fy or fy_for_date(date.today())
+    fy = fy or fy_for_date(await local_today(db))
     slab = await _resolve_slab_config(db, fy)
     if slab is None:
         raise HTTPException(400, "No TaxSlabConfig configured")
@@ -584,7 +585,7 @@ async def reconcile_fy(
     slab = await _resolve_slab_config(db, fy)
     if slab is None:
         raise HTTPException(400, "No TaxSlabConfig configured for this FY")
-    cutoff = as_of or date.today()
+    cutoff = as_of or await local_today(db)
     months_remaining = fy_remaining_months_inclusive(cutoff.month)
 
     # All active employees with finalized payroll inside the FY.
@@ -732,7 +733,7 @@ async def _generate_form16_part_b(
     missing_pan = not (emp.pan_number and emp.pan_number.strip())
     pdf_data: Dict[str, Any] = {
         "fy": fy,
-        "date": date.today().isoformat(),
+        "date": (await local_today(db)).isoformat(),
         "employee_name": user.full_name if user else "",
         "employee_code": emp.employee_id,
         "pan": emp.pan_number or "",
@@ -1249,7 +1250,7 @@ async def gratuity_for_employee(
         raise HTTPException(403, "Not authorized")
 
     config = await _resolve_gratuity_config(db)
-    cutoff = as_of or date.today()
+    cutoff = as_of or await local_today(db)
     result, _ = await _compute_for_emp(db, emp, as_of=cutoff, config=config)
     return result
 
@@ -1260,7 +1261,7 @@ async def gratuity_liability(
     current_user: User = Depends(deps.check_permissions([PERM_GRATUITY_VIEW])),
 ) -> Any:
     """Company-wide accruing liability across all active employees."""
-    cutoff = as_of or date.today()
+    cutoff = as_of or await local_today(db)
     config = await _resolve_gratuity_config(db)
     emps = list((await db.execute(
         select(Employee).where(Employee.status == "active")
@@ -1326,7 +1327,7 @@ async def gratuity_at_exit(
         # last_working_day comes from the resignation if not overridden
         cutoff = cutoff or getattr(res, "last_working_day", None)
     if cutoff is None:
-        cutoff = date.today()
+        cutoff = await local_today(db)
 
     config = await _resolve_gratuity_config(db)
     result, last_basic = await _compute_for_emp(

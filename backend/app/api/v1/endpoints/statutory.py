@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.employee import Employee
@@ -140,7 +141,7 @@ def _ensure_run_finalized_or_published(run: PayrollRun) -> None:
 
 
 def _build_filing_read(
-    f: StatutoryFiling, *, run: Optional[PayrollRun] = None,
+    f: StatutoryFiling, *, run: Optional[PayrollRun] = None, today: date,
 ) -> StatutoryFilingRead:
     data = {c.name: getattr(f, c.name) for c in f.__table__.columns}
     if run is not None:
@@ -151,7 +152,7 @@ def _build_filing_read(
             else pf_due_date(run.year, run.month)
         )
         data["due_date"] = due
-        data["days_to_due"] = (due - date.today()).days
+        data["days_to_due"] = (due - today).days
     return StatutoryFilingRead.model_validate(data)
 
 
@@ -674,11 +675,12 @@ async def generate(
         request,
     )
     await db.commit()
+    today = await local_today(db)
     for f in filings:
         await db.refresh(f)
 
     return GenerateResult(
-        filings=[_build_filing_read(f, run=run) for f in filings],
+        filings=[_build_filing_read(f, run=run, today=today) for f in filings],
         skipped_states=skipped_states, notes=notes,
     )
 
@@ -708,7 +710,7 @@ async def list_filings(
             select(PayrollRun).where(PayrollRun.id.in_(run_ids))
         )).scalars().all()
     }
-    return [_build_filing_read(r, run=runs.get(r.payroll_run_id)) for r in rows]
+    return [_build_filing_read(r, run=runs.get(r.payroll_run_id), today=await local_today(db)) for r in rows]
 
 
 @router.get("/filings/{fid}/download")
@@ -760,7 +762,7 @@ async def update_filing_status(
     await db.commit()
     await db.refresh(f)
     run = await db.get(PayrollRun, f.payroll_run_id)
-    return _build_filing_read(f, run=run)
+    return _build_filing_read(f, run=run, today=await local_today(db))
 
 
 # =====================================================================
@@ -886,7 +888,7 @@ async def compliance_dashboard(
     employees) but for which no filing has been generated yet are
     listed with status=draft so HR can see the gap.
     """
-    today = date.today()
+    today = await local_today(db)
     # Last N finalized/published runs
     cutoff_year = today.year - (months_back // 12 + 1)
     runs = list((await db.execute(

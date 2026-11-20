@@ -16,7 +16,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from _cleanup import purge_shift_templates
-from _tz import org_tz_utc  # noqa: F401  (pre-6A UTC expectations)
 from app.api import deps
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -335,8 +334,13 @@ async def test_roster_shift_changed_after_punch_is_baseline(world, client):
 async def test_night_allowance_with_rule_and_naive_db_datetimes(world, client):
     await _add_night_rule(world)
     i = world["ids"]
-    await _punch(i["ovn"], MON, i["t_night"], at(MON, 22),
-                 at(MON + timedelta(days=1), 7, 30))
+    # The night rule window is org-local wall-clock: punch 22:00 -> 07:30 in
+    # the org timezone (stored as UTC instants).
+    from app.services.org_time import local_to_utc, org_tz
+    async with SessionLocal() as db:
+        tz = await org_tz(db)
+    await _punch(i["ovn"], MON, i["t_night"], local_to_utc(MON, time(22, 0), tz),
+                 local_to_utc(MON + timedelta(days=1), time(7, 30), tz))
     await _recompute(client, world, ("ovn",), MON, MON)
     nt = (await _snapshot(world, ("ovn",)))["night"]
     assert len(nt) == 1 and nt[0]["night_minutes"] == 480
@@ -348,7 +352,9 @@ async def test_nightly_job_processes_lookback_window_only(world):
     spec = REGISTRY["overtime_recompute_yesterday"]
     assert spec.default_cadence_cron == "30 1 * * *"
     i = world["ids"]
-    today = datetime.now(UTC).date()
+    from app.services.org_time import local_today
+    async with SessionLocal() as db:
+        today = await local_today(db)
     yday, d2 = today - timedelta(days=1), today - timedelta(days=5)
     async with SessionLocal() as db:  # keep the job off real data
         for r in (await db.execute(select(OvertimeRule).where(

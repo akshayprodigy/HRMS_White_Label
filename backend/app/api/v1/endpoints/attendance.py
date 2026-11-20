@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.roster_common import lock_user_rows, retry_on_lock
 from app.models.attendance import Attendance
@@ -247,7 +248,7 @@ async def get_all_attendance(
     Returns the shift snapshot name + cross-midnight + attribution_flag
     so the UI can render the right indicators.
     """
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     range_start = date_from or today
     range_end = date_to or today
 
@@ -369,7 +370,7 @@ async def get_flagged_attendance(
     about — either the shift resolver (attribution_flag) or the geo
     layer (geo_flag / punch_out_geo_flag).
     """
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     range_start = date_from or (today - timedelta(days=30))
     range_end = date_to or today
 

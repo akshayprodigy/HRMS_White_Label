@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, or_, select, func
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.employee import Employee
@@ -770,7 +771,7 @@ async def get_my_current_shift(
     db: deps.DBDep,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    today = date_cls.today()
+    today = await local_today(db)
     asg = await _effective_for(db, current_user.id, today)
     return EffectiveShiftResponse(
         employee_id=current_user.id,
@@ -802,7 +803,7 @@ async def get_my_week(
     from app.models.leave import LeaveRequest, LeaveStatus
     from app.services.time_rules import build_default_shift, get_time_rules
 
-    today = date_cls.today()
+    today = await local_today(db)
     week_start = start or (today - timedelta(days=today.weekday()))
     days = [week_start + timedelta(days=i) for i in range(7)]
 
@@ -948,7 +949,7 @@ async def create_change_request(
 ) -> Any:
     """Employee requests a shift change (routed Manager -> HR via the
     chain engine; approvers act in their approvals queue)."""
-    today = datetime.now(_tz.utc).date()
+    today = await local_today(db)
     if payload.effective_from <= today:
         raise HTTPException(
             422, "effective_from must be a future date."

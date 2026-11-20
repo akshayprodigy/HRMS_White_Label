@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.approval import ApprovalItem, ApprovalStatus, ApprovalStep
@@ -838,7 +839,7 @@ async def apply_due(
     current_user: User = Depends(deps.check_permissions([PERM_REV_APPLY])),
 ) -> Any:
     """Apply every APPROVED revision whose effective_from <= as_of (today)."""
-    cutoff = as_of or date.today()
+    cutoff = as_of or await local_today(db)
     rows = (await db.execute(
         select(SalaryRevision).where(and_(
             SalaryRevision.status == RevisionStatus.APPROVED,

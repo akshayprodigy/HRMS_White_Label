@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from sqlalchemy import and_, or_, select
 
+from app.services.org_time import local_today
 from app.models.asset import Asset, AssetCategory, AssetStatus
 from app.models.audit import AuditLog
 from app.models.employee import Employee, EmployeeStatus
@@ -109,14 +110,15 @@ async def allocate(db, *, asset, employee, actor, issued_date=None,
         raise AssetStateError("Employee not found")
     if employee.status == EmployeeStatus.INACTIVE:
         raise AssetStateError("Cannot allocate an asset to an inactive employee")
-    if issued_date and issued_date > date.today():
+    today = await local_today(db)
+    if issued_date and issued_date > today:
         raise AssetStateError("Issue date cannot be in the future")
     category = await db.get(AssetCategory, asset.category_id)
     alloc = EmployeeAsset(
         employee_id=employee.id, asset_id=asset.id, status="allocated",
         asset_type=(category.name if category else "Asset")[:50],
         model=asset.name[:150], serial_no=asset.serial_no,
-        identifier=asset.asset_tag, issued_date=issued_date or date.today(),
+        identifier=asset.asset_tag, issued_date=issued_date or today,
         condition=condition, remarks=remarks,
         allocated_by_id=actor.id, created_by_id=actor.id)
     db.add(alloc)
@@ -139,8 +141,9 @@ async def return_asset(db, *, asset, actor, returned_date=None, condition=None,
     alloc = await open_allocation(db, asset.id, lock=True)
     if alloc is None:
         raise AssetStateError("Asset has no open allocation to return")
-    rdate = returned_date or date.today()
-    if rdate > date.today():
+    today = await local_today(db)
+    rdate = returned_date or today
+    if rdate > today:
         raise AssetStateError("Return date cannot be in the future")
     if alloc.issued_date and rdate < alloc.issued_date:
         raise AssetStateError("Return date cannot be before the issue date")
@@ -174,7 +177,7 @@ async def mark_lost(db, *, asset, actor, remarks) -> Optional[EmployeeAsset]:
         alloc = await open_allocation(db, asset.id, lock=True)
         if alloc is not None:
             alloc.status = "lost"
-            alloc.returned_date = date.today()
+            alloc.returned_date = await local_today(db)
             alloc.remarks = _append(alloc.remarks, remarks)
             details["employee_id"] = alloc.employee_id
             details["allocation_id"] = alloc.id
@@ -245,7 +248,7 @@ async def run_asset_expiry_alerts(db, today: Optional[date] = None) -> dict:
     committed stamps). Dedupe stamps record the expiry date alerted for, so a
     changed expiry alerts again. Does NOT commit; the caller does."""
     from app.services import roster as roster_svc
-    today = today or date.today()
+    today = today or await local_today(db)
     window_end = today + timedelta(days=await _expiry_alert_days(db))
     w_hit = and_(Asset.warranty_expiry.between(today, window_end),
                  or_(Asset.warranty_alert_for.is_(None),

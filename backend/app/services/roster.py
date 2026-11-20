@@ -18,6 +18,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.models.department import Department
 from app.models.employee import Employee, EmployeeStatus
 from app.models.leave import LeaveRequest, LeaveStatus
@@ -123,8 +124,8 @@ async def _resolve_scope(
 async def active_delegations(
     db: AsyncSession, user: User, on: Optional[pydate] = None
 ) -> List[ScheduleDelegation]:
-    # Validity dates are evaluated in UTC (project convention).
-    on = on or datetime.now(timezone.utc).date()
+    # Validity dates are evaluated in the org timezone.
+    on = on or await local_today(db)
     return list((await db.execute(
         select(ScheduleDelegation).where(
             ScheduleDelegation.grantee_id == user.id,
@@ -262,7 +263,7 @@ async def schedule_approver_ids(db: AsyncSession, employee_user_ids: set) -> set
 
     ids = set(employee_user_ids)
     cands: set = set()
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     for d in (await db.execute(
         select(ScheduleDelegation).where(
             ScheduleDelegation.can_approve_changes.is_(True),
@@ -320,19 +321,11 @@ def norm_cell(tpl: Optional[int], off: bool) -> Cell:
     return (None, True) if off else (tpl, False)
 
 
-def utc_today() -> pydate:
-    # The lock window is anchored to the UTC calendar day, matching the
-    # project-wide UTC wall-clock convention for roster dates. Org-timezone
-    # anchoring is a tracked follow-up.
-    return datetime.now(timezone.utc).date()
-
-
-def in_lock_window(d: pydate, lock_days: int, today: Optional[pydate] = None) -> bool:
+def in_lock_window(d: pydate, lock_days: int, today: pydate) -> bool:
     """True when `d` is within [today, today + lock_days] (lock_days 0 = the
     lock is off)."""
     if lock_days <= 0:
         return False
-    today = today or utc_today()
     return today <= d <= today + timedelta(days=lock_days)
 
 
@@ -419,7 +412,7 @@ async def lock_guard(
     lock_days = (await get_lock_rules(db))["lock_days"]
     if not lock_days:
         return set()
-    today = today or utc_today()
+    today = today or await local_today(db)
     locked = {
         (uid, d) for (uid, d, old, new) in cells
         if in_lock_window(d, lock_days, today) and tuple(old) != tuple(new)
@@ -1058,7 +1051,7 @@ async def publish_drafts(
     base: Dict[Tuple[int, pydate], Cell] = {}
     locked: set = set()
     if lock_days:
-        win = [d for d in todo if in_lock_window(d.work_date, lock_days)]
+        win = [d for d in todo if in_lock_window(d.work_date, lock_days, await local_today(db))]
         base = await assignment_cells(
             db, {(d.employee_id, d.work_date) for d in win})
         locked = await lock_guard(db, actor, [

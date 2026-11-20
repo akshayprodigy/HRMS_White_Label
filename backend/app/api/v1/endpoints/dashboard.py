@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.models.approval import ApprovalItem, ApprovalStatus, ApprovalStep
 from app.models.approval_chain import (
@@ -74,7 +75,7 @@ async def _posture_for(db, user: User):
 
 
 async def _wp_my_attendance_today(db, user, posture) -> dict:
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     row = (await db.execute(
         select(Attendance).where(
             and_(
@@ -329,7 +330,7 @@ async def _wp_unified_approval_queue(db, user, posture) -> dict:
 
 async def _wp_team_attendance_today(db, user, posture) -> dict:
     scoped = visible_user_ids(posture, widget_scope="team")
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     stmt = select(Attendance).where(Attendance.work_date == today)
     if scoped is not None:
         stmt = stmt.where(Attendance.user_id.in_(scoped))
@@ -350,7 +351,7 @@ async def _wp_team_attendance_today(db, user, posture) -> dict:
 
 async def _wp_team_on_leave_this_week(db, user, posture) -> dict:
     scoped = visible_user_ids(posture, widget_scope="team")
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     week_end = today + timedelta(days=7)
     stmt = select(LeaveRequest).where(
         and_(
@@ -402,7 +403,7 @@ async def _wp_team_1on1_coverage(db, user, posture) -> dict:
         return {"count_reportees": 0, "no_meeting_30d": 0}
 
     # Meetings in the last 30 days.
-    since = datetime.now(timezone.utc).date() - timedelta(days=30)
+    since = await local_today(db) - timedelta(days=30)
     stmt = (
         select(
             OneOnOne.manager_id, OneOnOne.reportee_id,
@@ -457,7 +458,7 @@ async def _wp_hr_flagged_attendance(db, user, posture) -> dict:
     from app.models.attendance import Attendance
     from datetime import timedelta as _td
 
-    since = datetime.now(timezone.utc).date() - _td(days=30)
+    since = await local_today(db) - _td(days=30)
     stmt = select(func.count(Attendance.id)).where(
         and_(
             Attendance.work_date >= since,
@@ -551,7 +552,7 @@ async def _wp_hr_headcount_trend(db, user, posture) -> dict:
 
 async def _wp_hr_attrition_rate(db, user, posture) -> dict:
     # Simple current-month leavers over avg headcount.
-    today = datetime.now(timezone.utc).date()
+    today = await local_today(db)
     month_start = today.replace(day=1)
     active = (await db.execute(
         select(func.count(User.id)).where(User.is_active.is_(True))

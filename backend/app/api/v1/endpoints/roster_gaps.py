@@ -207,7 +207,7 @@ async def create_gap(
     body: GapCreate,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    if body.work_date < os_svc.today():
+    if body.work_date < await os_svc.today(db):
         raise HTTPException(status_code=400, detail="work_date cannot be in the past")
     tpl = await db.get(ShiftTemplate, body.shift_template_id)
     if tpl is None or not tpl.is_active:

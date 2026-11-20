@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.roster_common import (
     check_window, commit_or_409, guard_conflicts, lock_row, lock_user_rows,
@@ -36,10 +37,6 @@ from app.services.attendance_lock import assert_attendance_editable
 router = APIRouter()
 BACKDATE_DAYS = 7
 MAX_LIST = 2000
-
-
-def _today() -> pydate:  # patched in tests
-    return datetime.now(timezone.utc).date()
 
 
 # ------------------------------- schemas -------------------------------
@@ -153,7 +150,7 @@ async def _out_many(db, rows: List[OnCallAssignment]) -> List[dict]:
 
 async def _check_date(db, actor: User, d: pydate) -> None:
     """Past-date policy (see module docstring)."""
-    today = _today()
+    today = await local_today(db)
     if d >= today:
         return
     if d < today - timedelta(days=BACKDATE_DAYS) \
@@ -414,7 +411,7 @@ async def my_on_call(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     """The caller's on-call days (default: today .. today+30)."""
-    s = start or _today()
+    s = start or await local_today(db)
     e = end or (s + timedelta(days=30))
     check_window(s, e)
     rows = (await db.execute(

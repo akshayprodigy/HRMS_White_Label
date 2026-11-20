@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
+from app.services.org_time import local_today
 from app.api import deps
 from sqlalchemy.exc import IntegrityError
 
@@ -159,11 +160,11 @@ def _life(a: Asset, cat: AssetCategory) -> Optional[int]:
     return a.useful_life_months or cat.default_useful_life_months
 
 
-def _bv(a: Asset, cat: AssetCategory):
+def _bv(a: Asset, cat: AssetCategory, today: date):
     return book_value(
         cost_paise=a.purchase_cost_paise, salvage_paise=a.salvage_value_paise,
         purchase_date=a.purchase_date, life_months=_life(a, cat),
-        on=date.today())
+        on=today)
 
 
 def _life_info(a: Asset, cat: AssetCategory) -> tuple:
@@ -175,8 +176,9 @@ def _life_info(a: Asset, cat: AssetCategory) -> tuple:
     return DEFAULT_LIFE_MONTHS, "default"
 
 
-def _asset_out(a: Asset, cat: AssetCategory, holder: Optional[dict]) -> dict:
-    bv = _bv(a, cat)
+def _asset_out(a: Asset, cat: AssetCategory, holder: Optional[dict],
+               today: date) -> dict:
+    bv = _bv(a, cat, today)
     eff, src = _life_info(a, cat)
     return {
         "id": a.id, "asset_tag": a.asset_tag, "name": a.name, "model": a.model,
@@ -217,8 +219,9 @@ async def _detail(db, asset_id: int) -> dict:
     if a is None:
         raise HTTPException(404, "Asset not found")
     cat = await db.get(AssetCategory, a.category_id)
-    out = _asset_out(a, cat, await _holder(db, a.id))
-    bv = _bv(a, cat)
+    today = await local_today(db)
+    out = _asset_out(a, cat, await _holder(db, a.id), today)
+    bv = _bv(a, cat, today)
     out["depreciation"] = (
         {"cost_paise": bv.cost_paise, "salvage_paise": bv.salvage_paise,
          "life_months": bv.life_months, "months_elapsed": bv.months_elapsed,
@@ -334,7 +337,7 @@ async def patch_category(db: deps.DBDep, category_id: int,
 # ── summary / by-tag (static, before /{asset_id}) ────────────────────────
 @router.get("/summary")
 async def summary(db: deps.DBDep) -> Any:
-    today = date.today()
+    today = await local_today(db)
     by_status = {s: 0 for s in (
         AssetStatus.IN_STOCK, AssetStatus.ALLOCATED, AssetStatus.IN_REPAIR,
         AssetStatus.RETIRED, AssetStatus.LOST)}
@@ -360,7 +363,7 @@ async def summary(db: deps.DBDep) -> Any:
                 AssetCategory, AssetCategory.id == Asset.category_id)
             .where(Asset.purchase_cost_paise.is_not(None),
                    Asset.purchase_date.is_not(None)))).all():
-        bv = _bv(a, cat)
+        bv = _bv(a, cat, today)
         if bv:
             book_total += bv.book_value_paise
     return {"by_status": by_status, "by_category": by_cat,
@@ -414,7 +417,7 @@ async def list_assets(
             Asset.serial_no.ilike(like, escape="\\"),
             User.full_name.ilike(like, escape="\\")))
     if expiring_within_days is not None:
-        today = date.today()
+        today = await local_today(db)
         end = today + timedelta(days=expiring_within_days)
         conds.append(Asset.status.notin_(
             [AssetStatus.RETIRED, AssetStatus.LOST]))
@@ -431,8 +434,9 @@ async def list_assets(
     rows = (await db.execute(
         base.where(*conds).order_by(Asset.id.desc())
         .limit(limit).offset(offset))).all()
+    today = await local_today(db)
     items = [_asset_out(a, cat, {"employee_id": eid, "emp_code": code,
-                                 "name": name} if eid else None)
+                                 "name": name} if eid else None, today)
              for a, cat, eid, code, name in rows]
     return {"items": items, "total": total}
 
@@ -451,7 +455,7 @@ async def create_asset(db: deps.DBDep, current_user: deps.CurrentUser,
             await db.execute(select(AssetCategory.id).where(
                 AssetCategory.id == body.category_id).with_for_update())
         cat = await _active_category(db, body.category_id)
-        if body.purchase_date and body.purchase_date > date.today():
+        if body.purchase_date and body.purchase_date > await local_today(db):
             raise HTTPException(422, "Purchase date cannot be in the future")
         await _check_location(db, body.location_id)
         tag = explicit
@@ -515,7 +519,7 @@ async def patch_asset(db: deps.DBDep, asset_id: int, body: AssetPatch) -> Any:
     if data.get("location_id") is not None:
         await _check_location(db, data["location_id"])
     pd = data.get("purchase_date")
-    if pd and pd > date.today():
+    if pd and pd > await local_today(db):
         raise HTTPException(422, "Purchase date cannot be in the future")
     for k, v in data.items():
         setattr(a, k, v)

@@ -37,6 +37,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.services.org_time import local_today
 from app.models.scheduled_job import JobRunStatus, ScheduledJob
 
 
@@ -274,7 +275,7 @@ async def _job_apply_due_revisions(session: AsyncSession) -> Dict[str, Any]:
     from app.models.revision import SalaryRevision, RevisionStatus
     from app.api.v1.endpoints.revisions import _apply_one
 
-    cutoff = date.today()
+    cutoff = await local_today(session)
     rows = (await session.execute(
         select(SalaryRevision).where(and_(
             SalaryRevision.status == RevisionStatus.APPROVED,
@@ -387,7 +388,7 @@ async def _job_esic_continuation_detect(
     from app.models.statutory import EmployeeStatutoryDetail
 
     updates = 0
-    today = date.today()
+    today = await local_today(session)
     # ESIC contribution periods: Apr-Sep (ends 30-Sep) and Oct-Mar
     # (ends 31-Mar). Compute inline — no dependency on statutory.py.
     if 4 <= today.month <= 9:
@@ -581,7 +582,7 @@ async def _job_birthday_anniversary_reminders(session: AsyncSession) -> Dict[str
     from app.models.employee import Employee
     from app.models.user import User, Role
 
-    today = date.today()
+    today = await local_today(session)
 
     hr_users = (await session.execute(
         select(User).join(User.roles).where(
@@ -842,17 +843,16 @@ register_job(JobSpec(
 
 async def _job_overtime_recompute_yesterday(session: AsyncSession) -> Dict[str, Any]:
     """Recompute OT + night allowance for a lookback window of
-    yesterday-2 .. yesterday (UTC) for every attendance row that has a
+    yesterday-2 .. yesterday (org-local days) for every attendance row that has a
     punch-out, so a punch that was still open on an earlier night is picked
     up once closed. Idempotent; never touches entries already attached to a
     payroll run. No requesting user: PENDING OT for employees without a
     manager is routed to the HR role.
 
-    work_date is a UTC date throughout (product convention; no org
-    timezone yet)."""
+    work_date is the org-local calendar day (org.timezone)."""
     from app.api.v1.endpoints.overtime import recompute_range
 
-    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+    yesterday = await local_today(session) - timedelta(days=1)
     counts = await recompute_range(
         session, yesterday - timedelta(days=2), yesterday,
         user_ids=None, requested_by_id=None, require_punch_out=True,
@@ -867,7 +867,7 @@ register_job(JobSpec(
     display_name="Nightly overtime / night-allowance recompute",
     description=(
         "Daily: recompute overtime and night-shift allowance for the last 3 days' "
-        "(UTC) completed attendance using the effective (roster-aware) "
+        "(org-local days) completed attendance using the effective (roster-aware) "
         "shift. Entries already in a payroll run are never modified."
     ),
     default_cadence_cron="30 1 * * *",     # daily 01:30 UTC

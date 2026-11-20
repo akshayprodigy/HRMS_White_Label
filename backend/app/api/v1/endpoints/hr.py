@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from fastapi.responses import FileResponse
 
+from app.services.org_time import local_today
 from app.core.datetime_utils import as_utc
 from app.api import deps
 from app.core.config import settings
@@ -848,7 +849,7 @@ async def process_employee_row(
 
     # Parse joining date
     join_date_val = col_val(COL_JOIN_DATE)
-    join_date = str(join_date_val) if join_date_val else str(date.today())
+    join_date = str(join_date_val) if join_date_val else str(await local_today(db))
 
     # Create employee
     try:
@@ -3027,7 +3028,7 @@ async def preview_letter_template(
         db, template_id, body.employee_id
     )
     context = build_employee_context(
-        emp, emp.user, letter_date=body.date,
+        emp, emp.user, letter_date=body.date, today=await local_today(db),
         overrides=body.extra_context,
     )
     rendered, missing = render_letter_body(tpl.body, context)
@@ -3053,13 +3054,14 @@ async def generate_from_letter_template(
     ref_number = await _next_letter_ref(db, LetterType.CUSTOM)
     context = build_employee_context(
         emp, emp.user, reference_number=ref_number,
-        letter_date=body.date, overrides=body.extra_context,
+        letter_date=body.date, today=await local_today(db),
+        overrides=body.extra_context,
     )
     rendered, _missing = render_letter_body(tpl.body, context)
 
     payload = {
         "reference_number": ref_number,
-        "date": (body.date or date.today()).isoformat(),
+        "date": (body.date or await local_today(db)).isoformat(),
         "title": body.title or tpl.name,
         "rendered_body": rendered,
         "template_id": tpl.id,
@@ -3810,7 +3812,7 @@ async def upcoming_celebrations(
     avoids wrap-around bugs at year-end without database date_part calls
     that would be MariaDB-specific.
     """
-    today = date.today()
+    today = await local_today(db)
     end = today + timedelta(days=days)
 
     employees = (await db.execute(
@@ -3940,7 +3942,7 @@ async def celebration_report(
         if kind in ("all", "anniversary") else set()
     )
 
-    today = date.today()
+    today = await local_today(db)
     birthdays: List[Dict[str, Any]] = []
     anniversaries: List[Dict[str, Any]] = []
     by_department: Dict[str, Dict[str, int]] = {}
@@ -4379,7 +4381,7 @@ async def update_asset(
 
     # If marking returned without a date, default to today.
     if update_data.get("status") == "returned" and not update_data.get("returned_date") and not asset.returned_date:
-        update_data["returned_date"] = date.today()
+        update_data["returned_date"] = await local_today(db)
 
     for field, value in update_data.items():
         setattr(asset, field, value)

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.approval_chains import _is_hr_or_admin
 from app.api.v1.endpoints.roster_common import (
@@ -25,7 +26,7 @@ from app.api.v1.endpoints.roster_common import (
 from app.models.approver_delegation import ApproverDelegation
 from app.models.user import User
 from app.services.approver_delegation import (
-    active_delegators, today_utc, user_names,
+    active_delegators, user_names,
 )
 
 router = APIRouter()
@@ -40,8 +41,7 @@ class DelegationIn(BaseModel):
     note: Optional[str] = Field(None, max_length=255)
 
 
-def _dict(d: ApproverDelegation, names: dict, live: set) -> dict:
-    today = today_utc()
+def _dict(d: ApproverDelegation, names: dict, live: set, today: date) -> dict:
     revoked = d.revoked_at is not None
     expired = d.ends_on is not None and d.ends_on < today
     return {
@@ -66,7 +66,8 @@ async def _render(db, rows: List[ApproverDelegation]) -> list:
     live: set = set()
     for did in {r.delegate_id for r in rows}:
         live |= {d.id for d in (await active_delegators(db, did)).values()}
-    return [_dict(r, names, live) for r in rows]
+    today = await local_today(db)
+    return [_dict(r, names, live, today) for r in rows]
 
 
 @router.get("/me/approval-delegations")
@@ -116,7 +117,7 @@ async def create_delegation(
     delegate = await db.get(User, payload.delegate_id)
     if delegate is None or not delegate.is_active:
         raise HTTPException(400, "Delegate not found or inactive")
-    starts = payload.starts_on or today_utc()
+    starts = payload.starts_on or await local_today(db)
     if payload.ends_on and payload.ends_on < starts:
         raise HTTPException(400, "End date is before the start date")
     far = date.max

@@ -8,7 +8,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from _cleanup import purge_gap_notifications, purge_shift_templates
-from _tz import org_tz_utc  # noqa: F401  (pre-6A UTC expectations)
 from app.api import deps
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -36,7 +35,8 @@ from app.services.time_rules import set_time_rules
 
 SW = f"{settings.API_V1_STR}/roster/swaps"
 PW = "test@12345"
-TODAY = datetime.now(timezone.utc).date()
+from app.services.org_time import local_today_for, tz_from_name  # noqa: E402
+TODAY = local_today_for(tz_from_name("Asia/Kolkata"))  # org default tz
 D = TODAY + timedelta(days=10)
 
 

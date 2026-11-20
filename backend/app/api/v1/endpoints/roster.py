@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.employee import Employee
@@ -421,7 +422,7 @@ async def my_roster(
     end: Optional[pydate] = Query(None),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    today = pydate.today()
+    today = await local_today(db)
     s = start or (today - timedelta(days=today.weekday()))
     e = end or (s + timedelta(days=6))
     rows = (await db.execute(
@@ -447,7 +448,7 @@ async def my_roster_week(
     from app.models.hr import HolidayCalendar
     from app.services.time_rules import build_default_shift, get_time_rules
 
-    today = pydate.today()
+    today = await local_today(db)
     week_start = start or (today - timedelta(days=today.weekday()))
     days = [week_start + timedelta(days=i) for i in range(7)]
 

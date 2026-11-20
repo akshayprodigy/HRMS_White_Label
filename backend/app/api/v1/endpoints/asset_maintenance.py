@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.roster_common import (
     commit_or_409, guard_conflicts, plain_actor, retry_on_lock,
@@ -78,13 +79,13 @@ def _audit(db, actor, action: str, asset_id: int, details: dict) -> None:
                     resource_id=str(asset_id), details=details))
 
 
-def _check_dates(started: date, completed: Optional[date],
+def _check_dates(started: date, completed: Optional[date], today: date,
                  check_future: bool = True) -> None:
-    if check_future and started > date.today():
+    if check_future and started > today:
         raise HTTPException(422, "Start date cannot be in the future")
     if completed is not None and completed < started:
         raise HTTPException(422, "Completion date cannot be before start date")
-    if completed is not None and completed > date.today():
+    if completed is not None and completed > today:
         raise HTTPException(422, "Completion date cannot be in the future")
 
 
@@ -152,7 +153,7 @@ async def list_maintenance(db: deps.DBDep, asset_id: int) -> Any:
 async def add_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
                           asset_id: int, body: MaintenanceIn) -> Any:
     actor = plain_actor(current_user)
-    _check_dates(body.started_on, body.completed_on)
+    _check_dates(body.started_on, body.completed_on, await local_today(db))
     if body.move_to_repair and body.completed_on is not None:
         raise HTTPException(
             422, "Cannot open and complete a repair in one entry")
@@ -209,7 +210,7 @@ async def patch_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
             raise HTTPException(
                 422, "Completed maintenance can't be reopened")
         if complete and data.get("completed_on") is None:
-            data["completed_on"] = date.today()
+            data["completed_on"] = await local_today(db)
         # setting completed_on on an open entry is a completion too
         completing = m.completed_on is None and \
             data.get("completed_on") is not None
@@ -217,7 +218,7 @@ async def patch_maintenance(db: deps.DBDep, current_user: deps.CurrentUser,
         completed = data["completed_on"] if "completed_on" in data \
             else m.completed_on
         try:
-            _check_dates(started, completed,
+            _check_dates(started, completed, await local_today(db),
                          check_future="started_on" in data)
         except HTTPException:
             await db.rollback()

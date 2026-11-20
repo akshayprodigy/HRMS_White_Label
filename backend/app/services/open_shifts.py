@@ -12,6 +12,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app.services.org_time import local_today
 from app.api.v1.endpoints.roster_common import lock_row, lock_user_rows
 from app.models.employee import Employee, EmployeeStatus
 from app.models.open_shift import (
@@ -33,8 +34,9 @@ DRAFT_WARNING = "An unpublished draft"
 NOTIFY_CAP = 500
 
 
-def today() -> date:
-    return datetime.now(timezone.utc).date()
+async def today(db) -> date:
+    """Org-local calendar day (Phase 6A)."""
+    return await local_today(db)
 
 
 # ----------------------------- eligibility -----------------------------
@@ -74,7 +76,7 @@ async def eligibility_matrix(
     approver_pub = (
         await roster_svc.publishable_subset(db, approver, uids)
         if approver is not None else set())
-    t = today()
+    t = await today(db)
     live = [s for s in shifts.values() if s.work_date >= t]
     eff: dict = {}
     leave: set = set()
@@ -163,7 +165,7 @@ async def create_open_shift(
 ) -> OpenShift:
     """Validate, insert and notify eligible employees. Flushes, never
     commits. Raises HTTPException (400 validation, 403 scope)."""
-    if work_date < today():
+    if work_date < await today(db):
         raise HTTPException(status_code=400, detail="work_date cannot be in the past")
     if not 1 <= slots <= 50:
         raise HTTPException(status_code=400, detail="slots must be between 1 and 50")

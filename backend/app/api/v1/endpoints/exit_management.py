@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.models.audit import AuditLog
 from app.models.employee import Employee
@@ -156,7 +157,7 @@ async def _auto_advance_notice_period(db) -> None:
     Called at the top of every HR list/detail read so it fires on the next
     page load after the LWD passes — no background worker required.
     """
-    today = date.today()
+    today = await local_today(db)
 
     result = await db.execute(
         select(Resignation)
@@ -242,7 +243,7 @@ async def submit_resignation(
             detail="You already have an active resignation"
         )
 
-    today = date.today()
+    today = await local_today(db)
     notice_days = emp.notice_period_days if emp.notice_period_days is not None else 30
     last_working_day = today + timedelta(days=notice_days)
 
@@ -358,7 +359,7 @@ async def get_my_resignation(
     if not resignation:
         return None
 
-    days_remaining = (resignation.last_working_day - date.today()).days
+    days_remaining = (resignation.last_working_day - await local_today(db)).days
     all_cleared = all(
         c.status == ClearanceStatus.CLEARED
         for c in resignation.clearance_requests
@@ -480,7 +481,7 @@ async def get_exit_details(
     await _auto_advance_notice_period(db)
     resignation = await _get_resignation(db, resignation_id)
 
-    days_remaining = (resignation.last_working_day - date.today()).days
+    days_remaining = (resignation.last_working_day - await local_today(db)).days
     all_cleared = all(
         c.status == ClearanceStatus.CLEARED
         for c in resignation.clearance_requests
@@ -729,7 +730,7 @@ async def expedite_resignation(
             detail=f"Cannot expedite resignation in '{resignation.status}' status",
         )
 
-    today = date.today()
+    today = await local_today(db)
     new_lwd = body.last_working_day
     if new_lwd < today:
         raise HTTPException(

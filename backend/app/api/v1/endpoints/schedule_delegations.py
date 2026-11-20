@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_, select
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.models.department import Department
@@ -94,7 +95,7 @@ async def list_delegations(
     require_admin(current_user)
     q = select(ScheduleDelegation).order_by(ScheduleDelegation.id.desc())
     if not include_inactive:
-        today = datetime.now(timezone.utc).date()
+        today = await local_today(db)
         q = q.where(
             ScheduleDelegation.revoked_at.is_(None),
             or_(ScheduleDelegation.valid_to.is_(None),

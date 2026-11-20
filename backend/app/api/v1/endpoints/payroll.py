@@ -4,6 +4,7 @@ from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy import select, and_, func, delete, update as sa_update
+from app.services.org_time import local_today
 from app.api import deps
 from app.models.payroll import (
     PayrollRun, PayrollLine, Payslip, PayrollRunStatus, SalaryDisbursement
@@ -95,7 +96,7 @@ async def get_payroll_dashboard(
     last_finalized = last_finalized_res.scalar_one_or_none()
 
     # Total processed YTD (gross)
-    curr_year = date.today().year
+    curr_year = (await local_today(db)).year
     ytd_res = await db.execute(
         select(func.sum(PayrollRun.total_gross)).where(
             and_(
@@ -474,9 +475,7 @@ async def generate_draft(
     if absence_lop_applies(time_rules, run.run_type):
         absence_map = await absence_days_for_period(
             db, employees, start_of_month, end_of_month,
-            # UTC is intentional: codebase dates are UTC end-to-end; an
-            # undercount near midnight IST is conservative.
-            datetime.now(timezone.utc).date(),
+            await local_today(db),
             default_offs_from_rules(time_rules),
         )
 

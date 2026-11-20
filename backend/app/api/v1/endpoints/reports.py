@@ -4,6 +4,7 @@ import random
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.models.user import User
 from app.models.attendance import Attendance
@@ -689,7 +690,7 @@ async def _fetch_headcount_trend(
     db, f: _rep.ReportFilter,
 ) -> _rep.ReportResult:
     # 12 months ending today.
-    today = _date.today()
+    today = await local_today(db)
     months_back = int(f.extras.get("months_back", 12))
     windows = []
     for i in range(months_back - 1, -1, -1):

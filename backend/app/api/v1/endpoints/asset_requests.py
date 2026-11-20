@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import aliased, selectinload
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.approval_chains import instantiate_for_entity
 from app.api.v1.endpoints.hr import _get_my_employee_or_404
@@ -58,13 +59,6 @@ class RequestIn(BaseModel):
         v = v.strip()
         if len(v) < 5:
             raise ValueError("reason must be at least 5 characters")
-        return v
-
-    @field_validator("needed_by")
-    @classmethod
-    def _needed(cls, v):
-        if v is not None and v < date.today():
-            raise ValueError("needed_by cannot be in the past")
         return v
 
 
@@ -154,6 +148,8 @@ async def create_request(
     payload: RequestIn, db: deps.DBDep,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
+    if payload.needed_by is not None and payload.needed_by < await local_today(db):
+        raise HTTPException(422, "needed_by cannot be in the past")
     emp = await _get_my_employee_or_404(db, current_user)
     # Serialise this employee's submissions so the duplicate check is race-free.
     await db.execute(select(Employee.id).where(Employee.id == emp.id)

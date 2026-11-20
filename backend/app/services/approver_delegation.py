@@ -13,20 +13,17 @@ from typing import Dict, Optional
 
 from sqlalchemy import and_, or_, select
 
+from app.services.org_time import local_today
 from app.models.approver_delegation import ApproverDelegation
 from app.models.leave import LeaveRequest, LeaveStatus
 from app.models.user import User
-
-
-def today_utc() -> date:
-    return datetime.now(timezone.utc).date()
 
 
 async def active_delegators(
     db, delegate_id: int, today: Optional[date] = None,
 ) -> Dict[int, ApproverDelegation]:
     """{delegator_user_id: delegation} that are live today for `delegate_id`."""
-    today = today or today_utc()
+    today = today or await local_today(db)
     rows = (await db.execute(
         select(ApproverDelegation)
         .join(User, User.id == ApproverDelegation.user_id)

@@ -179,7 +179,7 @@ async def list_open_shifts(
     status: Optional[str] = Query(None),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    start = start or os_svc.today()
+    start = start or await os_svc.today(db)
     end = end or (start + timedelta(days=30))
     check_window(start, end)
     if status and status not in (
@@ -217,7 +217,7 @@ async def available_open_shifts(
 ) -> Any:
     """Open shifts in the next 60 days the caller may claim, plus any the
     caller already has a pending claim on (so it can be withdrawn)."""
-    today = os_svc.today()
+    today = await os_svc.today(db)
     me = (await db.execute(
         select(Employee).join(User, User.id == Employee.user_id).where(
             Employee.user_id == current_user.id,
@@ -468,7 +468,7 @@ async def create_drop(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     me = current_user.id
-    if body.work_date < os_svc.today():
+    if body.work_date < await os_svc.today(db):
         raise HTTPException(status_code=400, detail="work_date cannot be in the past")
     # Serialize concurrent creates for this person, then read fresh state.
     await lock_user_rows(db, [me])
@@ -596,7 +596,7 @@ async def decide_drop(
     d, uid = drop.work_date, drop.user_id
     skipped: dict = {}
     if body.action == "approve":
-        if d < os_svc.today():
+        if d < await os_svc.today(db):
             raise HTTPException(status_code=400, detail="That date is in the past")
         can_post = admin or await roster_svc.can_publish_for(
             db, current_user, uid)

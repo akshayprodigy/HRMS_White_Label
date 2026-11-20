@@ -14,6 +14,7 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_, select
 
+from app.services.org_time import local_today
 from app.api import deps
 from app.api.v1.endpoints.hr import log_audit
 from app.api.v1.endpoints.roster_common import (
@@ -36,10 +37,6 @@ from app.services.effective_shift import effective_shifts_for_range
 router = APIRouter()
 
 RTYPE = "shift_swap"
-
-
-def _today() -> pydate:
-    return datetime.now(timezone.utc).date()
 
 
 async def _read_many(
@@ -158,7 +155,7 @@ async def swap_candidates(
     date: pydate = Query(...),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    today = _today()
+    today = await local_today(db)
     if date < today or date > today + timedelta(days=swap_svc.MAX_AHEAD_DAYS):
         raise HTTPException(
             status_code=400,
@@ -222,7 +219,7 @@ async def create_swap(
             detail="Counterparty must be an active employee in your department")
     rd = body.requester_date
     cd = body.counterparty_date or rd
-    swap_svc.validate_dates_open(rd, cd, _today())
+    swap_svc.validate_dates_open(rd, cd, await local_today(db))
     dates = swap_svc.swap_dates(rd, cd)
     eff = await swap_svc.load_effective(db, a, b, dates[0], dates[-1])
     mine = eff[(a, rd)]
@@ -373,7 +370,7 @@ async def accept_swap(
     await lock_user_rows(db, [swap.requester_id, swap.counterparty_id])
     d1, d2 = swap.requester_date, swap.counterparty_date
     await _ensure_parties_active(db, swap)
-    if min(d1, d2) < _today():
+    if min(d1, d2) < await local_today(db):
         raise HTTPException(status_code=400, detail="A swap date is in the past")
     dates, a_cells, b_cells, _eff = await _cells(db, swap)
     if not swap_svc.snapshot_matches(swap.snapshot, a_cells, b_cells):
@@ -494,7 +491,7 @@ async def decide_swap(
     if body.action == "approve":
         await lock_user_rows(db, [swap.requester_id, swap.counterparty_id])
         await _ensure_parties_active(db, swap)
-        if dates[0] < _today():
+        if dates[0] < await local_today(db):
             raise HTTPException(
                 status_code=400, detail="A swap date is in the past")
         dates, a_cells, b_cells, _eff = await _cells(db, swap)
