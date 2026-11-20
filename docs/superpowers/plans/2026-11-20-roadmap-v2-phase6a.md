@@ -233,6 +233,8 @@ Rules:
 - Pydantic default factories (e.g. `default_factory=date.today`): drop the default and fill it in the endpoint from `local_today(db)`. The schema field becomes `Optional[date] = None`.
 - Tax and statutory "financial year" calculations use `local_today` too, because the FY boundary is local.
 - `datetime.now(timezone.utc)` used as an **instant** (timestamps, comparisons with stored UTC) is correct. Leave it.
+- Also scan for SQL-side UTC day bucketing: `func.date(Attendance.captured_at)` / `func.time(...)`. The guard regex doesn't catch these, so add `func\.date\(|func\.time\(` to the guard over the attendance columns. Bucket by `work_date` or by local-day bounds.
+- After converting, try removing the `org_tz_utc` pin (`backend/tests/_tz.py`) from `test_pay_linkage` and `test_shift_swaps`. They were pinned for UTC "today" assumptions; keep a pin only where a test genuinely asserts UTC behaviour.
 - Assets frontend: `serverSafeToday()` in `frontend/src/components/assets/*` becomes `orgToday()` from Task 10. Do not change the frontend in this task.
 
 **Create:**
@@ -513,6 +515,11 @@ Notify the employee on decide (`resource_type="work_location"`).
   - `useOrgTime()` hook.
 - Replace `serverSafeToday()` in `components/assets/*` with `orgToday()`, and delete the helper if unused.
 - Live Board and roster time displays (`grep -rn "toLocaleTimeString\|getHours" frontend/src/components/roster frontend/src/components/workforce`) format with `formatOrgTime`.
+- Remove every hard-coded "UTC" label and `timeZone:'UTC'` formatting found in Task 2 review:
+  - `live-board.tsx` (~130-147, 318, 507, 589);
+  - `field-team.tsx` (~88, 250);
+  - `my-schedule/running-late-card.tsx:107` (`eta_hhmm` is now org-local).
+- `workforce/edit-punch-modal.tsx`: pre-fill org-local time instead of `iso.slice(0,16)` on the UTC string. Naive input is now read as org-local by the backend.
 
 **10b — holidays:**
 - `components/holidays/my-holidays-panel.tsx`, shown in `profile-view.tsx` (and in `leave-view.tsx` if that is where employees look for holidays; check the current usage of `Holiday` there). It shows a year selector, quota chip ("1 of 2 optional used"), the list of mandatory + optional holidays, a "Pick" button with an optional reason, the pick status badge, and "Cancel".
@@ -544,6 +551,7 @@ Checks after each sub-task: tsc ≤164, and that every new class exists in `inde
 - `mobile/src/lib/org-time.ts`: same API as the web helper. Add the fetch to the existing API client in `mobile/src/api`.
 - `mobile/src/features/holidays/`: hooks (`useMyHolidays`, `usePickHoliday`, `useCancelPick`), a screen listing holidays with pick/cancel and the quota chip. Route `mobile/app/holidays.tsx`, reached from the More tab.
 - `mobile/src/features/work-location/`: a request form (kind, dates, portion, place, purpose) and a My requests list with cancel. Route `mobile/app/work-location.tsx`, reached from the More tab and from a "Working remotely?" link on the Punch tab.
+- `mobile/src/features/punch/RunningLateCard.tsx:29`: drop the "UTC" label, since `eta_hhmm` is now org-local. Audit other `timeZone: 'UTC'` uses in mobile.
 - Punch tab: when today has an approved request, show a banner ("Approved WFH today — location check relaxed").
 - Push: tapping an `optional_holiday` / `work_location` notification opens the relevant screen (`mobile/src/features/push` route map).
 - Jest tests for hooks and form validation, following `features/leave` tests. `npm run check` green.
@@ -566,7 +574,10 @@ Checks after each sub-task: tsc ≤164, and that every new class exists in `inde
   - 0 × 5xx expected.
 - [ ] Browser QA agent: employee picks a holiday, manager approves, HR imports a CSV; employee files WFH, approver approves, punch from outside the fence shows "Remote"; coverage report export; time rules.
 - [ ] `DEPLOYMENT.md` "Phase 6A" section:
-  - timezone cutover: set `org.timezone` before go-live; flags from before the cutover used UTC; `UTC` restores the old behaviour;
+  - **HARD go-live step, timezone cutover.** The rule defaults to Asia/Kolkata when absent, so an existing install flips on deploy. Before deploying, set `org.timezone` explicitly; use `UTC` to keep the old behaviour until HR is ready.
+    - Late/no-show flags from before the cutover used UTC.
+    - `late_mark.process_month` re-run on a pre-cutover month re-interprets old punches in the new timezone, so don't re-run closed months.
+    - Biometric devices with an explicit `utc_offset_minutes` keep it; a blank `biometric.default_utc_offset_minutes` follows the org timezone.
   - HQ-only holidays now apply only to employees whose location is HQ — review holiday locations;
   - the new rules;
   - the CSV import format.
