@@ -17,7 +17,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.attendance import Attendance
 from app.models.audit import AuditLog
-from app.models.employee import Employee
 from app.models.location import (
     LocationPing, TrackingAlert, TrackingConsent, TrackingOverride,
     TrackingPolicy,

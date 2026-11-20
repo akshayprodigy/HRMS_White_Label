@@ -18,6 +18,8 @@ class HolidayCalendarCreate(HolidayCalendarBase):
 class HolidayCalendarRead(HolidayCalendarBase):
     id: int
     created_at: datetime
+    # Set on create/update only: employees this holiday applies to.
+    matching_employee_count: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

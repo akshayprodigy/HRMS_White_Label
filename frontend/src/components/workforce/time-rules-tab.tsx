@@ -76,6 +76,7 @@ const SELFIE_REQUIRED_KEY = 'attendance.selfie_required';
 const OFFLINE_HOURS_KEY = 'attendance.offline_max_hours';
 const RETENTION_KEY = 'attendance.selfie_retention_days';
 const TIMEZONE_KEY = 'org.timezone';
+const HOLIDAY_LOC_KEY = 'holidays.default_location';
 const COMMON_TIMEZONES = [
   'Asia/Kolkata',
   'Asia/Dubai',
@@ -143,6 +144,10 @@ export const TimeRulesTab: React.FC = () => {
     }
     if (!(rules[TIMEZONE_KEY] ?? '').toString().trim()) {
       toast.error('Organisation timezone is required (e.g. Asia/Kolkata or UTC)');
+      return;
+    }
+    if ((rules[HOLIDAY_LOC_KEY] ?? '').toString().trim().length > 100) {
+      toast.error('Default holiday location must be at most 100 characters');
       return;
     }
     const offH = (rules[OFFLINE_HOURS_KEY] ?? '').toString().trim();
@@ -223,6 +228,35 @@ export const TimeRulesTab: React.FC = () => {
           <p className="text-[9px] font-bold text-slate-400">
             IANA timezone name (e.g. Asia/Kolkata) or UTC
           </p>
+        </div>
+      </Card>
+      <Card className="p-6 border-slate-200 bg-white space-y-5">
+        <div>
+          <h3 className="text-sm font-black uppercase tracking-tight text-[#0F172A] inline-flex items-center gap-2">
+            <Clock3 size={15} className="text-blue-600" /> Holidays
+          </h3>
+          <p className="text-[10px] font-bold text-slate-500 mt-1">
+            Location-specific holidays apply to employees at that location.
+            People with no location set are treated as being at the location
+            below; leave it blank and they get only "All" holidays.
+          </p>
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor={HOLIDAY_LOC_KEY}
+            className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+          >
+            Default Location
+          </label>
+          <input
+            id={HOLIDAY_LOC_KEY}
+            type="text"
+            maxLength={100}
+            className={inputCls}
+            placeholder="e.g. HQ (blank = no fallback)"
+            value={rules[HOLIDAY_LOC_KEY] ?? ''}
+            onChange={(e) => setRules({ ...rules, [HOLIDAY_LOC_KEY]: e.target.value })}
+          />
         </div>
       </Card>
       <Card className="p-6 border-slate-200 bg-white space-y-5">

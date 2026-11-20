@@ -463,6 +463,7 @@ export const ENDPOINTS = {
     ATTENDANCE_MANUAL: '/hr/attendance/manual',
     TIME_RULES: '/hr/time-rules',
     HOLIDAYS: '/hr/holidays',
+    HOLIDAY_LOCATIONS: '/hr/holidays/locations',
     HOLIDAY_DETAIL: (id: number) => `/hr/holidays/${id}`,
     POLICIES: '/hr/policies',
     POLICY_UPLOAD: '/hr/policies/upload',

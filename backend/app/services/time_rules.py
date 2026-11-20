@@ -72,6 +72,12 @@ TIME_RULE_DEFAULTS: Dict[str, tuple[str, str]] = {
         "IANA timezone used to read shift times and 'today' "
         "(UTC = legacy behaviour)",
     ),
+    "holidays.default_location": (
+        "HQ",
+        "Location assumed for employees (and users) with no location set, "
+        "when matching location-specific holidays (blank = no fallback; "
+        "such people get only 'All' holidays)",
+    ),
     "biometric.offline_minutes": (
         "30",
         "A device is offline when it has not called in for this many "
@@ -235,6 +241,13 @@ async def set_time_rules(
                 "name, e.g. Asia/Kolkata")
         updates["org.timezone"] = sv
         db.info.pop("org_tz", None)  # drop org_tz() memo on this session
+    dl = updates.get("holidays.default_location")
+    if dl is not None:
+        sv = " ".join(str(dl).split())
+        if len(sv) > 100:
+            raise ValueError(
+                "holidays.default_location must be at most 100 characters")
+        updates["holidays.default_location"] = sv  # blank = no fallback
     for key, lo, hi in (("biometric.offline_minutes", 5, 1440),
                         ("biometric.default_utc_offset_minutes", -720, 840),
                         ("biometric.dedupe_seconds", 0, 3600),

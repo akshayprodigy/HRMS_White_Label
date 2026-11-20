@@ -16,7 +16,7 @@ Resignation.employee_id is the Employee PK.
 """
 import logging
 from datetime import date, timedelta
-from typing import Iterable
+from typing import Any, Container, Iterable, Mapping
 
 from sqlalchemy import and_, or_, select
 
@@ -103,7 +103,8 @@ def absence_lop_applies(rules: dict, run_type: str) -> bool:
 
 
 def is_non_working_day(
-    eff, d: date, user_holidays, default_offs: set[int], *, roster_beats_holiday: bool = False,
+    eff, d: date, user_holidays: Container[date], default_offs: set[int],
+    *, roster_beats_holiday: bool = False,
 ) -> bool:
     """Shared skip rules: holiday, week-off, no-shift default off day, or an
     assigned template with no weekly offs on a default off day. Roster
@@ -140,11 +141,11 @@ def count_absent_days(
     punched: set[tuple[int, date]],
     full_leave: set[tuple[int, date]],
     half_leave: set[tuple[int, date]],
-    holidays,
+    holidays: Mapping[date, Any] | Container[date],
 ) -> float:
-    # `holidays`: this user's holiday dates (dict[date, HolidayInfo] or set).
     """Pure per-employee loop over [first, last]. `shifts` maps
-    (user_id, date) -> EffectiveShift (missing == no shift)."""
+    (user_id, date) -> EffectiveShift (missing == no shift). `holidays` is
+    this user's holiday dates (a dict keyed by date, or a set)."""
     total = 0.0
     d = first
     while d <= last:

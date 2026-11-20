@@ -90,7 +90,6 @@ def test_pure_half_and_full_leave_overlap_and_holiday():
     assert _count(d, d, half_leave={k}, full_leave={k}) == 0.0
     assert _count(d, d, half_leave={k}, punched={k}) == 0.0
     assert _count(d, d, holidays={d: 1}) == 0.0
-    assert _count(d, d, holidays={d: 1}) == 0.0
     assert _count(d, d, holidays={d + timedelta(days=1): 1}) == 1.0
 
 

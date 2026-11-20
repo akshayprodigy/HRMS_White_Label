@@ -8,7 +8,7 @@ that the lines appear in the existing line editor and payslip flow.
 """
 import calendar as _cal
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, List, Optional, Tuple
+from typing import Any, Container, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, func, or_, select
@@ -661,7 +661,7 @@ async def _resolve_one(
     user_id: int,
     work_date: date,
     attendance: Optional[Attendance],
-    holiday_set: set[date] | dict,
+    holiday_set: Container[date],
     requested_by_id: Optional[int],
     eff: Optional[EffectiveShift] = None,
 ) -> Tuple[int, int, int]:
@@ -908,18 +908,6 @@ async def recompute_range(
     of employees without a manager; None routes those to the HR role.
     `require_punch_out` skips still-open attendance rows (nightly job).
     """
-    # Holidays for the whole window.
-    # Per-user holiday dates (location-aware); one batch for the window.
-    if user_ids is not None:
-        hol_users = list(user_ids)
-    else:
-        hol_users = list((await db.execute(
-            select(Attendance.user_id).where(
-                Attendance.work_date >= start, Attendance.work_date <= end,
-            ).distinct()
-        )).scalars().all())
-    holidays_by_user = await holidays_for(db, hol_users, start, end)
-
     # Pull all attendance rows in the window, scoped to user_ids if given.
     att_q = select(Attendance).where(
         and_(
@@ -933,6 +921,10 @@ async def recompute_range(
     if require_punch_out:
         att_q = att_q.where(Attendance.punch_out_time.isnot(None))
     att_rows = (await db.execute(att_q)).scalars().all()
+
+    # Per-user, location-aware holidays (one batch for everyone with rows).
+    holidays_by_user = await holidays_for(
+        db, sorted({a.user_id for a in att_rows}), start, end)
 
     # Effective shifts resolved in batches (2 queries per <=31-day chunk)
     # instead of one lookup per row.

@@ -21,9 +21,26 @@ export const HolidayManagement = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [formData, setFormData] = useState({ ...EMPTY_FORM });
+    const [locations, setLocations] = useState<{ location: string; count: number }[]>([]);
+
+    const normLoc = (l: string) => l.trim().split(/\s+/).join(' ').toLowerCase();
+    const loadLocations = async () => {
+        try {
+            const res = await client.get(ENDPOINTS.HR.HOLIDAY_LOCATIONS);
+            setLocations(res.data?.locations ?? []);
+        } catch {
+            setLocations([]);
+        }
+    };
+    const locKey = normLoc(formData.location || '');
+    const locationMatches =
+        locKey === '' || locKey === 'all'
+            ? null
+            : (locations.find(l => normLoc(l.location) === locKey)?.count ?? 0);
 
     useEffect(() => {
         fetchHolidays();
+        loadLocations();
     }, []);
 
     const fetchHolidays = async () => {
@@ -62,15 +79,20 @@ export const HolidayManagement = () => {
             return;
         }
         try {
+            let saved: any;
             if (editingId !== null) {
-                await client.put(ENDPOINTS.HR.HOLIDAY_DETAIL(editingId), formData);
+                saved = (await client.put(ENDPOINTS.HR.HOLIDAY_DETAIL(editingId), formData)).data;
                 toast.success("Holiday updated");
             } else {
-                await client.post(ENDPOINTS.HR.HOLIDAYS, formData);
+                saved = (await client.post(ENDPOINTS.HR.HOLIDAYS, formData)).data;
                 toast.success("Holiday added");
+            }
+            if (saved?.matching_employee_count === 0) {
+                toast.warning("No employees are at this location, so this holiday applies to nobody");
             }
             setIsModalOpen(false);
             fetchHolidays();
+            loadLocations();
         } catch {
             toast.error(editingId ? "Failed to update holiday" : "Failed to add holiday");
         }
@@ -178,16 +200,24 @@ export const HolidayManagement = () => {
                             </div>
                             <div className="space-y-2">
                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Location</label>
-                                <select
+                                <input
+                                    list="holiday-location-options"
                                     value={formData.location}
                                     onChange={(e) => setFormData({...formData, location: e.target.value})}
+                                    placeholder="All, or pick / type a location"
                                     className="w-full h-12 rounded-xl bg-slate-50 border border-slate-100 px-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-600/10"
-                                >
+                                />
+                                <datalist id="holiday-location-options">
                                     <option value="All">All Locations</option>
-                                    <option value="HQ">HQ-Kolkata</option>
-                                    <option value="Remote">Remote</option>
-                                    <option value="Zonal">Zonal Offices</option>
-                                </select>
+                                    {locations.map(l => (
+                                        <option key={l.location} value={l.location}>{`${l.location} (${l.count})`}</option>
+                                    ))}
+                                </datalist>
+                                {locationMatches === 0 && (
+                                    <p className="text-[10px] font-bold text-amber-600">
+                                        No employees are at this location - this holiday would apply to nobody.
+                                    </p>
+                                )}
                             </div>
                         </div>
                         <div className="space-y-2">

@@ -66,6 +66,7 @@ from app.services.notifications_delivery import get_email_provider
 from app.services.salary_calculator import calculate_salary
 from app.services.attendance_lock import assert_attendance_editable
 from app.services import employment_type as employment_type_service
+from app.services import holidays as holidays_svc
 from app.schemas.attendance import (
     AttendanceCorrectionCreate, AttendanceCorrectionRead,
     AttendanceCorrectionUpdate, AttendanceRead,
@@ -2445,6 +2446,8 @@ async def create_holiday(
     db.add(db_obj)
     await db.commit()
     await db.refresh(db_obj)
+    db_obj.matching_employee_count = await holidays_svc.matching_employee_count(
+        db, db_obj.location)
     return db_obj
 
 
@@ -2464,6 +2467,19 @@ async def list_holidays(
         )
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.get("/holidays/locations")
+async def holiday_locations(
+    db: deps.DBDep,
+    current_user: User = Depends(deps.check_permissions([HR_WRITE]))
+) -> Any:
+    """Employee locations a holiday can target (with head-counts) plus the
+    default-location rule, for the holiday form's picker."""
+    return {
+        "locations": await holidays_svc.location_counts(db),
+        "default_location": await holidays_svc.default_location(db),
+    }
 
 
 @router.delete("/holidays/{holiday_id}")
@@ -2496,6 +2512,8 @@ async def update_holiday(
         setattr(obj, field, value)
     await db.commit()
     await db.refresh(obj)
+    obj.matching_employee_count = await holidays_svc.matching_employee_count(
+        db, obj.location)
     return obj
 
 
