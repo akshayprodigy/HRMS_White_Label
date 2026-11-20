@@ -21,6 +21,7 @@ from app.schemas.roster import (
 )
 from app.models.user import Role, Permission
 from app.services import roster as roster_svc
+from app.services.org_time import local_to_utc, local_today_for, org_tz
 
 from app.api.v1.endpoints.roster_common import (
     require_manage, require_admin, commit_or_409, guard_conflicts, lock_row,
@@ -397,18 +398,17 @@ async def _history_rows(db, q) -> List[RosterHistoryRead]:
     ]
 
 
-def _history_filter(q, start, end, work_start, work_end):
-    """Window on WHEN the change happened (changed_at, UTC days; default the
-    last 30 days, max 92); optional work_start/work_end narrow by the
+def _history_filter(q, start, end, work_start, work_end, tz=timezone.utc):
+    """Window on WHEN the change happened (changed_at, org-local days; default
+    the last 30 days, max 92); optional work_start/work_end narrow by the
     affected work date."""
-    end = end or datetime.now(timezone.utc).date()
+    end = end or local_today_for(tz)
     start = start or (end - timedelta(days=30))
     check_window(start, end, 92)
     q = q.where(
-        RosterEntryHistory.changed_at >= datetime.combine(
-            start, time.min, tzinfo=timezone.utc),
-        RosterEntryHistory.changed_at < datetime.combine(
-            end + timedelta(days=1), time.min, tzinfo=timezone.utc),
+        RosterEntryHistory.changed_at >= local_to_utc(start, time.min, tz),
+        RosterEntryHistory.changed_at < local_to_utc(
+            end + timedelta(days=1), time.min, tz),
     )
     if work_start is not None:
         q = q.where(RosterEntryHistory.work_date >= work_start)
@@ -428,7 +428,8 @@ async def roster_history(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     q = _history_filter(
-        select(RosterEntryHistory), start, end, work_start, work_end
+        select(RosterEntryHistory), start, end, work_start, work_end,
+        await org_tz(db),
     )
     if employee_id is not None:
         await require_manage(db, current_user, employee_id)
@@ -454,5 +455,5 @@ async def my_roster_history(
     return await _history_rows(db, _history_filter(
         select(RosterEntryHistory).where(
             RosterEntryHistory.employee_id == current_user.id),
-        start, end, work_start, work_end,
+        start, end, work_start, work_end, await org_tz(db),
     ))

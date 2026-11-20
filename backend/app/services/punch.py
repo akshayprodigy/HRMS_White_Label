@@ -27,6 +27,7 @@ from app.schemas.geofence import GeoRejectionDetail
 from app.services.attendance_lock import LockRetry
 from app.services.comp_off_accrual import create_comp_off_accrual
 from app.services.effective_shift import effective_shift_on
+from app.services.org_time import local_date, org_tz
 from app.services.geofence import EnforcementMode, GeoDecision, evaluate_punch
 from app.services.shift_resolver import (
     DEFAULT_EARLY_IN_BUFFER,
@@ -215,7 +216,8 @@ async def _attribute_punch(
 
     Returns a 4-tuple ready to assign to an Attendance row.
     """
-    punch_date = punch_ts.astimezone(timezone.utc).date() if punch_ts.tzinfo else punch_ts.date()
+    tz = await org_tz(db)
+    punch_date = local_date(punch_ts, tz)
     today_shift = await _effective_shift_on(db, user_id, punch_date)
     yesterday_shift = await _effective_shift_on(
         db, user_id, punch_date - timedelta(days=1)
@@ -225,6 +227,7 @@ async def _attribute_punch(
         today_shift=today_shift,
         yesterday_shift=yesterday_shift,
         early_in_buffer=DEFAULT_EARLY_IN_BUFFER,
+        tz=tz,
     )
     shift_id = (
         getattr(result.shift, "id", None) if result.shift is not None else None
@@ -257,7 +260,7 @@ async def _maybe_create_comp_off_accrual(
     """
     # Prefer work_date (post shift-engine); fall back to calendar date
     # for any legacy code path that calls this before work_date is set.
-    work_date = attendance.work_date or punch_in.astimezone(timezone.utc).date()
+    work_date = attendance.work_date or local_date(punch_in, await org_tz(db))
 
     holiday = (await db.execute(
         select(HolidayCalendar)

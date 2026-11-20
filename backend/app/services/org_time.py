@@ -53,7 +53,7 @@ async def local_today(db) -> date:
     return local_today_for(await org_tz(db))
 
 
-def _to_utc(d: date, t: time, tz: tzinfo) -> datetime:
+def local_to_utc(d: date, t: time, tz: tzinfo) -> datetime:
     local = datetime.combine(d, t).replace(tzinfo=tz, fold=0)
     # Nonexistent local time (DST gap): round-trip check, shift forward.
     back = local.astimezone(timezone.utc).astimezone(tz)
@@ -65,9 +65,9 @@ def _to_utc(d: date, t: time, tz: tzinfo) -> datetime:
 def shift_window(
     work_date: date, start: time, end: time, tz: tzinfo
 ) -> tuple[datetime, datetime]:
-    s = _to_utc(work_date, start, tz)
+    s = local_to_utc(work_date, start, tz)
     end_date = work_date + timedelta(days=1) if end <= start else work_date
-    return s, _to_utc(end_date, end, tz)
+    return s, local_to_utc(end_date, end, tz)
 
 
 def utc_offset_minutes(tz: tzinfo, now: Optional[datetime] = None) -> int:

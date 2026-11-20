@@ -1,7 +1,8 @@
 """Pure RFC 5545 iCalendar rendering for the personal roster feed.
 
-Event times are NAIVE wall-clock datetimes emitted as floating local times
-(no Z, no TZID) so calendar apps show the shift's wall-clock time.
+Event times: tz-aware datetimes are emitted as UTC ("...Z") stamps so every
+calendar app shows the right local time; NAIVE datetimes are emitted as
+floating local times (no Z, no TZID).
 """
 import re
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ def fold_line(line: str, limit: int = 75) -> str:
 
 
 def _local(dt: datetime) -> str:
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return dt.strftime("%Y%m%dT%H%M%S")
 
 

@@ -15,6 +15,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from _cleanup import purge_shift_templates
+from _tz import org_tz_utc  # noqa: F401  (pre-6A UTC expectations)
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal
 from app.models.attendance import Attendance

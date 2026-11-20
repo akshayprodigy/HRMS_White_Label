@@ -19,6 +19,7 @@ from app.models.shift import ShiftTemplate
 from app.models.user import Role, User as UserModel
 from app.services.comp_off_accrual import create_comp_off_accrual
 from app.services.effective_shift import effective_shift_on
+from app.services.org_time import org_tz
 from app.services.geofence import (
     EnforcementMode,
     GeoDecision,
@@ -286,6 +287,7 @@ async def get_all_attendance(
     # Section Q: org time rules. Employees with no shift snapshot are
     # evaluated against the org-default virtual shift.
     rules = await get_time_rules(db)
+    tz = await org_tz(db)
     evaluate = flags_enabled(rules)
     default_shift = build_default_shift(rules)
 
@@ -319,10 +321,10 @@ async def get_all_attendance(
         if evaluate and att.work_date is not None:
             effective = shift or default_shift
             late = late_in_minutes(
-                _aware(att.captured_at), att.work_date, effective
+                _aware(att.captured_at), att.work_date, effective, tz
             )
             early = early_out_minutes(
-                _aware(att.punch_out_time), att.work_date, effective
+                _aware(att.punch_out_time), att.work_date, effective, tz
             )
             # 0 = evaluated and on-time; None = not evaluated (flags
             # disabled or no work_date). The UI must not re-guess

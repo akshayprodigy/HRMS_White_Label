@@ -5,14 +5,15 @@ starting just after midnight is attributed (work_date) to the next day, which
 the board does not read until that day begins, so such an employee can show
 as upcoming/not_arrived/no_show until midnight passes. Rare; accepted.
 
-Shift start/end are wall-clock times compared as UTC, exactly like
-shift_resolver / attendance (no org timezone yet). `classify` is pure; the
-loader batches every query (no per-employee DB access).
+Shift start/end are org-local wall-clock times converted to UTC through
+services/org_time (org.timezone; "UTC" reproduces the pre-6A behaviour).
+`classify` is pure; the loader batches every query (no per-employee DB
+access) and resolves the org timezone once per call.
 """
 import enum
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import or_, select
@@ -31,7 +32,7 @@ from app.services.absence_lop import (
     default_offs_from_rules, is_non_working_day, load_holidays,
 )
 from app.services.effective_shift import effective_shifts_for_range
-from app.services.shift_resolver import _combine
+from app.services.org_time import local_to_utc, local_today_for, org_tz
 from app.services.time_rules import get_schedule_rules, get_time_rules
 
 logger = logging.getLogger(__name__)
@@ -50,14 +51,15 @@ class LiveStatus(str, enum.Enum):
     COMPLETED = "completed"
 
 
-def shift_bounds(shift, work_date: date) -> Tuple[datetime, datetime]:
-    """Nominal (start, end) of `shift` for `work_date`, UTC-aware; an
+def shift_bounds(
+    shift, work_date: date, tz: tzinfo = timezone.utc,
+) -> Tuple[datetime, datetime]:
+    """Nominal (start, end) of `shift` for `work_date`, UTC-aware; `tz` is
+    the org timezone the shift's wall-clock times are expressed in. An
     overnight shift ends on the next calendar day."""
-    start = _combine(work_date, shift.start_time)
-    end = _combine(
-        work_date + timedelta(days=1) if shift.is_overnight else work_date,
-        shift.end_time)
-    return start, end
+    end_date = work_date + timedelta(days=1) if shift.is_overnight else work_date
+    return (local_to_utc(work_date, shift.start_time, tz),
+            local_to_utc(end_date, shift.end_time, tz))
 
 
 def classify(
@@ -148,7 +150,8 @@ async def live_board(
     """One row per ACTIVE employee in `user_ids`. Query count is constant in
     the number of employees (chunked only for very large IN lists)."""
     now = _aware(now)
-    today = now.date()
+    tz = await org_tz(db)
+    today = local_today_for(tz, now)
     yday = today - timedelta(days=1)
     ids = sorted(set(user_ids))
     if not ids:
@@ -232,7 +235,7 @@ async def live_board(
 
         ye = eff.get((uid, yday))
         if working(ye, yday) and ye.shift.is_overnight:
-            s, e = shift_bounds(ye.shift, yday)
+            s, e = shift_bounds(ye.shift, yday, tz)
             _, pout = _punches(by_key.get((uid, yday), []))
             # Yesterday's overnight shift is still running (and the person
             # has not already clocked out of it).
@@ -241,7 +244,7 @@ async def live_board(
         if chosen is None:
             te = eff.get((uid, today))
             if working(te, today):
-                s, e = shift_bounds(te.shift, today)
+                s, e = shift_bounds(te.shift, today, tz)
                 chosen = (today, te.shift, s, e)
         if chosen is not None:
             wd, shift, s, e = chosen
@@ -339,6 +342,7 @@ async def no_show_job(
         q = q.where(Employee.user_id.in_(list(user_ids)))
     ids = list((await session.execute(q)).scalars().all())
     rows = await live_board(session, ids, now, no_show_minutes=minutes)
+    tz = await org_tz(session)
     cands = [r for r in rows
              if r.status == LiveStatus.NO_SHOW and not r.alerted
              and not r.half_day_leave and r.end is not None and now < r.end]
@@ -371,7 +375,7 @@ async def no_show_job(
             logger.warning("no-show gap failed", exc_info=True)
     notified = 0
     if created:
-        recips = await _alert_recipients(session, created, now.date())
+        recips = await _alert_recipients(session, created, local_today_for(tz, now))
         notes = []
         for r in created:
             shift = r.shift_name or "your shift"

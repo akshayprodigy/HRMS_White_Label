@@ -2,7 +2,7 @@
 the punch system is down. Mounted WITHOUT verify_attendance (see api.py)."""
 import json
 import uuid
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,6 +24,7 @@ from app.schemas.attendance import AttendanceBulkMark, AttendanceBulkResponse
 from app.services import coverage_gaps as gap_svc
 from app.services import roster as roster_svc
 from app.services.attendance_lock import assert_attendance_editable
+from app.services.org_time import local_to_utc, local_today_for, org_tz
 from app.services.manual_attendance import (
     ManualAttendanceExists, create_manual_attendance_row,
 )
@@ -31,18 +32,19 @@ from app.services.manual_attendance import (
 router = APIRouter()
 
 MODE = "manual_bulk"
-SUPERVISOR_WINDOW_DAYS = 2  # [today-2, today], UTC
+SUPERVISOR_WINDOW_DAYS = 2  # [today-2, today], org-local dates
 
 
-def parse_time_input(raw: str, work_date: date) -> datetime:
-    """'HH:MM' -> that wall-clock time (UTC) on work_date; otherwise an ISO
-    datetime (naive treated as UTC)."""
+def parse_time_input(
+    raw: str, work_date: date, tz: tzinfo = timezone.utc,
+) -> datetime:
+    """'HH:MM' -> that org-local wall-clock time on work_date, as UTC;
+    otherwise an ISO datetime (naive treated as UTC)."""
     s = (raw or "").strip()
     try:
         if len(s) <= 5 and ":" in s:
             h, m = s.split(":")
-            return datetime.combine(
-                work_date, time(int(h), int(m)), tzinfo=timezone.utc)
+            return local_to_utc(work_date, time(int(h), int(m)), tz)
         return as_utc(datetime.fromisoformat(s.replace("Z", "+00:00")))
     except (ValueError, TypeError):
         raise HTTPException(
@@ -68,7 +70,8 @@ async def bulk_mark_present(
 ) -> Any:
     reason = _require_reason(body.reason)
     is_hr = deps.user_has_permission(current_user, ATTENDANCE_EDIT)
-    today = datetime.now(timezone.utc).date()
+    tz = await org_tz(db)
+    today = local_today_for(tz)
     if not is_hr:
         if not (await roster_svc.scoped_employees(db, current_user)
                 or roster_svc.is_roster_admin(current_user)):
@@ -84,10 +87,10 @@ async def bulk_mark_present(
         raise HTTPException(
             status_code=422, detail="Cannot mark attendance for a future date.")
 
-    punch_in = parse_time_input(body.punch_in_time, body.work_date)
+    punch_in = parse_time_input(body.punch_in_time, body.work_date, tz)
     punch_out = None
     if body.punch_out_time:
-        punch_out = parse_time_input(body.punch_out_time, body.work_date)
+        punch_out = parse_time_input(body.punch_out_time, body.work_date, tz)
         if punch_out <= punch_in and len(body.punch_out_time.strip()) <= 5:
             if punch_out == punch_in:
                 raise HTTPException(
@@ -106,7 +109,7 @@ async def bulk_mark_present(
             status_code=422,
             detail="Punch-out must be within 24 hours of punch-in.")
     if not is_hr:
-        day0 = datetime.combine(body.work_date, time(0), tzinfo=timezone.utc)
+        day0 = local_to_utc(body.work_date, time(0), tz)
         if not (day0 <= punch_in <= day0 + timedelta(days=1, hours=12)):
             raise HTTPException(
                 status_code=422,

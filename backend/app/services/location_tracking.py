@@ -29,6 +29,7 @@ from app.services.absence_lop import (
 )
 from app.services.effective_shift import effective_shifts_for_range
 from app.services.geofence import haversine_meters
+from app.services.org_time import local_date, local_today_for, org_tz
 from app.services.time_rules import get_time_rules
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,8 @@ async def windows_for(
     on work dates in [d_from, d_to]; the window is the shift +/- 30 min
     (an overnight shift ends the next calendar day)."""
     from app.services.live_ops import shift_bounds
+    from app.services.org_time import org_tz
+    tz = await org_tz(db)
     eff = await effective_shifts_for_range(db, [user_id], d_from, d_to)
     emp = (await db.execute(
         select(Employee).where(Employee.user_id == user_id))).scalars().first()
@@ -128,7 +131,7 @@ async def windows_for(
                 and not is_non_working_day(
                     e, d, loc, holidays, default_offs,
                     roster_beats_holiday=True)):
-            s, en = shift_bounds(e.shift, d)
+            s, en = shift_bounds(e.shift, d, tz)
             out.append((d, s - WINDOW_MARGIN, en + WINDOW_MARGIN, e.shift))
         d += timedelta(days=1)
     return out
@@ -150,7 +153,7 @@ async def my_status(db, user_id: int, now: datetime) -> Dict[str, Any]:
     consent = (await active_consents(db, [user_id])).get(user_id)
     w = None
     if req.required:
-        today = now.date()
+        today = local_today_for(await org_tz(db), now)
         w = current_window(
             await windows_for(db, user_id, today - timedelta(days=1), today),
             now)
@@ -232,8 +235,10 @@ async def ingest_pings(
         return {"accepted": 0, "dropped": dropped}
 
     caps = [aware(p.captured_at).replace(microsecond=0) for p in ok]
+    tz = await org_tz(db)
     wins = await windows_for(
-        db, user_id, min(caps).date() - timedelta(days=1), max(caps).date())
+        db, user_id, local_date(min(caps), tz) - timedelta(days=1),
+        local_date(max(caps), tz))
     existing = {aware(c) for c in (await db.execute(
         select(LocationPing.captured_at).where(
             LocationPing.user_id == user_id,

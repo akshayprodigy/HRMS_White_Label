@@ -2,7 +2,7 @@
 
 An employee with a shift today (or an overnight shift from yesterday that is
 still running) who has not punched in can tell their schedulers when they
-expect to arrive. Times are UTC wall-clock like the rest of the roster.
+expect to arrive. Times are org-local wall-clock (org.timezone) like the rest of the roster.
 """
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -20,6 +20,7 @@ from app.models.late_notice import LateNotice
 from app.models.user import User
 from app.services import live_ops
 from app.services import roster as roster_svc
+from app.services.org_time import local_today_for, org_tz
 
 router = APIRouter()
 
@@ -89,7 +90,8 @@ async def get_running_late(
 
 
 async def _notify_schedulers(db, uid, r, now, text, n) -> None:
-    recips = (await live_ops._alert_recipients(db, [r], now.date())).get(
+    recips = (await live_ops._alert_recipients(
+        db, [r], local_today_for(await org_tz(db), now))).get(
         uid, set())
     await roster_svc.notify_many(db, [
         (rid, "Running late", text, "roster", None) for rid in sorted(recips)])
@@ -106,7 +108,8 @@ async def _lock_state(db, uid, now):
     yesterday/today, done BEFORE any plain read of those tables so MariaDB
     does not raise 1020 against a stale snapshot. Returns
     ({work_date: LateNotice}, {work_dates with a punch})."""
-    days = [now.date() - timedelta(days=1), now.date()]
+    today = local_today_for(await org_tz(db), now)
+    days = [today - timedelta(days=1), today]
     notices = {n.work_date: n for n in (await db.execute(
         select(LateNotice).where(LateNotice.user_id == uid,
                                  LateNotice.work_date.in_(days))
@@ -131,6 +134,7 @@ async def post_running_late(
 
 async def _post(db, uid: int, who: str, body: RunningLate) -> Any:
     now = _now()
+    tz = await org_tz(db)
     await lock_user_rows(db, [uid])
     notices, punched = await _lock_state(db, uid, now)
     r = await _relevant_row(db, uid, now)
@@ -150,7 +154,7 @@ async def _post(db, uid: int, who: str, body: RunningLate) -> Any:
     if eta < r.start or eta > r.end:
         raise HTTPException(
             400, "Expected arrival must be within your shift "
-                 f"({r.start_hhmm}-{r.end_hhmm} UTC).")
+                 f"({r.start_hhmm}-{r.end_hhmm}).")
     if eta - base > timedelta(minutes=MAX_LATE_MINUTES):
         raise HTTPException(
             400, f"Expected arrival can be at most {MAX_LATE_MINUTES} minutes away.")
@@ -170,7 +174,7 @@ async def _post(db, uid: int, who: str, body: RunningLate) -> Any:
         await _notify_schedulers(
             db, uid, r, now,
             f"{who} is running late for {r.shift_name or 'their shift'} "
-            f"({r.start_hhmm}); expected by {eta.strftime('%H:%M')} UTC."
+            f"({r.start_hhmm}); expected by {eta.astimezone(tz).strftime('%H:%M')}."
             + (f" Reason: {reason}" if reason else ""), n)
     await db.commit()
     await db.refresh(n)

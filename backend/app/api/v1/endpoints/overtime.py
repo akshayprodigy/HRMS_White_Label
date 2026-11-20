@@ -58,6 +58,7 @@ from app.services.overtime import (
 from app.services.effective_shift import (
     EffectiveShift, effective_shift_on, effective_shifts_for_range,
 )
+from app.services.org_time import org_tz
 from app.services.shift_resolver import worked_hours as compute_worked_hours
 
 router = APIRouter()
@@ -867,7 +868,7 @@ async def _resolve_one(
     night = compute_night_allowance(
         punch_in=_aware_utc(attendance.captured_at),
         punch_out=_aware_utc(attendance.punch_out_time),
-        work_date=work_date, rule=night_rule,
+        work_date=work_date, rule=night_rule, tz=await org_tz(db),
     )
     night_state = 0
     if night.night_minutes > 0 and night_rule is not None:

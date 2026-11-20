@@ -41,6 +41,10 @@ class CoverageCell:
 
 
 def build_spans(cells: Iterable[Tuple[int, date, int]], templates) -> List[ShiftSpan]:
+    """Spans are NAIVE org-local wall-clock datetimes on purpose: every
+    consumer only compares spans with each other (rest gaps, hours, sort), all
+    in the same org timezone, so no UTC conversion is needed (and none would
+    change the result apart from DST transitions)."""
     out: List[ShiftSpan] = []
     for uid, d, tid in cells:
         t = templates.get(tid)

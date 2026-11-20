@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
 
 from _cleanup import purge_shift_templates
+from _tz import org_tz_utc  # noqa: F401  (pre-6A UTC expectations)
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal

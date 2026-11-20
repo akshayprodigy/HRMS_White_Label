@@ -340,7 +340,7 @@ async def create_on_call(
     await roster_svc.notify(
         db, a.user_id, "On-call duty assigned",
         f"You are on call on {a.work_date.isoformat()} "
-        f"({_hhmm(a.start_time)}-{_hhmm(a.end_time)} UTC).",
+        f"({_hhmm(a.start_time)}-{_hhmm(a.end_time)}).",
         "roster", None)
     await commit_or_409(db, "Employee is already on call that day.")
     await db.refresh(a)

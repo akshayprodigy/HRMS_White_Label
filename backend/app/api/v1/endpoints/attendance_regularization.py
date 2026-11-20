@@ -21,6 +21,7 @@ from app.schemas.attendance_regularization import (
 )
 from app.services.attendance_lock import assert_attendance_editable
 from app.services.effective_shift import effective_shift_on
+from app.services.org_time import local_date, org_tz
 from app.services.self_approval import guard_self_approval
 
 logger = logging.getLogger(__name__)
@@ -106,8 +107,8 @@ async def create_regularization(
         if punch_out - punch_in > timedelta(hours=24):
             raise HTTPException(422, "Punch-in to punch-out cannot exceed 24 hours.")
     # work_date is the logical (shift-start) date; an overnight shift
-    # starting on D can be punched in on D+1 (UTC), so accept both.
-    if punch_in.date() not in (
+    # starting on D can be punched in on D+1 (org-local), so accept both.
+    if local_date(punch_in, await org_tz(db)) not in (
         obj_in.work_date, obj_in.work_date + timedelta(days=1)
     ):
         raise HTTPException(

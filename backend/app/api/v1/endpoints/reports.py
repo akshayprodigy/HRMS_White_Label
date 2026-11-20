@@ -195,6 +195,7 @@ from app.models.shift import (
 from app.models.statutory import StatutoryFiling as _StatutoryFiling
 from app.models.tax import Form24QExport as _Form24QExport
 from app.services import reports as _rep
+from app.services.org_time import org_tz
 from app.services import report_export as _rx
 from app.services.report_catalog import (
     REGISTRY as _REGISTRY,
@@ -348,7 +349,8 @@ async def _fetch_late_early(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             grace_out_minutes=tpl.grace_out_minutes,
             punch_in=a.captured_at, punch_out=a.punch_out_time,
         ))
-    return _rep.build_late_early(records=records, filters=f)
+    return _rep.build_late_early(
+        records=records, filters=f, tz=await org_tz(db))
 
 
 async def _fetch_absenteeism(db, f: _rep.ReportFilter) -> _rep.ReportResult:

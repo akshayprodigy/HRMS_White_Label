@@ -2218,8 +2218,9 @@ async def attendance_correction_action(
         else:
             # Create new attendance record
             from datetime import time, datetime, timezone
-            captured_at = datetime.combine(
-                corr.date, time(9, 0), tzinfo=timezone.utc
+            from app.services.org_time import local_to_utc, org_tz
+            captured_at = local_to_utc(
+                corr.date, time(9, 0), await org_tz(db)
             )
             # New record: trust the work_date from the correction request if
             # provided; otherwise fall back to the calendar date in `date`.

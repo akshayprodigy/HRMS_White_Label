@@ -19,8 +19,10 @@ xlsx/csv/pdf/json without repeating format logic per report.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, Iterable, List, Optional
+
+from app.services.org_time import local_to_utc, shift_window
 
 
 # ============================================================
@@ -300,6 +302,7 @@ def build_muster_roll(
 
 def build_late_early(
     *, records: List[AttendanceRow], filters: ReportFilter,
+    tz: tzinfo = timezone.utc,
 ) -> ReportResult:
     """Late-comers + early-leavers against shift start/end + grace.
 
@@ -325,21 +328,23 @@ def build_late_early(
         # in the attendance module; we recompute the SAME formula here
         # from the timestamp so this stays pure (no attendance-module
         # import).
-        shift_start_dt = datetime.combine(
-            r.work_date, r.shift_start, tzinfo=r.punch_in.tzinfo,
-        )
+        # shift times are wall-clock in the org timezone `tz`; punches are
+        # UTC (naive rows are UTC).
+        p_in = r.punch_in if r.punch_in.tzinfo else r.punch_in.replace(tzinfo=timezone.utc)
+        shift_start_dt = local_to_utc(r.work_date, r.shift_start, tz)
         # Grace: on-time if punch_in ≤ start + grace_in.
         threshold_late = shift_start_dt + timedelta(minutes=r.grace_in_minutes)
-        late = max(0, int((r.punch_in - threshold_late).total_seconds() // 60))
+        late = max(0, int((p_in - threshold_late).total_seconds() // 60))
         early = 0
         if r.punch_out is not None and r.shift_end is not None:
-            shift_end_dt = datetime.combine(
-                r.work_date, r.shift_end, tzinfo=r.punch_out.tzinfo,
-            )
+            p_out = (r.punch_out if r.punch_out.tzinfo
+                     else r.punch_out.replace(tzinfo=timezone.utc))
+            shift_end_dt = shift_window(
+                r.work_date, r.shift_start, r.shift_end, tz)[1]
             threshold_early = shift_end_dt - timedelta(minutes=r.grace_out_minutes)
-            if r.punch_out < threshold_early:
+            if p_out < threshold_early:
                 early = int(
-                    (threshold_early - r.punch_out).total_seconds() // 60
+                    (threshold_early - p_out).total_seconds() // 60
                 )
         if late == 0 and early == 0:
             continue

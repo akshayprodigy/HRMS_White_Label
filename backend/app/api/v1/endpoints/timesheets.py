@@ -690,11 +690,11 @@ def as_utc_aware(dt: datetime) -> datetime:
 async def get_user_logged_seconds_on_date(
     db: deps.DBDep, user_id: int, target_date: date
 ) -> int:
-    """Calculate total seconds logged by user on a specific date (UTC)."""
-    day_start = datetime.combine(target_date, datetime.min.time()).replace(
-        tzinfo=timezone.utc
-    )
-    day_end = day_start + timedelta(days=1)
+    """Calculate total seconds logged by user on a specific org-local date."""
+    from app.services.org_time import local_to_utc, local_today_for, org_tz
+    tz = await org_tz(db)
+    day_start = local_to_utc(target_date, datetime.min.time(), tz)
+    day_end = local_to_utc(target_date + timedelta(days=1), datetime.min.time(), tz)
 
     finished_query = select(func.sum(TimeEntry.duration_seconds)).where(
         and_(
@@ -707,7 +707,7 @@ async def get_user_logged_seconds_on_date(
     finished_seconds = int(finished_result.scalar() or 0)
 
     session_seconds = 0
-    if target_date == datetime.now(timezone.utc).date():
+    if target_date == local_today_for(tz):
         session_query = select(TimerSession).where(
             and_(
                 TimerSession.user_id == user_id,

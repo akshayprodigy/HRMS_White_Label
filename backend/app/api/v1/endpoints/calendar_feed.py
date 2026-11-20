@@ -22,6 +22,7 @@ from app.models.roster import RosterEntry, RosterStatus
 from app.models.shift import ShiftTemplate
 from app.models.user import User
 from app.services.ics import IcsEvent, render_ics
+from app.services.org_time import local_today_for, org_tz, shift_window
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,8 @@ async def public_feed(token: str, db: deps.DBDep) -> Response:
         raise _not_found()
 
     now = datetime.now(timezone.utc)
-    today = now.date()
+    tz = await org_tz(db)
+    today = local_today_for(tz, now)
     rows = (await db.execute(
         select(RosterEntry, ShiftTemplate)
         .join(ShiftTemplate, ShiftTemplate.id == RosterEntry.shift_template_id)
@@ -125,10 +127,8 @@ async def public_feed(token: str, db: deps.DBDep) -> Response:
         ).order_by(RosterEntry.work_date, RosterEntry.id))).all()
     events = []
     for entry, tpl in rows:
-        start = datetime.combine(entry.work_date, tpl.start_time)
-        end = datetime.combine(entry.work_date, tpl.end_time)
-        if tpl.is_overnight or end <= start:
-            end += timedelta(days=1)
+        start, end = shift_window(
+            entry.work_date, tpl.start_time, tpl.end_time, tz)
         desc = f"{tpl.start_time:%H:%M}-{tpl.end_time:%H:%M}"
         if entry.note:
             desc += f" | {entry.note}"

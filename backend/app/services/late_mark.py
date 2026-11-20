@@ -11,7 +11,7 @@ Deductions already stamped with a payroll_run_id are locked and skipped.
 """
 import calendar
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from typing import Optional
 
 from sqlalchemy import and_, delete, select
@@ -22,6 +22,7 @@ from app.models.employee import Employee
 from app.models.late_mark import LateMarkDeduction, LateMarkRule, LateMarkScope
 from app.models.leave import LeaveBalanceLedger
 from app.models.shift import ShiftTemplate
+from app.services.org_time import local_to_utc, org_tz
 
 
 @dataclass
@@ -44,13 +45,16 @@ async def load_rules(db: AsyncSession) -> RuleSet:
     return RuleSet(org_default=org, by_shift=by_shift)
 
 
-def _is_late(punch_in: datetime, work_date: date, shift: ShiftTemplate, grace_minutes: int) -> bool:
-    """A punch-in later than shift start + grace is a late mark. Compares as
-    naive wall-clock (attendance is stored UTC-naive; shift.start_time is a
-    wall-clock time), so tz-aware/naive rows both work."""
+def _is_late(
+    punch_in: datetime, work_date: date, shift: ShiftTemplate,
+    grace_minutes: int, tz: tzinfo = timezone.utc,
+) -> bool:
+    """A punch-in later than shift start + grace is a late mark. Attendance is
+    stored UTC (naive rows are UTC); shift.start_time is wall-clock in the org
+    timezone `tz`, so compare as UTC instants."""
     from datetime import timedelta
-    pin = punch_in.replace(tzinfo=None) if punch_in.tzinfo is not None else punch_in
-    start = datetime.combine(work_date, shift.start_time)
+    pin = punch_in if punch_in.tzinfo is not None else punch_in.replace(tzinfo=timezone.utc)
+    start = local_to_utc(work_date, shift.start_time, tz)
     return pin > start + timedelta(minutes=grace_minutes)
 
 
@@ -72,7 +76,9 @@ async def _available(
     return row, max(0.0, (row.balance or 0.0) - (row.used or 0.0))
 
 
-def _count_late_marks(rows, shift_by_id: dict, rules: RuleSet) -> int:
+def _count_late_marks(
+    rows, shift_by_id: dict, rules: RuleSet, tz: tzinfo = timezone.utc,
+) -> int:
     late = 0
     for att in rows:
         if att.captured_at is None:
@@ -82,7 +88,7 @@ def _count_late_marks(rows, shift_by_id: dict, rules: RuleSet) -> int:
             continue  # no shift snapshot -> cannot judge lateness
         rule = rules.for_shift(att.shift_template_id)
         grace = rule.grace_minutes if rule else 10
-        if _is_late(att.captured_at, att.work_date, shift, grace):
+        if _is_late(att.captured_at, att.work_date, shift, grace, tz):
             late += 1
     return late
 
@@ -93,6 +99,7 @@ async def process_month(
     """Compute + persist late-mark deductions for a month. Returns a summary.
     Reverses prior unpaid deductions for the period first (idempotent)."""
     rules = await load_rules(db)
+    tz = await org_tz(db)
     if rules.org_default is None:
         return {"processed": 0, "skipped_locked": 0, "note": "no active org-default late-mark rule"}
 
@@ -137,7 +144,7 @@ async def process_month(
                 Attendance.work_date >= start_d, Attendance.work_date <= end_d,
             ))
         )).scalars().all()
-        late_count = _count_late_marks(att_rows, shift_by_id, rules)
+        late_count = _count_late_marks(att_rows, shift_by_id, rules, tz)
         blocks = late_count // org.lates_per_deduction
         deduct = round(blocks * org.deduction_days_per_block, 2)
         if deduct <= 0:
