@@ -9,7 +9,6 @@ from app.api import deps
 from app.api.v1.endpoints.roster_common import lock_user_rows, retry_on_lock
 from app.models.attendance import Attendance
 from app.models.audit import AuditLog
-from app.models.hr import HolidayCalendar
 from app.models.comp_off import CompOffAccrual
 from app.models.approval import ApprovalItem, ApprovalStep, ApprovalStatus
 from app.models.geofence import (

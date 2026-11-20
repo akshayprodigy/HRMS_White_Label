@@ -23,7 +23,7 @@ from sqlalchemy import and_, or_, select
 from app.models.attendance import Attendance
 from app.models.employee import Employee
 from app.models.exit_management import Resignation, ResignationStatus
-from app.models.hr import HolidayCalendar
+from app.services.holidays import holidays_for
 from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
 from app.services.effective_shift import effective_shifts_for_range
 
@@ -103,15 +103,14 @@ def absence_lop_applies(rules: dict, run_type: str) -> bool:
 
 
 def is_non_working_day(
-    eff, d: date, location: str, holidays: set[tuple[str, date]],
-    default_offs: set[int], *, roster_beats_holiday: bool = False,
+    eff, d: date, user_holidays, default_offs: set[int], *, roster_beats_holiday: bool = False,
 ) -> bool:
     """Shared skip rules: holiday, week-off, no-shift default off day, or an
     assigned template with no weekly offs on a default off day. Roster
     shifts are explicit working days for the template rule. With
     `roster_beats_holiday` a published roster working shift stays a working
     day even on a holiday (used by the live board)."""
-    if ("All", d) in holidays or (location, d) in holidays:
+    if d in user_holidays:
         if not (
             roster_beats_holiday and eff is not None
             and eff.source == "roster" and not eff.is_week_off
@@ -131,31 +130,19 @@ def is_non_working_day(
     return False
 
 
-async def load_holidays(db, start: date, end: date) -> set[tuple[str, date]]:
-    """Non-optional holidays as (location, date) in [start, end]."""
-    rows = (await db.execute(
-        select(HolidayCalendar.date, HolidayCalendar.location).where(
-            HolidayCalendar.date >= start,
-            HolidayCalendar.date <= end,
-            HolidayCalendar.is_optional.is_(False),
-        )
-    )).all()
-    return {(loc, d) for d, loc in rows}
-
-
 def count_absent_days(
     *,
     first: date,
     last: date,
     user_id: int,
-    location: str,
     shifts: dict,
     default_offs: set[int],
     punched: set[tuple[int, date]],
     full_leave: set[tuple[int, date]],
     half_leave: set[tuple[int, date]],
-    holidays: set[tuple[str, date]],
+    holidays,
 ) -> float:
+    # `holidays`: this user's holiday dates (dict[date, HolidayInfo] or set).
     """Pure per-employee loop over [first, last]. `shifts` maps
     (user_id, date) -> EffectiveShift (missing == no shift)."""
     total = 0.0
@@ -163,7 +150,7 @@ def count_absent_days(
     while d <= last:
         key = (user_id, d)
         eff = shifts.get(key)
-        if is_non_working_day(eff, d, location, holidays, default_offs):
+        if is_non_working_day(eff, d, holidays, default_offs):
             pass
         elif key in punched or key in full_leave:
             pass
@@ -216,7 +203,7 @@ async def absence_days_for_period(
             target.add((lv.employee_id, d))
             d += timedelta(days=1)
 
-    holidays = await load_holidays(db, start, last_day)
+    holidays = await holidays_for(db, user_ids, start, last_day)
 
     res_rows = (await db.execute(
         select(Resignation.employee_id, Resignation.last_working_day).where(
@@ -237,9 +224,10 @@ async def absence_days_for_period(
             stop = min(stop, lwd)
         out[e.user_id] = count_absent_days(
             first=max(start, e.date_of_joining), last=stop,
-            user_id=e.user_id, location=e.location or "HQ",
+            user_id=e.user_id,
             shifts=shifts, default_offs=default_weekly_offs,
             punched=punched, full_leave=full_leave,
-            half_leave=half_leave, holidays=holidays,
+            half_leave=half_leave,
+            holidays=holidays.get(e.user_id, {}),
         )
     return out

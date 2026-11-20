@@ -25,9 +25,10 @@ from app.models.location import (
 from app.models.user import User, user_roles
 from app.services import roster as roster_svc
 from app.services.absence_lop import (
-    default_offs_from_rules, is_non_working_day, load_holidays,
+    default_offs_from_rules, is_non_working_day,
 )
 from app.services.effective_shift import effective_shifts_for_range
+from app.services.holidays import holidays_for
 from app.services.geofence import haversine_meters
 from app.services.org_time import local_date, local_today_for, org_tz
 from app.services.time_rules import get_time_rules
@@ -115,10 +116,7 @@ async def windows_for(
     from app.services.live_ops import shift_bounds
     tz = await org_tz(db)
     eff = await effective_shifts_for_range(db, [user_id], d_from, d_to)
-    emp = (await db.execute(
-        select(Employee).where(Employee.user_id == user_id))).scalars().first()
-    loc = (emp.location if emp else None) or "HQ"
-    holidays = await load_holidays(db, d_from, d_to)
+    holidays = (await holidays_for(db, [user_id], d_from, d_to))[user_id]
     default_offs = default_offs_from_rules(await get_time_rules(db))
     leave = await roster_svc.approved_leave_days(db, [user_id], d_from, d_to)
     out = []
@@ -128,7 +126,7 @@ async def windows_for(
         if (e is not None and e.shift is not None
                 and (user_id, d) not in leave
                 and not is_non_working_day(
-                    e, d, loc, holidays, default_offs,
+                    e, d, holidays, default_offs,
                     roster_beats_holiday=True)):
             s, en = shift_bounds(e.shift, d, tz)
             out.append((d, s - WINDOW_MARGIN, en + WINDOW_MARGIN, e.shift))

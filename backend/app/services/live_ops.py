@@ -29,9 +29,10 @@ from app.models.schedule_delegation import ScheduleDelegation
 from app.models.user import Permission, Role, User
 from app.services import roster as roster_svc
 from app.services.absence_lop import (
-    default_offs_from_rules, is_non_working_day, load_holidays,
+    default_offs_from_rules, is_non_working_day,
 )
 from app.services.effective_shift import effective_shifts_for_range
+from app.services.holidays import holidays_for
 from app.services.org_time import local_today_for, org_tz, shift_window
 from app.services.time_rules import get_schedule_rules, get_time_rules
 
@@ -216,7 +217,7 @@ async def live_board(
             while d <= min(lv.end_date, today):
                 half_leave.add((lv.employee_id, d))
                 d += timedelta(days=1)
-    holidays = await load_holidays(db, yday, today)
+    holidays = await holidays_for(db, ids, yday, today)
     default_offs = default_offs_from_rules(await get_time_rules(db))
 
     by_key: Dict[Tuple[int, date], List[Attendance]] = {}
@@ -227,14 +228,14 @@ async def live_board(
     for uid in ids:
         name, dept, loc = people[uid]
         chosen = None  # (work_date, shift, start, end)
-        loc_key = loc or "HQ"
+        user_hols = holidays.get(uid, {})
 
         def working(e, d):
             # Same skip rules as absence-LOP (holiday / week-off / default
             # off day); a published roster shift beats a holiday.
             return (e is not None and e.shift is not None
                     and not is_non_working_day(
-                        e, d, loc_key, holidays, default_offs,
+                        e, d, user_hols, default_offs,
                         roster_beats_holiday=True))
 
         ye = eff.get((uid, yday))

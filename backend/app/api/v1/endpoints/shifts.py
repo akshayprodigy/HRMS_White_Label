@@ -799,7 +799,7 @@ async def get_my_week(
     """
     from datetime import timedelta
 
-    from app.models.hr import HolidayCalendar
+    from app.services.holidays import holidays_for
     from app.models.leave import LeaveRequest, LeaveStatus
     from app.services.time_rules import build_default_shift, get_time_rules
 
@@ -822,10 +822,9 @@ async def get_my_week(
     )).scalars().all())
 
     holidays = {
-        h.date: h.name
-        for h in (await db.execute(
-            select(HolidayCalendar).where(HolidayCalendar.date.in_(days))
-        )).scalars().all()
+        d: info.name
+        for d, info in (await holidays_for(
+            db, [current_user.id], days[0], days[-1]))[current_user.id].items()
     }
 
     leaves = list((await db.execute(

@@ -170,7 +170,7 @@ from sqlalchemy.orm import selectinload as _selectinload
 from app.api.v1.endpoints.hr import log_audit as _log_audit
 from app.models.attendance import Attendance as _Attendance
 from app.models.employee import Employee as _Employee
-from app.models.hr import HolidayCalendar as _HolidayCalendar
+from app.services.holidays import holidays_for as _holidays_for
 from app.models.leave import (
     LeaveBalanceLedger as _LeaveBalanceLedger,
     LeaveRequest as _LeaveRequest,
@@ -298,9 +298,10 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
     emps = await _employees_by_user_id(db, user_ids)
     if f.department:
         emps = {uid: e for uid, e in emps.items() if e.department == f.department}
-    holidays = set((await db.execute(
-        select(_HolidayCalendar.date)
-    )).scalars().all())
+    holidays = (await _holidays_for(
+        db, list(emps), min(a.work_date for a in att_rows),
+        max(a.work_date for a in att_rows),
+    )) if emps and att_rows else {}
 
     records: _List[_rep.AttendanceRow] = []
     for a in att_rows:
@@ -315,7 +316,7 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             punch_in=a.captured_at, punch_out=a.punch_out_time,
             attribution_flag=a.attribution_flag,
             geo_flag=a.geo_flag,
-            is_holiday=(a.work_date in holidays),
+            is_holiday=(a.work_date in holidays.get(a.user_id, {})),
         ))
     return _rep.build_muster_roll(records=records, filters=f)
 
@@ -362,9 +363,10 @@ async def _fetch_absenteeism(db, f: _rep.ReportFilter) -> _rep.ReportResult:
     emps = await _employees_by_user_id(db, user_ids)
     if f.department:
         emps = {uid: e for uid, e in emps.items() if e.department == f.department}
-    holidays = set((await db.execute(
-        select(_HolidayCalendar.date)
-    )).scalars().all())
+    holidays = (await _holidays_for(
+        db, list(emps), min(a.work_date for a in att_rows),
+        max(a.work_date for a in att_rows),
+    )) if emps and att_rows else {}
     records = []
     for a in att_rows:
         emp = emps.get(a.user_id)
@@ -374,7 +376,7 @@ async def _fetch_absenteeism(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             full_name=emp.user.full_name if emp.user else "",
             department=emp.department, work_date=a.work_date,
             punch_in=a.captured_at,
-            is_holiday=(a.work_date in holidays),
+            is_holiday=(a.work_date in holidays.get(a.user_id, {})),
         ))
     return _rep.build_absenteeism(records=records, filters=f)
 

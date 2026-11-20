@@ -19,7 +19,7 @@ from app.models.attendance import Attendance, AttendanceSelfie
 from app.models.audit import AuditLog
 from app.models.comp_off import CompOffAccrual
 from app.models.geofence import EmployeeGeoConfig, EmployeeGeoFenceLink
-from app.models.hr import HolidayCalendar
+from app.services.holidays import is_holiday
 from app.models.notification import Notification
 from app.models.shift import ShiftTemplate
 from app.models.user import Role, User as UserModel
@@ -262,12 +262,7 @@ async def _maybe_create_comp_off_accrual(
     # for any legacy code path that calls this before work_date is set.
     work_date = attendance.work_date or local_date(punch_in, await org_tz(db))
 
-    holiday = (await db.execute(
-        select(HolidayCalendar)
-        .where(HolidayCalendar.date == work_date)
-        .where(HolidayCalendar.location.in_(["All", "HQ"]))
-        .limit(1)
-    )).scalar_one_or_none()
+    holiday = await is_holiday(db, user.id, work_date)
     holiday_name: Optional[str] = holiday.name if holiday is not None else None
     if holiday is None:
         # Optional: working a rostered / scheduled week-off earns comp-off

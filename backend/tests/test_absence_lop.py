@@ -1,6 +1,6 @@
 """Tests for services/absence_lop (unexplained-absence LOP) + half-day helper."""
 import uuid
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from sqlalchemy import delete
@@ -62,9 +62,9 @@ def test_no_overlap_is_zero():
 # ---------- pure per-employee loop ----------
 
 def _count(first, last, **kw):
-    base = dict(user_id=1, location="HQ", shifts={}, default_offs={6},
+    base = dict(user_id=1, shifts={}, default_offs={6},
                 punched=set(), full_leave=set(), half_leave=set(),
-                holidays=set())
+                holidays={})
     base.update(kw)
     return count_absent_days(first=first, last=last, **base)
 
@@ -89,9 +89,9 @@ def test_pure_half_and_full_leave_overlap_and_holiday():
     assert _count(d, d, half_leave={k}) == 0.5
     assert _count(d, d, half_leave={k}, full_leave={k}) == 0.0
     assert _count(d, d, half_leave={k}, punched={k}) == 0.0
-    assert _count(d, d, holidays={("All", d)}) == 0.0
-    assert _count(d, d, holidays={("HQ", d)}) == 0.0
-    assert _count(d, d, holidays={("Elsewhere", d)}) == 1.0
+    assert _count(d, d, holidays={d: 1}) == 0.0
+    assert _count(d, d, holidays={d: 1}) == 0.0
+    assert _count(d, d, holidays={d + timedelta(days=1): 1}) == 1.0
 
 
 def test_absence_lop_applies():

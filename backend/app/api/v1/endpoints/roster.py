@@ -445,7 +445,7 @@ async def my_roster_week(
     """Seven-day roster outlook — RosterEntry first, then falling back to the
     effective assignment, then the org default. Mirrors shifts.get_my_week
     with holiday/leave enrichment."""
-    from app.models.hr import HolidayCalendar
+    from app.services.holidays import holidays_for
     from app.services.time_rules import build_default_shift, get_time_rules
 
     today = await local_today(db)
@@ -486,10 +486,9 @@ async def my_roster_week(
     )).scalars().all())
 
     holidays = {
-        h.date: h.name
-        for h in (await db.execute(
-            select(HolidayCalendar).where(HolidayCalendar.date.in_(days))
-        )).scalars().all()
+        d: info.name
+        for d, info in (await holidays_for(
+            db, [current_user.id], days[0], days[-1]))[current_user.id].items()
     }
     leaves = list((await db.execute(
         select(LeaveRequest)

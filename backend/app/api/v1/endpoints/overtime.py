@@ -20,7 +20,7 @@ from app.api.v1.endpoints.hr import log_audit
 from app.models.approval import ApprovalItem, ApprovalStatus, ApprovalStep
 from app.models.attendance import Attendance
 from app.models.employee import Employee
-from app.models.hr import HolidayCalendar
+from app.services.holidays import holidays_for
 from app.models.notification import Notification
 from app.models.overtime import (
     DayType as DayTypeConst,
@@ -141,21 +141,6 @@ async def _pick_night_rule(
         ).limit(1)
     )).scalar_one_or_none()
     return org
-
-
-async def _load_holidays(
-    db, start: date, end: date
-) -> set[date]:
-    rows = (await db.execute(
-        select(HolidayCalendar.date).where(
-            and_(
-                HolidayCalendar.date >= start,
-                HolidayCalendar.date <= end,
-                HolidayCalendar.location.in_(["All", "HQ"]),
-            )
-        )
-    )).scalars().all()
-    return set(rows)
 
 
 async def _basic_for(db, user_id: int) -> float:
@@ -676,7 +661,7 @@ async def _resolve_one(
     user_id: int,
     work_date: date,
     attendance: Optional[Attendance],
-    holiday_set: set[date],
+    holiday_set: set[date] | dict,
     requested_by_id: Optional[int],
     eff: Optional[EffectiveShift] = None,
 ) -> Tuple[int, int, int]:
@@ -924,7 +909,16 @@ async def recompute_range(
     `require_punch_out` skips still-open attendance rows (nightly job).
     """
     # Holidays for the whole window.
-    holiday_set = await _load_holidays(db, start, end)
+    # Per-user holiday dates (location-aware); one batch for the window.
+    if user_ids is not None:
+        hol_users = list(user_ids)
+    else:
+        hol_users = list((await db.execute(
+            select(Attendance.user_id).where(
+                Attendance.work_date >= start, Attendance.work_date <= end,
+            ).distinct()
+        )).scalars().all())
+    holidays_by_user = await holidays_for(db, hol_users, start, end)
 
     # Pull all attendance rows in the window, scoped to user_ids if given.
     att_q = select(Attendance).where(
@@ -960,7 +954,8 @@ async def recompute_range(
     for att in att_rows:
         ot_state, night_state, _ = await _resolve_one(
             db, user_id=att.user_id, work_date=att.work_date,
-            attendance=att, holiday_set=holiday_set,
+            attendance=att,
+            holiday_set=holidays_by_user.get(att.user_id, {}),
             requested_by_id=requested_by_id,
             eff=eff_map.get((att.user_id, att.work_date)),
         )
