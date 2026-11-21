@@ -298,6 +298,9 @@ async def test_no_show_skips_full_remote_flags_half(world):
         assert board[i["half"]].remote_kind == "wfh"
         assert board[i["none"]].remote_kind is None
         assert board[i["half"]].status == S.NO_SHOW
+        assert board[i["full"]].status == S.REMOTE
+        assert board[i["full"]].remote_portion == "full"
+        assert board[i["half"]].remote_portion == "first_half"
         await no_show_job(db, now=NOW, user_ids=ids)
     async with SessionLocal() as db:
         alerted = {a.user_id for a in (await db.execute(select(NoShowAlert).where(
@@ -368,3 +371,104 @@ async def test_muster_fetch_skips_off_days(world):
         res = await _fetch_muster_roll(db, f)
     got = sorted((x["work_date"], x["status"]) for x in res.rows)
     assert got == [(fri, "WFH"), (fri + timedelta(days=3), "WFH")]
+
+
+async def _att(uid, d, tpl=None, pout_next_day=False):
+    async with SessionLocal() as db:
+        db.add(Attendance(
+            user_id=uid, mode="web", work_date=d, shift_template_id=tpl,
+            captured_at=datetime.combine(d, time(9, 5), UTC)))
+        await db.commit()
+
+
+async def test_muster_fetch_punch_and_remote_day_coexist(world):
+    from app.api.v1.endpoints.reports import _fetch_muster_roll
+    i = world["ids"]
+    await _approve(i["full"], "wfh", "full", D)
+    await _att(i["full"], D, i["tpl"])
+    f = ReportFilter(start=D, end=D, department=world["dept"])
+    async with SessionLocal() as db:
+        res = await _fetch_muster_roll(db, f)
+    assert [(x["user_id"], x["status"]) for x in res.rows] == [
+        (i["full"], "P·WFH")]
+
+
+async def test_muster_fetch_shift_filter_still_suffixes_punched(world):
+    from app.api.v1.endpoints.reports import _fetch_muster_roll
+    i = world["ids"]
+    await _approve(i["full"], "on_duty", "full", D)
+    await _approve(i["half"], "wfh", "full", D)       # no punch: not synthesized
+    await _att(i["full"], D, i["tpl"])
+    f = ReportFilter(start=D, end=D, department=world["dept"],
+                     shift_template_id=i["tpl"])
+    async with SessionLocal() as db:
+        res = await _fetch_muster_roll(db, f)
+    assert [(x["user_id"], x["status"]) for x in res.rows] == [
+        (i["full"], "P·OD")]
+
+
+async def test_muster_synthesis_clipped_by_leave_and_joining(world):
+    from app.api.v1.endpoints.reports import _fetch_muster_roll
+    i = world["ids"]
+    await _approve(i["full"], "wfh", "full", D)       # also on full leave
+    await _approve(i["half"], "wfh", "full", D)       # joins after D
+    await _approve(i["none"], "wfh", "full", D)       # control
+    async with SessionLocal() as db:
+        lt = LeaveType(name=f"WEL{world['sfx']}")
+        db.add(lt)
+        await db.flush()
+        db.add(LeaveRequest(
+            employee_id=i["full"], leave_type_id=lt.id, start_date=D,
+            end_date=D, is_half_day=False, reason="t",
+            status=LeaveStatus.APPROVED, created_by_user_id=i["full"]))
+        emp = (await db.execute(select(Employee).where(
+            Employee.user_id == i["half"]))).scalar_one()
+        emp.date_of_joining = D + timedelta(days=1)
+        await db.commit()
+    f = ReportFilter(start=D, end=D, department=world["dept"])
+    async with SessionLocal() as db:
+        res = await _fetch_muster_roll(db, f)
+    assert [(x["user_id"], x["status"]) for x in res.rows] == [
+        (i["none"], "WFH")]
+
+
+async def test_overnight_punch_out_next_day_stays_relaxed(world):
+    uid = world["ids"]["strict"]
+    await _approve(uid, "wfh", "full")
+    row = await _punch(uid, FAR)
+    # Punch-out is evaluated against the open row's work_date, not the
+    # calendar date of the punch-out: simulate it landing a day later.
+    async with SessionLocal() as db:
+        user = await db.get(User, uid)
+        att = await db.get(Attendance, row.id)
+        out = await record_punch_out(
+            db, user, at=datetime.now(UTC) + timedelta(hours=20),
+            lat=FAR[0], lng=FAR[1], accuracy=10.0)
+        assert att.work_date == org_today()
+        assert out.punch_out_geo_flag == "approved_remote"
+        await db.commit()
+
+
+async def test_dashboard_and_flag_summary_exclude_approved_remote(world):
+    from app.api.v1.endpoints.dashboard import _wp_hr_flagged_attendance
+    from app.api.v1.endpoints.reports import _fetch_flag_summary
+    uid = world["ids"]["strict"]
+    today = org_today()
+    async with SessionLocal() as db:
+        before = (await _wp_hr_flagged_attendance(db, None, None))
+    await _approve(uid, "wfh", "full")
+    row = await _punch(uid, FAR)
+    assert row.geo_flag == "approved_remote"
+    async with SessionLocal() as db:
+        # attribution flag may also be set (no shift): clear it so only the
+        # geo dimension could count this row
+        a = await db.get(Attendance, row.id)
+        a.attribution_flag = None
+        await db.commit()
+    async with SessionLocal() as db:
+        after = (await _wp_hr_flagged_attendance(db, None, None))
+        assert after["count"] == before["count"]
+        assert after["geo_in"] == before["geo_in"]
+        res = await _fetch_flag_summary(
+            db, ReportFilter(start=today, end=today))
+    assert uid not in [r["user_id"] for r in res.rows]

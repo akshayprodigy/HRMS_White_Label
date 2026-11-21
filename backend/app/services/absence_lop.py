@@ -176,6 +176,46 @@ def count_absent_days(
     return total
 
 
+async def load_leave_days(
+    db, user_ids, start: date, last_day: date,
+) -> tuple[set[tuple[int, date]], set[tuple[int, date]]]:
+    """(full_leave, half_leave) sets of (user_id, date) from APPROVED leave in
+    [start, last_day]; one query."""
+    leave_rows = (await db.execute(
+        select(LeaveRequest).where(
+            LeaveRequest.employee_id.in_(list(user_ids)),
+            LeaveRequest.status == LeaveStatus.APPROVED,
+            LeaveRequest.start_date <= last_day,
+            LeaveRequest.end_date >= start,
+        )
+    )).scalars().all()
+    full_leave: set[tuple[int, date]] = set()
+    half_leave: set[tuple[int, date]] = set()
+    for lv in leave_rows:
+        d = max(lv.start_date, start)
+        stop = min(lv.end_date, last_day)
+        target = half_leave if lv.is_half_day else full_leave
+        while d <= stop:
+            target.add((lv.employee_id, d))
+            d += timedelta(days=1)
+    return full_leave, half_leave
+
+
+async def last_working_days(db, emps: Iterable[Employee]) -> dict[int, date]:
+    """Employee.id -> earliest effective-resignation last working day."""
+    res_rows = (await db.execute(
+        select(Resignation.employee_id, Resignation.last_working_day).where(
+            Resignation.employee_id.in_([e.id for e in emps]),
+            Resignation.status.in_(_EFFECTIVE_RESIGNATION),
+        )
+    )).all()
+    lwd_by_emp: dict[int, date] = {}
+    for eid, lwd in res_rows:
+        if eid not in lwd_by_emp or lwd < lwd_by_emp[eid]:
+            lwd_by_emp[eid] = lwd
+    return lwd_by_emp
+
+
 async def absence_days_for_period(
     db, employees: Iterable[Employee], start: date, end: date, today: date,
     default_weekly_offs: set[int],
@@ -199,37 +239,13 @@ async def absence_days_for_period(
     )).all()
     punched: set[tuple[int, date]] = {(u, d) for u, d in att_rows}
 
-    leave_rows = (await db.execute(
-        select(LeaveRequest).where(
-            LeaveRequest.employee_id.in_(user_ids),
-            LeaveRequest.status == LeaveStatus.APPROVED,
-            LeaveRequest.start_date <= last_day,
-            LeaveRequest.end_date >= start,
-        )
-    )).scalars().all()
-    full_leave: set[tuple[int, date]] = set()
-    half_leave: set[tuple[int, date]] = set()
-    for lv in leave_rows:
-        d = max(lv.start_date, start)
-        stop = min(lv.end_date, last_day)
-        target = half_leave if lv.is_half_day else full_leave
-        while d <= stop:
-            target.add((lv.employee_id, d))
-            d += timedelta(days=1)
+    full_leave, half_leave = await load_leave_days(
+        db, user_ids, start, last_day)
 
     holidays = await holidays_for(db, user_ids, start, last_day)
     remote = await approved_portions(db, user_ids, start, last_day)
 
-    res_rows = (await db.execute(
-        select(Resignation.employee_id, Resignation.last_working_day).where(
-            Resignation.employee_id.in_([e.id for e in emps]),
-            Resignation.status.in_(_EFFECTIVE_RESIGNATION),
-        )
-    )).all()
-    lwd_by_emp: dict[int, date] = {}
-    for eid, lwd in res_rows:
-        if eid not in lwd_by_emp or lwd < lwd_by_emp[eid]:
-            lwd_by_emp[eid] = lwd
+    lwd_by_emp = await last_working_days(db, emps)
 
     out: dict[int, float] = {}
     for e in emps:

@@ -74,6 +74,8 @@ describe('PunchScreen', () => {
     [{ review_flag: 'liveness_failed', attribution_flag: 'NO_SHIFT' }, 'Punch recorded, but flagged for review (selfie check not confirmed).'],
     [{ review_flag: 'offline' }, 'Punch recorded, but flagged for review (offline punch).'],
     [{ review_flag: 'something_new' }, 'Punch recorded, but flagged for review.'],
+    [{ geo_flag: 'approved_remote' }, 'Remote work (approved).'],
+    [{ geo_flag: 'approved_remote', attribution_flag: 'NO_SHIFT' }, 'Punch recorded, but flagged for review (no shift).'],
   ])('flag note reflects the server reason %j', async (flags, text) => {
     mock.onGet('/attendance/today').reply(200, { is_marked: false, attendance: null });
     mock.onPost('/attendance/mark').reply(200, { id: 1, captured_at: '2026-11-13T09:00:00Z', punch_out_time: null, ...flags });

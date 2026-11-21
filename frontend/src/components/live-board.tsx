@@ -16,7 +16,8 @@ type Status =
   | 'no_show'
   | 'running_late'
   | 'on_shift'
-  | 'completed';
+  | 'completed'
+  | 'remote';
 
 interface LiveRow {
   user_id: number;
@@ -34,6 +35,7 @@ interface LiveRow {
   alerted: boolean;
   half_day_leave: boolean;
   remote_kind?: "on_duty" | "client_visit" | "wfh" | null;
+  remote_portion?: "full" | "first_half" | "second_half" | null;
   late_notice_eta: string | null;
   late_notice_reason: string | null;
   transport_required?: boolean;
@@ -54,6 +56,7 @@ const STATUS_ORDER: Status[] = [
   'on_shift',
   'upcoming',
   'completed',
+  'remote',
   'on_leave',
   'off',
 ];
@@ -68,6 +71,7 @@ const STATUS_META: Record<
   on_shift: { label: 'On shift', variant: 'success' },
   upcoming: { label: 'Upcoming', variant: 'info' },
   completed: { label: 'Completed', variant: 'neutral' },
+  remote: { label: 'Remote', variant: 'info' },
   on_leave: { label: 'On leave', variant: 'neutral' },
   off: { label: 'Off', variant: 'neutral' },
 };

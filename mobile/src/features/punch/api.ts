@@ -134,13 +134,24 @@ export async function submitPunch(input: PunchInput, q: PunchQueue = getPunchQue
     const res = await api.post(input.kind === 'in' ? '/attendance/mark' : '/attendance/punch-out', body);
     const att = res.data as AttendanceRow & PunchFlags;
     await cleanup();
-    return { status: 'ok', attendance: att, flag: att.review_flag ?? (input.kind === 'out' ? att.punch_out_geo_flag : null) ?? att.geo_flag ?? att.attribution_flag ?? null };
+    return { status: 'ok', attendance: att, flag: pickFlag(att, input.kind) };
   } catch (e) {
     const err = normalizeError(e);
     if (isRetryable(err)) return queueIt(selfieId);
     if (isAlreadyRecorded(err.message)) { await cleanup(); return { status: 'already' }; }
     return { status: 'error', error: err, needsSelfie: selfieRequired(err) };
   }
+}
+
+export const APPROVED_REMOTE = 'approved_remote';
+/** The notice flag: real review flags win; `approved_remote` (a punch relaxed by an approved WFH / on-duty
+ * request) is informational and only surfaces when nothing else is flagged. */
+export function pickFlag(att: PunchFlags, kind: 'in' | 'out'): string | null {
+  const geo = (kind === 'out' ? att.punch_out_geo_flag : null) ?? att.geo_flag ?? null;
+  const realGeo = geo === APPROVED_REMOTE ? null : geo;
+  const real = att.review_flag ?? realGeo ?? att.attribution_flag ?? null;
+  if (real) return real;
+  return att.geo_flag === APPROVED_REMOTE || att.punch_out_geo_flag === APPROVED_REMOTE ? APPROVED_REMOTE : null;
 }
 
 const FLAG_TEXT: Record<string, string> = {
@@ -151,6 +162,7 @@ const FLAG_TEXT: Record<string, string> = {
 /** Human text for the flagged-result notice; unknown reasons fall back to a generic message. */
 export function flagNotice(flag: string | null): string | null {
   if (!flag) return null;
+  if (flag === APPROVED_REMOTE) return 'Remote work (approved).';
   const text = FLAG_TEXT[flag.toLowerCase()];
   return `Punch recorded, but flagged for review${text ? ` (${text})` : ''}.`;
 }

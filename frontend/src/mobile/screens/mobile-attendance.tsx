@@ -422,13 +422,17 @@ const TodayCard: React.FC<{ today: AttendanceRow | null; tick: number }> = ({
       </div>
       <p className="text-[11px] text-slate-500 mt-3">
         Mode: <span className="font-semibold uppercase">{today.mode}</span>
-        {today.geo_flag && (
+        {today.geo_flag && today.geo_flag !== 'approved_remote' && (
           <span className="ml-2 text-amber-700">· in-flag {today.geo_flag}</span>
         )}
-        {today.punch_out_geo_flag && (
+        {today.punch_out_geo_flag && today.punch_out_geo_flag !== 'approved_remote' && (
           <span className="ml-2 text-amber-700">
             · out-flag {today.punch_out_geo_flag}
           </span>
+        )}
+        {(today.geo_flag === 'approved_remote' ||
+          today.punch_out_geo_flag === 'approved_remote') && (
+          <span className="ml-2 text-emerald-700">· Remote work (approved)</span>
         )}
       </p>
     </div>

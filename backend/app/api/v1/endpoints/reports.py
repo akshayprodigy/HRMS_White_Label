@@ -166,7 +166,10 @@ from fastapi import Query as _Query, Request as _Request
 from fastapi.responses import StreamingResponse as _Stream
 from sqlalchemy import and_ as _and, func as _func, or_ as _or
 from app.models.work_location import WorkLocationRequest as _WLR
-from app.services.absence_lop import default_offs_from_rules, is_non_working_day
+from app.services.absence_lop import (
+    default_offs_from_rules, is_non_working_day, last_working_days,
+    load_leave_days,
+)
 from app.services.effective_shift import effective_shifts_for_range
 from app.services.time_rules import get_time_rules
 from app.services.work_location import approved_info as _wl_approved_info
@@ -300,10 +303,11 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
     att_rows = (await db.execute(stmt)).scalars().all()
 
     # Approved on-duty / client-visit / WFH days (Phase 6A): they annotate
-    # punched rows and add no-punch rows (muster codes OD / WFH). Only
-    # possible with a bounded range.
+    # punched rows (P·WFH / P·OD) and, with a bounded range and no shift
+    # filter, add no-punch rows (OD / WFH).
+    synth = bool(f.start and f.end and not f.shift_template_id)
     remote_users: set[int] = set()
-    if f.start and f.end and not f.shift_template_id:
+    if synth:
         remote_users = set((await db.execute(
             select(_WLR.user_id).where(
                 _WLR.status == "approved",
@@ -314,17 +318,16 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
     emps = await _employees_by_user_id(db, user_ids)
     if f.department:
         emps = {uid: e for uid, e in emps.items() if e.department == f.department}
-    lo = min([a.work_date for a in att_rows] + ([f.start] if remote_users else []),
-             default=None)
-    hi = max([a.work_date for a in att_rows] + ([f.end] if remote_users else []),
-             default=None)
+    dates = [a.work_date for a in att_rows] + (
+        [f.start, f.end] if remote_users else [])
+    lo, hi = (min(dates), max(dates)) if dates else (None, None)
     holidays = (await _holidays_for(
         db, list(emps), lo, hi)) if emps and lo else {}
     r_portions: dict = {}
     r_kinds: dict = {}
-    if remote_users and emps:
+    if emps and lo:
         r_portions, r_kinds = await _wl_approved_info(
-            db, list(emps), f.start, f.end)
+            db, list(emps), lo, hi)
 
     records: _List[_rep.AttendanceRow] = []
     seen: set = set()
@@ -345,25 +348,34 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             remote_kind=r_kinds.get(a.user_id, {}).get(a.work_date),
             remote_portion=r_portions.get(a.user_id, {}).get(a.work_date),
         ))
-    # Same off-day rules as the absence LOP (holiday / week-off / default
-    # weekly off), so the muster and payroll agree.
-    shifts = await effective_shifts_for_range(
-        db, list(r_portions), f.start, f.end) if r_portions else {}
-    default_offs = default_offs_from_rules(await get_time_rules(db))
-    for uid, days in r_portions.items():
-        emp = emps.get(uid)
-        for d, portion in sorted(days.items()):
-            if emp is None or (uid, d) in seen \
-                    or is_non_working_day(
-                        shifts.get((uid, d)), d, holidays.get(uid, {}),
-                        default_offs):
-                continue
-            records.append(_rep.AttendanceRow(
-                user_id=uid, employee_code=emp.employee_id,
-                full_name=emp.user.full_name if emp.user else "",
-                department=emp.department, work_date=d,
-                remote_kind=r_kinds[uid].get(d), remote_portion=portion,
-            ))
+    if synth and remote_users:
+        # Same exclusions as the absence LOP (holiday / week-off / default
+        # weekly off, joining date, last working day, full-day leave), via
+        # its own helpers, so the muster and payroll agree.
+        syn_ids = [uid for uid in r_portions if uid in remote_users]
+        shifts = await effective_shifts_for_range(
+            db, syn_ids, f.start, f.end) if syn_ids else {}
+        default_offs = default_offs_from_rules(await get_time_rules(db))
+        full_leave, _half = await load_leave_days(
+            db, syn_ids, f.start, f.end) if syn_ids else (set(), set())
+        lwd = await last_working_days(db, [emps[u] for u in syn_ids])
+        for uid in syn_ids:
+            emp = emps[uid]
+            first = max(f.start, emp.date_of_joining)
+            last = min(f.end, lwd.get(emp.id, f.end))
+            for d, portion in sorted(r_portions[uid].items()):
+                if d < first or d > last or (uid, d) in seen \
+                        or (uid, d) in full_leave \
+                        or is_non_working_day(
+                            shifts.get((uid, d)), d, holidays.get(uid, {}),
+                            default_offs):
+                    continue
+                records.append(_rep.AttendanceRow(
+                    user_id=uid, employee_code=emp.employee_id,
+                    full_name=emp.user.full_name if emp.user else "",
+                    department=emp.department, work_date=d,
+                    remote_kind=r_kinds[uid].get(d), remote_portion=portion,
+                ))
     return _rep.build_muster_roll(records=records, filters=f)
 
 

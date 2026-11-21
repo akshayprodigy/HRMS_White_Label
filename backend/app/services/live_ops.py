@@ -51,6 +51,8 @@ class LiveStatus(str, enum.Enum):
     RUNNING_LATE = "running_late"
     ON_SHIFT = "on_shift"
     COMPLETED = "completed"
+    # Phase 6A: full-day approved on-duty / client-visit / WFH, not punched
+    REMOTE = "remote"
 
 
 def shift_bounds(
@@ -266,6 +268,9 @@ async def live_board(
                 now=now, start=s, end=e, grace_in=shift.grace_in_minutes,
                 punch_in=pin, punch_out=pout, on_leave=(uid, wd) in leave,
                 no_show_minutes=no_show_minutes, late_eta=eta)
+            if (remote_portions[uid].get(wd) == "full" and pin is None
+                    and status != LiveStatus.ON_LEAVE):
+                status = LiveStatus.REMOTE  # working remotely, not a no-show
             half = (uid, wd) in half_leave
             if half and status == LiveStatus.NO_SHOW and now < e:
                 status = LiveStatus.NOT_ARRIVED  # other half is worked later
