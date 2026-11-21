@@ -375,9 +375,17 @@ async def get_flagged_attendance(
 
     # OR across both dimensions by default. flag_kind narrows.
     attribution_present = Attendance.attribution_flag.is_not(None)
+    # approved_remote (punch relaxed by an approved WFH / on-duty request) is
+    # informational, never a review item; only an explicit geo_flag filter
+    # surfaces it.
     geo_present = or_(
-        Attendance.geo_flag.is_not(None),
-        Attendance.punch_out_geo_flag.is_not(None),
+        Attendance.geo_flag == geo_flag,
+        Attendance.punch_out_geo_flag == geo_flag,
+    ) if geo_flag is not None else or_(
+        and_(Attendance.geo_flag.is_not(None),
+             Attendance.geo_flag != "approved_remote"),
+        and_(Attendance.punch_out_geo_flag.is_not(None),
+             Attendance.punch_out_geo_flag != "approved_remote"),
     )
     # Phase 3: offline-synced punches and failed liveness checks.
     review_present = or_(

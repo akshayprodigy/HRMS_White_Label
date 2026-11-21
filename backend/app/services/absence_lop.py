@@ -24,6 +24,7 @@ from app.models.attendance import Attendance
 from app.models.employee import Employee
 from app.models.exit_management import Resignation, ResignationStatus
 from app.services.holidays import holidays_for
+from app.services.work_location import approved_portions
 from app.models.leave import LeaveRequest, LeaveStatus, LeaveType
 from app.services.effective_shift import effective_shifts_for_range
 
@@ -142,10 +143,15 @@ def count_absent_days(
     full_leave: set[tuple[int, date]],
     half_leave: set[tuple[int, date]],
     holidays: Mapping[date, Any] | Container[date],
+    remote: Mapping[date, str] | None = None,
 ) -> float:
     """Pure per-employee loop over [first, last]. `shifts` maps
     (user_id, date) -> EffectiveShift (missing == no shift). `holidays` is
-    this user's holiday dates (a dict keyed by date, or a set)."""
+    this user's holiday dates (a dict keyed by date, or a set). `remote` is
+    this user's approved on-duty/WFH portions (date -> full|first_half|
+    second_half): a full day excuses a no-punch day, a half portion excuses
+    half of it (a half portion plus half leave covers the whole day)."""
+    remote = remote or {}
     total = 0.0
     d = first
     while d <= last:
@@ -155,10 +161,17 @@ def count_absent_days(
             pass
         elif key in punched or key in full_leave:
             pass
-        elif key in half_leave:
-            total += 0.5
         else:
-            total += 1.0
+            portion = remote.get(d)
+            if portion == "full":
+                pass
+            elif portion is not None:  # half-day remote
+                if key not in half_leave:
+                    total += 0.5
+            elif key in half_leave:
+                total += 0.5
+            else:
+                total += 1.0
         d += timedelta(days=1)
     return total
 
@@ -205,6 +218,7 @@ async def absence_days_for_period(
             d += timedelta(days=1)
 
     holidays = await holidays_for(db, user_ids, start, last_day)
+    remote = await approved_portions(db, user_ids, start, last_day)
 
     res_rows = (await db.execute(
         select(Resignation.employee_id, Resignation.last_working_day).where(
@@ -230,5 +244,6 @@ async def absence_days_for_period(
             punched=punched, full_leave=full_leave,
             half_leave=half_leave,
             holidays=holidays.get(e.user_id, {}),
+            remote=remote.get(e.user_id, {}),
         )
     return out

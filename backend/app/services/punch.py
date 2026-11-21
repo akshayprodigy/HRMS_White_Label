@@ -28,7 +28,10 @@ from app.services.attendance_lock import LockRetry
 from app.services.comp_off_accrual import create_comp_off_accrual
 from app.services.effective_shift import effective_shift_on
 from app.services.org_time import local_date, org_tz
-from app.services.geofence import EnforcementMode, GeoDecision, evaluate_punch
+from app.services.geofence import (
+    EnforcementMode, GeoDecision, GeoFlag, evaluate_punch,
+)
+from app.services.work_location import approved_portion
 from app.services.shift_resolver import (
     DEFAULT_EARLY_IN_BUFFER,
     AttributionFlag,
@@ -96,6 +99,30 @@ def _build_rejection(decision: GeoDecision, fences) -> HTTPException:
     )
 
 
+async def _evaluate_geo(
+    db, user_id: int, work_date, *, punch_lat, punch_lng, accuracy_m,
+    is_mock_location, fences, enforcement_mode, geo_enabled,
+) -> GeoDecision:
+    """evaluate_punch, relaxed by an approved on-duty / client-visit / WFH
+    request covering `work_date` (any portion counts for the whole day's
+    punches): a strict fence never rejects, and the fence / accuracy flags
+    become APPROVED_REMOTE. A mock location stays flagged. With no geo
+    configured the decision is already clean and is left untouched."""
+    remote = (geo_enabled and bool(fences)
+              and await approved_portion(db, user_id, work_date) is not None)
+    if remote:
+        enforcement_mode = EnforcementMode.ALLOW_WITH_FLAG
+    decision = evaluate_punch(
+        punch_lat=punch_lat, punch_lng=punch_lng, accuracy_m=accuracy_m,
+        is_mock_location=is_mock_location, fences=fences,
+        enforcement_mode=enforcement_mode, geo_enabled=geo_enabled,
+    )
+    if remote and decision.geo_flag in (
+            GeoFlag.OUTSIDE_GEOFENCE, GeoFlag.LOW_ACCURACY):
+        decision.geo_flag = GeoFlag.APPROVED_REMOTE
+    return decision
+
+
 async def _notify_geo_flag(
     db,
     *,
@@ -109,7 +136,8 @@ async def _notify_geo_flag(
     Best-effort — failures are swallowed; never block a punch on
     notification delivery.
     """
-    if decision.geo_flag is None:
+    if decision.geo_flag is None \
+            or decision.geo_flag == GeoFlag.APPROVED_REMOTE:
         return
     title = f"Geo-flagged attendance ({decision.geo_flag.value})"
     distance_part = (
@@ -470,7 +498,8 @@ async def record_punch_in(
     else:
         geo_enabled, mode_enf, allowed_fences = (
             await _load_geo_config_with_fences(db, user.id))
-    decision = evaluate_punch(
+    decision = await _evaluate_geo(
+        db, user.id, work_date,
         punch_lat=lat, punch_lng=lng, accuracy_m=accuracy,
         is_mock_location=is_mock, fences=allowed_fences,
         enforcement_mode=mode_enf, geo_enabled=geo_enabled,
@@ -666,7 +695,8 @@ async def record_punch_out(
     geo_enabled, mode, allowed_fences = await _load_geo_config_with_fences(
         db, user.id
     )
-    out_decision = evaluate_punch(
+    out_decision = await _evaluate_geo(
+        db, user.id, attendance.work_date,
         punch_lat=lat, punch_lng=lng, accuracy_m=accuracy,
         is_mock_location=is_mock, fences=allowed_fences,
         enforcement_mode=mode, geo_enabled=geo_enabled,

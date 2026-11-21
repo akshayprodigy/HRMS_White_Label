@@ -457,12 +457,17 @@ async def _wp_hr_flagged_attendance(db, user, posture) -> dict:
     from datetime import timedelta as _td
 
     since = await local_today(db) - _td(days=30)
+    # approved_remote is informational (approved WFH / on-duty), not a flag.
+    geo_in_p = and_(Attendance.geo_flag.isnot(None),
+                    Attendance.geo_flag != "approved_remote")
+    geo_out_p = and_(Attendance.punch_out_geo_flag.isnot(None),
+                     Attendance.punch_out_geo_flag != "approved_remote")
     stmt = select(func.count(Attendance.id)).where(
         and_(
             Attendance.work_date >= since,
             or_(
-                Attendance.geo_flag.isnot(None),
-                Attendance.punch_out_geo_flag.isnot(None),
+                geo_in_p,
+                geo_out_p,
                 Attendance.attribution_flag.isnot(None),
             ),
         )
@@ -477,8 +482,8 @@ async def _wp_hr_flagged_attendance(db, user, posture) -> dict:
             ))
         )).scalar_one() or 0)
 
-    geo_in = await _count(Attendance.geo_flag.isnot(None))
-    geo_out = await _count(Attendance.punch_out_geo_flag.isnot(None))
+    geo_in = await _count(geo_in_p)
+    geo_out = await _count(geo_out_p)
     attrib = await _count(Attendance.attribution_flag.isnot(None))
 
     return {

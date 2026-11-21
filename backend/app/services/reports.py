@@ -225,18 +225,30 @@ class AttendanceRow:
     is_leave: bool = False
     is_holiday: bool = False
     is_weekly_off: bool = False
+    # Approved on-duty / client-visit / WFH (Phase 6A): kind + portion.
+    remote_kind: Optional[str] = None
+    remote_portion: Optional[str] = None
+
+
+def _remote_code(r: "AttendanceRow") -> str:
+    base = "WFH" if r.remote_kind == "wfh" else "OD"
+    return base if r.remote_portion in (None, "full") else f"{base}/2"
 
 
 def build_muster_roll(
     *, records: List[AttendanceRow], filters: ReportFilter,
 ) -> ReportResult:
-    """Per-employee per-date presence: P / A / L / WO / H.
+    """Per-employee per-date presence: P / A / L / WO / H / OD / WFH.
 
     - P  Present  — has punch_in
     - A  Absent   — no punch_in and not leave / WO / holiday
     - L  Leave    — is_leave
     - WO Weekly-off — is_weekly_off
     - H  Holiday  — is_holiday
+    - OD  On duty — approved on-duty / client-visit request, no punch
+    - WFH Work from home — approved WFH request, no punch
+    - OD/2, WFH/2 — half-day approved request, no punch (the rest of the
+      day is unexplained). With a punch the normal P logic applies.
     """
     columns = [
         ColumnDef("employee_code", "Emp Code", ColumnType.TEXT, width=14),
@@ -261,9 +273,11 @@ def build_muster_roll(
             status = "L"
         elif r.punch_in is not None:
             status = "P"
+        elif r.remote_kind is not None:
+            status = _remote_code(r)
         else:
             status = "A"
-        counters[status] += 1
+        counters[status] = counters.get(status, 0) + 1
         rows.append({
             "user_id": r.user_id,
             "employee_code": r.employee_code,
@@ -288,6 +302,8 @@ def build_muster_roll(
         "status": (
             f"P={total_p}  A={total_a}  L={counters['L']}  "
             f"WO={counters['WO']}  H={counters['H']}"
+            + "".join(f"  {k}={v}" for k, v in counters.items()
+                      if k not in ("P", "A", "L", "WO", "H"))
         ),
         "punch_in": total_rows,
     }

@@ -165,6 +165,8 @@ from typing import Any as _Any, List as _List, Optional as _Opt
 from fastapi import Query as _Query, Request as _Request
 from fastapi.responses import StreamingResponse as _Stream
 from sqlalchemy import and_ as _and, func as _func, or_ as _or
+from app.models.work_location import WorkLocationRequest as _WLR
+from app.services.work_location import approved_info as _wl_approved_info
 from sqlalchemy.orm import selectinload as _selectinload
 
 from app.api.v1.endpoints.hr import log_audit as _log_audit
@@ -294,20 +296,40 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
         stmt = stmt.where(_Attendance.shift_template_id == f.shift_template_id)
     att_rows = (await db.execute(stmt)).scalars().all()
 
-    user_ids = {a.user_id for a in att_rows}
+    # Approved on-duty / client-visit / WFH days (Phase 6A): they annotate
+    # punched rows and add no-punch rows (muster codes OD / WFH). Only
+    # possible with a bounded range.
+    remote_users: set[int] = set()
+    if f.start and f.end and not f.shift_template_id:
+        remote_users = set((await db.execute(
+            select(_WLR.user_id).where(
+                _WLR.status == "approved",
+                _WLR.end_date >= f.start, _WLR.start_date <= f.end,
+            ).distinct())).scalars().all())
+
+    user_ids = {a.user_id for a in att_rows} | remote_users
     emps = await _employees_by_user_id(db, user_ids)
     if f.department:
         emps = {uid: e for uid, e in emps.items() if e.department == f.department}
+    lo = min([a.work_date for a in att_rows] + ([f.start] if remote_users else []),
+             default=None)
+    hi = max([a.work_date for a in att_rows] + ([f.end] if remote_users else []),
+             default=None)
     holidays = (await _holidays_for(
-        db, list(emps), min(a.work_date for a in att_rows),
-        max(a.work_date for a in att_rows),
-    )) if emps and att_rows else {}
+        db, list(emps), lo, hi)) if emps and lo else {}
+    r_portions: dict = {}
+    r_kinds: dict = {}
+    if remote_users and emps:
+        r_portions, r_kinds = await _wl_approved_info(
+            db, list(emps), f.start, f.end)
 
     records: _List[_rep.AttendanceRow] = []
+    seen: set = set()
     for a in att_rows:
         emp = emps.get(a.user_id)
         if emp is None:
             continue
+        seen.add((a.user_id, a.work_date))
         records.append(_rep.AttendanceRow(
             user_id=a.user_id, employee_code=emp.employee_id,
             full_name=emp.user.full_name if emp.user else "",
@@ -317,7 +339,21 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             attribution_flag=a.attribution_flag,
             geo_flag=a.geo_flag,
             is_holiday=(a.work_date in holidays.get(a.user_id, {})),
+            remote_kind=r_kinds.get(a.user_id, {}).get(a.work_date),
+            remote_portion=r_portions.get(a.user_id, {}).get(a.work_date),
         ))
+    for uid, days in r_portions.items():
+        emp = emps.get(uid)
+        for d, portion in sorted(days.items()):
+            if emp is None or (uid, d) in seen \
+                    or d in holidays.get(uid, {}):
+                continue
+            records.append(_rep.AttendanceRow(
+                user_id=uid, employee_code=emp.employee_id,
+                full_name=emp.user.full_name if emp.user else "",
+                department=emp.department, work_date=d,
+                remote_kind=r_kinds[uid].get(d), remote_portion=portion,
+            ))
     return _rep.build_muster_roll(records=records, filters=f)
 
 
@@ -411,7 +447,8 @@ async def _fetch_flag_summary(db, f: _rep.ReportFilter) -> _rep.ReportResult:
     stmt = select(_Attendance).where(
         _or(
             _Attendance.attribution_flag.isnot(None),
-            _Attendance.geo_flag.isnot(None),
+            _and(_Attendance.geo_flag.isnot(None),
+                 _Attendance.geo_flag != "approved_remote"),
         )
     )
     if f.start: stmt = stmt.where(_Attendance.work_date >= f.start)

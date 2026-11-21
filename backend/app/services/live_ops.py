@@ -35,6 +35,7 @@ from app.services.effective_shift import effective_shifts_for_range
 from app.services.holidays import holidays_for
 from app.services.org_time import local_today_for, org_tz, shift_window
 from app.services.time_rules import get_schedule_rules, get_time_rules
+from app.services.work_location import approved_info
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,10 @@ class LiveRow:
     half_day_leave: bool = False
     late_notice_eta: Optional[datetime] = None
     late_notice_reason: Optional[str] = None
+    # Approved on-duty / client-visit / WFH covering this row's work date
+    # (Phase 6A): kind + portion (full|first_half|second_half).
+    remote_kind: Optional[str] = None
+    remote_portion: Optional[str] = None
 
 
 def _chunks(ids, n=ID_CHUNK):
@@ -218,6 +223,7 @@ async def live_board(
                 half_leave.add((lv.employee_id, d))
                 d += timedelta(days=1)
     holidays = await holidays_for(db, ids, yday, today)
+    remote_portions, remote_kinds = await approved_info(db, ids, yday, today)
     default_offs = default_offs_from_rules(await get_time_rules(db))
 
     by_key: Dict[Tuple[int, date], List[Attendance]] = {}
@@ -269,7 +275,8 @@ async def live_board(
                 shift.end_time.strftime("%H:%M"),
                 status, late, pin, pout, (uid, wd) in alerts, half,
                 eta if pin is None else None,
-                ln.reason if ln and pin is None else None))
+                ln.reason if ln and pin is None else None,
+                remote_kinds[uid].get(wd), remote_portions[uid].get(wd)))
         else:
             pin, pout = _punches(by_key.get((uid, today), []))
             status, late = classify(
@@ -277,7 +284,9 @@ async def live_board(
                 punch_out=pout, on_leave=False, no_show_minutes=no_show_minutes)
             out.append(LiveRow(
                 uid, name, dept, loc, today, None, None, None, None, None,
-                None, status, late, pin, pout, False))
+                None, status, late, pin, pout, False,
+                remote_kind=remote_kinds[uid].get(today),
+                remote_portion=remote_portions[uid].get(today)))
     out.sort(key=lambda r: (r.name or "").lower())
     return out
 
@@ -350,7 +359,9 @@ async def no_show_job(
     tz = await org_tz(session)
     cands = [r for r in rows
              if r.status == LiveStatus.NO_SHOW and not r.alerted
-             and not r.half_day_leave and r.end is not None and now < r.end]
+             and not r.half_day_leave and r.end is not None and now < r.end
+             # a full-day approved on-duty / WFH request is not a no-show
+             and r.remote_portion != "full"]
     created: List[LiveRow] = []
     for r in cands:
         try:

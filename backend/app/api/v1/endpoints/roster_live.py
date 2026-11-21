@@ -82,6 +82,7 @@ async def live_board(
             "late_notice_reason": r.late_notice_reason,
             "transport_required": (r.user_id, r.work_date) in transport,
             "alerted": r.alerted, "half_day_leave": r.half_day_leave,
+            "remote_kind": r.remote_kind,
             "gap_id": gaps[(r.user_id, r.work_date)].id
             if (r.user_id, r.work_date) in gaps else None,
             "gap_status": gaps[(r.user_id, r.work_date)].status

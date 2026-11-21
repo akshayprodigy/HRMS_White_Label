@@ -47,6 +47,9 @@ class GeoFlag(str, Enum):
     OUTSIDE_GEOFENCE = "outside_geofence"
     MOCK_LOCATION = "mock_location"
     LOW_ACCURACY = "low_accuracy"
+    # Phase 6A: punch relaxed by an approved on-duty / client-visit / WFH
+    # request. Informational only; never counted as a violation.
+    APPROVED_REMOTE = "approved_remote"
 
 
 class FenceLike(Protocol):

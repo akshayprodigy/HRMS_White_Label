@@ -33,6 +33,7 @@ interface LiveRow {
   punch_out: string | null;
   alerted: boolean;
   half_day_leave: boolean;
+  remote_kind?: "on_duty" | "client_visit" | "wfh" | null;
   late_notice_eta: string | null;
   late_notice_reason: string | null;
   transport_required?: boolean;
