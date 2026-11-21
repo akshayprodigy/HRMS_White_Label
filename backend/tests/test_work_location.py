@@ -499,3 +499,52 @@ async def test_permissions(api, world):
             ).status_code == 200
     assert (await api.post(f"{P}/999999999/decide", headers=api.hr,
                            json={"approve": True})).status_code == 404
+
+
+async def test_create_in_locked_period(api, world):
+    await mk_run(world, D(-3))
+    try:
+        r = await req(api, s=-3)
+        assert r.status_code == 409 and "payroll period locked" in r.text
+        async with SessionLocal() as db:
+            n = (await db.execute(select(WorkLocationRequest.id).where(
+                WorkLocationRequest.user_id == world["uid"]["emp"]))
+                 ).all()
+        assert n == []
+    finally:
+        await drop_runs(world)
+    assert (await req(api, s=-3)).status_code == 201
+
+
+async def test_create_multi_day_later_date_locked(api, world):
+    # only the month of the LAST date is locked
+    await mk_run(world, D(30))
+    try:
+        r = await req(api, s=0, e=30)
+        if (D(0).year, D(0).month) != (D(30).year, D(30).month):
+            assert r.status_code == 409 and "payroll period locked" in r.text
+        else:
+            assert r.status_code == 409
+    finally:
+        await drop_runs(world)
+
+
+async def test_hr_cancel_notifies_owner(api, world):
+    rid = (await req(api, s=5)).json()["id"]
+    r = await api.post(f"{P}/{rid}/cancel", headers=api.hr)
+    assert r.status_code == 200 and r.json()["user_name"]
+    async with SessionLocal() as db:
+        notes = (await db.execute(select(Notification).where(
+            Notification.user_id == world["uid"]["emp"],
+            Notification.resource_type == "work_location",
+            Notification.resource_id == str(rid)))).scalars().all()
+    assert any("cancelled" in n.title.lower() for n in notes)
+    # owner cancelling their own request sends no cancel notice
+    rid2 = (await req(api, s=9)).json()["id"]
+    await api.post(f"{P}/{rid2}/cancel", headers=api.emp)
+    async with SessionLocal() as db:
+        notes = (await db.execute(select(Notification).where(
+            Notification.resource_type == "work_location",
+            Notification.resource_id == str(rid2),
+            Notification.user_id == world["uid"]["emp"]))).scalars().all()
+    assert notes == []

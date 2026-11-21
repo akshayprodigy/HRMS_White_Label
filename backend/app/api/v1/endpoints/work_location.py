@@ -9,19 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from app.api import deps
-from app.api.v1.endpoints.approval_chains import instantiate_for_entity
 from app.api.v1.endpoints.roster_common import (
     guard_conflicts, plain_actor, reload_user, retry_on_lock,
 )
-from app.models.approval_chain import (
-    ApprovalChain, ChainEntityType, ChainedApprovalInstance,
-    ChainedApprovalStatus,
-)
-from app.models.employee import Employee
+from app.models.approval_chain import ChainEntityType, ChainedApprovalInstance
 from app.models.user import User
 from app.models.work_location import (
     WorkLocationKind, WorkLocationRequest, WorkLocationStatus,
 )
+from app.services import chain_routing
 from app.services import roster as roster_svc
 from app.services import work_location as svc
 from app.services.self_approval import guard_self_approval
@@ -40,8 +36,8 @@ class RequestIn(BaseModel):
     start_date: date
     end_date: date
     day_portion: str = "full"
-    place: Optional[str] = Field(default=None, max_length=400)
-    purpose: str = Field(max_length=2000)
+    place: Optional[str] = Field(default=None, max_length=200)
+    purpose: str = Field(max_length=1000)
 
 
 class DecideIn(BaseModel):
@@ -72,23 +68,13 @@ def _out(r: WorkLocationRequest, name: Optional[str] = None,
 
 
 async def _chained_ids(db, ids) -> set:
-    if not ids:
-        return set()
-    return set((await db.execute(
-        select(ChainedApprovalInstance.entity_id).where(
-            ChainedApprovalInstance.entity_type
-            == ChainEntityType.WORK_LOCATION,
-            ChainedApprovalInstance.entity_id.in_(ids)))).scalars().all())
+    return await chain_routing.chained_ids(
+        db, ChainEntityType.WORK_LOCATION, ids)
 
 
 async def _chain_instance_id(db, rid: int) -> Optional[int]:
-    return (await db.execute(
-        select(ChainedApprovalInstance.id).where(
-            ChainedApprovalInstance.entity_type
-            == ChainEntityType.WORK_LOCATION,
-            ChainedApprovalInstance.entity_id == rid)
-        .order_by(ChainedApprovalInstance.id.desc()).limit(1)
-    )).scalar_one_or_none()
+    return await chain_routing.chain_instance_id(
+        db, ChainEntityType.WORK_LOCATION, rid)
 
 
 async def _detail(db, rid: int) -> dict:
@@ -96,7 +82,9 @@ async def _detail(db, rid: int) -> dict:
     r = (await db.execute(select(WorkLocationRequest).where(
         WorkLocationRequest.id == rid)
         .execution_options(populate_existing=True))).scalars().one()
-    return _out(r, None, "chain" if await _chain_instance_id(db, rid)
+    name = (await db.execute(select(User.full_name).where(
+        User.id == r.user_id))).scalar_one_or_none()
+    return _out(r, name, "chain" if await _chain_instance_id(db, rid)
                 else "direct")
 
 
@@ -125,27 +113,21 @@ async def create_request(
             start_date=payload.start_date, end_date=payload.end_date,
             day_portion=payload.day_portion, place=payload.place,
             purpose=payload.purpose)
-        chain_exists = (await db.execute(select(ApprovalChain.id).where(
-            ApprovalChain.entity_type == ChainEntityType.WORK_LOCATION,
-            ApprovalChain.is_active.is_(True)).limit(1))).first() is not None
-        svc.audit_create(db, uid, req, "chain" if chain_exists else "direct")
-        if chain_exists:
-            dept = (await db.execute(select(Employee.department).where(
-                Employee.user_id == uid))).scalar_one_or_none()
-            inst = await instantiate_for_entity(
-                db=db, entity_type=ChainEntityType.WORK_LOCATION,
-                entity_id=req.id, submitter=current_user, amount_paise=0,
-                department=dept, context={"kind": req.kind}, commit=False)
-            if inst.status == ChainedApprovalStatus.APPROVED:
-                await svc.finalize(db, req, approved=True, actor=None,
-                                   note=None)
-        else:
-            ids = await svc.direct_approver_ids(db, uid)
+        async def finalize_approved() -> None:
+            await svc.finalize(db, req, approved=True, actor=None, note=None)
+
+        async def notify_direct(ids) -> None:
             await roster_svc.notify_many(db, [(
                 u, "Work-location request",
                 f"{uname} requested {svc.req_summary(req)}.",
                 svc.RT, str(req.id), "work_location_submitted")
                 for u in ids])
+
+        await chain_routing.route_submission(
+            db, entity_type=ChainEntityType.WORK_LOCATION, entity_id=req.id,
+            submitter=current_user, context={"kind": req.kind},
+            audit=lambda via: svc.audit_create(db, uid, req, via),
+            finalize_approved=finalize_approved, notify_direct=notify_direct)
         return req.id
 
     rid = await retry_on_lock(db, body, commit=True)

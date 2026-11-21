@@ -8,18 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from app.api import deps
-from app.api.v1.endpoints.approval_chains import instantiate_for_entity
 from app.api.v1.endpoints.roster_common import (
     guard_conflicts, plain_actor, reload_user, retry_on_lock,
 )
-from app.models.approval_chain import (
-    ApprovalChain, ChainEntityType, ChainedApprovalInstance,
-    ChainedApprovalStatus,
-)
-from app.models.employee import Employee
+from app.models.approval_chain import ChainEntityType, ChainedApprovalInstance
 from app.models.hr import HolidayCalendar
 from app.models.optional_holiday import OptionalHolidayPick, PickStatus
 from app.models.user import User
+from app.services import chain_routing
 from app.services import holidays as holidays_svc
 from app.services import optional_holidays as svc
 from app.services import roster as roster_svc
@@ -66,13 +62,8 @@ def _pick_out(p: OptionalHolidayPick, hol: Optional[HolidayCalendar],
 
 
 async def _chain_instance_id(db, pick_id: int) -> Optional[int]:
-    return (await db.execute(
-        select(ChainedApprovalInstance.id).where(
-            ChainedApprovalInstance.entity_type
-            == ChainEntityType.OPTIONAL_HOLIDAY,
-            ChainedApprovalInstance.entity_id == pick_id)
-        .order_by(ChainedApprovalInstance.id.desc()).limit(1)
-    )).scalar_one_or_none()
+    return await chain_routing.chain_instance_id(
+        db, ChainEntityType.OPTIONAL_HOLIDAY, pick_id)
 
 
 async def _detail(db, pid: int) -> dict:
@@ -142,29 +133,23 @@ async def create_pick(
             db, user=current_user, holiday_id=payload.holiday_id,
             reason=payload.reason)
         hol = await svc.holiday_of(db, pick)
-        chain_exists = (await db.execute(select(ApprovalChain.id).where(
-            ApprovalChain.entity_type == ChainEntityType.OPTIONAL_HOLIDAY,
-            ApprovalChain.is_active.is_(True)).limit(1))).first() is not None
-        svc.audit_create(db, uid, pick,
-                         "chain" if chain_exists else "direct")
-        if chain_exists:
-            dept = (await db.execute(select(Employee.department).where(
-                Employee.user_id == uid))).scalar_one_or_none()
-            inst = await instantiate_for_entity(
-                db=db, entity_type=ChainEntityType.OPTIONAL_HOLIDAY,
-                entity_id=pick.id, submitter=current_user, amount_paise=0,
-                department=dept, context={"holiday": hol.name}, commit=False)
-            if inst.status == ChainedApprovalStatus.APPROVED:
-                await svc.finalize(db, pick, approved=True, actor=None,
-                                   note=None)
-        else:
-            ids = await svc.direct_approver_ids(db, uid)
+        async def finalize_approved() -> None:
+            await svc.finalize(db, pick, approved=True, actor=None, note=None)
+
+        async def notify_direct(ids) -> None:
             await roster_svc.notify_many(db, [(
                 u, "Optional holiday request",
                 f"{uname} picked optional holiday {hol.name} "
                 f"({hol.date.isoformat()}).",
                 svc.RT, str(pick.id), "optional_holiday_submitted")
                 for u in ids])
+
+        await chain_routing.route_submission(
+            db, entity_type=ChainEntityType.OPTIONAL_HOLIDAY,
+            entity_id=pick.id, submitter=current_user,
+            context={"holiday": hol.name},
+            audit=lambda via: svc.audit_create(db, uid, pick, via),
+            finalize_approved=finalize_approved, notify_direct=notify_direct)
         return pick.id
 
     pid = await retry_on_lock(db, body, commit=True)

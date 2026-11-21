@@ -175,6 +175,8 @@ LOCK_INT_CAPS: Dict[str, int] = {
 CALLBACK_MODES = ("none", "comp_off", "allowance")
 HOLIDAY_INT_CAPS: Dict[str, int] = {
     "holidays.optional_quota_per_year": 20,
+}
+WORK_LOCATION_INT_CAPS: Dict[str, int] = {
     "attendance.work_location_backdate_days": 60,
 }
 LEAVE_INT_CAPS: Dict[str, int] = {
@@ -220,7 +222,7 @@ async def set_time_rules(
         updates["attendance.weekoff_comp_off_enabled"] = str(wk).strip()
     for key, cap in {
         **SCHEDULE_INT_CAPS, **LEAVE_INT_CAPS, **LOCK_INT_CAPS,
-        **HOLIDAY_INT_CAPS,
+        **HOLIDAY_INT_CAPS, **WORK_LOCATION_INT_CAPS,
     }.items():
         v = updates.get(key)
         if v is not None:

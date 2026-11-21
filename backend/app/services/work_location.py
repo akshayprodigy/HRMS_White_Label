@@ -10,13 +10,11 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.audit import AuditLog
-from app.models.user import Permission, Role, User
 from app.models.work_location import (
     DayPortion, WorkLocationKind, WorkLocationRequest, WorkLocationStatus,
 )
 from app.services import roster as roster_svc
-from app.services.attendance_lock import assert_attendance_editable
-from app.services.optional_holidays import close_instance
+from app.services.chain_routing import assert_dates_unlocked, close_instance
 from app.services.org_time import local_today
 from app.services.time_rules import get_time_rules
 
@@ -98,6 +96,7 @@ async def create(db, *, user, kind, start_date, end_date, day_portion,
     if start_date < earliest:
         raise HTTPException(
             422, f"Start date cannot be before {earliest.isoformat()}")
+    await assert_dates_unlocked(db, start_date, end_date)
     rows = (await db.execute(
         select(WorkLocationRequest.start_date, WorkLocationRequest.end_date,
                WorkLocationRequest.day_portion).where(
@@ -130,25 +129,13 @@ def audit_create(db, actor_id, req, routed_via: str) -> None:
         "routed_via": routed_via})
 
 
-async def _assert_unlocked(db, req) -> None:
-    d = req.start_date
-    while d <= req.end_date:
-        try:
-            await assert_attendance_editable(db, d, fresh=True)
-        except HTTPException as e:
-            if e.status_code == 409:
-                raise HTTPException(409, f"payroll period locked: {e.detail}")
-            raise
-        d += timedelta(days=1)
-
-
 async def finalize(db, req: WorkLocationRequest, *, approved: bool, actor,
                    note) -> WorkLocationRequest:
     """`req` must already be row-locked by the caller."""
     if req.status != WorkLocationStatus.PENDING:
         raise HTTPException(409, f"Request is already {req.status}")
     if approved:
-        await _assert_unlocked(db, req)
+        await assert_dates_unlocked(db, req.start_date, req.end_date)
     req.status = (WorkLocationStatus.APPROVED if approved
                   else WorkLocationStatus.REJECTED)
     req.decided_by_id = getattr(actor, "id", None)
@@ -176,10 +163,15 @@ async def cancel(db, req: WorkLocationRequest, *, actor, is_hr: bool,
         if req.start_date < await local_today(db):
             raise HTTPException(409, "The request has already started")
     if req.status == WorkLocationStatus.APPROVED:
-        await _assert_unlocked(db, req)
+        await assert_dates_unlocked(db, req.start_date, req.end_date)
     await close_instance(db, inst)
     req.status = WorkLocationStatus.CANCELLED
     _audit(db, actor.id, "WORK_LOCATION_CANCEL", req, {"is_hr": is_hr})
+    if req.user_id != actor.id:
+        await roster_svc.notify_many(db, [(
+            req.user_id, "Work-location request cancelled",
+            f"Your request ({req_summary(req)}) was cancelled by HR.",
+            RT, str(req.id), "work_location_decided")])
     return req
 
 
@@ -238,18 +230,3 @@ async def approved_kinds(db, user_ids, start: date, end: date) -> dict:
 
 async def approved_portion(db, user_id: int, d: date):
     return (await approved_portions(db, [user_id], d, d))[int(user_id)].get(d)
-
-
-async def direct_approver_ids(db, employee_user_id: int) -> list[int]:
-    """Direct path notify list: reporting manager, else HR + superusers."""
-    mgr = (await db.execute(select(User.manager_id).where(
-        User.id == employee_user_id))).scalar_one_or_none()
-    if mgr:
-        return [mgr]
-    sup = (await db.execute(select(User.id).where(
-        User.is_active.is_(True), User.is_superuser.is_(True)))).scalars().all()
-    perm = (await db.execute(
-        select(User.id).join(User.roles).join(Role.permissions)
-        .where(User.is_active.is_(True),
-               Permission.name == "hr employee write"))).scalars().all()
-    return sorted((set(sup) | set(perm)) - {employee_user_id})
