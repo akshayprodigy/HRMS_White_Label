@@ -147,7 +147,7 @@ async def finalize(db, req: WorkLocationRequest, *, approved: bool, actor,
         req.user_id, f"Work-location request {req.status}",
         f"Your request ({req_summary(req)}) was {req.status}."
         + (f" Note: {req.decision_note}" if req.decision_note else ""),
-        RT, str(req.id), "work_location_decided")])
+        RT, str(req.id), "work_location_cancelled")])
     return req
 
 
@@ -171,7 +171,7 @@ async def cancel(db, req: WorkLocationRequest, *, actor, is_hr: bool,
         await roster_svc.notify_many(db, [(
             req.user_id, "Work-location request cancelled",
             f"Your request ({req_summary(req)}) was cancelled by HR.",
-            RT, str(req.id), "work_location_decided")])
+            RT, str(req.id), "work_location_cancelled")])
     return req
 
 

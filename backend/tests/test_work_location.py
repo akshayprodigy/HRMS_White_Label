@@ -517,16 +517,38 @@ async def test_create_in_locked_period(api, world):
 
 
 async def test_create_multi_day_later_date_locked(api, world):
-    # only the month of the LAST date is locked
-    await mk_run(world, D(30))
+    # s = last day of its month; e = s+1 = first day of the next month.
+    # Only the month of the LAST date is locked.
+    s = next(i for i in range(0, 32)
+             if (D(i) + timedelta(days=1)).day == 1)
+    e = s + 1
+    assert (D(s).year, D(s).month) != (D(e).year, D(e).month)
+    await mk_run(world, D(e))
     try:
-        r = await req(api, s=0, e=30)
-        if (D(0).year, D(0).month) != (D(30).year, D(30).month):
-            assert r.status_code == 409 and "payroll period locked" in r.text
-        else:
-            assert r.status_code == 409
+        r = await req(api, s=s, e=e)
+        assert r.status_code == 409 and "payroll period locked" in r.text
+        async with SessionLocal() as db:
+            assert (await db.execute(select(WorkLocationRequest.id).where(
+                WorkLocationRequest.user_id == world["uid"]["emp"]))
+                    ).all() == []
     finally:
         await drop_runs(world)
+    assert (await req(api, s=s, e=e)).status_code == 201
+
+
+async def test_create_back_dated_in_locked_period(api, world, monkeypatch):
+    async def fake_today(db):
+        return D(0)
+    monkeypatch.setattr(WL, "local_today", fake_today)
+    await mk_run(world, D(-3))
+    try:
+        r = await req(api, s=-3)
+        assert r.status_code == 409 and "payroll period locked" in r.text
+        r = await req(api, s=-10)
+        assert r.status_code == 422
+    finally:
+        await drop_runs(world)
+    assert (await req(api, s=-3)).status_code == 201
 
 
 async def test_hr_cancel_notifies_owner(api, world):
