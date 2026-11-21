@@ -445,6 +445,29 @@ async def test_tracking_not_attendance_gated(client, world):
 # --- scope / privacy ------------------------------------------------------------
 
 
+async def test_field_now_reports_remote_status_for_full_remote_user(client, world):
+    from app.models.work_location import WorkLocationRequest
+    i = world["ids"]
+    he1 = await _ready(client, world, "e1")
+    await _post(client, he1, [_ping(8), _ping(2)])
+    today = _now().date()
+    async with SessionLocal() as db:
+        db.add(WorkLocationRequest(
+            user_id=i["e1"], kind="wfh", start_date=today, end_date=today,
+            day_portion="full", purpose="t", status="approved"))
+        await db.commit()
+    try:
+        head = await _login(client, world, "head")
+        rows = (await client.get(f"{T}/field-now", headers=head)).json()["rows"]
+        row = [r for r in rows if r["user_id"] == i["e1"]][0]
+        assert row["status"] == "remote"
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(WorkLocationRequest).where(
+                WorkLocationRequest.user_id == i["e1"]))
+            await db.commit()
+
+
 async def test_field_now_and_trail_scope(client, world):
     i = world["ids"]
     he1 = await _ready(client, world, "e1")

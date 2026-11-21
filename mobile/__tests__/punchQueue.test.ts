@@ -212,7 +212,8 @@ describe('PunchQueue', () => {
 
   it('is scoped per user: only the current user items are shown or sent; user switch', async () => {
     const store = memoryStore();
-    const q = mkQ(store, memorySelfieFiles());
+    // Fixed clock inside the 72h foreign-purge window so the test is date-independent.
+    const q = mkQ(store, memorySelfieFiles(), () => Date.parse('2026-11-13T12:00:00Z'));
     await q.enqueue(mk('uuid-0001', '2026-11-13T09:00:00Z'));
     q.setUser(2);
     expect(q.getSnapshot().items).toEqual([]);

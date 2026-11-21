@@ -189,7 +189,7 @@ async def test_on_shift_audience(world, monkeypatch):
     S = live_ops.LiveStatus
     statuses = {ids["e1"]: S.ON_SHIFT, ids["e2"]: S.NOT_ARRIVED,
                 ids["e3"]: S.RUNNING_LATE, ids["e4"]: S.NO_SHOW,
-                ids["sender"]: S.OFF, ids["hr"]: S.UPCOMING}
+                ids["sender"]: S.OFF, ids["hr"]: S.REMOTE}
     seen = {}
 
     async def fake_board(db, user_ids, now, **kw):
@@ -199,7 +199,8 @@ async def test_on_shift_audience(world, monkeypatch):
     monkeypatch.setattr(live_ops, "live_board", fake_board)
     async with SessionLocal() as db:
         got = await svc.resolve_audience(db, "on_shift", user_scope=world["all"])
-    assert set(got) == {ids["e1"], ids["e2"], ids["e3"]}
+    # remote (full-day approved WFH / on-duty) workers are working: included
+    assert set(got) == {ids["e1"], ids["e2"], ids["e3"], ids["hr"]}
     assert ids["inactive"] not in seen["ids"]
 
 

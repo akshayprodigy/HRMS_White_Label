@@ -16,12 +16,14 @@ from app.services.notifications_delivery import notify_emergency_bulk
 
 # "On shift" audience = people whose live-board status right now is one of
 # these: on_shift (punched in), not_arrived (shift started, not yet punched in)
-# and running_late (late notice filed). Excluded on purpose: no_show (already
+# running_late (late notice filed) and remote (full-day approved WFH /
+# on-duty: working, so they must get emergency broadcasts). Excluded on purpose: no_show (already
 # escalated elsewhere), upcoming, completed, on_leave, off.
 ON_SHIFT_STATUSES = (
     live_ops.LiveStatus.ON_SHIFT,
     live_ops.LiveStatus.NOT_ARRIVED,
     live_ops.LiveStatus.RUNNING_LATE,
+    live_ops.LiveStatus.REMOTE,
 )
 _CHUNK = 500
 

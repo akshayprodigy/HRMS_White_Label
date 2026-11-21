@@ -11,7 +11,7 @@ import { errMsg, parseServerDate, todayIso } from './schedule-delegations-utils'
 
 type Status =
   | 'off' | 'on_leave' | 'upcoming' | 'not_arrived' | 'no_show'
-  | 'running_late' | 'on_shift' | 'completed';
+  | 'running_late' | 'on_shift' | 'completed' | 'remote';
 
 interface Ping {
   captured_at: string;
@@ -59,8 +59,12 @@ const STATUS_META: Record<
   upcoming: { label: 'Upcoming', color: '#2563EB', variant: 'info' },
   completed: { label: 'Completed', color: '#64748B', variant: 'neutral' },
   on_leave: { label: 'On leave', color: '#64748B', variant: 'neutral' },
+  remote: { label: 'Remote', color: '#0891B2', variant: 'info' },
   off: { label: 'Off', color: '#64748B', variant: 'neutral' },
 };
+
+/** Unknown status strings from a newer server must never crash the map. */
+const metaFor = (s: string) => STATUS_META[s as Status] ?? STATUS_META.off;
 
 const REFRESH_MS = 60_000;
 // OpenStreetMap's public tile servers are for light use only
@@ -361,7 +365,7 @@ export const FieldTeam: React.FC = () => {
                       pathOptions={{
                         color: r.user_id === selected ? '#111827' : '#FFFFFF',
                         weight: 2,
-                        fillColor: STATUS_META[r.status].color,
+                        fillColor: metaFor(r.status).color,
                         fillOpacity: 0.95,
                       }}
                       eventHandlers={{ click: () => setSelected(r.user_id) }}
@@ -369,7 +373,7 @@ export const FieldTeam: React.FC = () => {
                       <Popup>
                         <div className="text-sm">
                           <div className="font-semibold">{r.name}</div>
-                          <div>{STATUS_META[r.status].label} · {shiftText(r)}</div>
+                          <div>{metaFor(r.status).label} · {shiftText(r)}</div>
                           <div>
                             Last seen {lastSeen(r.ping!.captured_at)}
                             {r.ping!.battery != null ? ` · battery ${Math.round(r.ping!.battery)}%` : ''}
@@ -385,7 +389,7 @@ export const FieldTeam: React.FC = () => {
             <Card className="p-0 flex flex-col" style={{ maxHeight: 520 }}>
               <ul className="divide-y divide-gray-100 overflow-y-auto" aria-label="Tracked employees">
                 {rows.map((r) => {
-                  const m = STATUS_META[r.status];
+                  const m = metaFor(r.status);
                   return (
                     <li key={r.user_id}>
                       <button

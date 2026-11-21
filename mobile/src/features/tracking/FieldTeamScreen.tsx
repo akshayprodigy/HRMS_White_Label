@@ -7,7 +7,7 @@ import { fmtUtcTime } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { fetchFieldNow, fetchTrail, FIELD_NOW_KEY, type FieldRow } from './api';
 import { FieldMap } from './FieldMap';
-import { lastSeen, STATUS_META, utcDay } from './fieldFormat';
+import { lastSeen, statusMeta, utcDay } from './fieldFormat';
 import { mapsAvailable } from './maps';
 
 const REFRESH_MS = 60_000;
@@ -110,7 +110,7 @@ export function FieldTeamScreen() {
             <Text testID="field-no-map" muted size={13}>The map is not available in this build. Locations are listed below.</Text>
           )}
           {rows.map((r) => {
-            const m = STATUS_META[r.status];
+            const m = statusMeta(r.status);
             const on = r.user_id === selected;
             return (
               <Pressable key={r.user_id} testID={`field-row-${r.user_id}`} accessibilityRole="button" accessibilityState={{ selected: on }} onPress={() => pick(r.user_id)}>

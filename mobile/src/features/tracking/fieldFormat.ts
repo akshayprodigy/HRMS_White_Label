@@ -9,8 +9,12 @@ export const STATUS_META: Record<FieldStatus, { label: string; color: string }> 
   upcoming: { label: 'Upcoming', color: '#2563EB' },
   completed: { label: 'Completed', color: '#64748B' },
   on_leave: { label: 'On leave', color: '#64748B' },
+  remote: { label: 'Remote', color: '#0891B2' },
   off: { label: 'Off', color: '#64748B' },
 };
+
+/** Safe lookup: an unknown status from a newer server falls back to 'off' instead of crashing. */
+export const statusMeta = (s: string) => STATUS_META[s as FieldStatus] ?? STATUS_META.off;
 
 export function lastSeen(iso: string, now: number = Date.now()): string {
   const mins = Math.max(0, Math.round((now - parseUtc(iso).getTime()) / 60_000));

@@ -373,7 +373,7 @@ async def test_muster_fetch_skips_off_days(world):
     assert got == [(fri, "WFH"), (fri + timedelta(days=3), "WFH")]
 
 
-async def _att(uid, d, tpl=None, pout_next_day=False):
+async def _att(uid, d, tpl=None):
     async with SessionLocal() as db:
         db.add(Attendance(
             user_id=uid, mode="web", work_date=d, shift_template_id=tpl,

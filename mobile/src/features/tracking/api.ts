@@ -28,7 +28,7 @@ export type MyStatus = {
 export type WirePing = { captured_at: string; lat: number; lng: number; accuracy: number | null; speed: number | null; battery: number | null };
 export type PingResult = { accepted: number; dropped: Record<string, number> };
 
-export type FieldStatus = 'off' | 'on_leave' | 'upcoming' | 'not_arrived' | 'no_show' | 'running_late' | 'on_shift' | 'completed';
+export type FieldStatus = 'off' | 'on_leave' | 'upcoming' | 'not_arrived' | 'no_show' | 'running_late' | 'on_shift' | 'completed' | 'remote';
 export type FieldPing = { captured_at: string; lat: number; lng: number; accuracy: number | null; speed: number | null; battery: number | null };
 export type FieldRow = {
   user_id: number;

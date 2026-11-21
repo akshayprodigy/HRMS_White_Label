@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import type { FieldPing, FieldRow } from './api';
-import { STATUS_META } from './fieldFormat';
+import { statusMeta } from './fieldFormat';
 
 type Props = { rows: FieldRow[]; selected: number | null; trail: FieldPing[]; onSelect: (id: number) => void };
 
@@ -25,8 +25,8 @@ export function FieldMap({ rows, selected, trail, onSelect }: Props) {
           testID={`field-marker-${r.user_id}`}
           coordinate={{ latitude: r.ping!.lat, longitude: r.ping!.lng }}
           title={r.name}
-          description={STATUS_META[r.status].label}
-          pinColor={STATUS_META[r.status].color}
+          description={statusMeta(r.status).label}
+          pinColor={statusMeta(r.status).color}
           opacity={selected == null || selected === r.user_id ? 1 : 0.5}
           onPress={() => onSelect(r.user_id)}
         />
