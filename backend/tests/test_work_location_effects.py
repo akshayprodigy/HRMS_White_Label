@@ -53,7 +53,7 @@ async def world():
             us = {t: User(email=f"wle_{t}_{sfx}@test.com", full_name=f"WE {t}",
                           hashed_password=get_password_hash("x"),
                           is_active=True)
-                  for t in ("strict", "full", "half", "none", "mock")}
+                  for t in ("strict", "full", "half", "none", "mock", "flagmode")}
             db.add_all(us.values())
             db.add(Department(name=dept))
             tpl = ShiftTemplate(name=f"WET{sfx}", start_time=time(9),
@@ -68,12 +68,13 @@ async def world():
                     user_id=u.id, employee_id=f"WE{sfx}{t}", department=dept,
                     designation="T", date_of_joining=date(2020, 1, 1),
                     status=EmployeeStatus.ACTIVE))
-                if t in ("strict", "mock"):
+                if t in ("strict", "mock", "flagmode"):
                     db.add(EmployeeGeoConfig(
                         user_id=u.id, geo_enabled=True,
-                        enforcement_mode="strict"))
+                        enforcement_mode=("allow_with_flag"
+                                          if t == "flagmode" else "strict")))
             await db.commit()
-            for t in ("strict", "mock"):
+            for t in ("strict", "mock", "flagmode"):
                 db.add(EmployeeGeoFenceLink(
                     user_id=us[t].id, geofence_location_id=fence.id))
             await db.commit()
@@ -197,8 +198,15 @@ async def test_inside_fence_with_approval_stays_clean(world):
     assert (await _punch(uid, FENCE)).geo_flag is None
 
 
-async def test_mock_location_still_flagged_with_approval(world):
-    uid = world["ids"]["mock"]
+async def test_mock_location_still_strict_with_approval(world):
+    uid = world["ids"]["mock"]     # strict fence
+    await _approve(uid, "wfh", "full")
+    with pytest.raises(PunchRejected):
+        await _punch(uid, FAR, is_mock=True)
+
+
+async def test_mock_location_flag_mode_keeps_mock_flag(world):
+    uid = world["ids"]["flagmode"]
     await _approve(uid, "wfh", "full")
     row = await _punch(uid, FAR, is_mock=True)
     assert row.geo_flag == GeoFlag.MOCK_LOCATION.value
@@ -315,11 +323,15 @@ def test_muster_codes():
         _row(remote_kind="wfh", remote_portion="first_half"),
         _row(remote_kind="wfh", remote_portion="full",
              punch_in=datetime(2030, 6, 10, 9)),
+        _row(remote_kind="client_visit", remote_portion="first_half",
+             punch_in=datetime(2030, 6, 10, 9)),
         _row(),
     ]
     r = build_muster_roll(records=recs, filters=ReportFilter())
     assert [x["status"] for x in r.rows] == [
-        "OD", "OD", "WFH", "OD/2", "WFH/2", "P", "A"]
+        "OD", "OD", "WFH", "OD/2", "WFH/2", "P·WFH", "P·OD", "A"]
+    # suffixed rows still count as present
+    assert "P=2" in r.totals["status"] and "A=1" in r.totals["status"]
 
 
 async def test_muster_fetch_adds_no_punch_remote_rows(world):
@@ -332,3 +344,27 @@ async def test_muster_fetch_adds_no_punch_remote_rows(world):
         res = await _fetch_muster_roll(db, f)
     by = {x["user_id"]: x["status"] for x in res.rows}
     assert by == {i["full"]: "OD", i["half"]: "WFH/2"}
+
+
+async def test_muster_fetch_skips_off_days(world):
+    from app.api.v1.endpoints.reports import _fetch_muster_roll
+    i = world["ids"]
+    fri = date(2030, 6, 7)          # Fri; Sat is a roster week-off, Sun default
+    async with SessionLocal() as db:
+        for n in (0, 1, 3):         # Sunday: no roster -> default weekly off
+            d = fri + timedelta(days=n)
+            db.add(RosterEntry(
+                employee_id=i["full"], work_date=d,
+                shift_template_id=None if n == 1 else i["tpl"],
+                is_week_off=(n == 1), status=RosterStatus.PUBLISHED))
+        db.add(WorkLocationRequest(
+            user_id=i["full"], kind="wfh", start_date=fri,
+            end_date=fri + timedelta(days=3), day_portion="full",
+            purpose="t", status="approved"))
+        await db.commit()
+    f = ReportFilter(start=fri, end=fri + timedelta(days=3),
+                     department=world["dept"])
+    async with SessionLocal() as db:
+        res = await _fetch_muster_roll(db, f)
+    got = sorted((x["work_date"], x["status"]) for x in res.rows)
+    assert got == [(fri, "WFH"), (fri + timedelta(days=3), "WFH")]

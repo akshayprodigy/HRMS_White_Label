@@ -247,6 +247,8 @@ def build_muster_roll(
     - H  Holiday  — is_holiday
     - OD  On duty — approved on-duty / client-visit request, no punch
     - WFH Work from home — approved WFH request, no punch
+    - P·OD, P·WFH — present (has a punch) on a day with an approved
+      on-duty / client-visit or WFH request; counted as P in the totals
     - OD/2, WFH/2 — half-day approved request, no punch (the rest of the
       day is unexplained). With a punch the normal P logic applies.
     """
@@ -273,11 +275,14 @@ def build_muster_roll(
             status = "L"
         elif r.punch_in is not None:
             status = "P"
+            if r.remote_kind is not None:
+                status = f"P·{_remote_code(r).split('/')[0]}"
         elif r.remote_kind is not None:
             status = _remote_code(r)
         else:
             status = "A"
-        counters[status] = counters.get(status, 0) + 1
+        base = "P" if status.startswith("P·") else status
+        counters[base] = counters.get(base, 0) + 1
         rows.append({
             "user_id": r.user_id,
             "employee_code": r.employee_code,
@@ -295,7 +300,7 @@ def build_muster_roll(
         rows, scope=filters.manager_scope_user_ids,
     )
     total_rows = len(rows)
-    total_p = sum(1 for r in rows if r["status"] == "P")
+    total_p = sum(1 for r in rows if r["status"].startswith("P"))
     total_a = sum(1 for r in rows if r["status"] == "A")
     totals = {
         "employee_code": "TOTAL",

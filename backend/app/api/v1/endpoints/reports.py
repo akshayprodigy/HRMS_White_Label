@@ -166,6 +166,9 @@ from fastapi import Query as _Query, Request as _Request
 from fastapi.responses import StreamingResponse as _Stream
 from sqlalchemy import and_ as _and, func as _func, or_ as _or
 from app.models.work_location import WorkLocationRequest as _WLR
+from app.services.absence_lop import default_offs_from_rules, is_non_working_day
+from app.services.effective_shift import effective_shifts_for_range
+from app.services.time_rules import get_time_rules
 from app.services.work_location import approved_info as _wl_approved_info
 from sqlalchemy.orm import selectinload as _selectinload
 
@@ -342,11 +345,18 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             remote_kind=r_kinds.get(a.user_id, {}).get(a.work_date),
             remote_portion=r_portions.get(a.user_id, {}).get(a.work_date),
         ))
+    # Same off-day rules as the absence LOP (holiday / week-off / default
+    # weekly off), so the muster and payroll agree.
+    shifts = await effective_shifts_for_range(
+        db, list(r_portions), f.start, f.end) if r_portions else {}
+    default_offs = default_offs_from_rules(await get_time_rules(db))
     for uid, days in r_portions.items():
         emp = emps.get(uid)
         for d, portion in sorted(days.items()):
             if emp is None or (uid, d) in seen \
-                    or d in holidays.get(uid, {}):
+                    or is_non_working_day(
+                        shifts.get((uid, d)), d, holidays.get(uid, {}),
+                        default_offs):
                 continue
             records.append(_rep.AttendanceRow(
                 user_id=uid, employee_code=emp.employee_id,

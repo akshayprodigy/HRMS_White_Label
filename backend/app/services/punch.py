@@ -106,9 +106,11 @@ async def _evaluate_geo(
     """evaluate_punch, relaxed by an approved on-duty / client-visit / WFH
     request covering `work_date` (any portion counts for the whole day's
     punches): a strict fence never rejects, and the fence / accuracy flags
-    become APPROVED_REMOTE. A mock location stays flagged. With no geo
-    configured the decision is already clean and is left untouched."""
-    remote = (geo_enabled and bool(fences)
+    become APPROVED_REMOTE. A mock location is never relaxed: it is
+    evaluated with the user's real enforcement mode (strict still rejects,
+    flag modes keep MOCK_LOCATION). With no geo configured the decision is
+    already clean and is left untouched."""
+    remote = (geo_enabled and bool(fences) and not is_mock_location
               and await approved_portion(db, user_id, work_date) is not None)
     if remote:
         enforcement_mode = EnforcementMode.ALLOW_WITH_FLAG
