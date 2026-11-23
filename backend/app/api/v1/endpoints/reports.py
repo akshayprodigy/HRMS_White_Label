@@ -490,7 +490,10 @@ async def _fetch_shift_coverage(db, f: _rep.ReportFilter) -> _rep.ReportResult:
     today = await local_today(db)
 
     viewer = f.extras.get("_viewer")
-    admin = viewer is None or _roster_svc.is_roster_admin(viewer)
+    # Fail closed: no viewer means no org-wide view. HR/CEO/Admin see every
+    # requirement like muster_roll does, even without 'roster manage'.
+    admin = viewer is not None and (
+        _is_hr_admin(viewer) or _roster_svc.is_roster_admin(viewer))
     scoped_depts = None
     if not admin:
         scoped_depts = set(await _roster_svc.scope_department_names(db, viewer))
@@ -507,7 +510,7 @@ async def _fetch_shift_coverage(db, f: _rep.ReportFilter) -> _rep.ReportResult:
         reqs = [r for r in reqs if r.location in (None, location)]
 
     # Query 2: published, non-week-off cells. Past/today cells count as
-    # rostered; for future dates only currently active employees do.
+    # rostered; for future dates exited (inactive) employees do not.
     roster_rows = (await db.execute(
         select(_RE.work_date, _RE.shift_template_id, _RE.employee_id,
                _Employee.department, _Employee.location)
@@ -516,7 +519,7 @@ async def _fetch_shift_coverage(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             _RE.work_date >= start, _RE.work_date <= end,
             _RE.status == _RS.PUBLISHED, _RE.is_week_off.is_(False),
             _RE.shift_template_id.isnot(None),
-            _or(_RE.work_date <= today, _Employee.status == _ES.ACTIVE),
+            _or(_RE.work_date <= today, _Employee.status != _ES.INACTIVE),
         ))).all()
 
     # Query 3

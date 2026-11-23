@@ -21,7 +21,7 @@ from app.models.employee import Employee
 from app.models.roster import RosterEntry
 from app.models.shift import ShiftTemplate
 from app.models.department import Department
-from app.models.user import User
+from app.models.user import Role, User
 from app.api.v1.endpoints import reports as EP
 from app.services import report_catalog as RC
 from app.services import reports as R
@@ -199,7 +199,10 @@ def _ros(w, i, d, **kw):
                        shift_template_id=w["tid"], **kw)
 
 
-async def _run(w, start, end, department=None, location=None, viewer=None):
+ADMIN = SimpleNamespace(is_superuser=True, roles=[])
+
+
+async def _run(w, start, end, department=None, location=None, viewer=ADMIN):
     extras = {"location": location} if location else {}
     if viewer is not None:
         extras["_viewer"] = viewer
@@ -282,7 +285,8 @@ async def test_uncovered_department_gets_no_requirement_row(world):
 async def _viewer(uid):
     async with SessionLocal() as db:
         return (await db.execute(select(User).where(User.id == uid).options(
-            selectinload(User.roles)))).scalars().one()
+            selectinload(User.roles).selectinload(Role.permissions)
+        ))).scalars().one()
 
 
 async def test_scoped_viewer_sees_only_headed_departments(world):
@@ -298,6 +302,15 @@ async def test_scoped_viewer_sees_only_headed_departments(world):
         rows = await _run(w, THU, THU, viewer=v)
         assert {r["department"] for r in rows
                 if r["status"] != "no_requirement"} == {w["da"]}
+        # dept-B attendance is outside the viewer's headed departments
+        assert [r for r in rows if r["status"] == "no_requirement"] == []
+        # HR (no 'roster manage') sees every requirement, like muster_roll
+        hr = SimpleNamespace(is_superuser=False, roles=[
+            SimpleNamespace(name="HR", permissions=[])])
+        assert {r["department"] for r in await _run(w, THU, THU, viewer=hr)
+                if r["status"] != "no_requirement"} == {w["da"], w["db"]}
+        # no viewer at all fails closed
+        assert await _run(w, THU, THU, viewer=None) == []
         # a viewer who heads nothing sees no rows at all
         v2 = await _viewer(w["u"][4])
         assert await _run(w, THU, THU, viewer=v2) == []

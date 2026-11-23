@@ -168,7 +168,9 @@ def build_descriptors_no_fetchers() -> List[ReportDescriptor]:
                 "Required vs scheduled vs attended headcount per shift per "
                 "day (max 62 days). Scheduled counts published roster "
                 "entries only (week-offs excluded). Today and past days use "
-                "attended; only days after today show the roster plan."
+                "attended; only days after today show the roster plan. "
+                "HR/Admin see all departments; others see only departments "
+                "they head."
             ),
             category=ReportCategory.ATTENDANCE,
             permission="report attendance",
