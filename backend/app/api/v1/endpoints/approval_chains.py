@@ -695,6 +695,7 @@ async def instantiate_for_entity(
     department: Optional[str],
     context: Optional[Dict[str, Any]] = None,
     commit: bool = True,
+    exclude_submitter: bool = False,
 ) -> ChainedApprovalInstance:
     """Public helper — the endpoint layer of *other* modules (expenses.py,
     travel.py, ...) calls this to create the approval instance for their
@@ -751,7 +752,8 @@ async def instantiate_for_entity(
         ):
             continue
         approver_ids = await _resolve_approvers(db, step, submitter.id, department=department)
-        skip_self = step.skip_if_same_person or picked.skip_if_same_person
+        skip_self = (exclude_submitter or step.skip_if_same_person
+                     or picked.skip_if_same_person)
         if skip_self:
             approver_ids = [u for u in approver_ids if u != submitter.id]
         # Section M B5: real skip-if-absent lookup. If a step requires
@@ -1087,6 +1089,10 @@ async def act_on_step(
     return await guard_conflicts(_run)(db=db)
 
 
+SELF_DECIDE_FORBIDDEN_TYPES = (
+    ChainEntityType.OPTIONAL_HOLIDAY, ChainEntityType.WORK_LOCATION)
+
+
 async def act_on_instance(
     db, instance_id: int, action: str, comment: Optional[str],
     request: Request, current_user: User,
@@ -1107,6 +1113,10 @@ async def act_on_instance(
         raise HTTPException(404, "Instance not found")
     if instance.status != ChainedApprovalStatus.PENDING:
         raise HTTPException(400, f"Instance is {instance.status}")
+    if instance.entity_type in SELF_DECIDE_FORBIDDEN_TYPES:
+        # Product rule: a pick / work-location request is never taken until
+        # a person OTHER than the requester decides it.
+        guard_self_approval(current_user.id, instance.submitter_id)
 
     # Find MY pending row at the current step (or one I hold by an
     # out-of-office delegation; direct delegations only, never chained).

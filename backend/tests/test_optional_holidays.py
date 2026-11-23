@@ -708,12 +708,18 @@ async def test_finalize_requires_still_optional(api, world):
 async def test_leave_approve_and_superuser(api, world):
     p1 = (await pick(api, world, "m1")).json()["id"]
     p2 = (await pick(api, world, "m2")).json()["id"]
-    for who in ("lv", "su", "ro"):
+    for who in ("su", "ro", "hr"):
         r = await api.get(f"{P}/picks?year=2032", headers=getattr(api, who))
         assert r.status_code == 200, who
         row = next(x for x in r.json() if x["id"] == p1)
         assert row["routed_via"] == "direct"
+    # 'leave approve' (PM) is only a manager: no reports -> cannot list;
+    # outside the reporting line -> cannot decide.
+    assert (await api.get(f"{P}/picks?year=2032", headers=api.lv)
+            ).status_code == 403
     assert (await api.post(f"{P}/picks/{p1}/decide", headers=api.lv,
+                           json={"approve": True})).status_code == 403
+    assert (await api.post(f"{P}/picks/{p1}/decide", headers=api.hr,
                            json={"approve": True})).status_code == 200
     assert (await api.post(f"{P}/picks/{p2}/decide", headers=api.su,
                            json={"approve": True})).status_code == 200
@@ -723,6 +729,71 @@ async def test_leave_approve_and_superuser(api, world):
             ).status_code == 404
     assert (await api.post(f"{P}/picks/{p3}/decide", headers=api.ro,
                            json={"approve": True})).status_code == 403
+
+
+async def test_leave_approve_sees_only_own_reports(api, world):
+    async with SessionLocal() as db:
+        (await db.get(User, world["uid"]["emp2"])).manager_id = \
+            world["uid"]["lv"]
+        await db.commit()
+    mine = (await pick(api, world, "m1", who="emp2")).json()["id"]
+    other = (await pick(api, world, "m2")).json()["id"]
+    rows = {x["id"]: x for x in (await api.get(
+        f"{P}/picks?year=2032", headers=api.lv)).json()}
+    assert other not in rows and rows[mine]["can_decide"] is True
+    assert (await api.post(f"{P}/picks/{other}/decide", headers=api.lv,
+                           json={"approve": True})).status_code == 403
+    assert (await api.post(f"{P}/picks/{mine}/decide", headers=api.lv,
+                           json={"approve": True})).status_code == 200
+
+
+async def test_chain_only_approver_is_submitter_falls_back(api, world):
+    async with SessionLocal() as db:
+        c = ApprovalChain(
+            name=f"OhChain {world['sfx']}", entity_type="optional_holiday",
+            is_active=True, effective_from=date(2020, 1, 1),
+            skip_if_same_person=False)
+        db.add(c)
+        await db.flush()
+        db.add(ApprovalChainStep(
+            chain_id=c.id, step_order=1, approver_type="specific_user",
+            approver_ref=str(world["uid"]["emp"]), label="self"))
+        await db.commit()
+    q = (await pick(api, world, "m1")).json()
+    assert q["status"] == "pending" and q["routed_via"] == "direct", q
+    assert (await api.post(f"{P}/picks/{q['id']}/decide", headers=api.mgr,
+                           json={"approve": True})).status_code == 200
+
+
+async def test_submitter_cannot_act_via_chain_endpoint(api, world, chain):
+    q = (await pick(api, world, "m1")).json()
+    assert q["routed_via"] == "chain"
+    async with SessionLocal() as db:
+        iid = (await db.execute(select(ChainedApprovalInstance.id).where(
+            ChainedApprovalInstance.entity_type == "optional_holiday",
+            ChainedApprovalInstance.entity_id == q["id"]))).scalar_one()
+        db.add(ChainedApprovalStepInstance(
+            instance_id=iid, step_order=1, approver_type="specific_user",
+            approver_user_id=world["uid"]["emp"], mode="sequential",
+            parallel_rule="all", status="pending", label="x"))
+        await db.commit()
+    r = await api.post(f"/api/v1/approval-chains/instances/{iid}/act",
+                       headers=api.emp, json={"action": "approve"})
+    assert r.status_code == 403, r.text
+
+
+async def test_inactive_manager_falls_back_to_hr(api, world):
+    async with SessionLocal() as db:
+        (await db.get(User, world["uid"]["mgr"])).is_active = False
+        await db.commit()
+    q = (await pick(api, world, "m1")).json()
+    async with SessionLocal() as db:
+        notified = set((await db.execute(select(Notification.user_id).where(
+            Notification.resource_id == str(q["id"]),
+            Notification.event_type.like("%submitted%")))).scalars().all())
+    assert world["uid"]["mgr"] not in notified
+    assert (await api.post(f"{P}/picks/{q['id']}/decide", headers=api.hr,
+                           json={"approve": True})).status_code == 200
 
 
 async def test_csv_hardening(api, world):

@@ -479,10 +479,19 @@ async def test_list_scoping(api, world):
     ids = {x["id"] for x in (await api.get(
         f"{P}?status=pending", headers=api.mgr)).json()}
     assert a in ids and b not in ids
-    for who in ("hr", "lv", "su"):
+    for who in ("hr", "su"):
         ids = {x["id"] for x in (await api.get(P, headers=getattr(api, who))
                                  ).json()}
         assert {a, b} <= ids, who
+    # 'leave approve' (PM) is only a manager: no reports -> not allowed;
+    # with a report, sees only that report's requests.
+    assert (await api.get(P, headers=api.lv)).status_code == 403
+    async with SessionLocal() as db:
+        u = await db.get(User, world["uid"]["emp2"])
+        u.manager_id = world["uid"]["lv"]
+        await db.commit()
+    ids = {x["id"] for x in (await api.get(P, headers=api.lv)).json()}
+    assert b in ids and a not in ids
     r = await api.get(f"{P}?user_id={world['uid']['emp2']}&kind=wfh"
                       f"&from={iso(D(0))}&to={iso(D(0))}", headers=api.hr)
     assert [x["id"] for x in r.json()] == [b]
@@ -496,7 +505,9 @@ async def test_permissions(api, world):
     assert (await decide(api, rid, who="plain")).status_code == 403
     assert (await decide(api, rid, who="su")).status_code == 200
     rid2 = (await req(api, s=5)).json()["id"]
-    assert (await decide(api, rid2, who="lv")).status_code == 200
+    # a PM ('leave approve') outside the reporting line may not decide
+    assert (await decide(api, rid2, who="lv")).status_code == 403
+    assert (await decide(api, rid2, who="hr")).status_code == 200
     rid3 = (await req(api, s=9)).json()["id"]
     assert (await decide(api, rid3, who="hr", approve=False)
             ).status_code == 200
@@ -725,3 +736,76 @@ def test_can_decide_rule_pure():
     assert _can_decide(boss, True, pend, 3, "chain") is False     # chain
     done = NS(status=WS.APPROVED, user_id=2)
     assert _can_decide(boss, True, done, 3, "direct") is False    # decided
+
+
+async def test_leave_approve_only_decides_own_reports(api, world):
+    async with SessionLocal() as db:
+        u = await db.get(User, world["uid"]["emp2"])
+        u.manager_id = world["uid"]["lv"]
+        await db.commit()
+    mine = (await req(api, who="emp2", s=70)).json()
+    other = (await req(api, who="emp", s=71)).json()
+    assert (await decide(api, other["id"], who="lv")).status_code == 403
+    rows = {x["id"]: x for x in (await api.get(P, headers=api.lv)).json()}
+    assert other["id"] not in rows and rows[mine["id"]]["can_decide"] is True
+    assert (await decide(api, mine["id"], who="lv")).status_code == 200
+
+
+# --- requester is never an approver; inactive approvers never strand -----
+
+async def test_chain_only_approver_is_submitter_falls_back(api, world):
+    await _mk_chain(world, steps=(("specific_user",
+                                   str(world["uid"]["emp"])),))
+    q = (await req(api, s=0)).json()
+    await _assert_pending_direct(api, q, world["uid"]["emp"])
+
+
+async def test_submitter_cannot_act_via_chain_endpoint(api, world):
+    await _mk_chain(world, steps=(("specific_user",
+                                   str(world["uid"]["hr"])),))
+    q = (await req(api, s=0)).json()
+    assert q["routed_via"] == "chain"
+    (iid,) = await _instances(q["id"])
+    # even if the submitter somehow holds a pending row, acting is refused
+    async with SessionLocal() as db:
+        db.add(ChainedApprovalStepInstance(
+            instance_id=iid, step_order=1, approver_type="specific_user",
+            approver_user_id=world["uid"]["emp"], mode="sequential",
+            parallel_rule="all", status="pending", label="x"))
+        await db.commit()
+    for action in ("approve", "reject"):
+        r = await api.post(f"/api/v1/approval-chains/instances/{iid}/act",
+                           headers=api.emp, json={"action": action})
+        assert r.status_code == 403, r.text
+    assert await _status(q["id"]) == "pending"
+
+
+async def test_inactive_manager_falls_back_to_hr(api, world):
+    async with SessionLocal() as db:
+        (await db.get(User, world["uid"]["mgr"])).is_active = False
+        await db.commit()
+    q = (await req(api, s=0)).json()
+    async with SessionLocal() as db:
+        notified = set((await db.execute(select(Notification.user_id).where(
+            Notification.resource_type == "work_location",
+            Notification.resource_id == str(q["id"])))).scalars().all())
+    assert world["uid"]["hr"] in notified and world["uid"]["mgr"] not in notified
+    assert (await decide(api, q["id"], who="hr")).status_code == 200
+
+
+async def test_chain_step_all_inactive_falls_back_direct(api, world):
+    await _mk_chain(world, steps=(("specific_user",
+                                   str(world["uid"]["plain"])),))
+    async with SessionLocal() as db:
+        (await db.get(User, world["uid"]["plain"])).is_active = False
+        await db.commit()
+    q = (await req(api, s=0)).json()
+    await _assert_pending_direct(api, q, world["uid"]["emp"])
+
+
+def test_choose_direct_approvers_pure():
+    from app.services.chain_routing import choose_direct_approvers as c
+    assert c(1, 5, True, [8, 9]) == [5]
+    assert c(1, 5, False, [9, 8, 1]) == [8, 9]     # inactive manager -> HR
+    assert c(1, None, False, [8]) == [8]
+    assert c(1, 1, True, [8]) == [8]               # never the requester

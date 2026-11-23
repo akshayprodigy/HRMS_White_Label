@@ -35,13 +35,27 @@ async def close_instance(db, inst) -> None:
         si.actioned_at = now
 
 
+def choose_direct_approvers(employee_user_id: int, manager_id: Optional[int],
+                            manager_active: bool, hr_ids) -> list[int]:
+    """Pure rule: an active reporting manager decides; otherwise HR
+    (holders of 'hr employee write') and superusers (already active-only),
+    never the requester."""
+    if manager_id and manager_active and manager_id != employee_user_id:
+        return [manager_id]
+    return sorted(set(hr_ids) - {employee_user_id})
+
+
 async def direct_approver_ids(db, employee_user_id: int) -> list[int]:
-    """Who to notify on the direct path: the reporting manager, else HR
-    (holders of 'hr employee write') and superusers."""
+    """Who to notify on the direct path: the active reporting manager, else
+    (no manager, or the manager is inactive) HR and superusers."""
     mgr = (await db.execute(select(User.manager_id).where(
         User.id == employee_user_id))).scalar_one_or_none()
+    mgr_active = False
     if mgr:
-        return [mgr]
+        mgr_active = bool((await db.execute(select(User.is_active).where(
+            User.id == mgr))).scalar_one_or_none())
+        if mgr_active:
+            return choose_direct_approvers(employee_user_id, mgr, True, [])
     sup = (await db.execute(select(User.id).where(
         User.is_active.is_(True), User.is_superuser.is_(True)))).scalars().all()
     perm = (await db.execute(
@@ -49,7 +63,8 @@ async def direct_approver_ids(db, employee_user_id: int) -> list[int]:
         .where(User.is_active.is_(True),
                Permission.name == "hr employee write")
     )).scalars().all()
-    return sorted((set(sup) | set(perm)) - {employee_user_id})
+    return choose_direct_approvers(
+        employee_user_id, mgr, mgr_active, set(sup) | set(perm))
 
 
 async def assert_dates_unlocked(db, start: date,
@@ -100,13 +115,18 @@ async def _drop_unactionable_instance(db, inst) -> bool:
     it. Delete such an instance with its step rows and notifications so the
     request falls back to the direct path. Returns True when dropped."""
     if inst.status == ChainedApprovalStatus.PENDING:
+        # Only rows held by an ACTIVE user count: a step whose pending
+        # approvers are all deactivated would strand the request.
         pending = (await db.execute(
-            select(ChainedApprovalStepInstance.id).where(
+            select(ChainedApprovalStepInstance.id)
+            .join(User, User.id == ChainedApprovalStepInstance.approver_user_id)
+            .where(
                 ChainedApprovalStepInstance.instance_id == inst.id,
                 ChainedApprovalStepInstance.step_order
                 == inst.current_step_order,
                 ChainedApprovalStepInstance.status
-                == StepInstanceStatus.PENDING).limit(1))).first()
+                == StepInstanceStatus.PENDING,
+                User.is_active.is_(True)).limit(1))).first()
         if pending is not None:
             return False
     await db.execute(delete(Notification).where(
@@ -139,7 +159,7 @@ async def route_submission(
         inst = await instantiate_for_entity(
             db=db, entity_type=entity_type, entity_id=entity_id,
             submitter=submitter, amount_paise=0, department=dept,
-            context=context, commit=False)
+            context=context, commit=False, exclude_submitter=True)
         if not await _drop_unactionable_instance(db, inst):
             audit("chain")
             return
