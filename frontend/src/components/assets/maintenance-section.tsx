@@ -6,15 +6,16 @@ import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { Modal } from './modal';
 import {
-  AssetDetail, KIND_LABEL, MaintKind, fmtDate, fmtInr, inputCls, labelCls, rupeesToPaise, serverSafeToday,
+  AssetDetail, KIND_LABEL, MaintKind, fmtDate, fmtInr, inputCls, labelCls, rupeesToPaise,
 } from './asset-utils';
+import { orgToday } from '../../lib/org-time';
 
 const LogForm: React.FC<{ asset: AssetDetail; onClose: () => void; onDone: () => void }> = ({ asset, onClose, onDone }) => {
   const [kind, setKind] = useState<MaintKind>('repair');
   const [desc, setDesc] = useState('');
   const [vendor, setVendor] = useState('');
   const [cost, setCost] = useState('');
-  const [started, setStarted] = useState(serverSafeToday());
+  const [started, setStarted] = useState(orgToday());
   const [completed, setCompleted] = useState('');
   const [toRepair, setToRepair] = useState(false);
   const [busy, setBusy] = useState(false);

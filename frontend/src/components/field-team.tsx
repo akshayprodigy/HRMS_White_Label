@@ -8,6 +8,7 @@ import { useVisiblePoll } from '../hooks/use-visible-poll';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { errMsg, parseServerDate, todayIso } from './schedule-delegations-utils';
+import { formatOrgTime, useOrgTime } from '../lib/org-time';
 
 type Status =
   | 'off' | 'on_leave' | 'upcoming' | 'not_arrived' | 'no_show'
@@ -86,10 +87,10 @@ export const lastSeen = (iso: string, now: Date = new Date()): string => {
   return `${h} h ${mins % 60} min ago`;
 };
 
-const hhmmUtc = (iso: string) => parseServerDate(iso).toISOString().slice(11, 16);
+const hhmmOrg = (iso: string) => formatOrgTime(iso);
 
 const shiftText = (r: FieldRow) =>
-  r.shift_name ? `${r.shift_name} ${r.start_hhmm ?? ''}–${r.end_hhmm ?? ''} UTC` : 'No shift today';
+  r.shift_name ? `${r.shift_name} ${r.start_hhmm ?? ''}–${r.end_hhmm ?? ''}` : 'No shift today';
 
 const FitBounds: React.FC<{ bounds: LatLngBoundsExpression | null; token: string }> = ({ bounds, token }) => {
   const map = useMap();
@@ -104,6 +105,7 @@ const FitBounds: React.FC<{ bounds: LatLngBoundsExpression | null; token: string
 };
 
 export const FieldTeam: React.FC = () => {
+  const { timezone: tz } = useOrgTime();
   const [data, setData] = useState<FieldNow | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -251,7 +253,7 @@ export const FieldTeam: React.FC = () => {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Field Team</h2>
             <p className="text-sm text-gray-500 mt-0.5">
-              Latest location of tracked employees on shift. Shift times shown in UTC.
+              Latest location of tracked employees on shift. Times shown in org time ({tz}).
             </p>
           </div>
         </div>
@@ -271,7 +273,7 @@ export const FieldTeam: React.FC = () => {
             ))}
           </select>
           <span className="text-xs text-gray-500" aria-live="polite">
-            {updated ? `Updated ${updated.toISOString().slice(11, 19)} UTC` : ''}
+            {updated ? `Updated ${formatOrgTime(updated, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}` : ''}
           </span>
           <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading || refreshing}>
             <RefreshCw className={`w-4 h-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
@@ -354,7 +356,7 @@ export const FieldTeam: React.FC = () => {
                       radius={5}
                       pathOptions={{ color: '#FFFFFF', weight: 2, fillColor: '#4F46E5', fillOpacity: 1 }}
                     >
-                      <Popup>Trail start {hhmmUtc(trail!.points[0].captured_at)} UTC</Popup>
+                      <Popup>Trail start {hhmmOrg(trail!.points[0].captured_at)}</Popup>
                     </CircleMarker>
                   )}
                   {located.map((r) => (
@@ -448,8 +450,8 @@ export const FieldTeam: React.FC = () => {
               ) : trailOk ? (
                 <p className="text-sm text-gray-600">
                   {trail!.points.length} point{trail!.points.length === 1 ? '' : 's'} from{' '}
-                  {hhmmUtc(trail!.points[0].captured_at)} to{' '}
-                  {hhmmUtc(trail!.points[trail!.points.length - 1].captured_at)} UTC
+                  {hhmmOrg(trail!.points[0].captured_at)} to{' '}
+                  {hhmmOrg(trail!.points[trail!.points.length - 1].captured_at)}
                   {trail!.truncated ? ' (showing the first points only — trail truncated)' : ''}
                 </p>
               ) : null}

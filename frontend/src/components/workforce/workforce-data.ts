@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
+import { formatOrgTime } from '../../lib/org-time';
 import type { Regularization } from '../../api/regularization';
 import { toIsoDate, fromIsoDate, type DateRange } from '../period-picker';
 
@@ -195,8 +196,8 @@ function logFields(log: AttendanceLog): Pick<EmployeeHeatmapDay, 'punchIn' | 'pu
   const punchOut = log.punch_out_time || undefined;
   const hours = hoursBetween(punchIn, punchOut);
   return {
-    punchIn: new Date(punchIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    punchOut: punchOut ? new Date(punchOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined,
+    punchIn: formatOrgTime(punchIn),
+    punchOut: punchOut ? formatOrgTime(punchOut) : undefined,
     hours: Math.round(hours * 10) / 10,
     mode: log.mode,
     geoVerified: !!(log.latitude && log.longitude),

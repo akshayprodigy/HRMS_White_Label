@@ -6,18 +6,18 @@ import { Dialog, DialogContent, DialogTitle, DialogFooter } from '../ui/dialog';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import type { AttendanceLog } from './workforce-data';
+import { orgToday, toOrgInput } from '../../lib/org-time';
 
-// Section Q: HR/admin direct punch edits. Times are wall-clock strings
-// ("YYYY-MM-DDTHH:MM") sent as-is — the backend stores them verbatim,
-// matching how every other screen renders punch times.
+// Section Q: HR/admin direct punch edits. Times are org-local wall-clock
+// strings ("YYYY-MM-DDTHH:MM") sent as-is — the backend reads naive input as
+// org-local and stores UTC.
 
 const errDetail = (e: any, fallback: string) =>
   e?.response?.data?.detail ||
   e?.response?.data?.error?.message ||
   fallback;
 
-const toLocalInput = (iso?: string | null): string =>
-  iso ? iso.slice(0, 16) : '';
+const toLocalInput = toOrgInput;
 
 const Field: React.FC<{ label: string; children: React.ReactNode }> = ({
   label,
@@ -121,7 +121,7 @@ export const AddMissedPunchModal: React.FC<{
   onClose: () => void;
   onSaved: () => void;
 }> = ({ userId, userName, onClose, onSaved }) => {
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const yesterday = new Date(Date.parse(`${orgToday()}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
   const [workDate, setWorkDate] = useState(yesterday);
   const [punchIn, setPunchIn] = useState('09:30');
   const [punchOut, setPunchOut] = useState('18:00');

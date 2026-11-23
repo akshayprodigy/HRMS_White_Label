@@ -34,6 +34,7 @@ import {
 import { exportEmployeePdf } from './workforce-export';
 import { RegularizationList } from '../regularization-requests';
 import { EditPunchModal, AddMissedPunchModal } from './edit-punch-modal';
+import { formatOrgTime } from '../../lib/org-time';
 
 // Section Q: HR/admin can hand-edit punches. Backend enforces the
 // 'attendance edit' permission; this only controls button visibility.
@@ -572,9 +573,9 @@ const LogView: React.FC<{
                   {inDate.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
                 </p>
                 <p className="sb-item-sm font-medium text-slate-500 tabular-nums mt-0.5">
-                  In {inDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  In {formatOrgTime(l.captured_at)}
                   {out
-                    ? ` — Out ${out.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                    ? ` — Out ${formatOrgTime(l.punch_out_time!)}`
                     : ' — still open'}
                 </p>
               </div>

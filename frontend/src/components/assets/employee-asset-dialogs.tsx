@@ -5,7 +5,8 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { Modal } from './modal';
-import { Asset, inputCls, labelCls, serverSafeToday } from './asset-utils';
+import { Asset, inputCls, labelCls } from './asset-utils';
+import { orgToday } from '../../lib/org-time';
 
 /** Allocate an in-stock register asset to one employee (Employee primary key). */
 export const AllocateFromRegisterDialog: React.FC<{
@@ -17,7 +18,7 @@ export const AllocateFromRegisterDialog: React.FC<{
   const [dq, setDq] = useState('');
   const [items, setItems] = useState<Asset[]>([]);
   const [pick, setPick] = useState<Asset | null>(null);
-  const [date, setDate] = useState(serverSafeToday());
+  const [date, setDate] = useState(orgToday());
   const [dateTouched, setDateTouched] = useState(false);
   const [condition, setCondition] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -89,7 +90,7 @@ export const AllocateFromRegisterDialog: React.FC<{
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className={labelCls} htmlFor="ea-date">Issue date</label>
-          <input id="ea-date" type="date" max={serverSafeToday()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
+          <input id="ea-date" type="date" max={orgToday()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
         </div>
         <div>
           <label className={labelCls} htmlFor="ea-cond">Condition</label>
@@ -118,7 +119,7 @@ export const RowActionDialog: React.FC<{
   onDone: () => void;
 }> = ({ kind, assetId, label, onClose, onDone }) => {
   const [toStatus, setToStatus] = useState('in_stock');
-  const [date, setDate] = useState(serverSafeToday());
+  const [date, setDate] = useState(orgToday());
   const [dateTouched, setDateTouched] = useState(false);
   const [condition, setCondition] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -168,7 +169,7 @@ export const RowActionDialog: React.FC<{
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className={labelCls} htmlFor="er-date">Return date</label>
-              <input id="er-date" type="date" max={serverSafeToday()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
+              <input id="er-date" type="date" max={orgToday()} className={`${inputCls} w-full`} value={date} onChange={(e) => { setDate(e.target.value); setDateTouched(true); }} />
             </div>
             <div>
               <label className={labelCls} htmlFor="er-cond">Condition</label>

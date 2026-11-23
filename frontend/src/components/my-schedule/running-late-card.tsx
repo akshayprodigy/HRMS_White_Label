@@ -104,7 +104,7 @@ export const RunningLateCard: React.FC<{ inline?: boolean }> = ({ inline = false
         <Clock size={15} className="text-amber-600 shrink-0" />
         {state.notice ? (
           <p className="text-[11px] font-bold text-[#0F172A]">
-            Running late notice sent · ETA {state.notice.eta_hhmm} UTC
+            Running late notice sent · ETA {state.notice.eta_hhmm}
             {state.notice.reason ? (
               <span className="font-medium text-slate-600"> · {state.notice.reason}</span>
             ) : null}

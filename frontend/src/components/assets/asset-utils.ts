@@ -135,18 +135,10 @@ export const todayIso = (): string => {
   return `${d.getFullYear()}-${m}-${day}`;
 };
 
-/** Today as the (UTC) server sees it, never ahead of it: the earlier of local/UTC dates. */
-export const serverSafeToday = (): string => {
-  const utc = new Date().toISOString().slice(0, 10);
-  const loc = todayIso();
-  return loc < utc ? loc : utc;
-};
-
 /**
  * Earliest date that is not in the past as the server sees it: the LATER of the
- * local and UTC dates. (serverSafeToday takes the earlier, for not-in-future
- * inputs; a min-date input needs the opposite bound or a user west/east of UTC
- * could pick a date the server rejects as past.)
+ * local and UTC dates, so a user west/east of UTC cannot pick a date the
+ * server rejects as past.
  */
 export const clientSafeMinToday = (): string => {
   const utc = new Date().toISOString().slice(0, 10);

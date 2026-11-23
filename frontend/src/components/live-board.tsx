@@ -6,7 +6,8 @@ import { useVisiblePoll } from '../hooks/use-visible-poll';
 import { useReturnFocus } from './my-schedule/use-restore-focus';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { errMsg, parseServerDate } from './schedule-delegations-utils';
+import { errMsg } from './schedule-delegations-utils';
+import { formatOrgTime, useOrgTime } from '../lib/org-time';
 
 type Status =
   | 'off'
@@ -125,24 +126,10 @@ const overnightHint = (punchIn: string, punchOut: string): string | null =>
     ? `Punch-out ${punchOut} is treated as the next day (night shift).`
     : null;
 
-const hhmm = (iso: string | null) =>
-  iso
-    ? parseServerDate(iso).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-        timeZone: 'UTC',
-      })
-    : '—';
+const hhmm = (iso: string | null) => (iso ? formatOrgTime(iso) : '—');
 
 const hhmmss = (d: Date) =>
-  d.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-    timeZone: 'UTC',
-  });
+  formatOrgTime(d, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 /** Jump to the planner's Requests tab, where open coverage gaps live. */
 const openGap = () => {
@@ -158,6 +145,7 @@ const unique = (xs: (string | null)[]) =>
   Array.from(new Set(xs.filter((x): x is string => !!x))).sort();
 
 export const LiveBoard: React.FC = () => {
+  const { timezone: tz } = useOrgTime();
   const [data, setData] = useState<LiveResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -313,13 +301,13 @@ export const LiveBoard: React.FC = () => {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Live Board</h2>
             <p className="text-sm text-gray-500 mt-0.5">
-              Who is on shift, late or missing right now. Times shown in UTC (same as shift schedule).
+              Who is on shift, late or missing right now. Times shown in org time ({tz}), same as the shift schedule.
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-500" aria-live="polite">
-            {updated ? `Updated ${hhmmss(updated)} UTC` : ''}
+            {updated ? `Updated ${hhmmss(updated)}` : ''}
           </span>
           <Button
             variant="outline"
@@ -502,7 +490,7 @@ export const LiveBoard: React.FC = () => {
                           className="text-xs text-blue-700"
                           title={r.late_notice_reason ?? undefined}
                         >
-                          Running late · ETA {hhmm(r.late_notice_eta)} UTC
+                          Running late · ETA {hhmm(r.late_notice_eta)}
                           {r.late_notice_reason ? ` · ${r.late_notice_reason}` : ''}
                         </span>
                       )}
@@ -584,7 +572,7 @@ export const LiveBoard: React.FC = () => {
           ) : (
             <div className="space-y-3">
               <p className="text-sm text-gray-600">
-                Records {selectedRows.length} employee{selectedRows.length === 1 ? '' : 's'} as present. Times are UTC,
+                Records {selectedRows.length} employee{selectedRows.length === 1 ? '' : 's'} as present. Times are org time ({tz}),
                 same as the board. This is audited.
               </p>
               <div className="grid grid-cols-2 gap-3">

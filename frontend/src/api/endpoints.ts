@@ -9,6 +9,9 @@ export const ENDPOINTS = {
     CHANGE_PASSWORD: '/auth/change-password',
   },
   HEALTH: '/health',
+  META: {
+    ORG_TIME: '/meta/org-time',
+  },
   ATTENDANCE: {
     MARK: '/attendance/mark',
     PUNCH_OUT: '/attendance/punch-out',
