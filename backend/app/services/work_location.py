@@ -176,7 +176,7 @@ async def finalize(db, req: WorkLocationRequest, *, approved: bool, actor,
         req.user_id, f"Work-location request {req.status}",
         f"Your request ({req_summary(req)}) was {req.status}."
         + (f" Note: {req.decision_note}" if req.decision_note else ""),
-        RT, str(req.id), "work_location_cancelled")])
+        RT, str(req.id), "work_location_decided")])
     return req
 
 
