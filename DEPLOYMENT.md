@@ -214,8 +214,73 @@ The asset register, allocations, maintenance log, employee asset requests and wa
   - Each expiry date is alerted once. Changing the date, for example after an AMC renewal, re-arms the alert.
   - Requires `ENABLE_SCHEDULER=1`, as for the other jobs.
 - **Exit:** HR's *Final release* is blocked while the employee still holds an allocated asset. Return the asset, or mark it lost, first. Starting exit clearance adds a "Return assets: …" checklist item for the IT department.
-- **Dates:** the server uses its own date (UTC in the default containers) for "today". Asset forms leave issue/return dates to the server unless HR changes them, so issuing an asset after midnight IST works. An org-timezone setting is a known follow-up.
+- **Dates:** "today" is the org-local date from the `org.timezone` time rule (see *Attendance & time* below). Asset forms leave issue/return dates to the server unless HR changes them.
 - **Phones:** the web app's mobile layout (screens under 768px) doesn't include My Assets or Asset Management yet. Use a desktop browser, or the white-label mobile app once its asset screens ship.
+
+## Attendance & time (Phase 6A)
+
+Org timezone, location-wise and optional holidays, on-duty / client-visit / WFH requests, and the Shift Coverage report.
+
+### HARD go-live step: set the org timezone before you deploy
+
+All "today", shift-window, late-mark and no-show logic now runs in one org timezone, the time rule **`org.timezone`** (*Time Rules*). The database stays UTC.
+
+- **If the rule is absent, it defaults to `Asia/Kolkata`.** An existing install that ran on UTC therefore **changes behaviour the moment the new code starts**.
+- **Before deploying**, insert the rule explicitly:
+  - `UTC` keeps the old behaviour until HR is ready to switch;
+  - the real zone (e.g. `Asia/Kolkata`) switches immediately.
+- **What changes at cutover:**
+  - Late / no-show flags recorded before the cutover were computed in UTC and are not rewritten.
+  - **Do not re-run `late_mark.process_month` for months closed before the cutover.** It would re-interpret old punches in the new timezone.
+  - Shift template times (e.g. 09:00-18:00) are read as org-local wall clock. On a UTC install that had templates entered as UTC times, review the templates when you switch.
+  - Biometric devices with an explicit `utc_offset_minutes` keep it. Devices left blank follow `biometric.default_utc_offset_minutes`, and a blank value there now means "follow the org timezone".
+- Changing `org.timezone` later shows a warning in *Time Rules*. The same rules apply: it re-interprets everything from then on, and closed months must not be re-processed.
+
+### Migration `a6b8d0f2c4e7`
+
+Creates the `optional_holiday_pick` and `work_location_request` tables. Run `alembic upgrade head` as usual, with a backup first.
+
+### Holidays now follow the employee's location
+
+- A holiday applies to employees whose location matches it (case and spacing ignored) or when its location is **All**.
+- **HQ-only holidays now apply only to employees whose location is HQ.** Employees with a blank location fall back to the time rule **`holidays.default_location`** (default `HQ`).
+- **Before go-live:** review holiday locations in *Holiday Management*. Its location list shows employee counts per location and warns when a holiday matches nobody.
+- **Optional holidays:**
+  - Employees pick them under *Leave → Holiday Calendar* or *Profile → My Holidays*, and on mobile under *More → Holidays*.
+  - Limit per year: time rule **`holidays.optional_quota_per_year`** (default 2, range 0-20). Pending picks count toward the limit until decided.
+  - **A pick is not taken until a person approves it.** By default the employee's reporting manager decides; if there is no manager, HR (`hr employee write`), `leave approve` holders and superusers do. If an approval chain with entity type `optional_holiday` exists, picks route through it instead. A chain that would approve automatically, or that finds no approver, falls back to the manager / HR path.
+
+### CSV holiday import
+
+*Holiday Management → Import CSV*, requires `hr employee write`.
+
+```
+name,date,location,is_optional
+Diwali,2026-11-08,All,false
+Onam,2026-08-26,Kochi,true
+```
+
+- Dates are `YYYY-MM-DD` with a year from 2000 to 2100. `is_optional` accepts `true/false/1/0/yes/no`.
+- At most 1 MB and 1000 rows.
+- Rows already in the calendar (same date, location and name, ignoring case and spacing) are skipped.
+- Invalid rows are reported with their row number and the valid rows are still imported.
+
+### On-duty / client-visit / WFH requests
+
+- Employees file them under *My Shift → My Work Location Requests* on the web, and under *More → Work location* on mobile.
+- **A request is not taken until a person approves it.** Routing is the same as for optional holidays, with chain entity type `work_location`. On mobile, managers decide under *Approvals → Team requests*.
+- While pending, a request changes nothing. Once approved:
+  - the geofence is relaxed for that day (the punch is marked `approved_remote`, shown as **Remote** in *Flagged Review*);
+  - without a punch the day counts as present, with no LOP and no no-show;
+  - the muster roll shows `OD` / `WFH` (`OD/2`, `WFH/2` for half days, `P·OD` / `P·WFH` when the employee also punched).
+- A request overlapping **approved** leave is refused, both when it is filed and when it is approved.
+- Requests may be back-dated up to the time rule **`attendance.work_location_backdate_days`** (default 7, range 0-60), never into a payroll-locked month. Mock-location punches stay blocked even with an approved request.
+
+### Shift Coverage report
+
+*Reports → Shift Coverage* (permission `report attendance`, at most 62 days per run). It shows required vs scheduled vs attended headcount per shift per day.
+- "Scheduled" counts **published** roster entries only. Orgs that never publish rosters will see 0 scheduled.
+- HR, CEO and Admin see every department. Department heads see only the departments they head. Other users see no rows.
 
 ## Resource Usage (Hostinger KVM 4)
 - **CPU**: 4 vCPU allows ~9 Gunicorn workers. Each worker handles dozens of concurrent requests.
