@@ -8,6 +8,7 @@ import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
+import { orgToday } from '../lib/org-time';
 
 interface OTEntry {
   id: number;
@@ -42,17 +43,14 @@ const errMsg = (err: any, fallback: string): string => {
   return err?.message || fallback;
 };
 
-const today = () => new Date().toISOString().slice(0, 10);
-const monthStart = () => {
-  const d = new Date(); d.setDate(1);
-  return d.toISOString().slice(0, 10);
-};
+const today = () => orgToday();
+const monthStart = () => orgToday().slice(0, 8) + '01';
 
 export const OvertimeApprovalQueue: React.FC = () => {
   const [items, setItems] = useState<OTEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [start, setStart] = useState(monthStart());
-  const [end, setEnd] = useState(today());
+  const [start, setStart] = useState(() => monthStart());
+  const [end, setEnd] = useState(() => today());
   const [status, setStatus] = useState<string>('pending');
   const [reviewing, setReviewing] = useState<OTEntry | null>(null);
   const [action, setAction] = useState<'approve' | 'reject'>('approve');

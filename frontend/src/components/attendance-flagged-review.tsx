@@ -17,6 +17,7 @@ import { Card, Button, Badge, cn } from './ui-elements';
 import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
+import { orgToday } from '../lib/org-time';
 
 interface FlaggedRecord {
   id: number;
@@ -191,19 +192,18 @@ const fmtTs = (ts: string | null): string => {
   }
 };
 
-const toISODate = (d: Date) => d.toISOString().slice(0, 10);
-
+// n days before the org's current date (UTC arithmetic on a calendar date).
 const daysAgo = (n: number) => {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return toISODate(d);
+  const d = new Date(orgToday() + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
 };
 
 export const AttendanceFlaggedReview: React.FC = () => {
   const [items, setItems] = useState<FlaggedRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dateFrom, setDateFrom] = useState(daysAgo(30));
-  const [dateTo, setDateTo] = useState(toISODate(new Date()));
+  const [dateFrom, setDateFrom] = useState(() => daysAgo(30));
+  const [dateTo, setDateTo] = useState(() => orgToday());
   const [flagFilter, setFlagFilter] = useState<string>('');
   const [geoFlagFilter, setGeoFlagFilter] = useState<string>('');
   const [flagKind, setFlagKind] = useState<'all' | 'attribution' | 'geo' | 'review'>(

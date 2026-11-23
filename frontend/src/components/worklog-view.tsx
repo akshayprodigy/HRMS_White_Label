@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { useTimer } from '../contexts/timer-context';
+import { orgToday } from '../lib/org-time';
 
 interface WorklogEntry {
   id: string;
@@ -44,7 +45,7 @@ export const WorklogView = () => {
 
   const [manualProject, setManualProject] = useState('');
   const [manualTask, setManualTask] = useState('');
-  const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
+  const [manualDate, setManualDate] = useState(() => orgToday());
   const [manualStartTime, setManualStartTime] = useState('09:00');
   const [manualEndTime, setManualEndTime] = useState('13:00');
   const [manualReason, setManualReason] = useState('');

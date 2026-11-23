@@ -109,6 +109,7 @@ import { TimerProvider } from './contexts/timer-context';
 import { pickPrimaryRole } from './utils/roles';
 import { useIsMobile } from './mobile/use-is-mobile';
 import { MobileShell } from './mobile/mobile-shell';
+import { orgToday } from './lib/org-time';
 
 const App = () => {
   const isMobileViewport = useIsMobile();
@@ -313,7 +314,7 @@ const App = () => {
   };
 
   const handleAttendanceSuccess = () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = orgToday();
     localStorage.setItem(`attendance_${today}`, 'true');
     setHasMarkedAttendance(true);
     toast.success("Attendance marked successfully");

@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Input } from './ui/input';
+import { orgToday } from '../lib/org-time';
 
 interface MyOTEntry {
   id: number; work_date: string;
@@ -32,17 +33,14 @@ const errMsg = (err: any, fallback: string): string => {
   return err?.message || fallback;
 };
 
-const today = () => new Date().toISOString().slice(0, 10);
-const monthStart = () => {
-  const d = new Date(); d.setDate(1);
-  return d.toISOString().slice(0, 10);
-};
+const today = () => orgToday();
+const monthStart = () => orgToday().slice(0, 8) + '01';
 
 export const MyOvertimeView: React.FC = () => {
   const [ot, setOt] = useState<MyOTEntry[]>([]);
   const [night, setNight] = useState<MyNightEntry[]>([]);
-  const [start, setStart] = useState(monthStart());
-  const [end, setEnd] = useState(today());
+  const [start, setStart] = useState(() => monthStart());
+  const [end, setEnd] = useState(() => today());
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {

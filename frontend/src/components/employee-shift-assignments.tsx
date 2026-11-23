@@ -15,6 +15,7 @@ import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { AssignShiftDialog } from './assign-shift-dialog';
+import { orgToday } from '../lib/org-time';
 
 interface Assignment {
   id: number;
@@ -46,7 +47,7 @@ const errMsg = (err: any, fallback: string): string => {
   return err?.message || fallback;
 };
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => orgToday();
 
 // Section R: weekly/monthly period presets for bulk assignment.
 const iso = (d: Date) => d.toISOString().slice(0, 10);

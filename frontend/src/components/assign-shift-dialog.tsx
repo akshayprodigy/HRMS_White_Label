@@ -6,6 +6,7 @@ import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
+import { orgToday } from '../lib/org-time';
 
 interface ShiftTemplate {
   id: number;
@@ -46,7 +47,7 @@ const toHHMM = (t: string | undefined): string => {
   return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : t;
 };
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => orgToday();
 
 export const AssignShiftDialog: React.FC<AssignShiftDialogProps> = ({
   open,
@@ -61,7 +62,7 @@ export const AssignShiftDialog: React.FC<AssignShiftDialogProps> = ({
   const [submitting, setSubmitting] = useState(false);
 
   const [shiftTemplateId, setShiftTemplateId] = useState<number | ''>('');
-  const [effectiveFrom, setEffectiveFrom] = useState<string>(todayISO());
+  const [effectiveFrom, setEffectiveFrom] = useState<string>(() => todayISO());
   const [effectiveTo, setEffectiveTo] = useState<string>('');
   const [note, setNote] = useState('');
 
