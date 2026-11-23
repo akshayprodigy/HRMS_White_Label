@@ -77,5 +77,20 @@ def upgrade():
 
 
 def downgrade():
+    # Chain instances/steps created for these entities would be orphaned
+    # (no entity left to finalize); remove them and their notifications.
+    conn = op.get_bind()
+    ids = ("SELECT id FROM chained_approval_instance WHERE entity_type IN "
+           "('optional_holiday','work_location')")
+    conn.execute(sa.text(
+        "DELETE FROM notification WHERE resource_type = "
+        "'chained_approval_instance' AND resource_id IN "
+        f"(SELECT CAST(id AS CHAR) FROM ({ids}) AS i)"))
+    conn.execute(sa.text(
+        "DELETE FROM chained_approval_step_instance WHERE instance_id IN "
+        f"({ids})"))
+    conn.execute(sa.text(
+        "DELETE FROM chained_approval_instance WHERE entity_type IN "
+        "('optional_holiday','work_location')"))
     op.drop_table("work_location_request")
     op.drop_table("optional_holiday_pick")
