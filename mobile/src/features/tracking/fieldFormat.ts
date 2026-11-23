@@ -1,3 +1,4 @@
+import { orgDateOf } from '../../lib/org-time';
 import { parseUtc } from '../../lib/time';
 import type { FieldStatus } from './api';
 
@@ -22,4 +23,5 @@ export function lastSeen(iso: string, now: number = Date.now()): string {
   if (mins < 60) return `${mins} min ago`;
   return `${Math.floor(mins / 60)} h ${mins % 60} min ago`;
 }
-export const utcDay = (now: number = Date.now(), offsetDays = 0) => new Date(now - offsetDays * 86_400_000).toISOString().slice(0, 10);
+/** Org-local calendar date of `now` minus `offsetDays` (the backend's trail date is org-local). */
+export const orgDay = (now: number = Date.now(), offsetDays = 0) => orgDateOf(new Date(now - offsetDays * 86_400_000));

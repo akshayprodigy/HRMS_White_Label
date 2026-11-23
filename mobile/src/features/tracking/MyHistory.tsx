@@ -7,7 +7,7 @@ import { fmtOrgTime, useOrgTime } from '../../lib/org-time';
 import { useTheme } from '../../theme';
 import { fetchMyTrail } from './api';
 import { FieldMap } from './FieldMap';
-import { utcDay } from './fieldFormat';
+import { orgDay } from './fieldFormat';
 import { mapsAvailable } from './maps';
 
 /** The employee's own trail (Today / Yesterday): a map polyline when maps are available, else a time-ordered list. */
@@ -16,7 +16,7 @@ export function MyHistory() {
   const { colors } = useTheme();
   const [dayOffset, setDayOffset] = useState(0);
   const [openedAt] = useState(() => Date.now());
-  const date = utcDay(openedAt, dayOffset);
+  const date = orgDay(openedAt, dayOffset);
   const q = useQuery({ queryKey: ['tracking', 'my-trail', date], queryFn: () => fetchMyTrail(date), retry: 1 });
   const pts = q.data && q.data.date === date ? q.data.points : null;
   return (

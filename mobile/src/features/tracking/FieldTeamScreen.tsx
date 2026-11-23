@@ -7,7 +7,7 @@ import { fmtOrgTime, useOrgTime } from '../../lib/org-time';
 import { useTheme } from '../../theme';
 import { fetchFieldNow, fetchTrail, FIELD_NOW_KEY, type FieldRow } from './api';
 import { FieldMap } from './FieldMap';
-import { lastSeen, statusMeta, utcDay } from './fieldFormat';
+import { lastSeen, statusMeta, orgDay } from './fieldFormat';
 import { mapsAvailable } from './maps';
 
 const REFRESH_MS = 60_000;
@@ -42,7 +42,7 @@ export function FieldTeamScreen() {
   const [selected, setSelected] = useState<number | null>(null);
   const [dayOffset, setDayOffset] = useState(0);
   const [openedAt] = useState(() => Date.now());
-  const date = utcDay(openedAt, dayOffset);
+  const date = orgDay(openedAt, dayOffset);
 
   const q = useQuery({
     queryKey: [...FIELD_NOW_KEY, department],

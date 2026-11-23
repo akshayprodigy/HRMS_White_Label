@@ -11,6 +11,7 @@ import { GateInline } from '../attendance/GateNotice';
 import { isGateError } from '../attendance/gate';
 import type { ApprovalCard } from './api';
 import { TeamRequests } from '../team-requests/TeamRequests';
+import { useTeamPicks, useTeamWorkLocation } from '../team-requests/hooks';
 import { useApprovals, useBulkAction } from './hooks';
 
 export function Badge({ label, tone, testID }: { label: string; tone: 'danger' | 'info'; testID?: string }) {
@@ -77,6 +78,11 @@ export function ApprovalsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const q = useApprovals();
+  // Same queries as <TeamRequests /> (deduped by react-query): only say
+  // "Nothing to approve" when the team-requests section is empty too.
+  const teamWl = useTeamWorkLocation();
+  const teamPicks = useTeamPicks();
+  const teamCount = (teamWl.data?.length ?? 0) + (teamPicks.data?.length ?? 0);
   const bulk = useBulkAction();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [comment, setComment] = useState('');
@@ -172,7 +178,7 @@ export function ApprovalsScreen() {
         ItemSeparatorComponent={Separator}
         initialNumToRender={10}
         refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => void q.refetch()} />}
-        ListEmptyComponent={q.isLoading ? <Text muted>Loading…</Text> : <Text testID="approvals-empty" muted>Nothing to approve</Text>}
+        ListEmptyComponent={q.isLoading ? <Text muted>Loading…</Text> : <Text testID="approvals-empty" muted>{teamCount ? 'No other approvals' : 'Nothing to approve'}</Text>}
         renderItem={({ item }) => (
           <Row card={item} selected={item.source === 'legacy' && selectedSet.has(item.refId)} onToggle={toggle} onOpen={open} />
         )}
