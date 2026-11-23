@@ -536,6 +536,11 @@ const ApproverQueueTab: React.FC = () => {
                       <>
                         {row.entity.from_city} → {row.entity.to_city} · {row.entity.start_date} to {row.entity.end_date}
                       </>
+                    ) : row.entity?.kind === 'optional_holiday' ? (
+                      <>
+                        {row.entity.employee_name}
+                        {row.entity.reason ? ` · "${row.entity.reason}"` : ''}
+                      </>
                     ) : null}
                   </div>
                   <div className="text-xs text-slate-500 mt-1">

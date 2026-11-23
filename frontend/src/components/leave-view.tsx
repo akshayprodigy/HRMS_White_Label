@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
+import { MyHolidaysPanel } from './holidays/my-holidays-panel';
 import {
   Calendar as CalendarIcon,
   AlertCircle,
@@ -32,7 +33,6 @@ export const LeaveView = () => {
   const [leaveTypes, setLeaveTypes] = useState<any[]>([]);
   const [history, setHistory] = useState<LeaveRequest[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [holidays, setHolidays] = useState<any[]>([]);
 
   // Form State
   const [leaveTypeId, setLeaveTypeId] = useState<string>('');
@@ -56,16 +56,14 @@ export const LeaveView = () => {
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const [balRes, typeRes, histRes, holidayRes] = await Promise.all([
+      const [balRes, typeRes, histRes] = await Promise.all([
         client.get<LeaveBalance[]>(ENDPOINTS.LEAVE.BALANCES),
         client.get<any[]>(ENDPOINTS.LEAVE.TYPES),
         client.get<LeaveRequest[]>(ENDPOINTS.LEAVE.MY),
-        client.get<any[]>(ENDPOINTS.HR.HOLIDAYS)
       ]);
       setBalances(balRes.data);
       setLeaveTypes(typeRes.data);
       setHistory(histRes.data);
-      setHolidays(holidayRes.data);
     } catch (error) {
       toast.error("Failed to load leave data");
     } finally {
@@ -462,37 +460,8 @@ export const LeaveView = () => {
                 </table>
               </div>
             ) : (
-              <div className="p-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                 {holidays.length === 0 ? (
-                    <div className="col-span-full py-20 text-center text-slate-400 font-medium">
-                        No upcoming company holidays scheduled.
-                    </div>
-                 ) : (
-                    holidays.map((holiday, i) => (
-                        <Card key={i} className={`p-5 border-slate-100 hover:border-indigo-100 transition-all bg-white relative group overflow-hidden ${holiday.is_optional ? 'border-amber-100 hover:border-amber-200' : ''}`}>
-                            <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
-                                <Umbrella size={48} />
-                            </div>
-                            <div className="relative z-10">
-                                <span className={`text-[10px] font-black uppercase tracking-widest mb-2 block ${holiday.is_optional ? 'text-amber-500' : 'text-indigo-500'}`}>
-                                    {holiday.is_optional ? 'Optional Holiday' : 'Company Holiday'}
-                                </span>
-                                <h3 className="font-bold text-slate-900 text-lg mb-1">{holiday.name}</h3>
-                                <div className="flex items-center gap-4 mt-3">
-                                    <div className="flex items-center gap-2 text-sm text-slate-500 font-medium">
-                                        <CalendarIcon size={14} className="text-slate-400" />
-                                        {new Date(holiday.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                                    </div>
-                                    <div className="h-1 w-1 rounded-full bg-slate-300" />
-                                    <div className="text-sm text-slate-500 font-medium">{new Date(holiday.date).toLocaleDateString(undefined, { weekday: 'long' })}</div>
-                                </div>
-                                {holiday.is_optional && (
-                                    <p className="text-[10px] text-amber-500 font-bold mt-2 uppercase tracking-wide">Apply any 2 optional holidays</p>
-                                )}
-                            </div>
-                        </Card>
-                    ))
-                 )}
+              <div className="p-8">
+                <MyHolidaysPanel />
               </div>
             )}
           </div>

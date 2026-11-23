@@ -17,6 +17,7 @@ import { ENDPOINTS } from '../api/endpoints';
 import { ApprovalItem } from '../types/erp';
 import { toast } from 'sonner';
 import { RegularizationQueue } from './regularization-requests';
+import { OptionalHolidayApprovals } from './holidays/optional-holiday-approvals';
 import { normalizeRoleName } from '../utils/roles';
 import {
   Dialog,
@@ -351,6 +352,8 @@ export const ApprovalsView = () => {
           )}
         </div>
       </div>
+
+      {resourceType === 'all' && <OptionalHolidayApprovals />}
 
       {resourceType === 'attendance_correction' ? (
         <RegularizationQueue />

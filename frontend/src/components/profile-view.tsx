@@ -33,6 +33,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { Card, Button, Badge, cn } from './ui-elements';
+import { MyHolidaysPanel } from './holidays/my-holidays-panel';
 import { OutOfOfficeCard } from './out-of-office-card';
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
@@ -60,7 +61,7 @@ interface ProfileProps {
 }
 
 export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = "employee", onAvatarUpdated }: ProfileProps) => {
-  const [activeSection, setActiveSection] = useState<'info' | 'security' | 'preferences' | 'kra' | 'documents' | 'assets' | 'resignation' | 'safety'>('info');
+  const [activeSection, setActiveSection] = useState<'info' | 'security' | 'preferences' | 'kra' | 'documents' | 'assets' | 'resignation' | 'safety' | 'holidays'>('info');
   const [isSaving, setIsSaving] = useState(false);
   const [isPwModalOpen, setIsPwModalOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -319,6 +320,7 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
             { id: 'safety', label: 'Emergency Info', icon: <Shield size={18} /> },
             { id: 'documents', label: 'My Documents', icon: <FileText size={18} /> },
             { id: 'assets', label: 'My Assets', icon: <Briefcase size={18} /> },
+            { id: 'holidays', label: 'My Holidays', icon: <Clock size={18} /> },
             { id: 'security', label: 'Security & Access', icon: <Shield size={18} /> },
             { id: 'preferences', label: 'System Preferences', icon: <Globe size={18} /> },
             { id: 'resignation', label: 'Resignation / Exit', icon: <LogOut size={18} /> },
@@ -503,6 +505,7 @@ export const ProfileView = ({ avatarUrl, userName = "Alex Thompson", userRole = 
            {activeSection === 'documents' && <MyDocumentsSection />}
 
            {activeSection === 'assets' && <MyAssetsSection />}
+           {activeSection === 'holidays' && <MyHolidaysPanel />}
 
            {activeSection === 'security' && (
              <div className="space-y-10">

@@ -4,7 +4,8 @@ import {
   Plus,
   Trash2,
   MapPin,
-  Pencil
+  Pencil,
+  Upload
 } from 'lucide-react';
 import { Card, Button } from './ui-elements';
 import { toast } from 'sonner';
@@ -12,6 +13,7 @@ import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
+import { useOrgTime } from '../lib/org-time';
 
 const EMPTY_FORM = { name: '', date: '', location: 'All', is_optional: false, description: '' };
 
@@ -21,6 +23,14 @@ export const HolidayManagement = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [formData, setFormData] = useState({ ...EMPTY_FORM });
+    const { today } = useOrgTime();
+    const [yearSel, setYearSel] = useState<string | null>(null); // null = org-current year
+    const year = yearSel ?? today.slice(0, 4);
+    const [locFilter, setLocFilter] = useState('');
+    const [importOpen, setImportOpen] = useState(false);
+    const [importFile, setImportFile] = useState<File | null>(null);
+    const [importing, setImporting] = useState(false);
+    const [importResult, setImportResult] = useState<{ created: number; skipped: number; errors: { row: number; error: string }[] } | null>(null);
     const [locations, setLocations] = useState<{ location: string; count: number }[]>([]);
 
     const normLoc = (l: string) => l.trim().split(/\s+/).join(' ').toLowerCase();
@@ -39,14 +49,20 @@ export const HolidayManagement = () => {
             : (locations.find(l => normLoc(l.location) === locKey)?.count ?? 0);
 
     useEffect(() => {
-        fetchHolidays();
         loadLocations();
     }, []);
+
+    useEffect(() => {
+        fetchHolidays();
+    }, [year, locFilter]);
 
     const fetchHolidays = async () => {
         setIsLoading(true);
         try {
-            const res = await client.get(ENDPOINTS.HR.HOLIDAYS);
+            const params: Record<string, string> = {};
+            if (year !== 'all') params.year = year;
+            if (locFilter) params.location = locFilter;
+            const res = await client.get(ENDPOINTS.HR.HOLIDAYS, { params });
             setHolidays(res.data.sort((a: any, b: any) => a.date.localeCompare(b.date)));
         } catch {
             toast.error("Failed to load holiday calendar");
@@ -109,6 +125,36 @@ export const HolidayManagement = () => {
         }
     };
 
+    const runImport = async () => {
+        if (!importFile) return;
+        setImporting(true);
+        try {
+            const fd = new FormData();
+            fd.append('file', importFile);
+            const res = await client.post(ENDPOINTS.HR.HOLIDAY_IMPORT, fd, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+            });
+            setImportResult(res.data);
+            toast.success(`Import done: ${res.data.created} created, ${res.data.skipped} skipped`);
+            fetchHolidays();
+            loadLocations();
+        } catch (e: any) {
+            const d = e?.response?.data?.detail;
+            toast.error(typeof d === 'string' ? d : 'Import failed');
+        } finally {
+            setImporting(false);
+        }
+    };
+
+    const closeImport = () => {
+        setImportOpen(false);
+        setImportFile(null);
+        setImportResult(null);
+    };
+
+    const yearOptions = Array.from({ length: 5 }, (_, i) => String(Number(today.slice(0, 4)) - 2 + i));
+    if (year !== 'all' && !yearOptions.includes(year)) yearOptions.push(year);
+
     const confirmed = holidays.filter(h => !h.is_optional);
     const optional = holidays.filter(h => h.is_optional);
 
@@ -119,12 +165,41 @@ export const HolidayManagement = () => {
                     <h2 className="text-3xl font-black text-[#0F172A] tracking-tighter uppercase">Corporate Holiday Calendar</h2>
                     <p className="text-[#64748B] font-bold uppercase tracking-widest text-[10px] mt-1">Multi-Location Observance & Optional Leave Manifest</p>
                 </div>
+                <div className="flex items-center gap-3">
+                <select
+                    aria-label="Year filter"
+                    value={year}
+                    onChange={(e) => setYearSel(e.target.value)}
+                    className="h-12 px-3 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 bg-white"
+                >
+                    <option value="all">All years</option>
+                    {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+                <select
+                    aria-label="Location filter"
+                    value={locFilter}
+                    onChange={(e) => setLocFilter(e.target.value)}
+                    className="h-12 px-3 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 bg-white"
+                >
+                    <option value="">All locations</option>
+                    {locations.map(l => (
+                        <option key={l.location} value={l.location}>{`${l.location} (${l.count})`}</option>
+                    ))}
+                </select>
+                <Button
+                    variant="outline"
+                    onClick={() => setImportOpen(true)}
+                    className="h-12 px-6 rounded-xl text-[10px] font-black uppercase tracking-widest"
+                >
+                    <Upload size={16} className="mr-2"/> Import CSV
+                </Button>
                 <Button
                     onClick={openAdd}
                     className="h-12 px-8 bg-[#0F172A] text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-xl shadow-slate-200"
                 >
                     <Plus size={16} className="mr-2"/> Register Holiday
                 </Button>
+                </div>
             </div>
 
             {isLoading ? (
@@ -166,6 +241,38 @@ export const HolidayManagement = () => {
                     </section>
                 </>
             )}
+
+            <Dialog open={importOpen} onOpenChange={(o: boolean) => { if (!o) closeImport(); }}>
+                <DialogContent className="max-w-md">
+                    <DialogTitle>Import holidays (CSV)</DialogTitle>
+                    <p className="text-xs text-slate-500 mt-2">
+                        Header: name,date,location,is_optional. Dates are YYYY-MM-DD. Rows already in the calendar are skipped.
+                    </p>
+                    <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        aria-label="CSV file"
+                        onChange={(e) => { setImportFile(e.target.files?.[0] ?? null); setImportResult(null); }}
+                        className="mt-3 text-xs"
+                    />
+                    {importResult && (
+                        <div className="mt-3 text-xs font-bold text-slate-700 space-y-1" data-testid="import-result">
+                            <p>{importResult.created} created, {importResult.skipped} skipped, {importResult.errors.length} errors</p>
+                            {importResult.errors.length > 0 && (
+                                <div className="max-h-40 overflow-y-auto text-red-600 font-medium">
+                                    {importResult.errors.map((er, i) => <div key={i}>Row {er.row}: {er.error}</div>)}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    <DialogFooter>
+                        <Button variant="ghost" onClick={closeImport}>Close</Button>
+                        <Button onClick={runImport} disabled={!importFile || importing}>
+                            {importing ? 'Importing...' : 'Import'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* Add / Edit Modal */}
             <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>

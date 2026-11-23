@@ -277,6 +277,12 @@ export const ENDPOINTS = {
     INSTANCE_ACT: (id: number) =>
       `/approval-chains/instances/${id}/act`,
   },
+  HOLIDAYS: {
+    MY: '/holidays/my',
+    PICKS: '/holidays/picks',
+    PICK_CANCEL: (id: number) => `/holidays/picks/${id}/cancel`,
+    PICK_DECIDE: (id: number) => `/holidays/picks/${id}/decide`,
+  },
   EXPENSES: {
     CATEGORIES: '/expenses/categories',
     CATEGORY_DETAIL: (id: number) => `/expenses/categories/${id}`,
@@ -467,6 +473,7 @@ export const ENDPOINTS = {
     TIME_RULES: '/hr/time-rules',
     HOLIDAYS: '/hr/holidays',
     HOLIDAY_LOCATIONS: '/hr/holidays/locations',
+    HOLIDAY_IMPORT: '/hr/holidays/import',
     HOLIDAY_DETAIL: (id: number) => `/hr/holidays/${id}`,
     POLICIES: '/hr/policies',
     POLICY_UPLOAD: '/hr/policies/upload',
