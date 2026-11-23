@@ -9,6 +9,7 @@ import { fmtInr, fmtUtcDate } from '../../lib/time';
 import { GateInline } from '../attendance/GateNotice';
 import { isGateError } from '../attendance/gate';
 import type { ApprovalCard } from './api';
+import { TeamRequests } from '../team-requests/TeamRequests';
 import { useApprovals, useBulkAction } from './hooks';
 
 export function Badge({ label, tone, testID }: { label: string; tone: 'danger' | 'info'; testID?: string }) {
@@ -155,6 +156,7 @@ export function ApprovalsScreen() {
           )}
         </Card>
       ) : null}
+      <TeamRequests />
     </View>
   );
 

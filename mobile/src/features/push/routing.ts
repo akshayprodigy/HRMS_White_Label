@@ -57,6 +57,8 @@ export function hrefFor(data: PushData | null): string {
     return '/approvals';
   }
   if (data.category === 'open_shift' || data.resource_type === 'open_shift') return '/schedule?section=open';
+  // A submitted request addressed to its approver is decided on the Approvals tab (direct-path requests have no chain card).
+  if (data.event_type?.endsWith('_submitted') && (data.resource_type === 'work_location' || data.resource_type === 'optional_holiday')) return '/approvals';
   if (data.event_type?.startsWith('optional_holiday') || data.resource_type === 'optional_holiday') return '/holidays';
   if (data.event_type?.startsWith('work_location') || data.resource_type === 'work_location') return '/work-location';
   return '/home'; // broadcasts surface as the root modal / Home banner
