@@ -626,6 +626,47 @@ async def test_holiday_made_mandatory_cancels_picks(api, world):
         assert not res[world["uid"]["emp2"]][D1].is_optional
 
 
+async def test_mandatory_elsewhere_keeps_approved_pick(api, world):
+    appr = await _approved(api, world, "m1", "emp2")       # Mumbai employee
+    r = await api.put(f"/api/v1/hr/holidays/{world['h']['m1']}", headers=api.hr,
+                      json=_hol_body(world, "m1", is_optional=False,
+                                     location="Pune"))
+    assert r.status_code == 200, r.text
+    assert await _status(appr) == "approved"     # does not apply to Mumbai
+    assert "OPTIONAL_HOLIDAY_PICK_FLAGGED" in await audit_actions(appr)
+    assert "OPTIONAL_HOLIDAY_AUTO_CANCEL" not in await audit_actions(appr)
+
+
+async def test_mandatory_in_locked_month_refused(api, world):
+    appr = await _approved(api, world, "lock", "emp")
+    await mk_run(world)
+    r = await api.put(f"/api/v1/hr/holidays/{world['h']['lock']}",
+                      headers=api.hr,
+                      json=_hol_body(world, "lock", is_optional=False))
+    assert r.status_code == 409 and "locked" in r.text
+    assert await _status(appr) == "approved"
+    await drop_runs(world)
+    r = await api.put(f"/api/v1/hr/holidays/{world['h']['lock']}",
+                      headers=api.hr,
+                      json=_hol_body(world, "lock", is_optional=False))
+    assert r.status_code == 200 and await _status(appr) == "cancelled"
+
+
+def test_becomes_cancelled_pure():
+    from app.models.optional_holiday import PickStatus as PS
+    c = OH._becomes_cancelled
+    assert c(status=PS.PENDING, optional=False, eligible=False,
+             applies_now=False) is True
+    assert c(status=PS.PENDING, optional=True, eligible=True,
+             applies_now=True) is False
+    assert c(status=PS.APPROVED, optional=False, eligible=False,
+             applies_now=True) is True       # mandatory, applies
+    assert c(status=PS.APPROVED, optional=False, eligible=False,
+             applies_now=False) is False     # mandatory elsewhere: keep
+    assert c(status=PS.APPROVED, optional=True, eligible=False,
+             applies_now=False) is False     # still optional: flag only
+
+
 async def test_holiday_location_change(api, world):
     pend = (await pick(api, world, "m1", who="emp")).json()["id"]
     appr = await _approved(api, world, "m1", "emp2")

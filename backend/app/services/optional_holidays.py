@@ -19,6 +19,7 @@ from app.models.optional_holiday import OptionalHolidayPick, PickStatus
 from app.models.user import User
 from app.services import holidays as holidays_svc
 from app.services import roster as roster_svc
+from app.services.attendance_lock import LockRetry
 from app.services.chain_routing import assert_dates_unlocked, close_instance
 from app.services.org_time import local_today
 from app.services.time_rules import get_time_rules
@@ -151,12 +152,15 @@ async def cancel(db, pick: OptionalHolidayPick, *, actor, is_hr: bool,
     return pick
 
 
-async def _active_picks(db, holiday_id: int):
+async def _active_picks(db, holiday_id: int, *, lock: bool = False):
+    q = select(OptionalHolidayPick).where(
+        OptionalHolidayPick.holiday_id == holiday_id,
+        OptionalHolidayPick.status.in_(PickStatus.ACTIVE)
+    ).order_by(OptionalHolidayPick.id)
+    if lock:
+        q = q.with_for_update()
     return (await db.execute(
-        select(OptionalHolidayPick).where(
-            OptionalHolidayPick.holiday_id == holiday_id,
-            OptionalHolidayPick.status.in_(PickStatus.ACTIVE))
-        .execution_options(populate_existing=True))).scalars().all()
+        q.execution_options(populate_existing=True))).scalars().all()
 
 
 async def _pending_instance(db, pick_id: int):
@@ -170,52 +174,100 @@ async def _pending_instance(db, pick_id: int):
     )).scalars().first()
 
 
+def _becomes_cancelled(*, status: str, optional: bool,
+                       eligible: bool, applies_now: bool) -> bool:
+    """Pure rule: does editing the holiday auto-cancel this active pick?
+    PENDING and no longer eligible -> yes. APPROVED and the holiday became
+    mandatory -> yes only when that mandatory holiday applies to the user
+    (otherwise the pick is kept and flagged)."""
+    if status == PickStatus.PENDING:
+        return not eligible
+    if status == PickStatus.APPROVED:
+        return (not optional) and applies_now
+    return False
+
+
 async def reconcile_holiday_update(db, hol: HolidayCalendar, old: dict,
                                    actor) -> None:
     """Keep picks consistent after HR edits a holiday (call before commit,
-    after the new values are set). `old` = {date,is_optional,location}.
+    after the new values are set; inside retry_on_lock so a LockRetry
+    propagates). `old` = {date,is_optional,location}.
     Rules (kept deliberately simple):
       * active picks get year = new date's year;
       * PENDING picks that are no longer eligible (holiday became mandatory,
         or its location no longer matches the employee) are cancelled and
         their pending chain instance closed;
-      * APPROVED picks on a holiday that became mandatory are cancelled (it
-        applies to everyone anyway and the quota slot is freed);
-      * other APPROVED picks that fall ineligible, or whose date moved into a
+      * APPROVED picks on a holiday that became mandatory are cancelled only
+        when the new mandatory holiday applies to that user (location); the
+        quota slot is then freed. If any such pick sits in a payroll-locked
+        month the edit is refused with 409;
+      * other APPROVED picks that fall ineligible (incl. a mandatory holiday
+        that does not apply to the user), or whose date moved into a
         payroll-locked month, are left approved and flagged in the audit log
-        (pay is never changed silently)."""
+        (pay is never changed silently).
+    Lock order: chain instances first, then the pick rows."""
     new = {"date": hol.date, "is_optional": bool(hol.is_optional),
            "location": hol.location}
     if all(old[k] == new[k] for k in new):
         return
-    for p in await _active_picks(db, hol.id):
-        p.year = hol.date.year
-        eligible = bool(hol.is_optional) and holidays_svc.applies(
+    # Lock order (chain instance -> pick): instances of pending picks first.
+    snap = (await db.execute(
+        select(OptionalHolidayPick.id).where(
+            OptionalHolidayPick.holiday_id == hol.id,
+            OptionalHolidayPick.status == PickStatus.PENDING)
+        .order_by(OptionalHolidayPick.id))).scalars().all()
+    instances = {pid: await _pending_instance(db, pid) for pid in snap}
+    picks = await _active_picks(db, hol.id, lock=True)
+    plan = []
+    for p in picks:
+        applies_now = holidays_svc.applies(
             hol.location, await user_location(db, p.user_id))
-        detail = {"holiday_id": hol.id, "old": {k: str(v) for k, v in old.items()},
+        eligible = bool(hol.is_optional) and applies_now
+        plan.append((p, eligible, _becomes_cancelled(
+            status=p.status, optional=bool(hol.is_optional),
+            eligible=eligible, applies_now=applies_now)))
+    if any(p.status == PickStatus.PENDING and p.id not in instances
+           for p, _, _ in plan):
+        # A pick turned pending after the snapshot: re-run in a fresh
+        # transaction rather than lock the instance after the pick.
+        raise LockRetry("Pick changed while editing; retry")
+    # Cancelling an approved pick changes pay for its date: refuse in a
+    # payroll-locked month (old and new date), before touching anything.
+    if any(p.status == PickStatus.APPROVED and cancel for p, _, cancel in plan):
+        for d in {old["date"], hol.date}:
+            await assert_dates_unlocked(db, d)
+    actor_id = getattr(actor, "id", None)
+    for p, eligible, cancel in plan:
+        p.year = hol.date.year
+        detail = {"holiday_id": hol.id,
+                  "old": {k: str(v) for k, v in old.items()},
                   "new": {k: str(v) for k, v in new.items()}}
-        if p.status == PickStatus.PENDING and not eligible:
-            await close_instance(db, await _pending_instance(db, p.id))
+        if p.status == PickStatus.PENDING and cancel:
+            await close_instance(db, instances.get(p.id))
             p.status = PickStatus.CANCELLED
-            _audit(db, getattr(actor, "id", None), "OPTIONAL_HOLIDAY_AUTO_CANCEL", p, detail)
+            _audit(db, actor_id, "OPTIONAL_HOLIDAY_AUTO_CANCEL", p, detail)
             await roster_svc.notify_many(db, [(
                 p.user_id, "Optional holiday pick cancelled",
                 f"Your pick for {hol.name} was cancelled because the holiday "
                 "changed.", RT, str(p.id), "optional_holiday_decided")])
-        elif p.status == PickStatus.APPROVED and not hol.is_optional:
+        elif p.status == PickStatus.APPROVED and cancel:
             p.status = PickStatus.CANCELLED
-            _audit(db, getattr(actor, "id", None), "OPTIONAL_HOLIDAY_AUTO_CANCEL", p, detail)
+            _audit(db, actor_id, "OPTIONAL_HOLIDAY_AUTO_CANCEL", p, detail)
         elif p.status == PickStatus.APPROVED:
             flag = None
             if not eligible:
-                flag = "no longer eligible"
+                flag = ("holiday is now mandatory at a location that does "
+                        "not apply to this employee; pick kept"
+                        if not hol.is_optional else "no longer eligible")
             elif old["date"] != hol.date:
                 try:
                     await assert_dates_unlocked(db, hol.date)
+                except LockRetry:
+                    raise
                 except HTTPException:
                     flag = "date moved into a payroll-locked month"
             if flag:
-                _audit(db, getattr(actor, "id", None), "OPTIONAL_HOLIDAY_PICK_FLAGGED", p,
+                _audit(db, actor_id, "OPTIONAL_HOLIDAY_PICK_FLAGGED", p,
                        {**detail, "note": flag})
 
 

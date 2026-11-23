@@ -12,6 +12,7 @@ from sqlalchemy.exc import (
     DataError, IntegrityError, OperationalError, PendingRollbackError,
 )
 
+from app.services.attendance_lock import LockRetry
 from app.services.org_time import local_today
 from app.models.employee import Employee
 from app.models.roster import (
@@ -172,7 +173,8 @@ async def retry_on_lock(db, fn, *, tries: int = 8, commit: bool = False):
     rollback) as one transaction. MariaDB's REPEATABLE READ makes a locking
     read fail (1020/1213) when a concurrent writer committed after our
     snapshot: roll back, back off and retry on a fresh snapshot, which
-    serialises writers on the same row. With commit=True the transaction is
+    serialises writers on the same row (a LockRetry from the payroll-lock
+    check is retried the same way). With commit=True the transaction is
     committed after fn. Exhausted retries and integrity errors become 409
     (the session is rolled back); other errors propagate."""
     for attempt in range(tries):
@@ -182,6 +184,15 @@ async def retry_on_lock(db, fn, *, tries: int = 8, commit: bool = False):
                 await roster_svc.flush_emergency(db)
                 await db.commit()
             return out
+        except LockRetry:
+            # Transient payroll-lock conflict (1020 raised by
+            # assert_attendance_editable): same remedy as any lock conflict.
+            # The last attempt surfaces the 409 as-is.
+            if attempt < tries - 1:
+                await db.rollback()
+                await asyncio.sleep(0.05 * (attempt + 1))
+                continue
+            raise
         except (OperationalError, IntegrityError) as exc:
             retry = (isinstance(exc, OperationalError)
                      and roster_svc.is_lock_conflict(exc)

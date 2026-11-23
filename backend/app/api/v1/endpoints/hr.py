@@ -78,7 +78,9 @@ from app.schemas.employee import EmployeeCreateWithUser
 from app.schemas.user import UserLinkRead
 from app.schemas.user import RoleSchema, UserRolesUpdate
 from app.core.security import get_password_hash
-from app.api.v1.endpoints.roster_common import commit_or_409, guard_conflicts
+from app.api.v1.endpoints.roster_common import (
+    commit_or_409, guard_conflicts, plain_actor, retry_on_lock,
+)
 
 router = APIRouter()
 
@@ -2613,17 +2615,23 @@ async def update_holiday(
     obj_in: HolidayCalendarCreate,
     current_user: User = Depends(deps.check_permissions([HR_WRITE]))
 ) -> Any:
-    obj = await db.get(HolidayCalendar, holiday_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Holiday not found")
-    old = {"date": obj.date, "is_optional": bool(obj.is_optional),
-           "location": obj.location}
-    for field, value in obj_in.model_dump().items():
-        setattr(obj, field, value)
-    await optional_holidays_svc.reconcile_holiday_update(
-        db, obj, old, current_user)
-    await commit_or_409(db)
-    await db.refresh(obj)
+    actor = plain_actor(current_user)
+    changes = obj_in.model_dump()
+
+    async def body() -> None:
+        obj = await db.get(HolidayCalendar, holiday_id,
+                           populate_existing=True)
+        if not obj:
+            raise HTTPException(status_code=404, detail="Holiday not found")
+        old = {"date": obj.date, "is_optional": bool(obj.is_optional),
+               "location": obj.location}
+        for field, value in changes.items():
+            setattr(obj, field, value)
+        await optional_holidays_svc.reconcile_holiday_update(
+            db, obj, old, actor)
+
+    await retry_on_lock(db, body, commit=True)
+    obj = await db.get(HolidayCalendar, holiday_id, populate_existing=True)
     obj.matching_employee_count = await holidays_svc.matching_employee_count(
         db, obj.location)
     return obj
