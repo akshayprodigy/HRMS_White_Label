@@ -761,8 +761,6 @@ async def test_can_decide_flag(api, world):
     own = (await pick(api, world, "m1")).json()
     assert own["can_decide"] is False          # own pick, in the create reply
     pid = own["id"]
-    mine = (await api.post(f"{P}/picks", headers=api.mgr, json={
-        "holiday_id": world["h"]["m2"]})).json()  # manager has no location
     rows = lambda r: {x["id"]: x for x in r.json()}
     r = await api.get(f"{P}/picks?year=2032", headers=api.mgr)
     assert rows(r)[pid]["can_decide"] is True       # direct report
@@ -772,9 +770,6 @@ async def test_can_decide_flag(api, world):
     assert rows(r)[pid]["can_decide"] is False      # read-only HR
     r = await api.get(f"{P}/picks?year=2032", headers=api.hr)
     assert rows(r)[pid]["can_decide"] is True       # privileged
-    if "id" in mine:
-        assert rows(await api.get(f"{P}/picks?year=2032", headers=api.mgr)
-                    )[mine["id"]]["can_decide"] is False  # manager's own
     await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
                    json={"approve": True})
     r = await api.get(f"{P}/picks?year=2032", headers=api.mgr)
@@ -805,3 +800,19 @@ async def test_hr_holiday_location_filter_normalised(api, world):
     ids = {h["id"] for h in r.json()}
     assert world["h"]["m1"] in ids and world["h"]["all"] in ids
     assert world["h"]["pune"] not in ids
+
+
+def test_can_decide_rule_pure():
+    """DB-free: every branch of the rule decide_pick enforces."""
+    from types import SimpleNamespace as NS
+    from app.api.v1.endpoints.holidays import _can_decide
+    from app.models.optional_holiday import PickStatus as PS
+    me, other, boss = NS(id=1), NS(id=2), NS(id=3)
+    pend = NS(status=PS.PENDING, user_id=2)
+    assert _can_decide(boss, False, pend, 3, "direct") is True    # manager
+    assert _can_decide(me, False, pend, 3, "direct") is False     # unrelated
+    assert _can_decide(me, True, pend, 3, "direct") is True       # privileged
+    assert _can_decide(other, True, pend, 3, "direct") is False   # own pick
+    assert _can_decide(boss, True, pend, 3, "chain") is False     # chain
+    done = NS(status=PS.APPROVED, user_id=2)
+    assert _can_decide(boss, True, done, 3, "direct") is False    # decided
