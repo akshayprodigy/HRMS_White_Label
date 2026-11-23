@@ -337,8 +337,16 @@ def test_muster_codes():
     assert "P=2" in r.totals["status"] and "A=1" in r.totals["status"]
 
 
-async def test_muster_fetch_adds_no_punch_remote_rows(world):
+def _org_today(monkeypatch, d):
+    """Pin the org-local 'today' the muster/coverage fetchers see."""
+    async def fake(db):
+        return d
+    monkeypatch.setattr("app.api.v1.endpoints.reports.local_today", fake)
+
+
+async def test_muster_fetch_adds_no_punch_remote_rows(world, monkeypatch):
     from app.api.v1.endpoints.reports import _fetch_muster_roll
+    _org_today(monkeypatch, D + timedelta(days=30))
     i = world["ids"]
     await _approve(i["full"], "on_duty", "full", D)
     await _approve(i["half"], "wfh", "second_half", D)
@@ -349,8 +357,22 @@ async def test_muster_fetch_adds_no_punch_remote_rows(world):
     assert by == {i["full"]: "OD", i["half"]: "WFH/2"}
 
 
-async def test_muster_fetch_skips_off_days(world):
+async def test_muster_fetch_skips_future_dates(world, monkeypatch):
     from app.api.v1.endpoints.reports import _fetch_muster_roll
+    i = world["ids"]
+    await _approve(i["full"], "on_duty", "full", D)
+    f = ReportFilter(start=D, end=D, department=world["dept"])
+    _org_today(monkeypatch, D - timedelta(days=1))     # D is still ahead
+    async with SessionLocal() as db:
+        assert (await _fetch_muster_roll(db, f)).rows == []
+    _org_today(monkeypatch, D)                          # today counts
+    async with SessionLocal() as db:
+        assert len((await _fetch_muster_roll(db, f)).rows) == 1
+
+
+async def test_muster_fetch_skips_off_days(world, monkeypatch):
+    from app.api.v1.endpoints.reports import _fetch_muster_roll
+    _org_today(monkeypatch, date(2030, 12, 31))
     i = world["ids"]
     fri = date(2030, 6, 7)          # Fri; Sat is a roster week-off, Sun default
     async with SessionLocal() as db:

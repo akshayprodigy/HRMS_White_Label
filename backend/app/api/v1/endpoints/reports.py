@@ -359,10 +359,13 @@ async def _fetch_muster_roll(db, f: _rep.ReportFilter) -> _rep.ReportResult:
         full_leave, _half = await load_leave_days(
             db, syn_ids, f.start, f.end) if syn_ids else (set(), set())
         lwd = await last_working_days(db, [emps[u] for u in syn_ids])
+        # An approved future OD/WFH has not happened yet: no muster row for
+        # a date after the org's local today.
+        org_today = await local_today(db)
         for uid in syn_ids:
             emp = emps[uid]
             first = max(f.start, emp.date_of_joining)
-            last = min(f.end, lwd.get(emp.id, f.end))
+            last = min(f.end, lwd.get(emp.id, f.end), org_today)
             for d, portion in sorted(r_portions[uid].items()):
                 if d < first or d > last or (uid, d) in seen \
                         or (uid, d) in full_leave \
@@ -495,6 +498,11 @@ async def _fetch_shift_coverage(db, f: _rep.ReportFilter) -> _rep.ReportResult:
     admin = viewer is not None and (
         _is_hr_admin(viewer) or _roster_svc.is_roster_admin(viewer))
     scoped_depts = None
+    if viewer is None:
+        # No viewer -> nothing to show (never raise, never leak org-wide).
+        return _rep.build_shift_coverage(
+            [], [], [], {}, start, end, today, department=f.department,
+            location=location, leftover_departments=set())
     if not admin:
         scoped_depts = set(await _roster_svc.scope_department_names(db, viewer))
 
