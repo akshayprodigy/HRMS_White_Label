@@ -106,6 +106,9 @@ describe('ConsentScreen', () => {
     await screen.findByTestId('tracking-perm-warning');
     expect(screen.getByText(/only while the app is open/)).toBeTruthy();
     expect(screen.getByTestId('tracking-allow-always')).toBeTruthy();
+    // shift_start/end are UTC instants: shown as HH:MM wall clock, never a date fragment
+    expect(screen.getByText(/^Shift (\d{2}:\d{2}|—) to (\d{2}:\d{2}|—) \(sharing/)).toBeTruthy();
+    expect(screen.queryByText(/Shift 20\d\d-/)).toBeNull();
   });
 
   it('consented but no shift window: idle', async () => {
