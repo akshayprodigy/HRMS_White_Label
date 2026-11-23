@@ -82,6 +82,15 @@ const OFFLINE_HOURS_KEY = 'attendance.offline_max_hours';
 const RETENTION_KEY = 'attendance.selfie_retention_days';
 const TIMEZONE_KEY = 'org.timezone';
 const HOLIDAY_LOC_KEY = 'holidays.default_location';
+const OPT_QUOTA_KEY = 'holidays.optional_quota_per_year';
+const ALL_TIMEZONES: string[] = (() => {
+  try {
+    const f = (Intl as any).supportedValuesOf;
+    return typeof f === 'function' ? (f.call(Intl, 'timeZone') as string[]) : [];
+  } catch {
+    return [];
+  }
+})();
 const COMMON_TIMEZONES = [
   'Asia/Kolkata',
   'Asia/Dubai',
@@ -149,6 +158,11 @@ export const TimeRulesTab: React.FC = () => {
     }
     if (!(rules[TIMEZONE_KEY] ?? '').toString().trim()) {
       toast.error('Organisation timezone is required (e.g. Asia/Kolkata or UTC)');
+      return;
+    }
+    const quota = (rules[OPT_QUOTA_KEY] ?? '').toString().trim();
+    if (!/^\d+$/.test(quota) || Number(quota) > 20) {
+      toast.error('Optional holiday quota must be a whole number from 0 to 20');
       return;
     }
     if ((rules[HOLIDAY_LOC_KEY] ?? '').toString().trim().length > 100) {
@@ -227,10 +241,15 @@ export const TimeRulesTab: React.FC = () => {
             onChange={(e) => setRules({ ...rules, [TIMEZONE_KEY]: e.target.value })}
           />
           <datalist id="org-timezone-options">
-            {COMMON_TIMEZONES.map((z) => (
+            {Array.from(new Set([...COMMON_TIMEZONES, ...ALL_TIMEZONES])).map((z) => (
               <option key={z} value={z} />
             ))}
           </datalist>
+          <p className="text-[9px] font-bold text-amber-600">
+            Warning: changing the timezone re-interprets shift windows, late
+            marks and "today" from now on. Do not re-process closed
+            (locked or paid) months after changing it.
+          </p>
           <p className="text-[9px] font-bold text-slate-400">
             IANA timezone name (e.g. Asia/Kolkata) or UTC
           </p>
@@ -263,6 +282,26 @@ export const TimeRulesTab: React.FC = () => {
             value={rules[HOLIDAY_LOC_KEY] ?? ''}
             onChange={(e) => setRules({ ...rules, [HOLIDAY_LOC_KEY]: e.target.value })}
           />
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor={OPT_QUOTA_KEY}
+            className="text-[9px] font-black uppercase tracking-widest text-slate-400"
+          >
+            Optional Holiday Quota (per year)
+          </label>
+          <input
+            id={OPT_QUOTA_KEY}
+            type="number"
+            min={0}
+            max={20}
+            className={inputCls}
+            value={rules[OPT_QUOTA_KEY] ?? ''}
+            onChange={(e) => setRules({ ...rules, [OPT_QUOTA_KEY]: e.target.value })}
+          />
+          <p className="text-[9px] font-bold text-slate-400">
+            Optional holidays an employee may pick per calendar year (range 0–20)
+          </p>
         </div>
       </Card>
       <Card className="p-6 border-slate-200 bg-white space-y-5">

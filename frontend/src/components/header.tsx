@@ -100,6 +100,16 @@ export const Header = ({ title, userName, userRole, avatarUrl, onLogout, onNavig
       return n.event_type === 'asset_request_submitted' || n.event_type === 'asset_request_approved'
         ? 'asset-management' : 'profile';
     }
+    // Optional-holiday picks: approvers get the pick in Approvals; the
+    // employee's decided event opens their Leave > Holiday Calendar.
+    if (n.resource_type === 'optional_holiday') {
+      return n.event_type === 'optional_holiday_submitted' ? 'approvals' : 'leave';
+    }
+    // Work-location requests: approvers get submissions in Approvals; the
+    // employee's decided/cancelled events open My Shift (My requests).
+    if (n.resource_type === 'work_location') {
+      return n.event_type === 'work_location_submitted' ? 'approvals' : 'my-shift';
+    }
     return n.resource_type ? NAV_MAP[n.resource_type] : undefined;
   };
 

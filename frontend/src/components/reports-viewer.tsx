@@ -93,6 +93,15 @@ const fmtDateTime = (v: any): string => {
   return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
+const COVERAGE_STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'error' | 'neutral' }> = {
+  understaffed: { label: 'Understaffed', variant: 'error' },
+  understaffed_plan: { label: 'Understaffed (plan)', variant: 'error' },
+  over: { label: 'Over', variant: 'warning' },
+  met: { label: 'Met', variant: 'success' },
+  planned_ok: { label: 'Planned OK', variant: 'success' },
+  no_requirement: { label: 'No requirement', variant: 'neutral' },
+};
+
 const fmtCell = (value: any, type: string): string => {
   switch (type) {
     case 'currency': return fmtInr(value);
@@ -285,6 +294,9 @@ export const ReportViewer: React.FC<Props> = ({
               {result.meta?.row_count != null && (
                 <span className="font-semibold">{result.meta.row_count} rows</span>
               )}
+              {report.key === 'shift_coverage' && result.meta?.understaffed_count != null && (
+                <span className="ml-2">· <span className={result.meta.understaffed_count > 0 ? 'text-red-600 font-semibold' : ''}>{result.meta.understaffed_count} understaffed</span></span>
+              )}
               {result.meta?.period && <span className="ml-2">· {result.meta.period}</span>}
               {result.meta?.payroll_period && <span className="ml-2">· Payroll {result.meta.payroll_period}</span>}
             </div>
@@ -315,7 +327,11 @@ export const ReportViewer: React.FC<Props> = ({
                     {result.columns.map(c => (
                       <td key={c.key} className={cn('p-2 whitespace-nowrap',
                         (c.type === 'currency' || c.type === 'int' || c.type === 'hours' || c.type === 'percent') && 'text-right font-mono')}>
-                        {fmtCell(row[c.key], c.type)}
+                        {report.key === 'shift_coverage' && c.key === 'status' && COVERAGE_STATUS[row[c.key]] ? (
+                          <Badge variant={COVERAGE_STATUS[row[c.key]].variant} className="text-[10px]">
+                            {COVERAGE_STATUS[row[c.key]].label}
+                          </Badge>
+                        ) : fmtCell(row[c.key], c.type)}
                       </td>
                     ))}
                   </tr>
