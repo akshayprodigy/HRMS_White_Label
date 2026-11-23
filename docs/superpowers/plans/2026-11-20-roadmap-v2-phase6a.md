@@ -533,6 +533,7 @@ Notify the employee on decide (`resource_type="work_location"`).
 - Attendance Control (`components/workforce/attendance-tab.tsx`): a "Remote" badge, plus a filter for `approved_remote`.
 - Live Board shows the `remote_kind` badge.
 - Muster legend shows `OD`, `WFH`, `OD/2`, `WFH/2`.
+- Note: the Remote badge/filter live in Flagged Review (`attendance-flagged-review.tsx`), since `attendance-tab.tsx` has no per-punch rows.
 
 **10d — reports + rules:**
 - `shift_coverage` appears in `reports-catalog.tsx` automatically if the catalogue is server-driven; verify. Colour the status column: understaffed red, over amber, met green, using existing badge classes.

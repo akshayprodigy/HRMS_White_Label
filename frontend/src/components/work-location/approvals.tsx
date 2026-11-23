@@ -4,8 +4,7 @@ import { CheckCircle2, XCircle } from 'lucide-react';
 import { Card, Button, Badge, errMsg } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
-import { fmtRange } from './my-requests';
-import { KIND_LABEL, type WorkLocationRequest } from './shared';
+import { KIND_LABEL, fmtRange, type WorkLocationRequest } from './shared';
 
 /** Direct-path pending requests the viewer can decide (server `can_decide`).
  *  Chain-routed requests are decided in the chained-approval queue. */
@@ -62,7 +61,7 @@ export const WorkLocationApprovals: React.FC<{ refreshKey?: number }> = ({ refre
             </div>
             <div className="flex items-center gap-2">
               <input value={notes[r.id] || ''} maxLength={500}
-                onChange={(e) => setNotes({ ...notes, [r.id]: e.target.value })}
+                onChange={(e) => setNotes((n) => ({ ...n, [r.id]: e.target.value }))}
                 placeholder="Note (optional)"
                 className="h-9 px-3 rounded-lg border border-slate-200 text-xs" />
               <Button size="sm" variant="outline" disabled={busyId === r.id} onClick={() => decide(r, false)}>

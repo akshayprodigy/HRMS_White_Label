@@ -25,3 +25,17 @@ export const KIND_LABEL: Record<WorkLocationKind, string> = {
 
 /** On duty and client visit need a place. */
 export const needsPlace = (k: string) => k === 'on_duty' || k === 'client_visit';
+
+export const fmtDay = (iso: string) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  // Pure calendar date: format in UTC so the browser zone cannot shift it.
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+  });
+};
+
+const PORTION: Record<string, string> = { first_half: ' (first half)', second_half: ' (second half)' };
+
+export const fmtRange = (r: WorkLocationRequest) =>
+  (r.start_date === r.end_date ? fmtDay(r.start_date) : `${fmtDay(r.start_date)} – ${fmtDay(r.end_date)}`) +
+  (PORTION[r.day_portion] || '');

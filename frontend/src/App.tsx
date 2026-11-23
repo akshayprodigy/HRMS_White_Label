@@ -525,7 +525,7 @@ const App = () => {
       case 'my-overtime':
         return <MyOvertimeView />;
       case 'my-shift':
-        return <MyShiftView />;
+        return <MyShiftView userRole={userRole} />;
       case 'designations':
         return <DesignationGradeAdmin />;
       case 'employment-types':

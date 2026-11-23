@@ -10,7 +10,7 @@ import { KIND_LABEL, needsPlace, type WorkLocationKind } from './shared';
 
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-slate-200 text-sm text-[#0F172A] ' +
-  'focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-500 bg-white';
+  'focus:outline-none focus:ring-2 focus:ring-blue-600/10 focus:border-indigo-500 bg-white';
 const labelCls = 'text-[9px] font-black uppercase tracking-widest text-slate-400';
 
 export const WorkLocationRequestDialog: React.FC<{

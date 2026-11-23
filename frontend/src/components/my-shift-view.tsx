@@ -56,7 +56,7 @@ const errMsg = (e: any, fallback: string) =>
 const fmtShiftWindow = (s: any) =>
   s ? `${(s.start_time || '').slice(0, 5)} – ${(s.end_time || '').slice(0, 5)}` : '';
 
-export const MyShiftView: React.FC = () => {
+export const MyShiftView: React.FC<{ userRole?: string }> = ({ userRole }) => {
   const [current, setCurrent] = useState<any | null>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
@@ -538,7 +538,7 @@ export const MyShiftView: React.FC = () => {
       </div>
 
       <MyRegularizations />
-      <MyWorkLocationRequests />
+      <MyWorkLocationRequests isHr={['hr', 'admin', 'super admin'].includes(userRole || '')} />
       <TeamRegularizations />
       </div>
       </div>

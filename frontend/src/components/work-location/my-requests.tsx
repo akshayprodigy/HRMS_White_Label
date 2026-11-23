@@ -6,7 +6,7 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { useOrgTime } from '../../lib/org-time';
 import { WorkLocationRequestDialog } from './request-dialog';
-import { KIND_LABEL, type WorkLocationRequest } from './shared';
+import { KIND_LABEL, fmtRange, type WorkLocationRequest } from './shared';
 
 // Pending is NOT granted: it only counts once a person approves it.
 const STATUS_BADGE: Record<string, { label: string; variant: 'success' | 'warning' | 'error' | 'neutral' }> = {
@@ -16,22 +16,8 @@ const STATUS_BADGE: Record<string, { label: string; variant: 'success' | 'warnin
   cancelled: { label: 'Cancelled', variant: 'neutral' },
 };
 
-export const fmtDay = (iso: string) => {
-  const [y, m, d] = iso.split('-').map(Number);
-  // Pure calendar date: format in UTC so the browser zone cannot shift it.
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, {
-    day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
-  });
-};
-
-const PORTION: Record<string, string> = { first_half: ' (first half)', second_half: ' (second half)' };
-
-export const fmtRange = (r: WorkLocationRequest) =>
-  (r.start_date === r.end_date ? fmtDay(r.start_date) : `${fmtDay(r.start_date)} – ${fmtDay(r.end_date)}`) +
-  (PORTION[r.day_portion] || '');
-
-export const MyWorkLocationRequests: React.FC = () => {
-  const { today } = useOrgTime();
+export const MyWorkLocationRequests: React.FC<{ isHr?: boolean }> = ({ isHr = false }) => {
+  const { today, ready } = useOrgTime();
   const [items, setItems] = useState<WorkLocationRequest[]>([]);
   const [open, setOpen] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -46,9 +32,10 @@ export const MyWorkLocationRequests: React.FC = () => {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  // Backend: only pending/approved can be cancelled, and not once started.
+  // Backend: only pending/approved can be cancelled; non-HR users cannot once
+  // it has started (HR is exempt). The server stays authoritative.
   const canCancel = (r: WorkLocationRequest) =>
-    (r.status === 'pending' || r.status === 'approved') && r.start_date >= today;
+    (r.status === 'pending' || r.status === 'approved') && (isHr || (ready && r.start_date >= today));
 
   const cancel = async (r: WorkLocationRequest) => {
     setBusyId(r.id);
@@ -86,8 +73,8 @@ export const MyWorkLocationRequests: React.FC = () => {
                   </p>
                   <p className="text-xs font-bold text-slate-600">{fmtRange(r)}</p>
                   <p className="text-xs text-slate-500">{r.purpose}</p>
-                  {r.status === 'rejected' && r.decision_note && (
-                    <p className="text-xs text-red-600 font-bold">Note: {r.decision_note}</p>
+                  {(r.status === 'rejected' || r.status === 'approved') && r.decision_note && (
+                    <p className={'text-xs font-bold ' + (r.status === 'rejected' ? 'text-red-600' : 'text-slate-600')}>Note: {r.decision_note}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">

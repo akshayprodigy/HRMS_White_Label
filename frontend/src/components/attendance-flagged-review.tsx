@@ -153,6 +153,7 @@ const GEO_FLAG_META: Record<
     description: 'Device reported a fake-GPS reading.',
     icon: Smartphone,
   },
+  // Informational (approved WFH / on-duty), not a review flag: no count tile.
   approved_remote: {
     label: 'Remote',
     tone: 'bg-blue-100 text-blue-800',
@@ -253,7 +254,7 @@ export const AttendanceFlaggedReview: React.FC = () => {
   }, [items]);
 
   const geoCounts = useMemo(() => {
-    const c = { outside_geofence: 0, mock_location: 0, low_accuracy: 0, approved_remote: 0 };
+    const c = { outside_geofence: 0, mock_location: 0, low_accuracy: 0 };
     items.forEach((i) => {
       [i.geo_flag, i.punch_out_geo_flag].forEach((g) => {
         if (g && g in c) (c as any)[g] += 1;
@@ -364,8 +365,8 @@ export const AttendanceFlaggedReview: React.FC = () => {
         <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
           Geo Fencing
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {(['outside_geofence', 'mock_location', 'low_accuracy', 'approved_remote'] as const).map((k) => {
+        <div className="grid grid-cols-3 gap-3">
+          {(['outside_geofence', 'mock_location', 'low_accuracy'] as const).map((k) => {
             const meta = GEO_FLAG_META[k];
             const Icon = meta.icon;
             return (
@@ -394,6 +395,14 @@ export const AttendanceFlaggedReview: React.FC = () => {
             );
           })}
         </div>
+        <label className="mt-3 inline-flex items-center gap-2 text-xs font-bold text-slate-600 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={geoFlagFilter === 'approved_remote'}
+            onChange={(e) => setGeoFlagFilter(e.target.checked ? 'approved_remote' : '')}
+          />
+          Show approved remote punches
+        </label>
       </div>}
 
       {showReview && (

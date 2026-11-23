@@ -499,10 +499,10 @@ export const LiveBoard: React.FC = () => {
                       {r.transport_required && (
                         <span className="text-xs text-indigo-700">Cab/transport arranged</span>
                       )}
-                      {r.status === 'remote' && r.remote_kind && (
+                      {r.remote_kind && (
                         <span className="text-xs text-blue-700">
                           {REMOTE_KIND_LABEL[r.remote_kind]}
-                          {r.remote_portion && r.remote_portion !== 'full' ? ' (half day)' : ''}
+                          {r.remote_portion === 'first_half' ? ' (first half)' : r.remote_portion === 'second_half' ? ' (second half)' : ''}
                         </span>
                       )}
                       {r.half_day_leave && (

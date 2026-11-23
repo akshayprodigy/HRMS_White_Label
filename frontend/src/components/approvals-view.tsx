@@ -365,7 +365,7 @@ export const ApprovalsView = () => {
       )}
 
       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-        Chain-routed requests (optional holidays, shift changes, salary revisions) are actioned under Expenses, Travel &amp; Approvals, in the Approvals Queue tab.
+        Chain-routed requests (optional holidays, work-location requests, shift changes, salary revisions) are actioned under Expenses, Travel &amp; Approvals, in the Approvals Queue tab.
       </p>
 
       {resourceType === 'attendance_correction' ? (
