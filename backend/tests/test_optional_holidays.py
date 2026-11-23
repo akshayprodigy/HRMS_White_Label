@@ -414,7 +414,8 @@ async def test_my_shape(api, world):
     b = r.json()
     assert (b["quota"], b["used"], b["remaining"]) == (2, 1, 1)
     by = {h["id"]: h for h in b["holidays"]}
-    assert by[world["h"]["m1"]]["pick"] == {"id": pid, "status": "pending"}
+    assert by[world["h"]["m1"]]["pick"] == {
+        "id": pid, "status": "pending", "decision_note": None}
     assert by[world["h"]["m2"]]["pick"] is None
     assert by[world["h"]["m2"]]["is_optional"] is True
     assert by[world["h"]["mand"]]["is_optional"] is False
@@ -754,3 +755,53 @@ async def test_csv_hardening(api, world):
             AuditLog.action == "HOLIDAY_IMPORT",
             AuditLog.user_id == world["uid"]["hr"]))).scalars().all()
         assert n
+
+
+async def test_can_decide_flag(api, world):
+    own = (await pick(api, world, "m1")).json()
+    assert own["can_decide"] is False          # own pick, in the create reply
+    pid = own["id"]
+    mine = (await api.post(f"{P}/picks", headers=api.mgr, json={
+        "holiday_id": world["h"]["m2"]})).json()  # manager has no location
+    rows = lambda r: {x["id"]: x for x in r.json()}
+    r = await api.get(f"{P}/picks?year=2032", headers=api.mgr)
+    assert rows(r)[pid]["can_decide"] is True       # direct report
+    r = await api.get(f"{P}/picks?year=2032", headers=api.emp)
+    assert rows(r)[pid]["can_decide"] is False      # own pick
+    r = await api.get(f"{P}/picks?year=2032", headers=api.ro)
+    assert rows(r)[pid]["can_decide"] is False      # read-only HR
+    r = await api.get(f"{P}/picks?year=2032", headers=api.hr)
+    assert rows(r)[pid]["can_decide"] is True       # privileged
+    if "id" in mine:
+        assert rows(await api.get(f"{P}/picks?year=2032", headers=api.mgr)
+                    )[mine["id"]]["can_decide"] is False  # manager's own
+    await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
+                   json={"approve": True})
+    r = await api.get(f"{P}/picks?year=2032", headers=api.mgr)
+    assert rows(r)[pid]["can_decide"] is False      # no longer pending
+
+
+async def test_my_shows_rejected_pick(api, world):
+    pid = (await pick(api, world, "m1")).json()["id"]
+    await api.post(f"{P}/picks/{pid}/decide", headers=api.mgr,
+                   json={"approve": False, "note": "busy"})
+    b = (await api.get(f"{P}/my?year=2032", headers=api.emp)).json()
+    by = {h["id"]: h for h in b["holidays"]}
+    assert by[world["h"]["m1"]]["pick"] == {
+        "id": pid, "status": "rejected", "decision_note": "busy"}
+    assert (b["used"], b["remaining"]) == (0, 2)     # rejected not counted
+    # re-pick allowed; the latest pick (pending) is what is shown
+    pid2 = (await pick(api, world, "m1")).json()["id"]
+    b = (await api.get(f"{P}/my?year=2032", headers=api.emp)).json()
+    by = {h["id"]: h for h in b["holidays"]}
+    assert by[world["h"]["m1"]]["pick"]["id"] == pid2
+    assert by[world["h"]["m1"]]["pick"]["status"] == "pending"
+    assert b["used"] == 1
+
+
+async def test_hr_holiday_location_filter_normalised(api, world):
+    r = await api.get("/api/v1/hr/holidays?year=2032&location=%20%20mumBAI ",
+                      headers=api.hr)
+    ids = {h["id"] for h in r.json()}
+    assert world["h"]["m1"] in ids and world["h"]["all"] in ids
+    assert world["h"]["pune"] not in ids

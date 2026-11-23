@@ -48,9 +48,25 @@ def _is_hr(user: User) -> bool:
     return deps.user_has_permission(user, PERM_HR)
 
 
+def _is_privileged(user: User) -> bool:
+    """Same rule decide_pick uses for HR/leave-approver/superuser."""
+    return _is_hr(user) or deps.user_has_permission(user, PERM_LEAVE)
+
+
+def _can_decide(viewer: User, privileged: bool, p: OptionalHolidayPick,
+                owner_manager_id: Optional[int], routed_via: str) -> bool:
+    """Mirrors decide_pick: pending, direct path, never one's own pick, and
+    the viewer is the owner's manager or privileged."""
+    return (p.status == PickStatus.PENDING and routed_via == "direct"
+            and p.user_id != viewer.id
+            and (privileged or owner_manager_id == viewer.id))
+
+
 def _pick_out(p: OptionalHolidayPick, hol: Optional[HolidayCalendar],
-              name: Optional[str] = None, routed_via: str = "direct") -> dict:
+              name: Optional[str] = None, routed_via: str = "direct",
+              can_decide: bool = False) -> dict:
     return {
+        "can_decide": can_decide,
         "id": p.id, "status": p.status, "year": p.year,
         "routed_via": routed_via,
         "holiday": ({"id": hol.id, "name": hol.name, "date": _iso(hol.date),
@@ -66,14 +82,19 @@ async def _chain_instance_id(db, pick_id: int) -> Optional[int]:
         db, ChainEntityType.OPTIONAL_HOLIDAY, pick_id)
 
 
-async def _detail(db, pid: int) -> dict:
+async def _detail(db, pid: int, viewer: Optional[User] = None) -> dict:
     db.expire_all()
     p = (await db.execute(select(OptionalHolidayPick).where(
         OptionalHolidayPick.id == pid)
         .execution_options(populate_existing=True))).scalars().one()
     hol = await db.get(HolidayCalendar, p.holiday_id)
-    return _pick_out(p, hol, None, "chain" if await _chain_instance_id(
-        db, p.id) else "direct")
+    via = "chain" if await _chain_instance_id(db, p.id) else "direct"
+    cd = False
+    if viewer is not None:
+        mgr = (await db.execute(select(User.manager_id).where(
+            User.id == p.user_id))).scalar_one_or_none()
+        cd = _can_decide(viewer, _is_privileged(viewer), p, mgr, via)
+    return _pick_out(p, hol, None, via, cd)
 
 
 @router.get("/my")
@@ -89,11 +110,13 @@ async def my_holidays(
             HolidayCalendar.date >= _d(year, 1, 1),
             HolidayCalendar.date <= _d(year, 12, 31))
         .order_by(HolidayCalendar.date, HolidayCalendar.id))).scalars().all()
+    # Latest pick per holiday in ANY status (so a rejection stays visible);
+    # quota counts PENDING+APPROVED only. An active pick is always the latest
+    # (create_pick refuses a duplicate while one is active).
     picks = {p.holiday_id: p for p in (await db.execute(
         select(OptionalHolidayPick).where(
             OptionalHolidayPick.user_id == current_user.id,
-            OptionalHolidayPick.year == year,
-            OptionalHolidayPick.status.in_(PickStatus.ACTIVE))
+            OptionalHolidayPick.year == year)
         .order_by(OptionalHolidayPick.id))).scalars().all()}
     q = await svc.quota(db)
     out = []
@@ -106,8 +129,9 @@ async def my_holidays(
         out.append({
             "id": h.id, "name": h.name, "date": _iso(h.date),
             "location": h.location, "is_optional": bool(h.is_optional),
-            "pick": {"id": p.id, "status": p.status} if p else None})
-    n = len(picks)
+            "pick": ({"id": p.id, "status": p.status,
+                      "decision_note": p.decision_note} if p else None)})
+    n = sum(1 for p in picks.values() if p.status in PickStatus.ACTIVE)
     return {"quota": q, "used": n, "remaining": max(q - n, 0),
             "year": year, "holidays": out}
 
@@ -150,7 +174,7 @@ async def create_pick(
         return pick.id
 
     pid = await retry_on_lock(db, body, commit=True)
-    return await _detail(db, pid)
+    return await _detail(db, pid, current_user)
 
 
 @router.post("/picks/{pick_id}/cancel")
@@ -187,7 +211,7 @@ async def cancel_pick(
         return pick_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, pick_id)
+    return await _detail(db, pick_id, current_user)
 
 
 @router.get("/picks")
@@ -196,7 +220,8 @@ async def list_picks(
     year: Optional[int] = Query(None, ge=2000, le=2100),
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    q = (select(OptionalHolidayPick, HolidayCalendar, User.full_name)
+    q = (select(OptionalHolidayPick, HolidayCalendar, User.full_name,
+                User.manager_id)
          .join(HolidayCalendar, HolidayCalendar.id == OptionalHolidayPick.holiday_id)
          .join(User, User.id == OptionalHolidayPick.user_id))
     if not (_is_hr(current_user)
@@ -219,10 +244,15 @@ async def list_picks(
         select(ChainedApprovalInstance.entity_id).where(
             ChainedApprovalInstance.entity_type
             == ChainEntityType.OPTIONAL_HOLIDAY,
-            ChainedApprovalInstance.entity_id.in_([p.id for p, _, _ in rows]))
+            ChainedApprovalInstance.entity_id.in_([r[0].id for r in rows]))
     )).scalars().all()) if rows else set()
-    return [_pick_out(p, h, n, "chain" if p.id in chained else "direct")
-            for p, h, n in rows]
+    priv = _is_privileged(current_user)
+    out = []
+    for p, h, n, mgr in rows:
+        via = "chain" if p.id in chained else "direct"
+        out.append(_pick_out(p, h, n, via,
+                             _can_decide(current_user, priv, p, mgr, via)))
+    return out
 
 
 @router.post("/picks/{pick_id}/decide")
@@ -256,4 +286,4 @@ async def decide_pick(
         return pick_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, pick_id)
+    return await _detail(db, pick_id, current_user)

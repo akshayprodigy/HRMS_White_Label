@@ -2464,15 +2464,13 @@ async def list_holidays(
         query = query.where(
             HolidayCalendar.date >= date(year, 1, 1),
             HolidayCalendar.date <= date(year, 12, 31))
+    rows = (await db.execute(query)).scalars().all()
     if location:
-        query = query.where(
-            or_(
-                HolidayCalendar.location == location,
-                HolidayCalendar.location == "All"
-            )
-        )
-    result = await db.execute(query)
-    return result.scalars().all()
+        # same normalisation as services/holidays.applies: trim, collapse
+        # whitespace, case-insensitive; "All" always matches
+        rows = [h for h in rows
+                if holidays_svc.applies(h.location, location)]
+    return rows
 
 
 HOLIDAY_IMPORT_MAX_ROWS = 1000

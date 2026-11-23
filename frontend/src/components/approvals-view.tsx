@@ -58,6 +58,7 @@ export const ApprovalsView = () => {
   const [search, setSearch] = useState<string>('');
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshTick, setRefreshTick] = useState(0);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -83,6 +84,7 @@ export const ApprovalsView = () => {
 
   const fetchApprovals = async () => {
     setLoading(true);
+    setRefreshTick((n) => n + 1);
     try {
       const params = new URLSearchParams();
       if (resourceType !== 'all') params.set('resource_type', resourceType);
@@ -353,7 +355,13 @@ export const ApprovalsView = () => {
         </div>
       </div>
 
-      {resourceType === 'all' && <OptionalHolidayApprovals />}
+      {resourceType === 'all' && (statusFilter === 'all' || statusFilter === 'pending') && (
+        <OptionalHolidayApprovals refreshKey={refreshTick} />
+      )}
+
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+        Chain-routed requests (optional holidays, shift changes, salary revisions) are actioned under Expenses, Travel &amp; Approvals, in the Approvals Queue tab.
+      </p>
 
       {resourceType === 'attendance_correction' ? (
         <RegularizationQueue />

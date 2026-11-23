@@ -8,6 +8,7 @@ import { ENDPOINTS } from '../../api/endpoints';
 interface Pick {
   id: number;
   status: string;
+  can_decide: boolean;
   routed_via: 'direct' | 'chain';
   user_id: number;
   user_name: string | null;
@@ -17,26 +18,24 @@ interface Pick {
 
 /** Direct-path pending picks the viewer can decide. Chain-routed picks are
  *  decided in the chained-approval queue instead, so they are excluded. */
-export const OptionalHolidayApprovals: React.FC = () => {
+export const OptionalHolidayApprovals: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [notes, setNotes] = useState<Record<number, string>>({});
 
   const load = useCallback(async () => {
     try {
-      const [me, res] = await Promise.all([
-        client.get(ENDPOINTS.AUTH.ME),
-        client.get<Pick[]>(ENDPOINTS.HOLIDAYS.PICKS, { params: { status: 'pending' } }),
-      ]);
-      const myId = me.data?.id;
-      setPicks((res.data || []).filter(
-        (p) => p.status === 'pending' && p.routed_via === 'direct' && p.user_id !== myId));
-    } catch {
-      setPicks([]); // 403 = no reports and no leave/HR permission: nothing to decide
+      const res = await client.get<Pick[]>(ENDPOINTS.HOLIDAYS.PICKS, { params: { status: 'pending' } });
+      // The server computes can_decide with the same rule as the decide endpoint
+      setPicks((res.data || []).filter((p) => p.can_decide && p.status === 'pending'));
+    } catch (e: any) {
+      setPicks([]);
+      // 403 = no reports and no HR/leave permission: nothing to decide
+      if (e?.response?.status !== 403) toast.error(errMsg(e, 'Failed to load optional holiday requests'));
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, refreshKey]);
 
   const decide = async (p: Pick, approve: boolean) => {
     setBusyId(p.id);

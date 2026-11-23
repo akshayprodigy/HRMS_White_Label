@@ -13,7 +13,7 @@ export interface MyHoliday {
   date: string;
   location: string;
   is_optional: boolean;
-  pick: { id: number; status: string } | null;
+  pick: { id: number; status: string; decision_note?: string | null } | null;
 }
 
 interface MyHolidaysResponse {
@@ -25,10 +25,13 @@ interface MyHolidaysResponse {
 }
 
 // Pending is NOT a granted holiday: it only becomes one once a person approves.
-const PICK_BADGE: Record<string, { label: string; variant: 'success' | 'warning' | 'neutral' }> = {
+const PICK_BADGE: Record<string, { label: string; variant: 'success' | 'warning' | 'error' }> = {
   pending: { label: 'Pending approval', variant: 'warning' },
   approved: { label: 'Approved', variant: 'success' },
+  rejected: { label: 'Rejected', variant: 'error' },
 };
+
+const isActive = (h: MyHoliday) => h.pick?.status === 'pending' || h.pick?.status === 'approved';
 
 const fmtDay = (iso: string) => {
   const [y, m, d] = iso.split('-').map(Number);
@@ -41,8 +44,10 @@ const fmtDay = (iso: string) => {
 export const MyHolidaysPanel: React.FC = () => {
   const { today } = useOrgTime();
   const [yearSel, setYearSel] = useState<number | null>(null);
-  const year = yearSel ?? Number(today.slice(0, 4));
   const [data, setData] = useState<MyHolidaysResponse | null>(null);
+  // Unset selector: omit `year` so the backend uses the org-local year, then
+  // follow data.year (no wrong-year first fetch).
+  const year = yearSel ?? data?.year ?? Number(today.slice(0, 4));
   const [loading, setLoading] = useState(true);
   const [pickFor, setPickFor] = useState<MyHoliday | null>(null);
   const [reason, setReason] = useState('');
@@ -52,14 +57,14 @@ export const MyHolidaysPanel: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await client.get<MyHolidaysResponse>(ENDPOINTS.HOLIDAYS.MY, { params: { year } });
+      const res = await client.get<MyHolidaysResponse>(ENDPOINTS.HOLIDAYS.MY, { params: yearSel ? { year: yearSel } : {} });
       setData(res.data);
     } catch (e) {
       toast.error(errMsg(e, 'Failed to load holidays'));
     } finally {
       setLoading(false);
     }
-  }, [year]);
+  }, [yearSel]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -103,12 +108,14 @@ export const MyHolidaysPanel: React.FC = () => {
   const noQuota = !!data && data.remaining <= 0;
 
   const row = (h: MyHoliday) => {
-    const badge = h.pick ? PICK_BADGE[h.pick.status] : null;
+    const badge = h.pick ? PICK_BADGE[h.pick.status] ?? null : null;
+    const past = h.date < today;
+    const active = isActive(h);
     return (
       <Card key={h.id} className="p-4 border-slate-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${h.is_optional ? 'bg-amber-50 text-amber-400' : 'bg-blue-50 text-blue-400'}`}>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${h.is_optional ? 'bg-amber-50 text-amber-500' : 'bg-blue-50 text-blue-400'}`}>
               <Calendar size={18} />
             </div>
             <div>
@@ -117,15 +124,23 @@ export const MyHolidaysPanel: React.FC = () => {
               <p className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                 <MapPin size={10} /> {h.location}
               </p>
+              {h.pick?.status === 'rejected' && h.pick.decision_note && (
+                <p className="text-xs text-red-600 italic">Note: {h.pick.decision_note}</p>
+              )}
             </div>
           </div>
           {h.is_optional && (
             <div className="flex items-center gap-2">
+              {past && <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Past</span>}
               {badge && <Badge variant={badge.variant}>{badge.label}</Badge>}
-              {h.pick ? (
-                <Button size="sm" variant="outline" onClick={() => setCancelFor(h)}>Cancel</Button>
+              {active ? (
+                <Button size="sm" variant="outline" disabled={past} onClick={() => setCancelFor(h)}>Cancel</Button>
+              ) : h.pick?.status !== 'cancelled' && h.pick ? (
+                <Button size="sm" disabled={past || noQuota} onClick={() => { setReason(''); setPickFor(h); }}>
+                  Pick again
+                </Button>
               ) : (
-                <Button size="sm" disabled={noQuota} onClick={() => { setReason(''); setPickFor(h); }}>
+                <Button size="sm" disabled={past || noQuota} onClick={() => { setReason(''); setPickFor(h); }}>
                   Pick
                 </Button>
               )}

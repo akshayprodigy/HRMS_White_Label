@@ -13,6 +13,7 @@ import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
+import { errMsg } from './ui-elements';
 import { useOrgTime } from '../lib/org-time';
 
 const EMPTY_FORM = { name: '', date: '', location: 'All', is_optional: false, description: '' };
@@ -25,12 +26,17 @@ export const HolidayManagement = () => {
     const [formData, setFormData] = useState({ ...EMPTY_FORM });
     const { today } = useOrgTime();
     const [yearSel, setYearSel] = useState<string | null>(null); // null = org-current year
+    // Unset: omit `year` so the backend uses the org-local year (the list
+    // endpoint only filters when a year is sent, so default it client-side
+    // once org time is ready instead of fetching the wrong year first).
+    const { ready } = useOrgTime();
     const year = yearSel ?? today.slice(0, 4);
     const [locFilter, setLocFilter] = useState('');
     const [importOpen, setImportOpen] = useState(false);
     const [importFile, setImportFile] = useState<File | null>(null);
     const [importing, setImporting] = useState(false);
     const [importResult, setImportResult] = useState<{ created: number; skipped: number; errors: { row: number; error: string }[] } | null>(null);
+    const [seenLocs, setSeenLocs] = useState<string[]>([]);
     const [locations, setLocations] = useState<{ location: string; count: number }[]>([]);
 
     const normLoc = (l: string) => l.trim().split(/\s+/).join(' ').toLowerCase();
@@ -53,8 +59,9 @@ export const HolidayManagement = () => {
     }, []);
 
     useEffect(() => {
+        if (!ready && yearSel === null) return;
         fetchHolidays();
-    }, [year, locFilter]);
+    }, [year, locFilter, ready]);
 
     const fetchHolidays = async () => {
         setIsLoading(true);
@@ -63,6 +70,13 @@ export const HolidayManagement = () => {
             if (year !== 'all') params.year = year;
             if (locFilter) params.location = locFilter;
             const res = await client.get(ENDPOINTS.HR.HOLIDAYS, { params });
+            setSeenLocs(prev => {
+                const have = new Set(prev.map(normLoc));
+                const add = (res.data as any[])
+                    .map(h => h.location as string)
+                    .filter(l => l && normLoc(l) !== 'all' && !have.has(normLoc(l)) && have.add(normLoc(l)));
+                return add.length ? [...prev, ...add] : prev;
+            });
             setHolidays(res.data.sort((a: any, b: any) => a.date.localeCompare(b.date)));
         } catch {
             toast.error("Failed to load holiday calendar");
@@ -139,8 +153,7 @@ export const HolidayManagement = () => {
             fetchHolidays();
             loadLocations();
         } catch (e: any) {
-            const d = e?.response?.data?.detail;
-            toast.error(typeof d === 'string' ? d : 'Import failed');
+            toast.error(errMsg(e, 'Import failed'));
         } finally {
             setImporting(false);
         }
@@ -151,6 +164,17 @@ export const HolidayManagement = () => {
         setImportFile(null);
         setImportResult(null);
     };
+
+    // Employee locations plus any location seen on a holiday (normalised dedupe)
+    const filterLocations = (() => {
+        const seen = new Set<string>();
+        return [...locations.map(l => l.location), ...seenLocs].filter(l => {
+            const k = normLoc(l);
+            if (!k || k === 'all' || seen.has(k)) return false;
+            seen.add(k);
+            return true;
+        });
+    })();
 
     const yearOptions = Array.from({ length: 5 }, (_, i) => String(Number(today.slice(0, 4)) - 2 + i));
     if (year !== 'all' && !yearOptions.includes(year)) yearOptions.push(year);
@@ -182,8 +206,8 @@ export const HolidayManagement = () => {
                     className="h-12 px-3 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 bg-white"
                 >
                     <option value="">All locations</option>
-                    {locations.map(l => (
-                        <option key={l.location} value={l.location}>{`${l.location} (${l.count})`}</option>
+                    {filterLocations.map(l => (
+                        <option key={l} value={l}>{l}</option>
                     ))}
                 </select>
                 <Button
