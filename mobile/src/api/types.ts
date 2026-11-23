@@ -12,7 +12,7 @@ export type AttendanceToday = { is_marked: boolean; attendance: AttendanceRow | 
 
 export type ShiftInfo = {
   name: string;
-  start_time: string | null; // "HH:MM" UTC
+  start_time: string | null; // "HH:MM" org-local wall clock
   end_time: string | null;
   is_overnight: boolean;
   source: 'roster' | 'assigned' | 'default';
@@ -134,7 +134,7 @@ export type OpenShift = {
   id: number;
   work_date: string;
   shift_name: string | null;
-  shift_start: string | null; // "HH:MM[:SS]" UTC
+  shift_start: string | null; // "HH:MM[:SS]" org-local wall clock
   shift_end: string | null;
   department: string | null;
   location: string | null;
@@ -169,7 +169,7 @@ export type ScheduleAck = {
   reason: string | null;
 };
 
-/** GET /roster/my/on-call (times are "HH:MM" UTC). */
+/** GET /roster/my/on-call (times are "HH:MM" org-local wall clock). */
 export type OnCallDay = { id: number; work_date: string; start_time: string; end_time: string; is_overnight: boolean; note: string | null };
 
 export type CalendarFeedStatus = { active: boolean; created_at: string | null };

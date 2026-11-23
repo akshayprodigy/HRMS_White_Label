@@ -7,14 +7,16 @@ import { fmtUtcDate } from '../../lib/time';
 import { GateInline } from '../attendance/GateNotice';
 import { isGateError } from '../attendance/gate';
 import { cellText } from './api';
-import { isIsoDate, sameShift, utcToday, validateSwap, validateReturnDate, type MyCell } from './dates';
-import { useCreateSwap, useSwapCandidates } from './hooks';
+import { isIsoDate, sameShift, validateSwap, validateReturnDate, type MyCell } from './dates';
+import { useCreateSwap, useOrgToday, useSwapCandidates } from './hooks';
 import { ErrorText } from './ui';
 
 export type SwapDay = MyCell & { date: string };
 
 /** Propose a swap of my published shift with a same-department colleague (they accept, then the approver confirms). */
-export function SwapDialog({ day, today = utcToday(), onClose, onDone }: { day: SwapDay; today?: string; onClose: () => void; onDone: () => void }) {
+export function SwapDialog({ day, today: todayProp, onClose, onDone }: { day: SwapDay; today?: string; onClose: () => void; onDone: () => void }) {
+  const orgNow = useOrgToday();
+  const today = todayProp ?? orgNow;
   const { colors, radius } = useTheme();
   const cands = useSwapCandidates(day.date);
   const create = useCreateSwap();

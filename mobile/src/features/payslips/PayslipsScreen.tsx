@@ -3,7 +3,7 @@ import { RefreshControl, View } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { Button, Card, Screen, Text } from '../../components/ui';
-import { fmtUtcDate } from '../../lib/time';
+import { fmtOrgDate, useOrgTime } from '../../lib/org-time';
 import { useDownload } from '../../lib/useDownload';
 import { useTheme } from '../../theme';
 import { GateInline } from '../attendance/GateNotice';
@@ -11,6 +11,7 @@ import { isGateError, retryUnlessGate } from '../attendance/gate';
 import { fetchPayslips, fmtRupees, monthLabel, payslipDownloadPath, payslipFileName, PAYSLIPS_KEY } from './api';
 
 export function PayslipsScreen() {
+  useOrgTime(); // re-render once org time loads
   const { colors } = useTheme();
   const { user } = useAuth();
   const q = useQuery({ queryKey: PAYSLIPS_KEY, queryFn: fetchPayslips, enabled: !!user, retry: retryUnlessGate });
@@ -47,7 +48,7 @@ export function PayslipsScreen() {
           </Text>
           <Text muted size={13}>
             {s.payable_days} days paid{s.lop_days > 0 ? ` · ${s.lop_days} LOP` : ''}
-            {s.published_at ? ` · Published ${fmtUtcDate(s.published_at)}` : ''}
+            {s.published_at ? ` · Published ${fmtOrgDate(s.published_at)}` : ''}
           </Text>
           <View style={{ marginTop: 6 }}>
             <Button

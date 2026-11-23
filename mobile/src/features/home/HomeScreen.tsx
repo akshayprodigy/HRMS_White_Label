@@ -6,7 +6,8 @@ import { api, ApiError } from '../../api/client';
 import type { RosterWeek } from '../../api/types';
 import { useAuth } from '../../auth/AuthProvider';
 import { Button, Card, Screen, Text } from '../../components/ui';
-import { fmtShiftTime, fmtUtcTime } from '../../lib/time';
+import { fmtOrgTime, useOrgTime } from '../../lib/org-time';
+import { fmtShiftTime } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { useApprovalsAccess } from '../approvals/hooks';
 import { BroadcastBanner } from '../broadcast/BroadcastBanner';
@@ -24,6 +25,7 @@ function greeting(now = new Date()) {
 }
 
 export function HomeScreen() {
+  useOrgTime(); // re-render once org time loads
   const router = useRouter();
   const { colors } = useTheme();
   const { user, unverified } = useAuth();
@@ -74,9 +76,9 @@ export function HomeScreen() {
         {!today ? (
           <Text muted testID="punch-status">{todayQ.isError ? 'Status unavailable' : 'Checking…'}</Text>
         ) : punchState === 'in' ? (
-          <Text testID="punch-status">Punched in at {fmtUtcTime(att?.captured_at)}</Text>
+          <Text testID="punch-status">Punched in at {fmtOrgTime(att?.captured_at)}</Text>
         ) : punchState === 'done' ? (
-          <Text testID="punch-status">Punched in {fmtUtcTime(att?.captured_at)} · out {fmtUtcTime(att?.punch_out_time)}</Text>
+          <Text testID="punch-status">Punched in {fmtOrgTime(att?.captured_at)} · out {fmtOrgTime(att?.punch_out_time)}</Text>
         ) : (
           <Text testID="punch-status">Not punched in yet today</Text>
         )}

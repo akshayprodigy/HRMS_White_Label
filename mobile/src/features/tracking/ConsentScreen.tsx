@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, Linking, Switch, View } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { Button, Card, Screen, Text } from '../../components/ui';
-import { fmtUtcTime } from '../../lib/time';
+import { fmtShiftTime } from '../../lib/time';
 import { useTheme } from '../../theme';
 import { deleteMyData, giveConsent, MY_STATUS_KEY, revokeConsent } from './api';
 import { MyHistory } from './MyHistory';
@@ -148,7 +148,7 @@ export function ConsentScreen() {
           <>
             <Text testID="tracking-status" weight="600">{sharing ? 'Consented · sharing now' : 'Consented · idle'}</Text>
             <Text testID="tracking-why" muted>{perm === 'none' && decision.run ? WHY.no_permission : WHY[decision.reason]}</Text>
-            {w ? <Text muted size={13}>Shift {fmtUtcTime(w.shift_start)} to {fmtUtcTime(w.shift_end)} (sharing runs 30 min either side).</Text> : null}
+            {w ? <Text muted size={13}>Shift {fmtShiftTime(w.shift_start)} to {fmtShiftTime(w.shift_end)} (sharing runs 30 min either side).</Text> : null}
           </>
         )}
       </Card>

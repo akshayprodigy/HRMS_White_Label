@@ -30,15 +30,15 @@ const week = { start: '2026-11-09', days: [
 ] };
 
 describe('HomeScreen', () => {
-  it('renders today shift (UTC labelled), punch status, pending count and broadcast banner', async () => {
+  it('renders today shift (org-local, unlabelled), punch status, pending count and broadcast banner', async () => {
     mock.onGet('/attendance/today').reply(200, { is_marked: true, attendance: { id: 1, captured_at: '2026-11-13T09:41:00', punch_out_time: null } });
     mock.onGet('/roster/my/week').reply(200, week);
     mock.onGet('/dashboard/pending-count').reply(200, { count: 3 });
     mock.onGet('/broadcasts/my').reply(200, [{ id: 9, title: 'Fire drill', message: 'Assemble at gate', severity: 'warning', requires_ack: true, safety_check: false, created_at: null, pending: true }]);
     await renderWithProviders(<HomeScreen />);
     await waitFor(() => expect(screen.getByTestId('shift-name').props.children).toBe('Morning'));
-    expect(screen.getByText('09:30 UTC – 18:00 UTC')).toBeTruthy();
-    expect(screen.getByTestId('punch-status').props.children.join('')).toBe('Punched in at 09:41 UTC');
+    expect(screen.getByText('09:30 – 18:00')).toBeTruthy();
+    expect(screen.getByTestId('punch-status').props.children.join('')).toBe('Punched in at 09:41');
     await waitFor(() => expect(screen.getByText('3 pending requests')).toBeTruthy());
     expect(screen.getByTestId('broadcast-banner')).toBeTruthy();
     expect(screen.getByText('Fire drill')).toBeTruthy();

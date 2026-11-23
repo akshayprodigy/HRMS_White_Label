@@ -3,7 +3,7 @@ import { RefreshControl } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { Button, Card, Screen, Text } from '../../components/ui';
-import { fmtUtcDate } from '../../lib/time';
+import { fmtOrgDate, useOrgTime } from '../../lib/org-time';
 import { useDownload } from '../../lib/useDownload';
 import { useTheme } from '../../theme';
 import { GateInline } from '../attendance/GateNotice';
@@ -11,6 +11,7 @@ import { isGateError, retryUnlessGate } from '../attendance/gate';
 import { documentDownloadPath, DOCUMENTS_KEY, fetchForm16, fetchMyDocuments, form16DownloadPath, form16FileName, FORM16_KEY } from './api';
 
 export function DocumentsScreen() {
+  useOrgTime(); // re-render once org time loads
   const { colors } = useTheme();
   const { user } = useAuth();
   const f16 = useQuery({ queryKey: FORM16_KEY, queryFn: fetchForm16, enabled: !!user, retry: retryUnlessGate });
@@ -43,7 +44,7 @@ export function DocumentsScreen() {
           <Text muted size={13}>
             {f.reference_number ? `${f.reference_number} · ` : ''}
             {f.status}
-            {f.issued_at ? ` · Issued ${fmtUtcDate(f.issued_at)}` : ''}
+            {f.issued_at ? ` · Issued ${fmtOrgDate(f.issued_at)}` : ''}
           </Text>
           {f.part_b_url ? (
             <Button
@@ -69,7 +70,7 @@ export function DocumentsScreen() {
           <Text weight="600">{d.doc_type}</Text>
           <Text muted size={13}>
             {d.original_filename}
-            {d.uploaded_at ? ` · ${fmtUtcDate(d.uploaded_at)}` : ''}
+            {d.uploaded_at ? ` · ${fmtOrgDate(d.uploaded_at)}` : ''}
           </Text>
           <Text size={13} style={{ color: d.verification_status === 'rejected' ? colors.danger : colors.mutedText }}>
             {d.verification_status === 'rejected' ? `Rejected${d.rejection_reason ? `: ${d.rejection_reason}` : ''}` : d.verification_status === 'verified' ? 'Verified' : 'Pending verification'}

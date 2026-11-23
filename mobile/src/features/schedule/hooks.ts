@@ -4,7 +4,7 @@ import { AppState } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { retryUnlessGate, useAttendanceGate } from '../attendance/gate';
-import { utcToday } from './dates';
+import { useOrgTime } from '../../lib/org-time';
 import {
   ackChange, cancelDrop, claimOpenShift, createAvailability, createDrop, createSwap, deleteAvailability, deleteFeed,
   fetchAcks, fetchAvailability, fetchDrops, fetchFeedStatus, fetchOnCall, fetchOpenShifts, fetchShiftOptions, fetchSwapCandidates,
@@ -115,11 +115,12 @@ export function useGuardedRun() {
   return { run, error, clearError: () => setError(null), isBusy: (key: string) => busy.has(key), anyBusy: busy.size > 0 };
 }
 
-/** UTC "today", recomputed when the app returns to the foreground (no timer): keeps the highlight right after UTC midnight. */
-export function useUtcToday() {
-  const [today, setToday] = useState(() => utcToday());
+/** Org-local "today" (re-renders when org time loads and when the app returns to the foreground, so the highlight is right after org midnight). */
+export function useOrgToday() {
+  const { today } = useOrgTime();
+  const [, bump] = useState(0);
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') setToday(utcToday()); });
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') bump((n) => n + 1); });
     return () => sub.remove();
   }, []);
   return today;

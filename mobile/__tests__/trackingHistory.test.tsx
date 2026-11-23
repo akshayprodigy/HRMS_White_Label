@@ -24,17 +24,17 @@ describe('MyHistory', () => {
     mock.onGet('/tracking/my-trail').reply((c) => [200, { user_id: 1, date: c.params.date, truncated: false, points: [pt('2026-11-13T09:00:00Z'), pt('2026-11-13T09:05:00Z')] }]);
     await renderWithProviders(<MyHistory />);
     expect(await screen.findByTestId('field-polyline')).toBeTruthy();
-    expect(mock.history.get[0].params).toEqual({ date: day(0) });
+    expect(mock.history.get.filter((r) => r.url !== '/meta/org-time')[0].params).toEqual({ date: day(0) });
   });
   it('falls back to a time-ordered list without maps; Yesterday refetches that date', async () => {
     mockMaps.on = false;
     mock.onGet('/tracking/my-trail').reply((c) => [200, { user_id: 1, date: c.params.date, truncated: false, points: c.params.date === day(0) ? [pt('2026-11-13T09:00:00Z')] : [] }]);
     await renderWithProviders(<MyHistory />);
     expect(await screen.findByTestId('history-list')).toBeTruthy();
-    expect(screen.getByText(/09:00 UTC/)).toBeTruthy();
+    expect(screen.getByText(/09:00 · /)).toBeTruthy();
     await fireEvent.press(screen.getByTestId('history-yesterday'));
     expect(await screen.findByTestId('history-empty')).toBeTruthy();
-    expect(mock.history.get.some((r) => r.params.date === day(1))).toBe(true);
+    expect(mock.history.get.some((r) => r.params?.date === day(1))).toBe(true);
   });
   it('shows an error message when the request fails', async () => {
     mock.onGet('/tracking/my-trail').reply(500);

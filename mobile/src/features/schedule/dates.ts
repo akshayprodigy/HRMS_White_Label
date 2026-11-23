@@ -9,9 +9,7 @@ const DAY_MS = 86_400_000;
 const toMs = (iso: string) => Date.parse(`${iso}T00:00:00Z`);
 const fromMs = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-/** Shift dates are UTC wall-clock, so "today" is the UTC calendar date (the backend compares against its own date). */
-export const utcToday = (now = new Date(Date.now())) => now.toISOString().slice(0, 10);
-
+// "Today" for rosters is the ORG-local date (backend local_today): use useOrgToday() / orgToday() from lib/org-time, never the UTC date.
 export const isIsoDate = (s: string) => ISO.test(s) && !Number.isNaN(toMs(s)) && fromMs(toMs(s)) === s;
 export const addDays = (iso: string, n: number) => fromMs(toMs(iso) + n * DAY_MS);
 export const daysBetween = (a: string, b: string) => Math.round((toMs(b) - toMs(a)) / DAY_MS);
@@ -71,12 +69,12 @@ export function validateSwap(v: { date: string; today: string; pick: number | nu
 }
 
 export type DayLabel = { title: string; times: string | null; transport: boolean; muted: boolean };
-/** What to show for a roster day; times are UTC wall-clock. */
+/** What to show for a roster day; times are org-local wall-clock. */
 export function dayLabel(d: RosterDay): DayLabel {
   if (d.on_leave) return { title: d.leave_type ? `On leave (${d.leave_type})` : 'On leave', times: null, transport: false, muted: true };
   if (isWeekOffDay(d)) return { title: 'Week off', times: null, transport: false, muted: true };
   const s = d.shift;
-  const times = s.start_time && s.end_time ? `${s.start_time}–${s.end_time} UTC${s.is_overnight ? ' (+1 day)' : ''}` : null;
+  const times = s.start_time && s.end_time ? `${s.start_time}–${s.end_time}${s.is_overnight ? ' (+1 day)' : ''}` : null;
   return { title: s.name, times, transport: !!s.transport_required, muted: false };
 }
 

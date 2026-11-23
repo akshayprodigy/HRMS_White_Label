@@ -35,7 +35,7 @@ export function OpenShiftsPanel() {
 
   return (
     <View style={{ gap: 10 }}>
-      <Text muted size={13}>Unfilled shifts in the next 60 days that you are eligible for. Your scheduler confirms claims. Times are UTC.</Text>
+      <Text muted size={13}>Unfilled shifts in the next 60 days that you are eligible for. Your scheduler confirms claims. Times are in organisation time.</Text>
       {notice.msg ? <Card testID="open-notice" accessibilityLiveRegion="polite"><Text>{notice.msg}</Text>{notice.warnings.map((w) => <Text key={w} muted size={13}>{w}</Text>)}</Card> : null}
       {error ? <ErrorText testID="open-error">{error}</ErrorText> : null}
       {q.isPending ? <Text muted>Loading…</Text> : null}

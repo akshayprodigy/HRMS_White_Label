@@ -26,9 +26,9 @@ export function fmtUtcDate(iso: string | null | undefined): string {
   return `${d.getUTCDate()} ${m}`;
 }
 
-/** Roster shift times are "HH:MM" strings in UTC. */
+/** Roster shift times are "HH:MM" org-local wall-clock strings (no zone label). */
 export function fmtShiftTime(hhmm: string | null | undefined): string {
-  return hhmm ? `${hhmm} UTC` : '—';
+  return hhmm ? hhmm.slice(0, 5) : '—';
 }
 
 export function fmtInr(paise: number | null | undefined): string {

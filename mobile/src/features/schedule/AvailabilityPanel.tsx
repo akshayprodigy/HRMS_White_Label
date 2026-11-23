@@ -6,13 +6,13 @@ import { GateInline } from '../attendance/GateNotice';
 import { isGateError } from '../attendance/gate';
 import { WEEKDAYS } from './api';
 import { EMPTY_AVAILABILITY, ruleText, toAvailabilityInput, validateAvailability, type AvailabilityForm } from './availability';
-import { utcToday } from './dates';
-import { useAddAvailability, useAvailability, useDeleteAvailability, useGuardedRun, useShiftOptions } from './hooks';
+import { useAddAvailability, useOrgToday, useAvailability, useDeleteAvailability, useGuardedRun, useShiftOptions } from './hooks';
 import { ConfirmAction, ErrorText } from './ui';
 
 function AddRule({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
   const shifts = useShiftOptions();
   const add = useAddAvailability();
+  const today = useOrgToday();
   const [f, setF] = useState<AvailabilityForm>(EMPTY_AVAILABILITY);
   const [err, setErr] = useState<string | null>(null);
   const submitting = useRef(false);
@@ -20,7 +20,7 @@ function AddRule({ onDone, onCancel }: { onDone: () => void; onCancel: () => voi
 
   const submit = async () => {
     if (submitting.current) return;
-    const bad = validateAvailability(f, utcToday());
+    const bad = validateAvailability(f, today);
     setErr(bad);
     if (bad) return;
     submitting.current = true;
@@ -81,7 +81,7 @@ export function AvailabilityPanel() {
   if (rules.error && isGateError(rules.error)) return <GateInline />;
   return (
     <View style={{ gap: 10 }}>
-      <Text muted size={13}>Tell your scheduler when you cannot work or which shifts you prefer. Dates and times are UTC.</Text>
+      <Text muted size={13}>Tell your scheduler when you cannot work or which shifts you prefer. Dates and times are in organisation time.</Text>
       {error ? <ErrorText testID="avail-del-error">{error}</ErrorText> : null}
       {rules.error ? <ErrorText testID="avail-load-error">{normalizeError(rules.error).message}</ErrorText> : null}
       {adding ? <AddRule onDone={() => setAdding(false)} onCancel={() => setAdding(false)} /> : <Button testID="avail-add" title="Add rule" onPress={() => setAdding(true)} />}

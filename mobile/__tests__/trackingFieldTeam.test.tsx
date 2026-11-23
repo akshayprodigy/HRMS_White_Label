@@ -28,7 +28,7 @@ describe('FieldTeamScreen', () => {
     mock.onGet('/tracking/field-now').reply(403, { detail: 'You have no roster scope.' });
     await renderWithProviders(<FieldTeamScreen />);
     expect(await screen.findByTestId('field-no-scope')).toBeTruthy();
-    expect(mock.history.get).toHaveLength(1); // not retried
+    expect(mock.history.get.filter((r) => r.url !== '/meta/org-time')).toHaveLength(1); // not retried
   });
 
   it('lists tracked people (located first), shows markers and counts', async () => {
@@ -108,7 +108,7 @@ describe('useFieldTeamAccess', () => {
     await cleanup();
     await mount(client);
     await new Promise((r) => setTimeout(r, 30));
-    expect(mock.history.get).toHaveLength(1);
+    expect(mock.history.get.filter((r) => r.url !== '/meta/org-time')).toHaveLength(1);
     await cleanup(); // unmount first: an observer leaving a cleared client re-arms a gc timer that keeps the worker alive
     client.clear();
   });

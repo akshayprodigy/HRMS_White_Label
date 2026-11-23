@@ -4,12 +4,14 @@ import { View } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { Button, Card, Screen, Text, TextInput } from '../../components/ui';
 import { useTheme } from '../../theme';
-import { fmtInr, fmtUtcDate, fmtUtcTime } from '../../lib/time';
+import { fmtOrgDate, fmtOrgTime, useOrgTime } from '../../lib/org-time';
+import { fmtInr } from '../../lib/time';
 import { useApprovalAction, useApprovals } from './hooks';
 import { Badge } from './ApprovalsScreen';
 import type { ApprovalCard } from './api';
 
 export function ApprovalDetail() {
+  useOrgTime(); // re-render once org time loads
   const { key } = useLocalSearchParams<{ key: string }>();
   const router = useRouter();
   const { colors } = useTheme();
@@ -58,8 +60,8 @@ export function ApprovalDetail() {
           <Text testID="detail-title" weight="700" size={20}>{card.title}</Text>
           {card.subtitle ? <Text muted>{card.subtitle}</Text> : null}
           {card.requester ? <Text size={14}>Requested by {card.requester}</Text> : null}
-          <Text size={14}>Submitted {fmtUtcDate(card.createdAt)}</Text>
-          {card.dueAt ? <Text size={14}>Due {fmtUtcDate(card.dueAt)} {fmtUtcTime(card.dueAt)}</Text> : null}
+          <Text size={14}>Submitted {fmtOrgDate(card.createdAt)}</Text>
+          {card.dueAt ? <Text size={14}>Due {fmtOrgDate(card.dueAt)} {fmtOrgTime(card.dueAt)}</Text> : null}
           {card.amountPaise != null ? <Text size={14} weight="600">Amount {fmtInr(card.amountPaise)}</Text> : null}
           {card.meta ? <Text size={14}>{card.meta}</Text> : null}
         </Card>

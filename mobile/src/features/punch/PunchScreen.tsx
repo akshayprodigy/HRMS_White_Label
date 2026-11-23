@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking } from 'react-native';
 import { Button, Card, Screen, Text } from '../../components/ui';
-import { fmtUtcTime } from '../../lib/time';
+import { fmtOrgTime, useOrgTime } from '../../lib/org-time';
 import { useTheme } from '../../theme';
 import { useAttendanceGate } from '../attendance/gate';
 import { flagNotice, submitPunch, type Fix, type PunchOutcome, type SelfieInput } from './api';
@@ -15,6 +15,7 @@ import { RunningLateCard } from './RunningLateCard';
 import { SelfieCapture } from './SelfieCapture';
 
 export function PunchScreen() {
+  useOrgTime();
   const { colors } = useTheme();
   const router = useRouter();
   const { today, query } = useAttendanceGate();
@@ -89,7 +90,7 @@ export function PunchScreen() {
     ? lastPending.kind === 'in' ? 'Punched in (pending sync)' : 'Punched out (pending sync)'
     : !today
     ? query.isError ? 'Status unavailable' : 'Checking…'
-    : !att ? 'Not punched in' : att.punch_out_time ? `Punched out at ${fmtUtcTime(att.punch_out_time)}` : `Punched in at ${fmtUtcTime(att.captured_at)}`;
+    : !att ? 'Not punched in' : att.punch_out_time ? `Punched out at ${fmtOrgTime(att.punch_out_time)}` : `Punched in at ${fmtOrgTime(att.captured_at)}`;
 
   return (
     <Screen scroll style={{ gap: 12 }}>

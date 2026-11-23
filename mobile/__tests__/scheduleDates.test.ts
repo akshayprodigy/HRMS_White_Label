@@ -1,4 +1,4 @@
-import { addDays, canActOnDay, isWeekOffDay, monthWeekStarts, sameShift, utcToday, validateSwap, weekStartOf } from '../src/features/schedule/dates';
+import { addDays, canActOnDay, isWeekOffDay, monthWeekStarts, sameShift, validateSwap, weekStartOf } from '../src/features/schedule/dates';
 import type { RosterDay, SwapCandidate } from '../src/api/types';
 
 const day = (o: Omit<Partial<RosterDay>, 'shift'> & { shift?: Partial<RosterDay['shift']> } = {}): RosterDay => ({
@@ -8,11 +8,7 @@ const day = (o: Omit<Partial<RosterDay>, 'shift'> & { shift?: Partial<RosterDay[
 });
 const cand = (o: Partial<SwapCandidate> = {}): SwapCandidate => ({ user_id: 5, name: 'Asha', shift_template_id: 4, shift_name: 'Evening', is_week_off: false, ...o });
 
-describe('date windows (UTC)', () => {
-  it('utcToday uses the UTC calendar date, not local', () => {
-    expect(utcToday(new Date('2026-11-13T23:30:00Z'))).toBe('2026-11-13');
-    expect(utcToday(new Date('2026-11-14T00:30:00Z'))).toBe('2026-11-14');
-  });
+describe('date windows', () => {
   it('addDays crosses month/year boundaries', () => {
     expect(addDays('2026-12-30', 3)).toBe('2027-01-02');
     expect(addDays('2026-03-01', -1)).toBe('2026-02-28');

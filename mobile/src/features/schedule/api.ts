@@ -96,7 +96,7 @@ export async function deleteFeed(): Promise<void> {
 
 export const STATUS_LABEL = (s: string) => s.replace(/_/g, ' ');
 export const cellText = (c: { shift_name: string | null; is_week_off: boolean } | null) => (!c ? '—' : c.is_week_off ? 'Week off' : c.shift_name || 'Shift');
-/** "09:00" from "09:00:00" / "09:00"; always labelled UTC. */
-export const fmtHm = (t: string | null | undefined) => (t ? `${t.slice(0, 5)} UTC` : '—');
-export const fmtRange = (a: string | null | undefined, b: string | null | undefined) => (a ? `${a.slice(0, 5)}–${(b ?? '').slice(0, 5)} UTC` : '');
+/** "09:00" from "09:00:00" / "09:00"; org-local wall clock, no zone label. */
+export const fmtHm = (t: string | null | undefined) => (t ? t.slice(0, 5) : '—');
+export const fmtRange = (a: string | null | undefined, b: string | null | undefined) => (a ? `${a.slice(0, 5)}–${(b ?? '').slice(0, 5)}` : '');
 export const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];

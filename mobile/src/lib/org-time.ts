@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { parseUtc } from './time';
+import { fmtUtcDate, parseUtc } from './time';
 
 // Organisation time: the DB stores UTC, but shifts, "today" and HR-entered punch times are read in the
 // org timezone (GET /meta/org-time, public). Same API as frontend/src/lib/org-time.ts.
@@ -80,12 +80,14 @@ export const orgTimezone = (): string => {
 export const orgTimeReady = (): boolean => info !== null;
 
 /** The org's current date as YYYY-MM-DD, computed client-side (never the device zone). */
-export const orgToday = (now: Date = new Date()): string => {
+/** The org-local calendar date (YYYY-MM-DD) of a UTC instant. */
+export const orgDateOf = (now: Date): string => {
   // formatToParts, not the en-CA string shape (Hermes ICU may format it differently).
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: orgTimezone(), year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
   const p = (t: string) => parts.find((x) => x.type === t)?.value ?? '';
   return `${p('year')}-${p('month')}-${p('day')}`;
 };
+export const orgToday = (now: Date = new Date(Date.now())): string => orgDateOf(now);
 
 /** Format a UTC instant in org time. Default: 24-hour HH:MM; '' if invalid. */
 export const formatOrgTime = (
@@ -95,6 +97,16 @@ export const formatOrgTime = (
   const d = typeof isoUtc === 'string' ? parseUtc(isoUtc) : isoUtc;
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleTimeString('en-GB', { ...opts, hourCycle: 'h23', timeZone: orgTimezone() });
+};
+
+/** Instant -> "HH:MM" in org time (no suffix), or an em dash. Call useOrgTime() in the component so it refreshes on load. */
+export const fmtOrgTime = (iso: string | null | undefined): string => (iso ? formatOrgTime(iso) || '—' : '—');
+/** Instant -> "14 Nov" for its org-local date, or an em dash. */
+export const fmtOrgDate = (iso: string | null | undefined): string => {
+  if (!iso) return '—';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return fmtUtcDate(iso); // a calendar date, not an instant: never shift it
+  const d = parseUtc(iso);
+  return Number.isNaN(d.getTime()) ? '—' : fmtUtcDate(orgDateOf(d));
 };
 
 /** Re-renders the component once org time has loaded. */

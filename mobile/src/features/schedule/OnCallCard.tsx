@@ -12,7 +12,7 @@ export function OnCallCard() {
       <Text weight="700">On-call · next 30 days</Text>
       {days.map((d) => (
         <Text key={d.id} testID={`on-call-${d.id}`} size={14}>
-          {`${fmtUtcDate(d.work_date)}  ${d.start_time}–${d.end_time} UTC${d.is_overnight ? ' (+1 day)' : ''}${d.note ? ` · ${d.note}` : ''}`}
+          {`${fmtUtcDate(d.work_date)}  ${d.start_time}–${d.end_time}${d.is_overnight ? ' (+1 day)' : ''}${d.note ? ` · ${d.note}` : ''}`}
         </Text>
       ))}
     </Card>

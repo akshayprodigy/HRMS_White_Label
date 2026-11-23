@@ -12,7 +12,7 @@ import { AcksBanner } from './AcksBanner';
 import { CalendarFeedCard } from './CalendarFeedCard';
 import { addDays, canActOnDay, dayLabel, isWeekOffDay, monthName, monthWeekStarts, shiftMonth, weekStartOf } from './dates';
 import { GiveawayDialog } from './GiveawayDialog';
-import { useMonthWeeks, useUtcToday, useWeek } from './hooks';
+import { useMonthWeeks, useOrgToday, useWeek } from './hooks';
 import { OnCallCard } from './OnCallCard';
 import { SwapDialog } from './SwapDialog';
 import { ErrorText } from './ui';
@@ -42,7 +42,7 @@ function DayDetail({ d, today, onSwap, onGive }: { d: RosterDay; today: string; 
 
 function WeekView({ focus, onAction }: { focus?: string; onAction: (kind: 'swap' | 'give', d: RosterDay) => void }) {
   const { colors, radius } = useTheme();
-  const today = useUtcToday();
+  const today = useOrgToday();
   const [start, setStart] = useState(weekStartOf(focus ?? today));
   const [sel, setSel] = useState<string | null>(focus ?? null);
   const q = useWeek(start);
@@ -96,7 +96,7 @@ function WeekView({ focus, onAction }: { focus?: string; onAction: (kind: 'swap'
 }
 
 function MonthView({ onPick }: { onPick: (date: string) => void }) {
-  const today = useUtcToday();
+  const today = useOrgToday();
   const [ym, setYm] = useState(today.slice(0, 7));
   const starts = useMemo(() => monthWeekStarts(ym), [ym]);
   const results = useMonthWeeks(starts, true);

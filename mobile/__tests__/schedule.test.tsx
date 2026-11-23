@@ -96,7 +96,7 @@ describe('OpenShiftsPanel', () => {
     mock.onGet('/roster/open-shifts/available').reply(() => [200, [open(claimed ? { my_claim_id: 31, my_claim_status: 'pending' } : {})]]);
     mock.onPost('/roster/open-shifts/7/claim').reply(() => { claimed = true; return [200, open({ my_claim_id: 31, my_claim_status: 'pending' })]; });
     await renderWithProviders(<OpenShiftsPanel />);
-    expect(await screen.findByText(/22:00–06:00 UTC/)).toBeTruthy();
+    expect(await screen.findByText(/22:00–06:00/)).toBeTruthy();
     expect(screen.getByText(/1\/2 filled/)).toBeTruthy();
     await fireEvent.press(screen.getByTestId('claim-7'));
     expect(await screen.findByTestId('open-status-7')).toBeTruthy();
@@ -224,9 +224,9 @@ describe('ScheduleScreen', () => {
   it('shows the week strip with UTC times, transport flag and on-call; sub-tabs switch', async () => {
     await renderWithProviders(<ScheduleScreen />);
     expect(await screen.findByTestId(`strip-${mon}`)).toBeTruthy();
-    expect(await screen.findByTestId('on-call-1')).toHaveTextContent(/18:00–23:00 UTC/);
+    expect(await screen.findByTestId('on-call-1')).toHaveTextContent(/18:00–23:00/);
     await fireEvent.press(screen.getByTestId(`strip-${mon}`));
-    expect(await screen.findByTestId(`day-times-${mon}`)).toHaveTextContent('09:00–17:00 UTC');
+    expect(await screen.findByTestId(`day-times-${mon}`)).toHaveTextContent('09:00–17:00');
     expect(screen.getByTestId(`day-transport-${mon}`)).toBeTruthy();
     expect(screen.queryByTestId(`swap-${mon}`)).toBeNull(); // past day: no swap / give-away
     await fireEvent.press(screen.getByTestId('strip-2026-11-13'));

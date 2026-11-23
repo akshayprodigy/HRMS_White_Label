@@ -5,7 +5,8 @@ import { normalizeError } from '../../api/client';
 import type { BulkResult } from '../../api/types';
 import { Button, Card, Screen, Text, TextInput } from '../../components/ui';
 import { useTheme } from '../../theme';
-import { fmtInr, fmtUtcDate } from '../../lib/time';
+import { fmtOrgDate, useOrgTime } from '../../lib/org-time';
+import { fmtInr } from '../../lib/time';
 import { GateInline } from '../attendance/GateNotice';
 import { isGateError } from '../attendance/gate';
 import type { ApprovalCard } from './api';
@@ -33,6 +34,7 @@ export function toggleSelection(prev: Set<number>, id: number, max = MAX_BULK): 
 const Separator = () => <View style={{ height: 12 }} />;
 
 const Row = memo(function Row({ card, selected, onToggle, onOpen }: { card: ApprovalCard; selected: boolean; onToggle: (id: number) => void; onOpen: (key: string) => void }) {
+  useOrgTime();
   const { colors } = useTheme();
   return (
     <Card style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
@@ -58,7 +60,7 @@ const Row = memo(function Row({ card, selected, onToggle, onOpen }: { card: Appr
         <Text weight="600">{card.title}</Text>
         {card.subtitle ? <Text muted size={13}>{card.subtitle}</Text> : null}
         <Text muted size={12}>
-          Submitted {fmtUtcDate(card.createdAt)}
+          Submitted {fmtOrgDate(card.createdAt)}
           {card.meta ? ` · ${card.meta}` : ''}
           {card.amountPaise != null ? ` · ${fmtInr(card.amountPaise)}` : ''}
         </Text>

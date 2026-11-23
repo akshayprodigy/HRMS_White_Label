@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, RefreshControl, View } from 'react-native';
 import { ApiError, normalizeError } from '../../api/client';
 import { Button, Card, Chip, Screen, Text } from '../../components/ui';
-import { fmtUtcTime } from '../../lib/time';
+import { fmtOrgTime, useOrgTime } from '../../lib/org-time';
 import { useTheme } from '../../theme';
 import { fetchFieldNow, fetchTrail, FIELD_NOW_KEY, type FieldRow } from './api';
 import { FieldMap } from './FieldMap';
@@ -36,6 +36,7 @@ export function useFieldTeamAccess() {
 }
 
 export function FieldTeamScreen() {
+  useOrgTime(); // re-render once org time loads
   const { colors } = useTheme();
   const [department, setDepartment] = useState('');
   const [selected, setSelected] = useState<number | null>(null);
@@ -87,7 +88,7 @@ export function FieldTeamScreen() {
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => void q.refetch()} />} style={{ gap: 12 }}>
-      <Text muted size={13}>Latest location of tracked employees on shift. Shared only during rostered shifts by employees who consented; views are audit-logged. Shift times are UTC.</Text>
+      <Text muted size={13}>Latest location of tracked employees on shift. Shared only during rostered shifts by employees who consented; views are audit-logged. Shift times are in organisation time.</Text>
       {depts.length > 0 || department ? (
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           <Chip testID="field-dept-all" label="All departments" selected={!department} onPress={() => { setDepartment(''); setSelected(null); }} />
@@ -140,7 +141,7 @@ export function FieldTeamScreen() {
                 <Text testID="field-trail-empty" muted>No location points recorded on {trail.date}.</Text>
               ) : trail ? (
                 <Text testID="field-trail-summary" muted>
-                  {trail.points.length} point{trail.points.length === 1 ? '' : 's'} from {fmtUtcTime(trail.points[0].captured_at)} to {fmtUtcTime(trail.points[trail.points.length - 1].captured_at)}
+                  {trail.points.length} point{trail.points.length === 1 ? '' : 's'} from {fmtOrgTime(trail.points[0].captured_at)} to {fmtOrgTime(trail.points[trail.points.length - 1].captured_at)}
                   {trail.truncated ? ' (first points only: trail truncated)' : ''}
                 </Text>
               ) : null}

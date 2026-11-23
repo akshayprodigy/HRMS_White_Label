@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { View } from 'react-native';
 import { normalizeError } from '../../api/client';
 import { Card, Chip, Text } from '../../components/ui';
-import { fmtUtcTime } from '../../lib/time';
+import { fmtOrgTime, useOrgTime } from '../../lib/org-time';
 import { useTheme } from '../../theme';
 import { fetchMyTrail } from './api';
 import { FieldMap } from './FieldMap';
@@ -12,6 +12,7 @@ import { mapsAvailable } from './maps';
 
 /** The employee's own trail (Today / Yesterday): a map polyline when maps are available, else a time-ordered list. */
 export function MyHistory() {
+  useOrgTime(); // re-render once org time loads
   const { colors } = useTheme();
   const [dayOffset, setDayOffset] = useState(0);
   const [openedAt] = useState(() => Date.now());
@@ -36,7 +37,7 @@ export function MyHistory() {
           ) : (
             <View testID="history-list" style={{ gap: 2 }}>
               {pts.map((p) => (
-                <Text key={p.captured_at} size={13}>{fmtUtcTime(p.captured_at)} · {p.lat.toFixed(5)}, {p.lng.toFixed(5)}</Text>
+                <Text key={p.captured_at} size={13}>{fmtOrgTime(p.captured_at)} · {p.lat.toFixed(5)}, {p.lng.toFixed(5)}</Text>
               ))}
             </View>
           )}
