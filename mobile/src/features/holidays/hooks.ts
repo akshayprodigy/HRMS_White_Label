@@ -17,5 +17,5 @@ export function usePickHoliday() {
 }
 export function useCancelPick() {
   const invalidate = useInvalidateHolidays();
-  return useMutation({ mutationFn: cancelPick, onSuccess: invalidate });
+  return useMutation({ mutationFn: cancelPick, onSuccess: invalidate, onError: invalidate });
 }

@@ -25,6 +25,21 @@ describe('org time', () => {
     expect(formatOrgTime('2026-11-20T20:00:00')).toBe('01:30'); // zone-less server timestamps are UTC
     expect(formatOrgTime('garbage')).toBe('');
   });
+  it('retries with backoff after a failure', async () => {
+    jest.useFakeTimers();
+    try {
+      mock.onGet('/meta/org-time').replyOnce(500).onGet('/meta/org-time').reply(200, { timezone: 'Asia/Kolkata', utc_offset_minutes: 330, today: '2026-11-20' });
+      expect(await loadOrgTime()).toBeNull();
+      expect(mock.history.get.length).toBe(1);
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(mock.history.get.length).toBe(1);
+      await jest.advanceTimersByTimeAsync(2);
+      expect(mock.history.get.length).toBe(2);
+      expect(orgTimezone()).toBe('Asia/Kolkata');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
   it('rejects an invalid zone', async () => {
     mock.onGet('/meta/org-time').reply(200, { timezone: 'Not/AZone', utc_offset_minutes: 0, today: '2026-11-20' });
     expect(await loadOrgTime()).toBeNull();

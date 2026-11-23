@@ -18,4 +18,4 @@ export const canCancel = (r: WorkLocationRequest, today: string) => (r.status ==
 export function approvedToday(items: WorkLocationRequest[] | undefined, today: string): WorkLocationRequest | null {
   return (items ?? []).find((r) => r.status === 'approved' && r.start_date <= today && today <= r.end_date) ?? null;
 }
-export const approvedBannerText = (r: WorkLocationRequest) => `Approved ${KIND_LABEL[r.kind] ?? r.kind} today — location check relaxed`;
+export const approvedBannerText = (r: WorkLocationRequest) => `Approved ${KIND_LABEL[r.kind] ?? r.kind} today${PORTION[r.day_portion] ?? ''} — location check relaxed`;

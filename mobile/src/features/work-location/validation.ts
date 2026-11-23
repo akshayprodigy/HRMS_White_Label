@@ -1,6 +1,10 @@
 import type { DayPortion, RequestPayload, WorkLocationKind } from './api';
 import { needsPlace } from './logic';
 
+/** Backend MAX_SPAN_DAYS (services/work_location). */
+export const MAX_SPAN_DAYS = 31;
+const DAY_MS = 86_400_000;
+
 export type RequestFormValues = { kind: WorkLocationKind; start: string; end: string; portion: DayPortion; place: string; purpose: string };
 export type RequestFormErrors = Partial<Record<'start' | 'end' | 'place' | 'purpose' | 'portion', string>>;
 
@@ -20,6 +24,7 @@ export function validateRequest(v: RequestFormValues): RequestFormErrors {
   if (!v.end.trim()) e.end = 'Enter an end date.';
   else if (!isIsoDate(v.end)) e.end = 'Use the format YYYY-MM-DD.';
   if (!e.start && !e.end && v.end < v.start) e.end = 'End date cannot be before the start date.';
+  if (!e.start && !e.end && (Date.parse(`${v.end}T00:00:00Z`) - Date.parse(`${v.start}T00:00:00Z`)) / DAY_MS + 1 > MAX_SPAN_DAYS) e.end = `A request may span at most ${MAX_SPAN_DAYS} days.`;
   if (v.portion !== 'full' && v.start !== v.end) e.portion = 'Half days are for a single date.';
   if (needsPlace(v.kind) && !v.place.trim()) e.place = 'Place is required.';
   if (!v.purpose.trim()) e.purpose = 'Please give a purpose.';

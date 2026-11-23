@@ -12,6 +12,10 @@ describe('validateRequest', () => {
     expect(validateRequest({ ...base, start: '2026-02-30' }).start).toMatch(/YYYY-MM-DD/);
     expect(validateRequest({ ...base, end: '2026-11-19' }).end).toMatch(/before/);
   });
+  it('caps the span at 31 days (backend MAX_SPAN_DAYS)', () => {
+    expect(validateRequest({ ...base, start: '2026-11-01', end: '2026-12-01' })).toEqual({});
+    expect(validateRequest({ ...base, start: '2026-11-01', end: '2026-12-02' }).end).toMatch(/at most 31 days/);
+  });
   it('requires a place for on duty and client visit only', () => {
     expect(validateRequest({ ...base, kind: 'on_duty' }).place).toBeTruthy();
     expect(validateRequest({ ...base, kind: 'client_visit', place: '  ' }).place).toBeTruthy();

@@ -80,8 +80,12 @@ export const orgTimezone = (): string => {
 export const orgTimeReady = (): boolean => info !== null;
 
 /** The org's current date as YYYY-MM-DD, computed client-side (never the device zone). */
-export const orgToday = (now: Date = new Date()): string =>
-  new Intl.DateTimeFormat('en-CA', { timeZone: orgTimezone(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+export const orgToday = (now: Date = new Date()): string => {
+  // formatToParts, not the en-CA string shape (Hermes ICU may format it differently).
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: orgTimezone(), year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const p = (t: string) => parts.find((x) => x.type === t)?.value ?? '';
+  return `${p('year')}-${p('month')}-${p('day')}`;
+};
 
 /** Format a UTC instant in org time. Default: 24-hour HH:MM; '' if invalid. */
 export const formatOrgTime = (

@@ -6,7 +6,7 @@ import { approvedBannerText, approvedToday } from './logic';
 /** Punch tab: shown only when today (org-local) has an APPROVED request. Nothing for pending. */
 export function ApprovedBanner() {
   const { today, ready } = useOrgTime();
-  const q = useMyRequests();
+  const q = useMyRequests(60_000);
   const r = ready ? approvedToday(q.data, today) : null;
   if (!r) return null;
   return (

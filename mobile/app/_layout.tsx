@@ -12,6 +12,7 @@ import { usePunchQueueSyncLoop } from '../src/features/punch/hooks';
 import { useTrackingLifecycle } from '../src/features/tracking/hooks';
 import { useAppStateFocus } from '../src/lib/appFocus';
 import { sweepDownloads } from '../src/lib/download';
+import { loadOrgTime } from '../src/lib/org-time';
 import { ThemeProvider, useTheme } from '../src/theme';
 
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
@@ -54,6 +55,7 @@ function AuthGate() {
 
 export default function RootLayout() {
   useAppStateFocus();
+  useEffect(() => { void loadOrgTime(); }, []); // warm org time (public endpoint) so org-local dates are ready on first use
   useEffect(() => sweepDownloads(), []); // drop sensitive downloads left by a killed session
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 30_000 } } }));
   return (

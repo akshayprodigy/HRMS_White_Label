@@ -9,7 +9,7 @@ import type { MyHoliday } from './api';
 import { useCancelPick, useMyHolidays, usePickHoliday } from './hooks';
 import { isPast, PICK_LABEL, pickAction } from './logic';
 
-function HolidayRow({ h, today, remaining }: { h: MyHoliday; today: string; remaining: number }) {
+function HolidayRow({ h, today, remaining, ready }: { h: MyHoliday; today: string; remaining: number; ready: boolean }) {
   const { colors } = useTheme();
   const pick = usePickHoliday();
   const cancel = useCancelPick();
@@ -17,8 +17,8 @@ function HolidayRow({ h, today, remaining }: { h: MyHoliday; today: string; rema
   const [reason, setReason] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const act = pickAction(h, today, remaining);
-  const past = isPast(h, today);
+  const act = pickAction(h, today, remaining, ready);
+  const past = ready && isPast(h, today);
 
   const doPick = async () => {
     setErr(null);
@@ -80,7 +80,7 @@ function HolidayRow({ h, today, remaining }: { h: MyHoliday; today: string; rema
 
 export function HolidaysScreen() {
   const { colors } = useTheme();
-  const { today } = useOrgTime();
+  const { today, ready } = useOrgTime();
   const [yearSel, setYearSel] = useState<number | null>(null);
   const q = useMyHolidays(yearSel);
   const data = q.data;
@@ -109,9 +109,9 @@ export function HolidaysScreen() {
       {data ? (
         <>
           <Text weight="700">{`Company holidays (${mandatory.length})`}</Text>
-          {mandatory.length === 0 ? <Text muted>No company holidays this year.</Text> : mandatory.map((h) => <HolidayRow key={h.id} h={h} today={today} remaining={data.remaining} />)}
+          {mandatory.length === 0 ? <Text muted>No company holidays this year.</Text> : mandatory.map((h) => <HolidayRow key={h.id} h={h} today={today} remaining={data.remaining} ready={ready} />)}
           <Text weight="700">{`Optional holidays (${optional.length})`}</Text>
-          {optional.length === 0 ? <Text muted>No optional holidays this year.</Text> : optional.map((h) => <HolidayRow key={h.id} h={h} today={today} remaining={data.remaining} />)}
+          {optional.length === 0 ? <Text muted>No optional holidays this year.</Text> : optional.map((h) => <HolidayRow key={h.id} h={h} today={today} remaining={data.remaining} ready={ready} />)}
         </>
       ) : q.isLoading ? <Text muted>Loading holidays…</Text> : null}
     </Screen>
