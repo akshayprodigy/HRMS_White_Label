@@ -25,7 +25,6 @@ from app.services.self_approval import guard_self_approval
 router = APIRouter()
 PERM_HR = "hr employee write"
 PERM_HR_READ = "hr employee read"
-PERM_LEAVE = "leave approve"
 
 
 class PickIn(BaseModel):
@@ -49,8 +48,10 @@ def _is_hr(user: User) -> bool:
 
 
 def _is_privileged(user: User) -> bool:
-    """Same rule decide_pick uses for HR/leave-approver/superuser."""
-    return _is_hr(user) or deps.user_has_permission(user, PERM_LEAVE)
+    """Org-wide deciders: 'hr employee write' holders (superusers hold every
+    permission). A 'leave approve' holder is only a manager: their direct
+    reports."""
+    return _is_hr(user)
 
 
 def _can_decide(viewer: User, privileged: bool, p: OptionalHolidayPick,
@@ -225,8 +226,7 @@ async def list_picks(
          .join(HolidayCalendar, HolidayCalendar.id == OptionalHolidayPick.holiday_id)
          .join(User, User.id == OptionalHolidayPick.user_id))
     if not (_is_hr(current_user)
-            or deps.user_has_permission(current_user, PERM_HR_READ)
-            or deps.user_has_permission(current_user, PERM_LEAVE)):
+            or deps.user_has_permission(current_user, PERM_HR_READ)):
         has_reports = (await db.execute(select(User.id).where(
             User.manager_id == current_user.id).limit(1))).first()
         if not has_reports:
@@ -263,8 +263,7 @@ async def decide_pick(
 ) -> Any:
     aid = current_user.id
     actor = plain_actor(current_user)
-    privileged = (_is_hr(current_user)
-                  or deps.user_has_permission(current_user, PERM_LEAVE))
+    privileged = _is_privileged(current_user)
 
     async def body() -> int:
         pick = (await db.execute(

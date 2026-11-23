@@ -25,7 +25,6 @@ from app.services.self_approval import guard_self_approval
 router = APIRouter()
 PERM_HR = "hr employee write"
 PERM_HR_READ = "hr employee read"
-PERM_LEAVE = "leave approve"
 _STATUSES = (WorkLocationStatus.PENDING, WorkLocationStatus.APPROVED,
              WorkLocationStatus.REJECTED, WorkLocationStatus.CANCELLED)
 
@@ -55,8 +54,9 @@ def _is_hr(user: User) -> bool:
 
 
 def _is_privileged(user: User) -> bool:
-    return (_is_hr(user) or bool(user.is_superuser)
-            or deps.user_has_permission(user, PERM_LEAVE))
+    """Org-wide deciders: 'hr employee write' holders and superusers. A
+    'leave approve' holder is only a manager (their direct reports)."""
+    return _is_hr(user) or bool(user.is_superuser)
 
 
 def _can_decide(viewer: User, privileged: bool, r: WorkLocationRequest,
@@ -222,7 +222,6 @@ async def list_requests(
          .join(User, User.id == WorkLocationRequest.user_id))
     if not (_is_hr(current_user)
             or deps.user_has_permission(current_user, PERM_HR_READ)
-            or deps.user_has_permission(current_user, PERM_LEAVE)
             or current_user.is_superuser):
         has_reports = (await db.execute(select(User.id).where(
             User.manager_id == current_user.id).limit(1))).first()
