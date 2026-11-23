@@ -18,7 +18,7 @@ export const AllocateFromRegisterDialog: React.FC<{
   const [dq, setDq] = useState('');
   const [items, setItems] = useState<Asset[]>([]);
   const [pick, setPick] = useState<Asset | null>(null);
-  const [date, setDate] = useState(orgToday());
+  const [date, setDate] = useState(orgToday);
   const [dateTouched, setDateTouched] = useState(false);
   const [condition, setCondition] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -119,7 +119,7 @@ export const RowActionDialog: React.FC<{
   onDone: () => void;
 }> = ({ kind, assetId, label, onClose, onDone }) => {
   const [toStatus, setToStatus] = useState('in_stock');
-  const [date, setDate] = useState(orgToday());
+  const [date, setDate] = useState(orgToday);
   const [dateTouched, setDateTouched] = useState(false);
   const [condition, setCondition] = useState('');
   const [remarks, setRemarks] = useState('');

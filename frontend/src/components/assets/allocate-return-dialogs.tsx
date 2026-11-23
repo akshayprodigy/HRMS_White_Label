@@ -29,7 +29,7 @@ interface Props {
 
 export const AssetActionDialog: React.FC<Props> = ({ asset, kind, onClose, onDone }) => {
   const [emp, setEmp] = useState<EmpOpt | null>(null);
-  const [date, setDate] = useState(orgToday());
+  const [date, setDate] = useState(orgToday);
   const [dateTouched, setDateTouched] = useState(false);
   const [condition, setCondition] = useState('');
   const [remarks, setRemarks] = useState('');

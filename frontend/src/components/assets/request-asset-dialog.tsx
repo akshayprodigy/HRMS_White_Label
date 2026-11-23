@@ -5,7 +5,8 @@ import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { Modal } from './modal';
-import { inputCls, labelCls, clientSafeMinToday } from './asset-utils';
+import { inputCls, labelCls } from './asset-utils';
+import { orgToday } from '../../lib/org-time';
 
 interface Cat { id: number; name: string; code: string }
 
@@ -64,7 +65,7 @@ export const RequestAssetDialog: React.FC<{ onClose: () => void; onDone: () => v
       </div>
       <div>
         <label className={labelCls} htmlFor="ra-needed">Needed by (optional)</label>
-        <input id="ra-needed" type="date" min={clientSafeMinToday()} className={`${inputCls} w-full`} value={needed} onChange={(e) => setNeeded(e.target.value)} />
+        <input id="ra-needed" type="date" min={orgToday()} className={`${inputCls} w-full`} value={needed} onChange={(e) => setNeeded(e.target.value)} />
       </div>
       {err && <p role="alert" className="text-sm text-red-700">{err}</p>}
       <div className="flex justify-end gap-2">

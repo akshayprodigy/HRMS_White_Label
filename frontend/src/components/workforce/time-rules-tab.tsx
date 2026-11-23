@@ -4,6 +4,7 @@ import { Clock3, Save } from 'lucide-react';
 import { Card, Button } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
+import { refreshOrgTime } from '../../lib/org-time';
 import { TrackingSettings } from './tracking-settings';
 
 // Section Q: org-level attendance time rules (flag & report). Employees
@@ -176,6 +177,7 @@ export const TimeRulesTab: React.FC = () => {
       const { 'tracking.retention_days': _omit, ...payload } = rules;
       const res = await client.put(ENDPOINTS.HR.TIME_RULES, { rules: payload });
       setRules(res.data?.rules ?? rules);
+      void refreshOrgTime();
       toast.success('Time rules saved');
     } catch (e: any) {
       toast.error(

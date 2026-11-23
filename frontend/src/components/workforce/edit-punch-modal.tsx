@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogTitle, DialogFooter } from '../ui/dialog';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import type { AttendanceLog } from './workforce-data';
-import { orgToday, toOrgInput } from '../../lib/org-time';
+import { orgToday, toOrgInput, useOrgTime } from '../../lib/org-time';
 
 // Section Q: HR/admin direct punch edits. Times are org-local wall-clock
 // strings ("YYYY-MM-DDTHH:MM") sent as-is — the backend reads naive input as
@@ -16,8 +16,6 @@ const errDetail = (e: any, fallback: string) =>
   e?.response?.data?.detail ||
   e?.response?.data?.error?.message ||
   fallback;
-
-const toLocalInput = toOrgInput;
 
 const Field: React.FC<{ label: string; children: React.ReactNode }> = ({
   label,
@@ -40,8 +38,14 @@ export const EditPunchModal: React.FC<{
   onClose: () => void;
   onSaved: () => void;
 }> = ({ log, onClose, onSaved }) => {
-  const [punchIn, setPunchIn] = useState(toLocalInput(log.captured_at));
-  const [punchOut, setPunchOut] = useState(toLocalInput(log.punch_out_time));
+  const { ready } = useOrgTime();
+  // Pre-fill only once org time is known; before that the zone is a UTC
+  // placeholder and the backend would read the edited value as org-local.
+  const origIn = ready ? toOrgInput(log.captured_at) : '';
+  const origOut = ready ? toOrgInput(log.punch_out_time) : '';
+  const [edits, setEdits] = useState<{ in?: string; out?: string }>({});
+  const punchIn = edits.in ?? origIn;
+  const punchOut = edits.out ?? origOut;
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -50,13 +54,17 @@ export const EditPunchModal: React.FC<{
       toast.error('Please give a reason (at least 5 characters).');
       return;
     }
+    // Send only changed fields (the backend leaves an omitted/null one as is).
+    const body: Record<string, string> = { reason: reason.trim() };
+    if (punchIn && punchIn !== origIn) body.punch_in_time = punchIn;
+    if (punchOut && punchOut !== origOut) body.punch_out_time = punchOut;
+    if (!body.punch_in_time && !body.punch_out_time) {
+      toast.error('Change a punch time first.');
+      return;
+    }
     setBusy(true);
     try {
-      await client.patch(ENDPOINTS.HR.ATTENDANCE_EDIT(log.id), {
-        punch_in_time: punchIn || null,
-        punch_out_time: punchOut || null,
-        reason: reason.trim(),
-      });
+      await client.patch(ENDPOINTS.HR.ATTENDANCE_EDIT(log.id), body);
       toast.success('Punch times updated');
       onSaved();
       onClose();
@@ -76,13 +84,14 @@ export const EditPunchModal: React.FC<{
         <p className="text-[10px] font-bold text-slate-500 -mt-1">
           {log.user_name || `User #${log.user_id}`} · changes are audit-logged
         </p>
+        {!ready && <p className="text-[10px] font-bold text-slate-500">Loading org time…</p>}
         <div className="space-y-3 pt-1">
           <Field label="Punch In">
             <input
               type="datetime-local"
               className={inputCls}
               value={punchIn}
-              onChange={(e) => setPunchIn(e.target.value)}
+              onChange={(e) => setEdits((s) => ({ ...s, in: e.target.value }))}
             />
           </Field>
           <Field label="Punch Out (leave empty for open)">
@@ -90,7 +99,7 @@ export const EditPunchModal: React.FC<{
               type="datetime-local"
               className={inputCls}
               value={punchOut}
-              onChange={(e) => setPunchOut(e.target.value)}
+              onChange={(e) => setEdits((s) => ({ ...s, out: e.target.value }))}
             />
           </Field>
           <Field label="Reason (required)">
@@ -106,7 +115,7 @@ export const EditPunchModal: React.FC<{
           <Button variant="outline" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={save} isLoading={busy}>
+          <Button onClick={save} isLoading={busy} disabled={!ready}>
             Save Changes
           </Button>
         </DialogFooter>

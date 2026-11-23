@@ -15,7 +15,7 @@ const LogForm: React.FC<{ asset: AssetDetail; onClose: () => void; onDone: () =>
   const [desc, setDesc] = useState('');
   const [vendor, setVendor] = useState('');
   const [cost, setCost] = useState('');
-  const [started, setStarted] = useState(orgToday());
+  const [started, setStarted] = useState(orgToday);
   const [completed, setCompleted] = useState('');
   const [toRepair, setToRepair] = useState(false);
   const [busy, setBusy] = useState(false);

@@ -126,7 +126,7 @@ const overnightHint = (punchIn: string, punchOut: string): string | null =>
     ? `Punch-out ${punchOut} is treated as the next day (night shift).`
     : null;
 
-const hhmm = (iso: string | null) => (iso ? formatOrgTime(iso) : '—');
+const hhmm = (iso: string | null) => (iso ? formatOrgTime(iso) || '—' : '—');
 
 const hhmmss = (d: Date) =>
   formatOrgTime(d, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });

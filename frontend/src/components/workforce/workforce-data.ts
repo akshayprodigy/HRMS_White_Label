@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
-import { formatOrgTime } from '../../lib/org-time';
+import { formatOrgTime, orgToday, toOrgInput } from '../../lib/org-time';
 import type { Regularization } from '../../api/regularization';
 import { toIsoDate, fromIsoDate, type DateRange } from '../period-picker';
 
@@ -161,7 +161,7 @@ function isLateLog(log: AttendanceLog): boolean {
 /** Bucket a log on its logical work_date (shift start day), falling
  * back to the punch-in calendar date for legacy rows. */
 export function logDayIso(log: AttendanceLog): string {
-  return log.work_date || toIsoDate(new Date(log.captured_at));
+  return log.work_date || toOrgInput(log.captured_at).slice(0, 10);
 }
 
 function isWfhMode(mode: string | undefined): boolean {
@@ -515,7 +515,7 @@ export function useWorkforceData(range: DateRange): WorkforceData {
   const holidayDates = useMemo(() => new Set(holidays.keys()), [holidays]);
 
   const workingDaysInRange = useMemo(() => {
-    const todayIso = toIsoDate(new Date());
+    const todayIso = orgToday();
     let n = 0;
     for (const d of eachDay(range)) {
       const iso = toIsoDate(d);

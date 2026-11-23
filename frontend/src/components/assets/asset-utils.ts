@@ -128,24 +128,6 @@ export const rupeesToPaise = (s: string): number | null => {
 export const paiseToRupees = (p: number | null | undefined): string =>
   p == null ? '' : (p / 100).toFixed(2);
 
-export const todayIso = (): string => {
-  const d = new Date();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-};
-
-/**
- * Earliest date that is not in the past as the server sees it: the LATER of the
- * local and UTC dates, so a user west/east of UTC cannot pick a date the
- * server rejects as past.
- */
-export const clientSafeMinToday = (): string => {
-  const utc = new Date().toISOString().slice(0, 10);
-  const loc = todayIso();
-  return loc > utc ? loc : utc;
-};
-
 /** Days from today to an ISO date (negative = past); null when no date. */
 export const daysUntil = (iso: string | null | undefined): number | null => {
   if (!iso) return null;

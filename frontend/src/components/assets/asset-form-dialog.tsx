@@ -6,8 +6,9 @@ import { ENDPOINTS } from '../../api/endpoints';
 import { errMsg } from '../schedule-delegations-utils';
 import { Modal } from './modal';
 import {
-  AssetCategory, AssetDetail, inputCls, labelCls, paiseToRupees, rupeesToPaise, todayIso,
+  AssetCategory, AssetDetail, inputCls, labelCls, paiseToRupees, rupeesToPaise,
 } from './asset-utils';
+import { orgToday } from '../../lib/org-time';
 
 interface Props {
   asset?: AssetDetail | null; // present = edit
@@ -58,7 +59,7 @@ export const AssetFormDialog: React.FC<Props> = ({ asset, onClose, onSaved, supp
     if (f.life.trim() && (!/^\d+$/.test(f.life.trim()) || Number(f.life) <= 0)) {
       return setErr('Useful life must be a whole number of months greater than 0.');
     }
-    if (f.purchase_date && f.purchase_date > todayIso()) return setErr('Purchase date cannot be in the future.');
+    if (f.purchase_date && f.purchase_date > orgToday()) return setErr('Purchase date cannot be in the future.');
     const body: Record<string, unknown> = {
       category_id: Number(f.category_id),
       name: f.name.trim(),
@@ -115,7 +116,7 @@ export const AssetFormDialog: React.FC<Props> = ({ asset, onClose, onSaved, supp
         {!edit && field('tag', 'Asset tag', 'asset_tag', { placeholder: 'auto', maxLength: 32 })}
         {field('vendor', 'Vendor', 'vendor', { maxLength: 150 })}
         {field('invoice', 'Invoice no', 'invoice_no', { maxLength: 64 })}
-        {field('pdate', 'Purchase date', 'purchase_date', { type: 'date', max: todayIso() })}
+        {field('pdate', 'Purchase date', 'purchase_date', { type: 'date', max: orgToday() })}
         {field('cost', 'Purchase cost (₹)', 'cost', { type: 'number', min: 0, step: '0.01' })}
         {field('salvage', 'Salvage value (₹)', 'salvage', { type: 'number', min: 0, step: '0.01' })}
         {field('life', 'Useful life (months)', 'life', { type: 'number', min: 1, step: 1 })}

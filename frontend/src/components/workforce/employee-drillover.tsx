@@ -563,19 +563,18 @@ const LogView: React.FC<{
       {logs.length === 0 ? (
         <EmptyState text="No punches in this period" />
       ) : logs.map(l => {
-        const inDate = new Date(l.captured_at);
-        const out = l.punch_out_time ? new Date(l.punch_out_time) : null;
+        const dayLabel = new Date(`${logDayIso(l)}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
         return (
           <div key={l.id} className="p-3 rounded-xl border border-slate-200 bg-white">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="sb-item-sm font-black text-[#0F172A] tabular-nums">
-                  {inDate.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
+                  {dayLabel}
                 </p>
                 <p className="sb-item-sm font-medium text-slate-500 tabular-nums mt-0.5">
                   In {formatOrgTime(l.captured_at)}
-                  {out
-                    ? ` — Out ${formatOrgTime(l.punch_out_time!)}`
+                  {l.punch_out_time
+                    ? ` — Out ${formatOrgTime(l.punch_out_time)}`
                     : ' — still open'}
                 </p>
               </div>

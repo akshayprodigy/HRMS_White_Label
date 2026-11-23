@@ -7,7 +7,7 @@ import { Card, Button, Badge } from './ui-elements';
 import { useVisiblePoll } from '../hooks/use-visible-poll';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { errMsg, parseServerDate, todayIso } from './schedule-delegations-utils';
+import { errMsg, parseServerDate } from './schedule-delegations-utils';
 import { formatOrgTime, useOrgTime } from '../lib/org-time';
 
 type Status =
@@ -105,7 +105,7 @@ const FitBounds: React.FC<{ bounds: LatLngBoundsExpression | null; token: string
 };
 
 export const FieldTeam: React.FC = () => {
-  const { timezone: tz } = useOrgTime();
+  const { timezone: tz, today } = useOrgTime();
   const [data, setData] = useState<FieldNow | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -115,7 +115,7 @@ export const FieldTeam: React.FC = () => {
   const [department, setDepartment] = useState('');
   const [deptOpts, setDeptOpts] = useState<string[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
-  const [date, setDate] = useState(todayIso());
+  const [date, setDate] = useState(today);
   const [trail, setTrail] = useState<Trail | null>(null);
   const [trailErr, setTrailErr] = useState<string | null>(null);
   const [trailLoading, setTrailLoading] = useState(false);
@@ -180,7 +180,7 @@ export const FieldTeam: React.FC = () => {
     }
     const key = `${selected}|${date}`;
     const changed = trailKey.current !== key;
-    if (!changed && date !== todayIso()) return; // a past day will not change
+    if (!changed && date !== today) return; // a past day will not change
     if (changed) {
       trailKey.current = key;
       setTrail(null);
@@ -433,7 +433,7 @@ export const FieldTeam: React.FC = () => {
                   aria-label="Trail date"
                   className={selectCls}
                   value={date}
-                  max={todayIso()}
+                  max={today}
                   onChange={(e) => e.target.value && setDate(e.target.value)}
                 />
                 <Button variant="outline" size="sm" onClick={() => setSelected(null)}>
