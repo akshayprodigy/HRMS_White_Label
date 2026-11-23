@@ -162,6 +162,21 @@ def build_descriptors_no_fetchers() -> List[ReportDescriptor]:
             manager_scoped=True,
         ),
         ReportDescriptor(
+            key="shift_coverage",
+            name="Shift Coverage",
+            description=(
+                "Required vs scheduled vs attended headcount per shift per "
+                "day (max 62 days). Future dates show the roster plan."
+            ),
+            category=ReportCategory.ATTENDANCE,
+            permission="report attendance",
+            filters=date_range + [
+                dept,
+                ReportFilterSchema("location", "Location", type="text"),
+            ],
+            manager_scoped=True,
+        ),
+        ReportDescriptor(
             key="flag_summary",
             name="Attendance Flag Summary",
             description=(

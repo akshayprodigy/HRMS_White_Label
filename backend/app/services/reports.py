@@ -1084,3 +1084,228 @@ def _period_label(start: Optional[date], end: Optional[date]) -> str:
     if end:
         return f"to {fmt_date(end)}"
     return "all-time"
+
+
+# ============================================================
+# Shift coverage (Phase 6A)
+# ============================================================
+
+SHIFT_COVERAGE_MAX_DAYS = 62
+
+
+def select_requirements(reqs: Iterable[Any], d: date) -> List[Any]:
+    """Requirements that apply on `d`. A row applies when weekday is None
+    or equals d.weekday(). For the same (template, dept, location) the
+    weekday-specific row beats the generic one; among equals the newest
+    (highest id) wins so the result is deterministic."""
+    best: Dict[tuple, Any] = {}
+    for r in reqs:
+        if r.weekday is not None and r.weekday != d.weekday():
+            continue
+        key = (r.shift_template_id, r.department, r.location)
+        cur = best.get(key)
+        if cur is None:
+            best[key] = r
+            continue
+        r_specific = r.weekday is not None
+        c_specific = cur.weekday is not None
+        if r_specific and not c_specific:
+            best[key] = r
+        elif r_specific == c_specific and (r.id or 0) > (cur.id or 0):
+            best[key] = r
+    return list(best.values())
+
+
+def coverage_status(
+    *, scheduled: int, attended: Optional[int], required_min: Optional[int],
+    required_max: Optional[int], future: bool,
+) -> str:
+    """Exactly: understaffed, met, over, no_requirement, understaffed_plan,
+    planned_ok."""
+    if required_min is None:
+        return "no_requirement"
+    if future:
+        return "understaffed_plan" if scheduled < required_min else "planned_ok"
+    got = attended or 0
+    if got < required_min:
+        return "understaffed"
+    if required_max is not None and got > required_max:
+        return "over"
+    return "met"
+
+
+def coverage_fill_pct(
+    *, scheduled: int, attended: Optional[int], required_min: Optional[int],
+    future: bool,
+) -> Optional[int]:
+    if not required_min or required_min <= 0:
+        return None
+    basis = scheduled if future else (attended or 0)
+    return round(100 * basis / required_min)
+
+
+async def build_shift_coverage(
+    db, start: date, end: date,
+    department: Optional[str] = None, location: Optional[str] = None,
+    scope_user_ids: Optional[List[int]] = None,
+) -> ReportResult:
+    """Required vs scheduled vs attended headcount per (date, shift
+    requirement). Exactly 4 queries regardless of range length."""
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    from app.models.attendance import Attendance
+    from app.models.coverage_requirement import CoverageRequirement
+    from app.models.employee import Employee
+    from app.models.roster import RosterEntry, RosterStatus
+    from app.models.shift import ShiftTemplate
+    from app.services.org_time import local_today
+
+    if start is None or end is None:
+        raise HTTPException(422, "start and end are required")
+    if end < start:
+        raise HTTPException(422, "end must not be before start")
+    if (end - start).days + 1 > SHIFT_COVERAGE_MAX_DAYS:
+        raise HTTPException(
+            422, f"Range too long: at most {SHIFT_COVERAGE_MAX_DAYS} days")
+
+    today = await local_today(db)
+
+    def _emp_filters(stmt):
+        if department:
+            stmt = stmt.where(Employee.department == department)
+        if location:
+            stmt = stmt.where(Employee.location == location)
+        if scope_user_ids is not None:
+            stmt = stmt.where(Employee.user_id.in_(scope_user_ids))
+        return stmt
+
+    # Query 1: active requirements (narrowed to the filter scope).
+    rq = select(CoverageRequirement).where(CoverageRequirement.is_active.is_(True))
+    if department:
+        rq = rq.where(
+            (CoverageRequirement.department.is_(None))
+            | (CoverageRequirement.department == department))
+    if location:
+        rq = rq.where(
+            (CoverageRequirement.location.is_(None))
+            | (CoverageRequirement.location == location))
+    reqs = list((await db.execute(rq)).scalars().all())
+
+    # Query 2: published, non-week-off roster cells.
+    roster_q = _emp_filters(
+        select(
+            RosterEntry.work_date, RosterEntry.shift_template_id,
+            RosterEntry.employee_id, Employee.department, Employee.location,
+        ).join(Employee, Employee.user_id == RosterEntry.employee_id).where(
+            RosterEntry.work_date >= start, RosterEntry.work_date <= end,
+            RosterEntry.status == RosterStatus.PUBLISHED,
+            RosterEntry.is_week_off.is_(False),
+            RosterEntry.shift_template_id.isnot(None),
+        ))
+    roster_rows = (await db.execute(roster_q)).all()
+
+    # Query 3: attendance (distinct users are de-duplicated in Python).
+    att_q = _emp_filters(
+        select(
+            Attendance.work_date, Attendance.shift_template_id,
+            Attendance.user_id, Employee.department, Employee.location,
+        ).join(Employee, Employee.user_id == Attendance.user_id).where(
+            Attendance.work_date >= start, Attendance.work_date <= end,
+            Attendance.shift_template_id.isnot(None),
+        ))
+    att_rows = (await db.execute(att_q)).all()
+
+    def _bucket(rows) -> Dict[tuple, List[tuple]]:
+        out: Dict[tuple, Dict[int, tuple]] = {}
+        for wd, tid, uid, dept, loc in rows:
+            out.setdefault((wd, tid), {})[uid] = (dept, loc)
+        return {k: list(v.values()) for k, v in out.items()}
+
+    sched = _bucket(roster_rows)
+    attd = _bucket(att_rows)
+
+    # Query 4: shift names.
+    tids = {r.shift_template_id for r in reqs} | {k[1] for k in sched} \
+        | {k[1] for k in attd}
+    names: Dict[int, str] = {}
+    if tids:
+        names = {
+            i: n for i, n in (await db.execute(
+                select(ShiftTemplate.id, ShiftTemplate.name)
+                .where(ShiftTemplate.id.in_(tids)))).all()
+        }
+
+    def _count(people: List[tuple], dept, loc) -> int:
+        return sum(
+            1 for (pd, pl) in people
+            if (dept is None or pd == dept) and (loc is None or pl == loc))
+
+    rows: List[dict] = []
+    d = start
+    while d <= end:
+        future = d > today
+        covered_templates = set()
+        for r in select_requirements(reqs, d):
+            covered_templates.add(r.shift_template_id)
+            s = _count(sched.get((d, r.shift_template_id), []),
+                       r.department, r.location)
+            a = None if future else _count(
+                attd.get((d, r.shift_template_id), []),
+                r.department, r.location)
+            rows.append({
+                "date": d, "shift_template_id": r.shift_template_id,
+                "shift_name": names.get(r.shift_template_id),
+                "department": r.department, "location": r.location,
+                "required_min": r.min_headcount,
+                "required_max": r.max_headcount,
+                "scheduled": s, "attended": a,
+                "fill_pct": coverage_fill_pct(
+                    scheduled=s, attended=a, required_min=r.min_headcount,
+                    future=future),
+                "status": coverage_status(
+                    scheduled=s, attended=a, required_min=r.min_headcount,
+                    required_max=r.max_headcount, future=future),
+            })
+        # Shifts that ran / are rostered with no applicable requirement.
+        extra = ({k[1] for k in sched if k[0] == d}
+                 | {k[1] for k in attd if k[0] == d}) - covered_templates
+        for tid in extra:
+            s = len(sched.get((d, tid), []))
+            a = None if future else len(attd.get((d, tid), []))
+            rows.append({
+                "date": d, "shift_template_id": tid,
+                "shift_name": names.get(tid),
+                "department": department, "location": location,
+                "required_min": None, "required_max": None,
+                "scheduled": s, "attended": a, "fill_pct": None,
+                "status": "no_requirement",
+            })
+        d += timedelta(days=1)
+
+    rows.sort(key=lambda x: (
+        x["date"], x["shift_name"] or "", x["department"] or "",
+        x["location"] or ""))
+    columns = [
+        ColumnDef("date", "Date", ColumnType.DATE, width=14),
+        ColumnDef("shift_name", "Shift", ColumnType.TEXT, width=20),
+        ColumnDef("department", "Department", ColumnType.TEXT, width=20),
+        ColumnDef("location", "Location", ColumnType.TEXT, width=18),
+        ColumnDef("required_min", "Min", ColumnType.INT, width=8),
+        ColumnDef("required_max", "Max", ColumnType.INT, width=8),
+        ColumnDef("scheduled", "Scheduled", ColumnType.INT, width=11),
+        ColumnDef("attended", "Attended", ColumnType.INT, width=11),
+        ColumnDef("fill_pct", "Fill %", ColumnType.PERCENT, width=9),
+        ColumnDef("status", "Status", ColumnType.TEXT, width=18),
+    ]
+    return ReportResult(
+        rows=rows, columns=columns,
+        totals={
+            "understaffed": sum(
+                1 for r in rows if r["status"] in ("understaffed", "understaffed_plan")),
+        },
+        meta={
+            "period": f"{start.isoformat()} to {end.isoformat()}",
+            "row_count": len(rows),
+        },
+    )

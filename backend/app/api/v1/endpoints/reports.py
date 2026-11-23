@@ -275,7 +275,7 @@ def _parse_filter(
         fy=payload.get("fy"),
         manager_scope_user_ids=team_ids,
         extras={k: v for k, v in payload.items() if k in (
-            "per_row", "approved_only", "reference_prefix",
+            "per_row", "approved_only", "reference_prefix", "location",
         )},
     )
     return f
@@ -463,6 +463,13 @@ async def _fetch_ot_report(db, f: _rep.ReportFilter) -> _rep.ReportResult:
             status=o.status,
         ))
     return _rep.build_ot_report(entries=entries, filters=f)
+
+
+async def _fetch_shift_coverage(db, f: _rep.ReportFilter) -> _rep.ReportResult:
+    return await _rep.build_shift_coverage(
+        db, f.start, f.end, f.department, f.extras.get("location"),
+        scope_user_ids=f.manager_scope_user_ids,
+    )
 
 
 async def _fetch_flag_summary(db, f: _rep.ReportFilter) -> _rep.ReportResult:
@@ -1133,6 +1140,7 @@ _FETCHERS = {
     "late_early": _fetch_late_early,
     "absenteeism": _fetch_absenteeism,
     "ot_report": _fetch_ot_report,
+    "shift_coverage": _fetch_shift_coverage,
     "flag_summary": _fetch_flag_summary,
     "leave_balance": _fetch_leave_balance,
     "leave_utilization": _fetch_leave_utilization,
