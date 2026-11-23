@@ -5,6 +5,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from _chains import deactivate_active_chains, restore_chains  # noqa: E402
 from _tz import org_today  # noqa: E402
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, insert, select
@@ -86,6 +87,7 @@ async def _cleanup(sfx, run_ids=()):
 async def world():
     sfx = uuid.uuid4().hex[:8]
     w: dict = {"sfx": sfx, "runs": []}
+    w["parked_chains"] = await deactivate_active_chains()
     async with SessionLocal() as db:
         row = await db.get(SystemSetting, WL.BACKDATE_KEY)
         w["saved"] = (row.value, row.description) if row else None
@@ -116,6 +118,7 @@ async def world():
         yield w
     finally:
         await _cleanup(sfx, w["runs"])
+        await restore_chains(w["parked_chains"])
         async with SessionLocal() as db:
             row = await db.get(SystemSetting, WL.BACKDATE_KEY)
             sv = w["saved"]
