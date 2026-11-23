@@ -466,9 +466,81 @@ async def _fetch_ot_report(db, f: _rep.ReportFilter) -> _rep.ReportResult:
 
 
 async def _fetch_shift_coverage(db, f: _rep.ReportFilter) -> _rep.ReportResult:
-    return await _rep.build_shift_coverage(
-        db, f.start, f.end, f.department, f.extras.get("location"),
-        scope_user_ids=f.manager_scope_user_ids,
+    """Queries (4, batched, not per date): requirements, published roster
+    cells, attendance, shift names. department/location choose WHICH
+    requirements are shown (roster-insights rule: NULL-department ones stay
+    visible); each requirement still counts everyone in its own scope.
+    Non-roster-admin viewers only see requirements for departments they
+    head (plus org-wide ones) -- none if they head none."""
+    from app.models.coverage_requirement import CoverageRequirement as _CR
+    from app.models.employee import EmployeeStatus as _ES
+    from app.models.roster import RosterEntry as _RE, RosterStatus as _RS
+    from app.models.shift import ShiftTemplate as _ST
+    from app.services import roster as _roster_svc
+
+    start, end = f.start, f.end
+    if start is None or end is None:
+        raise HTTPException(422, "start and end are required")
+    if end < start:
+        raise HTTPException(422, "end must not be before start")
+    if (end - start).days + 1 > _rep.SHIFT_COVERAGE_MAX_DAYS:
+        raise HTTPException(
+            422, f"Range too long: at most {_rep.SHIFT_COVERAGE_MAX_DAYS} days")
+    location = f.extras.get("location")
+    today = await local_today(db)
+
+    viewer = f.extras.get("_viewer")
+    admin = viewer is None or _roster_svc.is_roster_admin(viewer)
+    scoped_depts = None
+    if not admin:
+        scoped_depts = set(await _roster_svc.scope_department_names(db, viewer))
+
+    # Query 1
+    reqs = list((await db.execute(select(_CR).where(
+        _CR.is_active.is_(True)))).scalars().all())
+    reqs = _roster_svc.visible_requirements(
+        reqs, admin=admin, scoped_departments=scoped_depts or set(),
+        department=f.department)
+    if not admin and not scoped_depts:
+        reqs = []   # heads no department: no rows rather than false gaps
+    if location:
+        reqs = [r for r in reqs if r.location in (None, location)]
+
+    # Query 2: published, non-week-off cells. Past/today cells count as
+    # rostered; for future dates only currently active employees do.
+    roster_rows = (await db.execute(
+        select(_RE.work_date, _RE.shift_template_id, _RE.employee_id,
+               _Employee.department, _Employee.location)
+        .join(_Employee, _Employee.user_id == _RE.employee_id)
+        .where(
+            _RE.work_date >= start, _RE.work_date <= end,
+            _RE.status == _RS.PUBLISHED, _RE.is_week_off.is_(False),
+            _RE.shift_template_id.isnot(None),
+            _or(_RE.work_date <= today, _Employee.status == _ES.ACTIVE),
+        ))).all()
+
+    # Query 3
+    att_rows = (await db.execute(
+        select(_Attendance.work_date, _Attendance.shift_template_id,
+               _Attendance.user_id, _Employee.department, _Employee.location)
+        .join(_Employee, _Employee.user_id == _Attendance.user_id)
+        .where(
+            _Attendance.work_date >= start, _Attendance.work_date <= end,
+            _Attendance.shift_template_id.isnot(None),
+        ))).all()
+
+    # Query 4
+    tids = ({r.shift_template_id for r in reqs}
+            | {r[1] for r in roster_rows} | {r[1] for r in att_rows})
+    names = {}
+    if tids:
+        names = {i: n for i, n in (await db.execute(
+            select(_ST.id, _ST.name).where(_ST.id.in_(tids)))).all()}
+
+    return _rep.build_shift_coverage(
+        reqs, [tuple(r) for r in roster_rows], [tuple(r) for r in att_rows],
+        names, start, end, today, department=f.department, location=location,
+        leftover_departments=scoped_depts,
     )
 
 
@@ -1247,6 +1319,7 @@ async def run_report(
     if desc.manager_scoped:
         team_ids = await _manager_team_ids(db, current_user)
     f = _parse_filter(payload or {}, team_ids=team_ids)
+    f.extras["_viewer"] = current_user
 
     if desc.fetch_and_build is None:
         raise HTTPException(500, "Report has no fetcher registered")

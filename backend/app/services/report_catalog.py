@@ -166,7 +166,9 @@ def build_descriptors_no_fetchers() -> List[ReportDescriptor]:
             name="Shift Coverage",
             description=(
                 "Required vs scheduled vs attended headcount per shift per "
-                "day (max 62 days). Future dates show the roster plan."
+                "day (max 62 days). Scheduled counts published roster "
+                "entries only (week-offs excluded). Today and past days use "
+                "attended; only days after today show the roster plan."
             ),
             category=ReportCategory.ATTENDANCE,
             permission="report attendance",
@@ -174,7 +176,9 @@ def build_descriptors_no_fetchers() -> List[ReportDescriptor]:
                 dept,
                 ReportFilterSchema("location", "Location", type="text"),
             ],
-            manager_scoped=True,
+            # Scoping is done by department (roster scope), not by direct
+            # reports, so headcounts are never compared with partial counts.
+            manager_scoped=False,
         ),
         ReportDescriptor(
             key="flag_summary",

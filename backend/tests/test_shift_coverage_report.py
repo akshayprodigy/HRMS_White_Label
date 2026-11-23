@@ -9,6 +9,7 @@ from _tz import org_today  # noqa: E402
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
+from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.core.security import get_password_hash
@@ -19,7 +20,9 @@ from app.models.coverage_requirement import CoverageRequirement
 from app.models.employee import Employee
 from app.models.roster import RosterEntry
 from app.models.shift import ShiftTemplate
+from app.models.department import Department
 from app.models.user import User
+from app.api.v1.endpoints import reports as EP
 from app.services import report_catalog as RC
 from app.services import reports as R
 
@@ -74,6 +77,46 @@ def test_catalog_entry():
     assert sc.permission == mr.permission
     assert {f.key for f in sc.filters} == {
         "start", "end", "department", "location"}
+
+
+def _b(reqs, sched, att, start=MON, end=MON, today=date(2030, 1, 1), **kw):
+    return R.build_shift_coverage(
+        reqs, sched, att, {1: "S"}, start, end, today, **kw).rows
+
+
+def test_builder_each_requirement_counts_its_own_scope():
+    reqs = [_req(1, dept="A"), _req(2)]            # dept-A and org-wide
+    att = [(MON, 1, 10, "A", "X"), (MON, 1, 11, "A", "X"),
+           (MON, 1, 12, "B", "X")]
+    rows = {r["department"]: r for r in _b(reqs, [], att)}
+    assert rows["A"]["attended"] == 2
+    assert rows[None]["attended"] == 3
+    assert len(rows) == 2           # nobody left over, no extra row
+
+
+def test_builder_leftover_no_requirement_row():
+    reqs = [_req(1, dept="A")]
+    att = [(MON, 1, 10, "A", "X"), (MON, 1, 12, "B", "X"),
+           (MON, 1, 13, "B", "X")]
+    rows = _b(reqs, [], att)
+    nr = [r for r in rows if r["status"] == "no_requirement"]
+    assert len(nr) == 1 and nr[0]["attended"] == 2
+    # filter narrows leftovers; scoped viewers only see their departments
+    assert not [r for r in _b(reqs, [], att, department="A")
+                if r["status"] == "no_requirement"]
+    assert not [r for r in _b(reqs, [], att, leftover_departments={"A"})
+                if r["status"] == "no_requirement"]
+    assert len([r for r in _b(reqs, [], att, leftover_departments={"B"})
+                if r["status"] == "no_requirement"]) == 1
+
+
+def test_builder_future_uses_plan_and_totals_not_in_totals():
+    sched = [(MON, 1, 10, "A", "X")]
+    res = R.build_shift_coverage([_req(1)], sched, [], {1: "S"}, MON, MON,
+                                 date(2019, 1, 1))
+    assert res.rows[0]["status"] == "understaffed_plan"
+    assert res.rows[0]["attended"] is None
+    assert res.totals == {} and res.meta["understaffed_count"] == 1
 
 
 # ---------------- DB-backed ----------------
@@ -156,9 +199,14 @@ def _ros(w, i, d, **kw):
                        shift_template_id=w["tid"], **kw)
 
 
-async def _run(w, start, end, **kw):
+async def _run(w, start, end, department=None, location=None, viewer=None):
+    extras = {"location": location} if location else {}
+    if viewer is not None:
+        extras["_viewer"] = viewer
+    f = R.ReportFilter(start=start, end=end, department=department,
+                       extras=extras)
     async with SessionLocal() as db:
-        res = await R.build_shift_coverage(db, start, end, **kw)
+        res = await EP._fetch_shift_coverage(db, f)
     return [r for r in res.rows if r["shift_template_id"] == w["tid"]]
 
 
@@ -199,26 +247,65 @@ async def test_weekday_override(world):
     assert len([r for r in await _run(w, WED, WED)]) == 1
 
 
-async def test_department_filter(world):
+async def test_department_filter_picks_requirements(world):
     w = world
-    await _add(_req_row(w), _att(w, 0, THU), _att(w, 1, THU),
-               _att(w, 4, THU), _att(w, 5, THU))
-    assert (await _run(w, THU, THU))[0]["attended"] == 4
-    da = (await _run(w, THU, THU, department=w["da"]))[0]
-    assert da["attended"] == 2 and da["status"] == "met"
-    db_ = (await _run(w, THU, THU, department=w["db"]))[0]
-    assert db_["attended"] == 2
-    lx = (await _run(w, THU, THU, location="LX"))[0]
-    assert lx["attended"] == 2
+    await _add(_req_row(w, department=w["da"]),
+               _req_row(w, department=w["db"]),
+               _att(w, 0, THU), _att(w, 1, THU), _att(w, 4, THU),
+               _att(w, 5, THU))
+    allr = {r["department"]: r for r in await _run(w, THU, THU)}
+    assert allr[w["da"]]["attended"] == 2 and allr[w["db"]]["attended"] == 2
+    only_a = await _run(w, THU, THU, department=w["da"])
+    assert [r["department"] for r in only_a] == [w["da"]]
+    assert only_a[0]["attended"] == 2
 
 
-async def test_dept_scoped_requirement(world):
+async def test_org_wide_requirement_counts_whole_org_under_filter(world):
+    w = world
+    await _add(_req_row(w), _att(w, 0, THU), _att(w, 1, THU), _att(w, 4, THU))
+    rows = await _run(w, THU, THU, department=w["da"])
+    assert rows[0]["department"] is None and rows[0]["attended"] == 3
+    assert rows[0]["status"] == "over"
+
+
+async def test_uncovered_department_gets_no_requirement_row(world):
     w = world
     await _add(_req_row(w, department=w["da"]), _att(w, 0, THU),
                _att(w, 4, THU), _att(w, 5, THU))
     rows = await _run(w, THU, THU)
-    scoped = [r for r in rows if r["department"] == w["da"]]
-    assert scoped[0]["attended"] == 1 and scoped[0]["status"] == "understaffed"
+    scoped = [r for r in rows if r["department"] == w["da"]][0]
+    assert scoped["attended"] == 1 and scoped["status"] == "understaffed"
+    nr = [r for r in rows if r["status"] == "no_requirement"]
+    assert len(nr) == 1 and nr[0]["attended"] == 2
+
+
+async def _viewer(uid):
+    async with SessionLocal() as db:
+        return (await db.execute(select(User).where(User.id == uid).options(
+            selectinload(User.roles)))).scalars().one()
+
+
+async def test_scoped_viewer_sees_only_headed_departments(world):
+    w = world
+    async with SessionLocal() as db:
+        db.add(Department(name=w["da"], head_user_id=w["u"][5]))
+        await db.commit()
+    await _add(_req_row(w, department=w["da"]),
+               _req_row(w, department=w["db"]),
+               _att(w, 0, THU), _att(w, 4, THU), _att(w, 5, THU))
+    try:
+        v = await _viewer(w["u"][5])
+        rows = await _run(w, THU, THU, viewer=v)
+        assert {r["department"] for r in rows
+                if r["status"] != "no_requirement"} == {w["da"]}
+        # a viewer who heads nothing sees no rows at all
+        v2 = await _viewer(w["u"][4])
+        assert await _run(w, THU, THU, viewer=v2) == []
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(Department).where(
+                Department.name == w["da"]))
+            await db.commit()
 
 
 async def test_future_dates_use_plan(world):
@@ -244,10 +331,12 @@ async def test_no_requirement(world):
 
 async def test_range_limit_422(world):
     async with SessionLocal() as db:
-        ok = await R.build_shift_coverage(db, MON, MON + timedelta(days=61))
+        ok = await EP._fetch_shift_coverage(db, R.ReportFilter(
+            start=MON, end=MON + timedelta(days=61)))
         assert ok is not None  # 62 days inclusive is allowed
         with pytest.raises(HTTPException) as ei:
-            await R.build_shift_coverage(db, MON, MON + timedelta(days=62))
+            await EP._fetch_shift_coverage(db, R.ReportFilter(
+                start=MON, end=MON + timedelta(days=62)))
         assert ei.value.status_code == 422
 
 

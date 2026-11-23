@@ -1144,118 +1144,58 @@ def coverage_fill_pct(
     return round(100 * basis / required_min)
 
 
-async def build_shift_coverage(
-    db, start: date, end: date,
+def build_shift_coverage(
+    reqs: List[Any], roster_rows: Iterable[tuple], att_rows: Iterable[tuple],
+    names: Dict[int, str], start: date, end: date, today: date,
     department: Optional[str] = None, location: Optional[str] = None,
-    scope_user_ids: Optional[List[int]] = None,
+    leftover_departments: Optional[Iterable[str]] = None,
 ) -> ReportResult:
-    """Required vs scheduled vs attended headcount per (date, shift
-    requirement). Exactly 4 queries regardless of range length."""
-    from fastapi import HTTPException
-    from sqlalchemy import select
+    """Pure builder: required vs scheduled vs attended per (date, shift
+    requirement).
 
-    from app.models.attendance import Attendance
-    from app.models.coverage_requirement import CoverageRequirement
-    from app.models.employee import Employee
-    from app.models.roster import RosterEntry, RosterStatus
-    from app.models.shift import ShiftTemplate
-    from app.services.org_time import local_today
-
-    if start is None or end is None:
-        raise HTTPException(422, "start and end are required")
-    if end < start:
-        raise HTTPException(422, "end must not be before start")
-    if (end - start).days + 1 > SHIFT_COVERAGE_MAX_DAYS:
-        raise HTTPException(
-            422, f"Range too long: at most {SHIFT_COVERAGE_MAX_DAYS} days")
-
-    today = await local_today(db)
-
-    def _emp_filters(stmt):
-        if department:
-            stmt = stmt.where(Employee.department == department)
-        if location:
-            stmt = stmt.where(Employee.location == location)
-        if scope_user_ids is not None:
-            stmt = stmt.where(Employee.user_id.in_(scope_user_ids))
-        return stmt
-
-    # Query 1: active requirements (narrowed to the filter scope).
-    rq = select(CoverageRequirement).where(CoverageRequirement.is_active.is_(True))
-    if department:
-        rq = rq.where(
-            (CoverageRequirement.department.is_(None))
-            | (CoverageRequirement.department == department))
-    if location:
-        rq = rq.where(
-            (CoverageRequirement.location.is_(None))
-            | (CoverageRequirement.location == location))
-    reqs = list((await db.execute(rq)).scalars().all())
-
-    # Query 2: published, non-week-off roster cells.
-    roster_q = _emp_filters(
-        select(
-            RosterEntry.work_date, RosterEntry.shift_template_id,
-            RosterEntry.employee_id, Employee.department, Employee.location,
-        ).join(Employee, Employee.user_id == RosterEntry.employee_id).where(
-            RosterEntry.work_date >= start, RosterEntry.work_date <= end,
-            RosterEntry.status == RosterStatus.PUBLISHED,
-            RosterEntry.is_week_off.is_(False),
-            RosterEntry.shift_template_id.isnot(None),
-        ))
-    roster_rows = (await db.execute(roster_q)).all()
-
-    # Query 3: attendance (distinct users are de-duplicated in Python).
-    att_q = _emp_filters(
-        select(
-            Attendance.work_date, Attendance.shift_template_id,
-            Attendance.user_id, Employee.department, Employee.location,
-        ).join(Employee, Employee.user_id == Attendance.user_id).where(
-            Attendance.work_date >= start, Attendance.work_date <= end,
-            Attendance.shift_template_id.isnot(None),
-        ))
-    att_rows = (await db.execute(att_q)).all()
-
-    def _bucket(rows) -> Dict[tuple, List[tuple]]:
+    `reqs` are the requirements the viewer may see (already filtered by the
+    endpoint). Each requirement counts EVERYONE in its own scope (its
+    department/location, or the whole org when NULL); `department` /
+    `location` only choose which requirements are shown (endpoint) and
+    narrow the no_requirement rows below. `roster_rows` / `att_rows` are
+    (work_date, shift_template_id, user_id, emp_department, emp_location).
+    `leftover_departments` (None = unrestricted) limits which departments'
+    uncovered people may appear in no_requirement rows (scoped viewers)."""
+    def _bucket(rows) -> Dict[tuple, Dict[int, tuple]]:
         out: Dict[tuple, Dict[int, tuple]] = {}
         for wd, tid, uid, dept, loc in rows:
             out.setdefault((wd, tid), {})[uid] = (dept, loc)
-        return {k: list(v.values()) for k, v in out.items()}
+        return out
 
     sched = _bucket(roster_rows)
     attd = _bucket(att_rows)
+    allowed = None if leftover_departments is None else set(leftover_departments)
 
-    # Query 4: shift names.
-    tids = {r.shift_template_id for r in reqs} | {k[1] for k in sched} \
-        | {k[1] for k in attd}
-    names: Dict[int, str] = {}
-    if tids:
-        names = {
-            i: n for i, n in (await db.execute(
-                select(ShiftTemplate.id, ShiftTemplate.name)
-                .where(ShiftTemplate.id.in_(tids)))).all()
-        }
+    def _in_scope(r, person) -> bool:
+        return ((r.department is None or person[0] == r.department)
+                and (r.location is None or person[1] == r.location))
 
-    def _count(people: List[tuple], dept, loc) -> int:
-        return sum(
-            1 for (pd, pl) in people
-            if (dept is None or pd == dept) and (loc is None or pl == loc))
+    by_date: Dict[date, set] = {}
+    for (wd, tid) in list(sched) + list(attd):
+        by_date.setdefault(wd, set()).add(tid)
 
     rows: List[dict] = []
     d = start
     while d <= end:
         future = d > today
-        covered_templates = set()
+        covered: Dict[int, set] = {}      # template -> user ids any req counts
         for r in select_requirements(reqs, d):
-            covered_templates.add(r.shift_template_id)
-            s = _count(sched.get((d, r.shift_template_id), []),
-                       r.department, r.location)
-            a = None if future else _count(
-                attd.get((d, r.shift_template_id), []),
-                r.department, r.location)
+            tid = r.shift_template_id
+            s_people = {u: p for u, p in sched.get((d, tid), {}).items()
+                        if _in_scope(r, p)}
+            a_people = {u: p for u, p in attd.get((d, tid), {}).items()
+                        if _in_scope(r, p)}
+            covered.setdefault(tid, set()).update(s_people, a_people)
+            s = len(s_people)
+            a = None if future else len(a_people)
             rows.append({
-                "date": d, "shift_template_id": r.shift_template_id,
-                "shift_name": names.get(r.shift_template_id),
+                "date": d, "shift_template_id": tid,
+                "shift_name": names.get(tid),
                 "department": r.department, "location": r.location,
                 "required_min": r.min_headcount,
                 "required_max": r.max_headcount,
@@ -1267,25 +1207,36 @@ async def build_shift_coverage(
                     scheduled=s, attended=a, required_min=r.min_headcount,
                     required_max=r.max_headcount, future=future),
             })
-        # Shifts that ran / are rostered with no applicable requirement.
-        extra = ({k[1] for k in sched if k[0] == d}
-                 | {k[1] for k in attd if k[0] == d}) - covered_templates
-        for tid in extra:
-            s = len(sched.get((d, tid), []))
-            a = None if future else len(attd.get((d, tid), []))
+        # People rostered / punched on a shift but covered by no requirement.
+        for tid in by_date.get(d, ()):
+            cov = covered.get(tid, set())
+
+            def _left(people):
+                return {
+                    u for u, (pd, pl) in people.items()
+                    if u not in cov
+                    and (not department or pd == department)
+                    and (not location or pl == location)
+                    and (allowed is None or pd in allowed)
+                }
+            s_left = _left(sched.get((d, tid), {}))
+            a_left = set() if future else _left(attd.get((d, tid), {}))
+            if not s_left and not a_left:
+                continue
             rows.append({
                 "date": d, "shift_template_id": tid,
                 "shift_name": names.get(tid),
                 "department": department, "location": location,
                 "required_min": None, "required_max": None,
-                "scheduled": s, "attended": a, "fill_pct": None,
-                "status": "no_requirement",
+                "scheduled": len(s_left),
+                "attended": None if future else len(a_left),
+                "fill_pct": None, "status": "no_requirement",
             })
         d += timedelta(days=1)
 
     rows.sort(key=lambda x: (
         x["date"], x["shift_name"] or "", x["department"] or "",
-        x["location"] or ""))
+        x["location"] or "", x["status"]))
     columns = [
         ColumnDef("date", "Date", ColumnType.DATE, width=14),
         ColumnDef("shift_name", "Shift", ColumnType.TEXT, width=20),
@@ -1300,12 +1251,11 @@ async def build_shift_coverage(
     ]
     return ReportResult(
         rows=rows, columns=columns,
-        totals={
-            "understaffed": sum(
-                1 for r in rows if r["status"] in ("understaffed", "understaffed_plan")),
-        },
         meta={
             "period": f"{start.isoformat()} to {end.isoformat()}",
             "row_count": len(rows),
+            "understaffed_count": sum(
+                1 for r in rows
+                if r["status"] in ("understaffed", "understaffed_plan")),
         },
     )
