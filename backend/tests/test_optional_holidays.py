@@ -635,6 +635,10 @@ async def test_mandatory_elsewhere_keeps_approved_pick(api, world):
     assert await _status(appr) == "approved"     # does not apply to Mumbai
     assert "OPTIONAL_HOLIDAY_PICK_FLAGGED" in await audit_actions(appr)
     assert "OPTIONAL_HOLIDAY_AUTO_CANCEL" not in await audit_actions(appr)
+    # ...and the approved day off still counts as a holiday (no silent LOP)
+    async with SessionLocal() as db:
+        hd = (await db.get(HolidayCalendar, world["h"]["m1"])).date
+        assert await H.is_holiday(db, world["uid"]["emp2"], hd) is not None
 
 
 async def test_mandatory_in_locked_month_refused(api, world):

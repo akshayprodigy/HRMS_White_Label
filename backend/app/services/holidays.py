@@ -58,7 +58,8 @@ def effective_location(
 async def _approved_pick_holiday_ids(
     db, user_ids: list[int], start: date, end: date,
 ) -> dict[int, set[int]]:
-    """user_id -> ids of optional holidays the user has an APPROVED pick for
+    """user_id -> ids of holidays the user has an APPROVED pick for (picked
+    while optional; the holiday may since have been made mandatory)
     whose date falls in [start, end] (one query per 1000 users)."""
     from app.models.optional_holiday import OptionalHolidayPick, PickStatus
     out: dict[int, set[int]] = {}
@@ -114,9 +115,12 @@ async def holidays_for(
         mine = out[u]
         picked = picks.get(u, set())
         for h in hols:
-            if h.is_optional:
-                if h.id not in picked:
-                    continue
+            # An APPROVED pick always counts, even if HR later made the
+            # holiday mandatory for another location: the day stays off.
+            if h.id in picked:
+                pass
+            elif h.is_optional:
+                continue
             elif not applies(h.location, locs.get(u)):
                 continue
             cur = mine.get(h.date)
