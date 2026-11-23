@@ -690,3 +690,35 @@ async def test_approved_leave_blocks_work_location(api, world):
                 LeaveRequest.leave_type_id == lt_id))
             await db.execute(delete(LeaveType).where(LeaveType.id == lt_id))
             await db.commit()
+
+
+async def test_can_decide_flag(api, world):
+    own = (await req(api, "emp", s=60)).json()
+    assert own["can_decide"] is False           # owner, in the create reply
+    rid = own["id"]
+    rows = lambda r: {x["id"]: x for x in r.json()}
+    r = await api.get(P, headers=api.mgr)
+    assert rows(r)[rid]["can_decide"] is True       # direct report
+    r = await api.get(P, headers=api.hr)
+    assert rows(r)[rid]["can_decide"] is True       # privileged
+    r = await api.get(f"{P}/my", headers=api.emp)
+    assert rows(r)[rid]["can_decide"] is False      # own request
+    assert (await decide(api, rid)).json()["can_decide"] is False
+    r = await api.get(P, headers=api.mgr)
+    assert rows(r)[rid]["can_decide"] is False      # no longer pending
+
+
+def test_can_decide_rule_pure():
+    """DB-free: every branch of the rule decide_request enforces."""
+    from types import SimpleNamespace as NS
+    from app.api.v1.endpoints.work_location import _can_decide
+    from app.models.work_location import WorkLocationStatus as WS
+    me, other, boss = NS(id=1), NS(id=2), NS(id=3)
+    pend = NS(status=WS.PENDING, user_id=2)
+    assert _can_decide(boss, False, pend, 3, "direct") is True    # manager
+    assert _can_decide(me, False, pend, 3, "direct") is False     # unrelated
+    assert _can_decide(me, True, pend, 3, "direct") is True       # privileged
+    assert _can_decide(other, True, pend, 3, "direct") is False   # own request
+    assert _can_decide(boss, True, pend, 3, "chain") is False     # chain
+    done = NS(status=WS.APPROVED, user_id=2)
+    assert _can_decide(boss, True, done, 3, "direct") is False    # decided

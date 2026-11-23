@@ -77,6 +77,8 @@ const STATUS_META: Record<
   off: { label: 'Off', variant: 'neutral' },
 };
 
+const REMOTE_KIND_LABEL = { on_duty: 'On duty', client_visit: 'Client visit', wfh: 'WFH' } as const;
+
 const REFRESH_MS = 60_000;
 
 /** Rows a supervisor can mark present when the punch system is down. */
@@ -496,6 +498,12 @@ export const LiveBoard: React.FC = () => {
                       )}
                       {r.transport_required && (
                         <span className="text-xs text-indigo-700">Cab/transport arranged</span>
+                      )}
+                      {r.status === 'remote' && r.remote_kind && (
+                        <span className="text-xs text-blue-700">
+                          {REMOTE_KIND_LABEL[r.remote_kind]}
+                          {r.remote_portion && r.remote_portion !== 'full' ? ' (half day)' : ''}
+                        </span>
                       )}
                       {r.half_day_leave && (
                         <span className="text-xs text-gray-500">Half-day leave</span>

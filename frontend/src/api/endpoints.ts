@@ -283,6 +283,12 @@ export const ENDPOINTS = {
     PICK_CANCEL: (id: number) => `/holidays/picks/${id}/cancel`,
     PICK_DECIDE: (id: number) => `/holidays/picks/${id}/decide`,
   },
+  WORK_LOCATION: {
+    LIST: '/work-location-requests',
+    MY: '/work-location-requests/my',
+    CANCEL: (id: number) => `/work-location-requests/${id}/cancel`,
+    DECIDE: (id: number) => `/work-location-requests/${id}/decide`,
+  },
   EXPENSES: {
     CATEGORIES: '/expenses/categories',
     CATEGORY_DETAIL: (id: number) => `/expenses/categories/${id}`,

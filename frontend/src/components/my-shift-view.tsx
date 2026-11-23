@@ -14,6 +14,7 @@ import {
 import { Card, Button, Badge, cn } from './ui-elements';
 import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { MyRegularizations, TeamRegularizations } from './regularization-requests';
+import { MyWorkLocationRequests } from './work-location/my-requests';
 import { client } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
 import { todayIso } from './schedule-delegations-utils';
@@ -537,6 +538,7 @@ export const MyShiftView: React.FC = () => {
       </div>
 
       <MyRegularizations />
+      <MyWorkLocationRequests />
       <TeamRegularizations />
       </div>
       </div>

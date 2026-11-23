@@ -202,6 +202,12 @@ export const ReportViewer: React.FC<Props> = ({
           <div>
             <h1 className="text-2xl font-bold">{report.name}</h1>
             <p className="text-sm text-slate-500 mt-1">{report.description}</p>
+            {report.key === 'muster_roll' && (
+              <p className="text-xs text-slate-500 mt-1">
+                Legend: P present · A absent · L leave · WO weekly off · H holiday · OD on duty / client visit ·
+                WFH work from home · OD/2, WFH/2 half-day approved request (no punch) · P·OD, P·WFH present on an approved day
+              </p>
+            )}
             <div className="flex gap-1 mt-2">
               {report.is_sensitive && (
                 <Badge variant="warning" className="text-[10px]">

@@ -18,6 +18,7 @@ import { ApprovalItem } from '../types/erp';
 import { toast } from 'sonner';
 import { RegularizationQueue } from './regularization-requests';
 import { OptionalHolidayApprovals } from './holidays/optional-holiday-approvals';
+import { WorkLocationApprovals } from './work-location/approvals';
 import { normalizeRoleName } from '../utils/roles';
 import {
   Dialog,
@@ -357,6 +358,10 @@ export const ApprovalsView = () => {
 
       {resourceType === 'all' && (statusFilter === 'all' || statusFilter === 'pending') && (
         <OptionalHolidayApprovals refreshKey={refreshTick} />
+      )}
+
+      {resourceType === 'all' && (statusFilter === 'all' || statusFilter === 'pending') && (
+        <WorkLocationApprovals refreshKey={refreshTick} />
       )}
 
       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">

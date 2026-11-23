@@ -153,6 +153,12 @@ const GEO_FLAG_META: Record<
     description: 'Device reported a fake-GPS reading.',
     icon: Smartphone,
   },
+  approved_remote: {
+    label: 'Remote',
+    tone: 'bg-blue-100 text-blue-800',
+    description: 'Punch location check relaxed by an approved WFH / on-duty request.',
+    icon: MapPin,
+  },
   low_accuracy: {
     label: 'Low Accuracy',
     tone: 'bg-slate-100 text-slate-700',
@@ -247,7 +253,7 @@ export const AttendanceFlaggedReview: React.FC = () => {
   }, [items]);
 
   const geoCounts = useMemo(() => {
-    const c = { outside_geofence: 0, mock_location: 0, low_accuracy: 0 };
+    const c = { outside_geofence: 0, mock_location: 0, low_accuracy: 0, approved_remote: 0 };
     items.forEach((i) => {
       [i.geo_flag, i.punch_out_geo_flag].forEach((g) => {
         if (g && g in c) (c as any)[g] += 1;
@@ -358,8 +364,8 @@ export const AttendanceFlaggedReview: React.FC = () => {
         <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
           Geo Fencing
         </div>
-        <div className="grid grid-cols-3 gap-3">
-          {(['outside_geofence', 'mock_location', 'low_accuracy'] as const).map((k) => {
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {(['outside_geofence', 'mock_location', 'low_accuracy', 'approved_remote'] as const).map((k) => {
             const meta = GEO_FLAG_META[k];
             const Icon = meta.icon;
             return (

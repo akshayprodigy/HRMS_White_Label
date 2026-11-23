@@ -54,9 +54,24 @@ def _is_hr(user: User) -> bool:
     return deps.user_has_permission(user, PERM_HR)
 
 
+def _is_privileged(user: User) -> bool:
+    return (_is_hr(user) or bool(user.is_superuser)
+            or deps.user_has_permission(user, PERM_LEAVE))
+
+
+def _can_decide(viewer: User, privileged: bool, r: WorkLocationRequest,
+                owner_manager_id: Optional[int], routed_via: str) -> bool:
+    """Mirrors decide_request: pending, direct path, never one's own request,
+    and the viewer is the owner's manager or privileged."""
+    return (r.status == WorkLocationStatus.PENDING
+            and routed_via == "direct" and r.user_id != viewer.id
+            and (privileged or owner_manager_id == viewer.id))
+
+
 def _out(r: WorkLocationRequest, name: Optional[str] = None,
-         routed_via: str = "direct") -> dict:
+         routed_via: str = "direct", can_decide: bool = False) -> dict:
     return {
+        "can_decide": can_decide,
         "id": r.id, "user_id": r.user_id, "user_name": name,
         "kind": r.kind, "start_date": _iso(r.start_date),
         "end_date": _iso(r.end_date), "day_portion": r.day_portion,
@@ -77,15 +92,20 @@ async def _chain_instance_id(db, rid: int) -> Optional[int]:
         db, ChainEntityType.WORK_LOCATION, rid)
 
 
-async def _detail(db, rid: int) -> dict:
+async def _detail(db, rid: int, viewer: Optional[User] = None) -> dict:
     db.expire_all()
     r = (await db.execute(select(WorkLocationRequest).where(
         WorkLocationRequest.id == rid)
         .execution_options(populate_existing=True))).scalars().one()
     name = (await db.execute(select(User.full_name).where(
         User.id == r.user_id))).scalar_one_or_none()
-    return _out(r, name, "chain" if await _chain_instance_id(db, rid)
-                else "direct")
+    via = "chain" if await _chain_instance_id(db, rid) else "direct"
+    cd = False
+    if viewer is not None:
+        mgr = (await db.execute(select(User.manager_id).where(
+            User.id == r.user_id))).scalar_one_or_none()
+        cd = _can_decide(viewer, _is_privileged(viewer), r, mgr, via)
+    return _out(r, name, via, cd)
 
 
 def _check_status(status: Optional[str]) -> None:
@@ -128,7 +148,7 @@ async def create_request(
         return req.id
 
     rid = await retry_on_lock(db, body, commit=True)
-    return await _detail(db, rid)
+    return await _detail(db, rid, current_user)
 
 
 @router.get("/my")
@@ -144,8 +164,14 @@ async def my_requests(
     rows = (await db.execute(q.order_by(WorkLocationRequest.id.desc())
                              )).scalars().all()
     chained = await _chained_ids(db, [r.id for r in rows])
-    return [_out(r, current_user.full_name,
-                 "chain" if r.id in chained else "direct") for r in rows]
+    mgr = current_user.manager_id
+    priv = _is_privileged(current_user)
+    out = []
+    for r in rows:
+        via = "chain" if r.id in chained else "direct"
+        out.append(_out(r, current_user.full_name, via,
+                        _can_decide(current_user, priv, r, mgr, via)))
+    return out
 
 
 @router.post("/{request_id}/cancel")
@@ -182,7 +208,7 @@ async def cancel_request(
         return request_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, request_id)
+    return await _detail(db, request_id, current_user)
 
 
 @router.get("")
@@ -192,7 +218,7 @@ async def list_requests(
     to: Optional[date] = None, user_id: Optional[int] = None,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
-    q = (select(WorkLocationRequest, User.full_name)
+    q = (select(WorkLocationRequest, User.full_name, User.manager_id)
          .join(User, User.id == WorkLocationRequest.user_id))
     if not (_is_hr(current_user)
             or deps.user_has_permission(current_user, PERM_HR_READ)
@@ -217,9 +243,13 @@ async def list_requests(
     if user_id:
         q = q.where(WorkLocationRequest.user_id == user_id)
     rows = (await db.execute(q.order_by(WorkLocationRequest.id.desc()))).all()
-    chained = await _chained_ids(db, [r.id for r, _ in rows])
-    return [_out(r, n, "chain" if r.id in chained else "direct")
-            for r, n in rows]
+    chained = await _chained_ids(db, [r[0].id for r in rows])
+    priv = _is_privileged(current_user)
+    out = []
+    for r, n, mgr in rows:
+        via = "chain" if r.id in chained else "direct"
+        out.append(_out(r, n, via, _can_decide(current_user, priv, r, mgr, via)))
+    return out
 
 
 @router.post("/{request_id}/decide")
@@ -230,8 +260,7 @@ async def decide_request(
 ) -> Any:
     aid = current_user.id
     actor = plain_actor(current_user)
-    privileged = (_is_hr(current_user) or current_user.is_superuser
-                  or deps.user_has_permission(current_user, PERM_LEAVE))
+    privileged = _is_privileged(current_user)
 
     async def body() -> int:
         req = (await db.execute(
@@ -253,4 +282,4 @@ async def decide_request(
         return request_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, request_id)
+    return await _detail(db, request_id, current_user)
