@@ -229,6 +229,7 @@ All "today", shift-window, late-mark and no-show logic now runs in one org timez
 - **Before deploying**, insert the rule explicitly:
   - `UTC` keeps the old behaviour until HR is ready to switch;
   - the real zone (e.g. `Asia/Kolkata`) switches immediately.
+- **Biometric devices in IST on an install you set to `UTC`:** if you set `org.timezone=UTC` and `biometric.default_utc_offset_minutes` was never set explicitly, **also set `biometric.default_utc_offset_minutes=330`**. A blank value now follows the org timezone (UTC, offset 0), whereas the previous default was 330 (IST). Without this, newly registered devices and imports would be read 5.5 hours off. Devices that already have an explicit `utc_offset_minutes` are unaffected.
 - **What changes at cutover:**
   - Late / no-show flags recorded before the cutover were computed in UTC and are not rewritten.
   - **Do not re-run `late_mark.process_month` for months closed before the cutover.** It would re-interpret old punches in the new timezone.
@@ -248,7 +249,11 @@ Creates the `optional_holiday_pick` and `work_location_request` tables. Run `ale
 - **Optional holidays:**
   - Employees pick them under *Leave → Holiday Calendar* or *Profile → My Holidays*, and on mobile under *More → Holidays*.
   - Limit per year: time rule **`holidays.optional_quota_per_year`** (default 2, range 0-20). Pending picks count toward the limit until decided.
-  - **A pick is not taken until a person approves it.** By default the employee's reporting manager decides; if there is no manager, HR (`hr employee write`), `leave approve` holders and superusers do. If an approval chain with entity type `optional_holiday` exists, picks route through it instead. A chain that would approve automatically, or that finds no approver, falls back to the manager / HR path.
+  - **A pick is not taken until a person other than the requester approves it.**
+  - **Who decides:** the employee's reporting manager. If there is no manager, HR (holders of `hr employee write`) and superusers are notified and decide. HR and superusers can always decide any pick. If the manager is inactive, it goes to HR instead.
+  - **`leave approve` grants nothing beyond being a manager:** holders list and decide only their own direct reports. Read-only HR (`hr employee read`) can list but not decide. Admin assigns managers.
+  - **Chains:** if an approval chain with entity type `optional_holiday` exists, picks route through it instead, and the requester is always excluded from every step. A chain that would approve automatically, finds no approver (including a step whose only approvers are the requester or inactive users) falls back to the manager / HR path above. The requester can never act on their own pick, directly or through the chain.
+  - **Editing a holiday (HR):** when a holiday becomes mandatory, an approved pick is cancelled only if the mandatory holiday applies to that employee's location; otherwise it stays approved and an audit row is written. The edit is refused with 409 if such a pick falls in a payroll-locked month.
 
 ### CSV holiday import
 
@@ -268,7 +273,7 @@ Onam,2026-08-26,Kochi,true
 ### On-duty / client-visit / WFH requests
 
 - Employees file them under *My Shift → My Work Location Requests* on the web, and under *More → Work location* on mobile.
-- **A request is not taken until a person approves it.** Routing is the same as for optional holidays, with chain entity type `work_location`. On mobile, managers decide under *Approvals → Team requests*.
+- **A request is not taken until a person approves it.** Routing is the same as for optional holidays, with chain entity type `work_location`: the reporting manager decides (no manager or inactive manager: HR with `hr employee write` and superusers, who can always decide); `leave approve` holders only decide their own direct reports; the chain path excludes the requester. On mobile, managers decide under *Approvals → Team requests*.
 - While pending, a request changes nothing. Once approved:
   - the geofence is relaxed for that day (the punch is marked `approved_remote`, shown as **Remote** in *Flagged Review*);
   - without a punch the day counts as present, with no LOP and no no-show;
@@ -280,7 +285,8 @@ Onam,2026-08-26,Kochi,true
 
 *Reports → Shift Coverage* (permission `report attendance`, at most 62 days per run). It shows required vs scheduled vs attended headcount per shift per day.
 - "Scheduled" counts **published** roster entries only. Orgs that never publish rosters will see 0 scheduled.
-- HR, CEO and Admin see every department. Department heads see only the departments they head. Other users see no rows.
+- HR, CEO and Admin see every department. Department heads **and deputies** see only the departments they head or deputise. Other users see no rows.
+- Org-wide requirements (no department) are shown to those scoped viewers as org-wide headcounts (aggregates only, no names).
 
 ## Resource Usage (Hostinger KVM 4)
 - **CPU**: 4 vCPU allows ~9 Gunicorn workers. Each worker handles dozens of concurrent requests.
