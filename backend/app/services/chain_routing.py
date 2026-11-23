@@ -5,13 +5,14 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.models.approval_chain import (
     ApprovalChain, ChainedApprovalInstance, ChainedApprovalStatus,
     ChainedApprovalStepInstance, StepInstanceStatus,
 )
 from app.models.employee import Employee
+from app.models.notification import Notification
 from app.models.user import Permission, Role, User
 from app.services.attendance_lock import LockRetry, assert_attendance_editable
 
@@ -91,20 +92,47 @@ async def chain_instance_id(db, entity_type: str,
     )).scalar_one_or_none()
 
 
+async def _drop_unactionable_instance(db, inst) -> bool:
+    """These requests (work location, optional holidays) are only ever taken
+    once a person approves them. An instance that auto-approved (amount
+    threshold / no applicable steps) or whose current step has no pending
+    approver would either grant the request with nobody deciding or strand
+    it. Delete such an instance with its step rows and notifications so the
+    request falls back to the direct path. Returns True when dropped."""
+    if inst.status == ChainedApprovalStatus.PENDING:
+        pending = (await db.execute(
+            select(ChainedApprovalStepInstance.id).where(
+                ChainedApprovalStepInstance.instance_id == inst.id,
+                ChainedApprovalStepInstance.step_order
+                == inst.current_step_order,
+                ChainedApprovalStepInstance.status
+                == StepInstanceStatus.PENDING).limit(1))).first()
+        if pending is not None:
+            return False
+    await db.execute(delete(Notification).where(
+        Notification.resource_type == "chained_approval_instance",
+        Notification.resource_id == str(inst.id)))
+    await db.execute(delete(ChainedApprovalStepInstance).where(
+        ChainedApprovalStepInstance.instance_id == inst.id))
+    await db.delete(inst)
+    await db.flush()
+    return True
+
+
 async def route_submission(
     db, *, entity_type: str, entity_id: int, submitter, context: dict,
     audit: Callable[[str], None],
-    finalize_approved: Callable[[], Awaitable[None]],
     notify_direct: Callable[[list], Awaitable[None]],
 ) -> None:
-    """Route a freshly created entity: active chain -> instantiate (commit
-    =False) and finalize when it auto-approves; otherwise notify the direct
-    approvers. `audit(routed_via)` is called once before routing."""
+    """Route a freshly created entity: an active chain with a real approver
+    on its current step -> instantiate (commit=False); otherwise notify the
+    direct approvers (reporting manager, else HR/superusers). Never
+    approves on its own: the entity stays pending until someone decides.
+    `audit(routed_via)` is called once after routing."""
     from app.api.v1.endpoints.approval_chains import instantiate_for_entity
     chain_exists = (await db.execute(select(ApprovalChain.id).where(
         ApprovalChain.entity_type == entity_type,
         ApprovalChain.is_active.is_(True)).limit(1))).first() is not None
-    audit("chain" if chain_exists else "direct")
     if chain_exists:
         dept = (await db.execute(select(Employee.department).where(
             Employee.user_id == submitter.id))).scalar_one_or_none()
@@ -112,7 +140,8 @@ async def route_submission(
             db=db, entity_type=entity_type, entity_id=entity_id,
             submitter=submitter, amount_paise=0, department=dept,
             context=context, commit=False)
-        if inst.status == ChainedApprovalStatus.APPROVED:
-            await finalize_approved()
-    else:
-        await notify_direct(await direct_approver_ids(db, submitter.id))
+        if not await _drop_unactionable_instance(db, inst):
+            audit("chain")
+            return
+    audit("direct")
+    await notify_direct(await direct_approver_ids(db, submitter.id))

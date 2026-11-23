@@ -570,3 +570,123 @@ async def test_hr_cancel_notifies_owner(api, world):
             Notification.resource_id == str(rid2),
             Notification.user_id == world["uid"]["emp"]))).scalars().all()
     assert notes == []
+
+
+# --- A request is only ever taken once a person approves it ---------------
+
+async def _mk_chain(world, *, steps=(), auto_below=None):
+    async with SessionLocal() as db:
+        c = ApprovalChain(
+            name=f"WlNoAuto {world['sfx']}", entity_type="work_location",
+            is_active=True, effective_from=org_today().replace(year=2020),
+            skip_if_same_person=False, auto_approve_below_paise=auto_below)
+        db.add(c)
+        await db.flush()
+        for i, (atype, ref) in enumerate(steps, 1):
+            db.add(ApprovalChainStep(chain_id=c.id, step_order=i,
+                                     approver_type=atype, approver_ref=ref,
+                                     label=f"S{i}"))
+        await db.commit()
+
+
+async def _instances(rid):
+    async with SessionLocal() as db:
+        return (await db.execute(select(ChainedApprovalInstance.id).where(
+            ChainedApprovalInstance.entity_type == "work_location",
+            ChainedApprovalInstance.entity_id == rid))).scalars().all()
+
+
+async def _assert_pending_direct(api, q, uid, approver="mgr"):
+    assert q["status"] == "pending" and q["routed_via"] == "direct", q
+    assert await _status(q["id"]) == "pending"
+    assert await _instances(q["id"]) == []
+    async with SessionLocal() as db:
+        assert await WL.approved_portion(
+            db, uid, D(0)) is None
+    r = await decide(api, q["id"], who=approver)
+    assert r.status_code == 200 and r.json()["status"] == "approved", r.text
+
+
+async def test_chain_auto_approve_threshold_never_applies(api, world):
+    await _mk_chain(world, steps=(("specific_user",
+                                   str(world["uid"]["hr"])),),
+                    auto_below=10_000_000)
+    q = (await req(api, s=0)).json()
+    await _assert_pending_direct(api, q, world["uid"]["emp"])
+
+
+async def test_chain_without_steps_stays_pending(api, world):
+    await _mk_chain(world)
+    q = (await req(api, s=0)).json()
+    await _assert_pending_direct(api, q, world["uid"]["emp"])
+
+
+async def test_chain_step_with_no_approver_falls_back(api, world):
+    # emp2 has no reporting manager -> the chain step resolves to nobody;
+    # the request must not strand: it goes to HR/superusers directly.
+    await _mk_chain(world, steps=(("reporting_manager", None),))
+    q = (await req(api, who="emp2", s=0)).json()
+    assert q["status"] == "pending" and q["routed_via"] == "direct", q
+    assert await _instances(q["id"]) == []
+    async with SessionLocal() as db:
+        notified = set((await db.execute(select(Notification.user_id).where(
+            Notification.resource_type == "work_location",
+            Notification.resource_id == str(q["id"])))).scalars().all())
+    assert world["uid"]["hr"] in notified and world["uid"]["su"] in notified
+    assert (await decide(api, q["id"], who="mgr")).status_code == 403
+    r = await decide(api, q["id"], who="hr")
+    assert r.status_code == 200 and r.json()["status"] == "approved"
+
+
+async def test_chain_with_real_approver_still_used(api, world):
+    await _mk_chain(world, steps=(("reporting_manager", None),))
+    q = (await req(api, s=0)).json()          # emp reports to mgr
+    assert q["status"] == "pending" and q["routed_via"] == "chain", q
+    assert len(await _instances(q["id"])) == 1
+
+
+async def test_approved_leave_blocks_work_location(api, world):
+    from app.models.leave import (HalfDaySession, LeaveRequest, LeaveStatus,
+                                  LeaveType)
+    uid = world["uid"]["emp"]
+    async with SessionLocal() as db:
+        lt = LeaveType(name=f"WLLV{world['sfx']}")
+        db.add(lt)
+        await db.flush()
+        lt_id = lt.id
+
+        def lv(d, status, half=False, session=None):
+            return LeaveRequest(
+                employee_id=uid, leave_type_id=lt_id, start_date=D(d),
+                end_date=D(d), is_half_day=half, half_day_session=session,
+                reason="t", status=status, created_by_user_id=uid)
+        db.add_all([lv(0, LeaveStatus.APPROVED),
+                    lv(2, LeaveStatus.PENDING),
+                    lv(4, LeaveStatus.APPROVED, True, HalfDaySession.MORNING),
+                    lv(6, LeaveStatus.APPROVED, True, None)])
+        await db.commit()
+    try:
+        r = await req(api, s=0)                       # approved full leave
+        assert r.status_code == 409 and "approved leave" in r.text
+        r = await req(api, s=-1, e=1)                 # range touching it
+        assert r.status_code == 409
+        assert (await req(api, s=2)).status_code == 201   # pending leave ok
+        r = await req(api, s=4, portion="first_half")     # same half
+        assert r.status_code == 409
+        assert (await req(api, s=4, portion="second_half")).status_code == 201
+        r = await req(api, s=6, portion="second_half")    # session unknown
+        assert r.status_code == 409
+        # leave approved while the WFH was pending -> approval is refused
+        q = (await req(api, s=8)).json()
+        async with SessionLocal() as db:
+            db.add(lv(8, LeaveStatus.APPROVED))
+            await db.commit()
+        r = await decide(api, q["id"])
+        assert r.status_code == 409 and "approved leave" in r.text
+        assert await _status(q["id"]) == "pending"
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(LeaveRequest).where(
+                LeaveRequest.leave_type_id == lt_id))
+            await db.execute(delete(LeaveType).where(LeaveType.id == lt_id))
+            await db.commit()

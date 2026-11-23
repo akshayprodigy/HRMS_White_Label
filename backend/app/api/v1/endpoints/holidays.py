@@ -133,9 +133,6 @@ async def create_pick(
             db, user=current_user, holiday_id=payload.holiday_id,
             reason=payload.reason)
         hol = await svc.holiday_of(db, pick)
-        async def finalize_approved() -> None:
-            await svc.finalize(db, pick, approved=True, actor=None, note=None)
-
         async def notify_direct(ids) -> None:
             await roster_svc.notify_many(db, [(
                 u, "Optional holiday request",
@@ -149,7 +146,7 @@ async def create_pick(
             entity_id=pick.id, submitter=current_user,
             context={"holiday": hol.name},
             audit=lambda via: svc.audit_create(db, uid, pick, via),
-            finalize_approved=finalize_approved, notify_direct=notify_direct)
+            notify_direct=notify_direct)
         return pick.id
 
     pid = await retry_on_lock(db, body, commit=True)

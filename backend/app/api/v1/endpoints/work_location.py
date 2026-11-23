@@ -113,9 +113,6 @@ async def create_request(
             start_date=payload.start_date, end_date=payload.end_date,
             day_portion=payload.day_portion, place=payload.place,
             purpose=payload.purpose)
-        async def finalize_approved() -> None:
-            await svc.finalize(db, req, approved=True, actor=None, note=None)
-
         async def notify_direct(ids) -> None:
             await roster_svc.notify_many(db, [(
                 u, "Work-location request",
@@ -127,7 +124,7 @@ async def create_request(
             db, entity_type=ChainEntityType.WORK_LOCATION, entity_id=req.id,
             submitter=current_user, context={"kind": req.kind},
             audit=lambda via: svc.audit_create(db, uid, req, via),
-            finalize_approved=finalize_approved, notify_direct=notify_direct)
+            notify_direct=notify_direct)
         return req.id
 
     rid = await retry_on_lock(db, body, commit=True)

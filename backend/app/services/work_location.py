@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.audit import AuditLog
+from app.models.leave import HalfDaySession, LeaveRequest, LeaveStatus
 from app.models.work_location import (
     DayPortion, WorkLocationKind, WorkLocationRequest, WorkLocationStatus,
 )
@@ -67,6 +68,31 @@ def _conflicts(a_start, a_end, a_portion, b_start, b_end, b_portion) -> bool:
     return True
 
 
+_LEAVE_PORTION = {HalfDaySession.MORNING: DayPortion.FIRST_HALF,
+                  HalfDaySession.AFTERNOON: DayPortion.SECOND_HALF}
+
+
+async def assert_no_approved_leave(db, user_id: int, start_date: date,
+                                   end_date: date, day_portion: str) -> None:
+    """409 when APPROVED leave already covers any of these dates. Pending
+    leave does not block: only an approved request is "taken". A half-day
+    leave and the opposite half-day request on the same date may coexist;
+    a half-day leave with no session blocks the whole date."""
+    rows = (await db.execute(
+        select(LeaveRequest.start_date, LeaveRequest.end_date,
+               LeaveRequest.is_half_day, LeaveRequest.half_day_session).where(
+            LeaveRequest.employee_id == user_id,
+            LeaveRequest.status == LeaveStatus.APPROVED,
+            LeaveRequest.end_date >= start_date,
+            LeaveRequest.start_date <= end_date))).all()
+    for s, e, half, session in rows:
+        portion = (_LEAVE_PORTION.get(session, DayPortion.FULL) if half
+                   else DayPortion.FULL)
+        if _conflicts(start_date, end_date, day_portion, s, e, portion):
+            raise HTTPException(
+                409, "You have approved leave on these dates")
+
+
 async def create(db, *, user, kind, start_date, end_date, day_portion,
                  place, purpose) -> WorkLocationRequest:
     """The CALLER must hold the user-row lock (fresh transaction) so the
@@ -97,6 +123,7 @@ async def create(db, *, user, kind, start_date, end_date, day_portion,
         raise HTTPException(
             422, f"Start date cannot be before {earliest.isoformat()}")
     await assert_dates_unlocked(db, start_date, end_date)
+    await assert_no_approved_leave(db, uid, start_date, end_date, day_portion)
     rows = (await db.execute(
         select(WorkLocationRequest.start_date, WorkLocationRequest.end_date,
                WorkLocationRequest.day_portion).where(
@@ -136,6 +163,8 @@ async def finalize(db, req: WorkLocationRequest, *, approved: bool, actor,
         raise HTTPException(409, f"Request is already {req.status}")
     if approved:
         await assert_dates_unlocked(db, req.start_date, req.end_date)
+        await assert_no_approved_leave(db, req.user_id, req.start_date,
+                                       req.end_date, req.day_portion)
     req.status = (WorkLocationStatus.APPROVED if approved
                   else WorkLocationStatus.REJECTED)
     req.decided_by_id = getattr(actor, "id", None)
