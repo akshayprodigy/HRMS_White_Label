@@ -27,6 +27,8 @@ export default function MoreTab() {
         <Text muted>{user?.email}</Text>
         <Button testID="open-payslips" variant="secondary" title="Payslips" onPress={() => router.push('/payslips' as never)} />
         <Button testID="open-documents" variant="secondary" title="Documents and Form 16" onPress={() => router.push('/documents' as never)} />
+        <Button testID="open-holidays" variant="secondary" title="Holidays" onPress={() => router.push('/holidays' as never)} />
+        <Button testID="open-work-location" variant="secondary" title="Work location" onPress={() => router.push('/work-location' as never)} />
         <Button testID="open-location-sharing" variant="secondary" title="Shift location sharing" onPress={() => router.push('/location-sharing' as never)} />
         {fieldTeam ? <Button testID="open-field-team" variant="secondary" title="Field team" onPress={() => router.push('/field-team' as never)} /> : null}
         <Button testID="logout" variant="secondary" title={t('common.signOut')} onPress={signOut} />

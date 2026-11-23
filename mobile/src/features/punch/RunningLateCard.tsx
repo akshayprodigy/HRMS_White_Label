@@ -26,7 +26,7 @@ export function RunningLateCard({ isMarked }: { isMarked: boolean | undefined })
   if (notice) {
     return (
       <Card testID="running-late-notice" style={{ gap: 6 }}>
-        <Text weight="600">{`Running late, expected by ${notice.eta_hhmm} UTC`}</Text>
+        <Text weight="600">{`Running late, expected by ${notice.eta_hhmm}`}</Text>
         {notice.reason ? <Text muted size={14}>{notice.reason}</Text> : null}
         {err ? <Text size={13}>{err}</Text> : null}
         <Button testID="running-late-clear" variant="secondary" title="Cancel notice" loading={clear.isPending} onPress={() => clear.mutate()} />

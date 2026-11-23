@@ -1,4 +1,5 @@
 import * as Crypto from 'expo-crypto';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking } from 'react-native';
 import { Button, Card, Screen, Text } from '../../components/ui';
@@ -9,11 +10,13 @@ import { flagNotice, submitPunch, type Fix, type PunchOutcome, type SelfieInput 
 import { useInvalidateAfterPunch, usePunchQueue, useSyncNow } from './hooks';
 import { checkPermission, getFix, requestPermission, type PermState } from './location';
 import { PendingBanner } from './PendingBanner';
+import { ApprovedBanner } from '../work-location/ApprovedBanner';
 import { RunningLateCard } from './RunningLateCard';
 import { SelfieCapture } from './SelfieCapture';
 
 export function PunchScreen() {
   const { colors } = useTheme();
+  const router = useRouter();
   const { today, query } = useAttendanceGate();
   const invalidate = useInvalidateAfterPunch();
   const { items: pending, rejected } = usePunchQueue();
@@ -96,6 +99,7 @@ export function PunchScreen() {
       </Card>
 
       <PendingBanner />
+      <ApprovedBanner />
 
       <Card style={{ gap: 6 }}>
         <Text weight="600">Location</Text>
@@ -140,6 +144,7 @@ export function PunchScreen() {
       {result ? <ResultNotice result={result} pendingIds={pending.map((p) => p.client_uuid)} rejectedIds={rejected.map((r) => r.client_uuid)} /> : null}
 
       <RunningLateCard isMarked={today?.is_marked} />
+      <Button testID="working-remotely" variant="secondary" title="Working remotely?" onPress={() => router.push('/work-location' as never)} />
     </Screen>
   );
 }

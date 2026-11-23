@@ -57,6 +57,8 @@ export function hrefFor(data: PushData | null): string {
     return '/approvals';
   }
   if (data.category === 'open_shift' || data.resource_type === 'open_shift') return '/schedule?section=open';
+  if (data.event_type?.startsWith('optional_holiday') || data.resource_type === 'optional_holiday') return '/holidays';
+  if (data.event_type?.startsWith('work_location') || data.resource_type === 'work_location') return '/work-location';
   return '/home'; // broadcasts surface as the root modal / Home banner
 }
 

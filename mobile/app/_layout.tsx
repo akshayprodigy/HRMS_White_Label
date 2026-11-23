@@ -39,6 +39,8 @@ function AuthGate() {
           <Stack.Screen name="payslips" options={{ headerShown: true, title: 'Payslips' }} />
           <Stack.Screen name="documents" options={{ headerShown: true, title: 'Documents' }} />
           <Stack.Screen name="location-sharing" options={{ headerShown: true, title: 'Shift location sharing' }} />
+          <Stack.Screen name="holidays" options={{ headerShown: true, title: 'Holidays' }} />
+          <Stack.Screen name="work-location" options={{ headerShown: true, title: 'Work location' }} />
           <Stack.Screen name="field-team" options={{ headerShown: true, title: 'Field team' }} />
         </Stack.Protected>
         <Stack.Protected guard={!user}>
