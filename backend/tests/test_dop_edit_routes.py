@@ -468,7 +468,7 @@ async def test_scheduler_job_retries_and_never_raises(dop, monkeypatch):
     u = dop["uid"]
     seen = {"n": 0}
 
-    async def scoped(db, user_ids=None):    # never a full sync on dev data
+    async def scoped(db, user_ids=None, *a):   # never a full sync on dev data
         seen["n"] += 1
         return await real(db, [u["emp"]])
     real = A.sync_mirror
@@ -477,12 +477,12 @@ async def test_scheduler_job_retries_and_never_raises(dop, monkeypatch):
         out = await S._job_dop_manager_mirror(db)
     assert out["changed"] == 0 and seen["n"] == 1
 
-    async def boom(db, user_ids=None):
+    async def boom(db, *a):
         raise RuntimeError("boom")
     monkeypatch.setattr(A, "sync_mirror", boom)
-    async with SessionLocal() as db:
-        out = await S._job_dop_manager_mirror(db)     # must not raise
-    assert out["changed"] == 0 and "boom" in out["error"]
+    async with SessionLocal() as db:                  # raises: the run fails
+        with pytest.raises(RuntimeError):
+            await S._job_dop_manager_mirror(db)
     assert "dop_manager_mirror" in S.REGISTRY
 
 
@@ -612,3 +612,48 @@ async def test_bulk_hashes_only_creating_rows(dop, api, monkeypatch):
                         "-officedocument.spreadsheetml.sheet")})
     assert r.status_code == 200, r.text
     assert len(calls) == 1, calls
+
+
+async def test_mirror_changes_are_audited_once_with_a_reason(dop, api):
+    u = dop["uid"]
+    from app.services.org_time import local_today
+    dn = f"DOP{dop['sfx']}B"
+    async with SessionLocal() as db:
+        d = Department(name=dn, is_active=True)
+        db.add(d)
+        await db.commit()
+        did = d.id
+    try:
+        async with SessionLocal() as db:
+            kind = (await A.lock_reporting(db)).id
+            await A.create(db, actor_id=u["admin"], kind_id=kind,
+                           scope_type="department",
+                           scope_department_id=dop["dept_id"],
+                           manager_user_id=u["hr"],
+                           starts_on=await local_today(db))
+            await db.commit()
+
+        async def rows():
+            async with SessionLocal() as db:
+                return (await db.execute(select(AuditLog).where(
+                    AuditLog.action == "dop.manager.sync",
+                    AuditLog.user_id == u["admin"]))).scalars().all()
+        assert await rows() == []
+        r = await _patch(api, u["emp"], {"department": dn})
+        assert r.status_code == 200, r.text
+        got = await rows()
+        assert len(got) == 1
+        d0 = got[0].details
+        assert d0["reason"] == "department/location move" and d0["total"] == 1
+        assert d0["changes"] == [{"user_id": u["emp"], "from": u["hr"],
+                                  "to": None}]
+        # nothing changes: no new row
+        assert (await _patch(api, u["emp"], {"designation": "Z"})
+                ).status_code == 200
+        assert len(await rows()) == 1
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(ManagerAssignment).where(
+                ManagerAssignment.scope_department_id == did))
+            await db.execute(delete(Department).where(Department.id == did))
+            await db.commit()

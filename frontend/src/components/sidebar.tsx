@@ -287,7 +287,7 @@ const menuItems: MenuItem[] = [
     id: "dop-admin",
     label: "Delegation of Powers",
     icon: Network,
-    roles: ["admin", "super admin"],
+    roles: ["super admin"],
     group: "Administration",
   },
   {

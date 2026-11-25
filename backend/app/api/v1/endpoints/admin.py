@@ -13,6 +13,8 @@ from sqlalchemy.orm import selectinload
 from app.api import deps
 from app.api.v1.endpoints import dop_edits as DE
 from app.services.dop import assignments as DOP
+from app.services.dop import deletes as DELETES
+from app.api.v1.endpoints.roster_common import retry_on_lock
 from app.core.security import get_password_hash
 from app.models.audit import AuditLog
 from app.models.user import User, Role, Permission
@@ -150,8 +152,22 @@ async def delete_department(
             ),
         )
 
-    await db.delete(db_obj)
-    await db.commit()
+    actor_id, name = current_user.id, db_obj.name
+
+    async def remove():
+        await db.commit()
+        await DE.sync_ready(db)                 # reporting lock first
+        why = await DELETES.department_blockers(db, dept_id)
+        if why:
+            raise HTTPException(status_code=409, detail=(
+                f"Cannot delete '{name}': " + "; ".join(why)))
+        d = await db.get(Department, dept_id, populate_existing=True)
+        if d is None:
+            raise HTTPException(status_code=404, detail="Department not found")
+        await DELETES.audit_department_rows_removed(db, actor_id, dept_id)
+        await db.flush()
+        await db.delete(d)
+    await retry_on_lock(db, remove, commit=True)
     return None
 
 
@@ -579,7 +595,6 @@ async def update_user_admin(
     return user
 
 
-
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     *,
@@ -592,9 +607,26 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     if user.id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete self")
-    
-    await db.delete(user)
-    await db.commit()
+
+    actor_id, name = current_user.id, user.full_name
+
+    async def remove():
+        await db.commit()
+        await DE.sync_ready(db)                 # reporting lock first
+        blockers = await DELETES.user_blockers(db, user_id)
+        if blockers:
+            raise HTTPException(status_code=409, detail=(
+                f"Cannot delete {name}: reassign first: "
+                + "; ".join(b["message"] for b in blockers)))
+        u = (await db.execute(
+            select(User).where(User.id == user_id)
+            .execution_options(populate_existing=True))).scalars().first()
+        if u is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        await DELETES.audit_user_rows_removed(db, actor_id, user_id)
+        await db.flush()
+        await db.delete(u)
+    await retry_on_lock(db, remove, commit=True)
     return None
 
 

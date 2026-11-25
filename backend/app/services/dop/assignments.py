@@ -589,10 +589,25 @@ async def set_reporting_manager(db, *, actor_id, user_id, manager_id) -> None:
             await db.flush()
 
 
-async def _sync(db, w, today, user_ids) -> int:
+SYNC_AUDIT_CAP = 200
+
+
+def audit_sync(db, actor_id, reason, changes) -> None:
+    """One `dop.manager.sync` row for a mirror change that no assignment
+    write already audited (job, department/location move, holder change).
+    Nothing is written when nothing changed."""
+    if not changes:
+        return
+    audit(db, actor_id, "dop.manager.sync", "manager_mirror", reason,
+          {"reason": reason, "total": len(changes),
+           "changes": changes[:SYNC_AUDIT_CAP]})
+
+
+async def _sync(db, w, today, user_ids, reason=None, actor_id=None) -> int:
     """Mirror for `user_ids` from the world `w` (built for `today`). Plain
     reads decide; only users whose manager_id differs are locked (id order)
-    and re-checked."""
+    and re-checked. With `reason`, changes are audited (see audit_sync);
+    direct assignment writes pass none: they audit themselves."""
     dnames = dict((await db.execute(
         select(Department.id, Department.name))).all())
     # Governed: an all-subdomain reporting row that has started applies (or
@@ -620,19 +635,24 @@ async def _sync(db, w, today, user_ids) -> int:
         User.id.in_(list(want))))).all())
     diff = sorted(i for i in want if cur.get(i) != want[i] and i in cur)
     changed = 0
+    changes: list = []
     if diff:
         for u in (await db.execute(
                 select(User).where(User.id.in_(diff)).order_by(User.id)
                 .with_for_update().execution_options(populate_existing=True)
         )).scalars().all():
             if u.manager_id != want[u.id]:
+                changes.append({"user_id": u.id, "from": u.manager_id,
+                                "to": want[u.id]})
                 u.manager_id = want[u.id]
                 changed += 1
         await db.flush()
+    if reason:
+        audit_sync(db, actor_id, reason, changes)
     return changed
 
 
-async def sync_mirror(db, user_ids=None) -> int:
+async def sync_mirror(db, user_ids=None, reason=None, actor_id=None) -> int:
     """Set User.manager_id to the base reporting manager (no acting cover).
     Returns how many users changed. Needs the reporting kind lock (taken
     here; re-locking a held row is free). Only users the assignments govern
@@ -640,7 +660,8 @@ async def sync_mirror(db, user_ids=None) -> int:
     await lock_reporting(db)
     await db.flush()
     today = await local_today(db)
-    return await _sync(db, await load_world(db, today), today, user_ids)
+    return await _sync(db, await load_world(db, today), today, user_ids,
+                       reason, actor_id)
 
 
 async def post_governed_users(db, post_id) -> list:
@@ -664,7 +685,7 @@ async def post_governed_users(db, post_id) -> list:
     return sorted(users)
 
 
-async def sync_post_users(db, post_id, baseline=None) -> int:
+async def sync_post_users(db, post_id, baseline=None, actor_id=None) -> int:
     """After a holder or post change: refuse a new reporting loop (when a
     `loop_baseline` taken after the lock is given) and resync the mirror of
     the users governed by assignments to the post. Returns users changed."""
@@ -676,7 +697,8 @@ async def sync_post_users(db, post_id, baseline=None) -> int:
     if baseline is not None:
         await assert_no_new_loops(db, baseline, users)
     today = await local_today(db)
-    return await _sync(db, await load_world(db, today), today, users)
+    return await _sync(db, await load_world(db, today), today, users,
+                       "post holder change", actor_id)
 
 
 async def has_reporting_assignment(db, user_id, w=None, today=None) -> bool:
@@ -691,7 +713,7 @@ async def has_reporting_assignment(db, user_id, w=None, today=None) -> bool:
 
 
 async def resync_after_move(db, user_id, had_assignment: bool,
-                            w=None, today=None) -> int:
+                            w=None, today=None, actor_id=None) -> int:
     """After a department/location change: when an assignment applied before
     and none applies now, manager_id becomes NULL; otherwise the normal sync."""
     await lock_reporting(db)
@@ -704,8 +726,12 @@ async def resync_after_move(db, user_id, had_assignment: bool,
             select(User).where(User.id == user_id).with_for_update()
             .execution_options(populate_existing=True))).scalars().first()
         if u is not None and u.manager_id is not None:
+            audit_sync(db, actor_id, "department/location move",
+                       [{"user_id": user_id, "from": u.manager_id,
+                         "to": None}])
             u.manager_id = None
             await db.flush()
             return 1
         return 0
-    return await _sync(db, w, today, [user_id])
+    return await _sync(db, w, today, [user_id], "department/location move",
+                       actor_id)

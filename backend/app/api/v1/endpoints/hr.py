@@ -84,6 +84,7 @@ from app.api.v1.endpoints.roster_common import (
 
 from app.api.v1.endpoints import dop_edits as DE
 from app.services.dop import assignments as DOP
+from app.services.dop import deletes as DELETES
 
 router = APIRouter()
 
@@ -791,7 +792,7 @@ async def _process_employee_row(
     pw_hash: Optional[str] = None,
 ) -> Optional[str]:
     """Process a single row: create user (if needed) + employee record."""
-    row_num = index + 2  # Excel row (1-indexed header + 1-indexed data)  # Excel row (1-indexed header + 1-indexed data)
+    row_num = index + 2  # Excel row (1-indexed header + 1-indexed data)
 
     # Helper to read a column safely (supports fallback column names)
     def col_val(name: str, *fallbacks: str):
@@ -938,7 +939,8 @@ async def _process_employee_row(
                 db, actor_id=current_user_id, user_id=user.id,
                 manager_id=manager_id)
         elif await DOP.reporting_ready(db):
-            await DOP.sync_mirror(db, [user.id])
+            await DOP.sync_mirror(db, [user.id], "new employee",
+                                      current_user_id)
     except HTTPException as e:
         return f"Row {row_num} ({full_name}): {e.detail}"
 
@@ -1156,7 +1158,8 @@ async def create_employee(
             await DOP.set_reporting_manager(
                 db, actor_id=actor_id, user_id=target_uid, manager_id=mgr_id)
         elif ready:
-            await DOP.sync_mirror(db, [target_uid])
+            await DOP.sync_mirror(db, [target_uid], "new employee",
+                                  actor_id)
         return row.id
 
     new_id = await retry_on_lock(db, create_row, commit=True)
@@ -1225,7 +1228,8 @@ async def create_employee_with_user(
             await DOP.set_reporting_manager(
                 db, actor_id=actor_id, user_id=new_user.id, manager_id=mgr_id)
         elif ready:
-            await DOP.sync_mirror(db, [new_user.id])
+            await DOP.sync_mirror(db, [new_user.id], "new employee",
+                                  actor_id)
         return row.id
 
     new_id = await retry_on_lock(db, create_rows, commit=True)
@@ -1309,7 +1313,7 @@ async def _update_profile_with_location(db, current_user, body) -> Any:
         target.location = body.location
         await db.flush()
         if moved:
-            await DOP.resync_after_move(db, uid, had)
+            await DOP.resync_after_move(db, uid, had, actor_id=uid)
         return {"status": "success", "user_id": uid,
                 "full_name": user.full_name, "phone": target.phone,
                 "location": target.location}
@@ -1577,7 +1581,8 @@ async def update_employee(
         db.add(emp)
         await DE.flush_raw(db)
         if moved:
-            await DOP.resync_after_move(db, target_uid, had)
+            await DOP.resync_after_move(db, target_uid, had,
+                                        actor_id=actor_id)
     await DE.run_edit(db, apply)
 
     await log_audit(
@@ -1838,6 +1843,9 @@ async def _gather_employee_delete_blockers(db, user_id: int) -> list[dict]:
             "message": f"{open_reqs} open asset request(s)",
         })
 
+    for b in await DELETES.user_blockers(db, user_id):
+        blockers.append({**b, "message": "Reassign first: " + b["message"]})
+
     return blockers
 
 
@@ -1905,16 +1913,36 @@ async def delete_employee(
             },
         )
 
-    await log_audit(
-        db, current_user.id, "DELETE", "employee",
-        str(emp_id),
-        {"employee_id": emp_id_str, "email": email},
-        request
-    )
+    actor_id, uid, full_name = current_user.id, user.id, user.full_name
+    ip = request.client.host if request.client else None
 
-    await db.delete(db_obj)
-    await db.delete(user)
-    await db.commit()
+    async def remove():
+        await db.commit()
+        await DE.sync_ready(db)                 # reporting lock first
+        again = await DELETES.user_blockers(db, uid)    # under the lock
+        if again:
+            raise HTTPException(status_code=409, detail={
+                "message": (f"Cannot delete {full_name}: still tied to "
+                            "delegation of powers. Reassign first."),
+                "blockers": [{**b, "message": "Reassign first: " + b["message"]}
+                             for b in again]})
+        emp = (await db.execute(
+            select(Employee).where(Employee.id == emp_id)
+            .options(selectinload(Employee.user))
+            .execution_options(populate_existing=True))).scalars().first()
+        if emp is None:
+            raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
+        await DELETES.audit_user_rows_removed(db, actor_id, uid)
+        db.add(AuditLog(
+            user_id=actor_id, action="DELETE", resource_type="employee",
+            resource_id=str(emp_id),
+            details={"employee_id": emp_id_str, "email": email},
+            ip_address=ip))
+        await db.flush()
+        usr = emp.user
+        await db.delete(emp)
+        await db.delete(usr)
+    await retry_on_lock(db, remove, commit=True)
 
     # DB rows are gone via cascade; clean up the on-disk document folder so
     # we don't leave orphan files. Best-effort — if it fails we still return

@@ -147,7 +147,7 @@ async def update(db, *, actor_id, post_id, changes) -> Post:
     audit(db, actor_id, "dop.post.update", "post", p.id,
           {"before": before, "after": changes})
     if reactivating:
-        await sync_post_users(db, post_id, base)
+        await sync_post_users(db, post_id, base, actor_id=actor_id)
     return p
 
 
@@ -212,7 +212,7 @@ async def assign_holder(db, *, actor_id, post_id, user_id, starts_on,
         audit(db, actor_id, "dop.post.holder_end", "post", post_id,
               {"before": snap, "after": _holder_snapshot(old),
                "truncated_by": h.id})
-    await sync_post_users(db, post_id, base)
+    await sync_post_users(db, post_id, base, actor_id=actor_id)
     return h
 
 
@@ -238,7 +238,7 @@ async def end_holder(db, *, actor_id, post_id, holder_id, ends_on):
     await db.flush()
     audit(db, actor_id, "dop.post.holder_end", "post", post_id,
           {"before": before, "ends_on": ends_on.isoformat()})
-    await sync_post_users(db, post_id, base)
+    await sync_post_users(db, post_id, base, actor_id=actor_id)
     return h
 
 
@@ -296,4 +296,4 @@ async def remove_holder(db, *, actor_id, post_id, holder_id,
         audit(db, actor_id, "dop.post.holder_end", "post", post_id,
               {"before": before, "after": _holder_snapshot(prev),
                "reopened_by_removal_of": holder_id})
-    await sync_post_users(db, post_id, base)
+    await sync_post_users(db, post_id, base, actor_id=actor_id)
