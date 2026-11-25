@@ -14,7 +14,7 @@ Spec: `docs/superpowers/specs/2026-11-25-dop-delegation-of-powers-design.md`, se
 
 - `ApproverDelegation` stays in charge of live out-of-office cover. The resolver **reads** live delegations as covers with `original_can_act=True`. Replacing the table moves to D2, together with enforcing `original_can_act=False`.
 - Rules, step jobs, override and inbox are D2. Access control is A1.
-- `manager_id` changes only when someone edits a manager or an assignment.
+- `manager_id` is a mirror of the reporting assignment. It changes when someone edits a manager or an assignment, when an employee moves department or location, when a post holder changes, and in the daily `dop_manager_mirror` job (audited as `dop.manager.sync`).
 
 ## Environment (all tasks)
 
@@ -1764,5 +1764,5 @@ async def replace_overlaps(db, *, actor_id, kind_id, scope_type, starts_on,
 | Resolver order, fallback, HR, blocked | 1 |
 | Reporting mirror | 4, 5 |
 | Managers / Posts / Acting / Check screens | 8 |
-| CSV import of managers | existing employee bulk import, routed in 5 |
+| CSV import of managers | existing employee bulk import, routed in 5. Its `Manager Email` column applies to **new users only**, as before; a row for an existing user does not change the manager |
 | Repeat approver, verifier ≠ approver, re-resolve, override, rules, inbox, replacing ApproverDelegation | D2 |

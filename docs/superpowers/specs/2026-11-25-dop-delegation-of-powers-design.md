@@ -31,15 +31,16 @@ Admin decides who verifies, recommends and approves every request, by person, po
 
 **Subdomains** are a fixed code list, each mapped from request types: `leave`, `attendance` (regularization, work location, optional holiday, overtime, comp-off), `roster` (shift change, swaps, drops, claims), `expense` (expense, travel, salary advance), `asset`, `pay` (salary revision), `people` (requisition, resignation), `business` (estimate).
 
-**Manager assignments** `manager_assignment`: id, manager_kind_id, scope_type (`user|department|location|company`), scope_user_id / scope_department_id / scope_location (text), manager_user_id **or** manager_post_id (exactly one), starts_on, ends_on (NULL = open), note, created_by_id, created_at, ended_by_id, ended_at.
-- Child `manager_assignment_subdomain` (assignment_id, subdomain); no rows = all subdomains.
+**Manager assignments** `manager_assignment`: id, manager_kind_id, scope_type (`user|department|location|company`), scope_user_id / scope_department_id / scope_location (text), manager_user_id **or** manager_post_id (exactly one), subdomains (JSON list of codes; `[]` = all), starts_on, ends_on (NULL = open), note, created_by_id, created_at, cancelled_at (a row removed before it ever started; ended rows keep their history, so there is no ended_by/ended_at).
+- There is no child subdomain table: rows are always read whole.
+- **Replacement keeps what the new row does not cover:** a new assignment that overlaps an existing one ends or splits the old row only where the new one applies. Areas (subdomains) and dates the new row does not cover stay with the old row.
 - **One answer:** two assignments with the same kind and scope may not overlap in dates for the same subdomain (409). "All" and a named subdomain at the same scope may coexist: the named one wins.
 - A "team" is expressed by assigning to selected employees in bulk; there is no separate team table.
 
-**Posts** `post`: id, code, title, department_id, location, parent_post_id, is_active. `post_holder`: post_id, user_id, starts_on, ends_on, with at most one holder on any date. Vacant posts are allowed. Department head is the existing `Department.head_user_id` / deputy; a post may be flagged `heads_department_id` (unique), in which case its holder is the head.
+**Posts** `post`: id, code, title, department_id, location, parent_post_id, is_active. `post_holder`: post_id, user_id, starts_on, ends_on, with at most one holder on any date. Vacant posts are allowed. Department head is the existing `Department.head_user_id` / deputy; a post may point at the department it heads with `heads_department_id` (unique), in which case its holder is the head.
 
-**Acting assignments** `acting_assignment`: id, covers_user_id **or** covers_post_id, acting_user_id, subdomains (child table, as above), starts_on, ends_on, `original_can_act` (bool, default false), only_when_on_leave (bool), reason, created_by_id, revoked_at / revoked_by_id.
-- Replaces `ApproverDelegation` in D2 (D1 only reads it). Existing rows are migrated with `original_can_act=true`, which keeps today's behaviour. Self-service out-of-office stays and creates these rows with the same default.
+**Acting assignments** `acting_assignment`: id, covers_user_id **or** covers_post_id, acting_user_id, subdomains (JSON list, as above), starts_on, ends_on, `original_can_act` (bool, default false), `only_when_on_leave` (bool: the cover applies only while the covered person is on approved leave), reason, created_by_id, revoked_at / revoked_by_id.
+- Replaces `ApproverDelegation` in D2. **D1 reads `ApproverDelegation`** as covers with `original_can_act=true` and does not write it. Existing rows are migrated with `original_can_act=true`, which keeps today's behaviour. Self-service out-of-office stays and creates these rows with the same default.
 - Acting does not chain: if A covers B and B covers C, A does not act for C.
 - Overlapping covers for the same user/post and subdomain are refused (409). A cycle is harmless because covers do not chain.
 
@@ -144,7 +145,8 @@ Each request type registers one adapter (`services/dop/adapters/`): subdomain, a
 Each is planned, built, tested and merged separately.
 
 - **D1 Foundation:** manager kinds, assignments, posts, acting, resolver, Managers / Posts / Acting / Check screens.
-  - `User.manager_id` rows are copied to `reporting` assignments. `manager_id` remains as a **synced mirror** of the user-scoped or inherited reporting manager, so existing readers keep working; HR edits of the manager go through the assignment service.
+  - `User.manager_id` rows are copied to `reporting` assignments. `manager_id` remains as a **synced mirror** of the reporting manager (user, department, location or company scope, or a post's holder), so existing readers keep working. It changes when someone edits an assignment, **and also** when an employee moves department or location, when a post's holder changes, and in the daily `dop_manager_mirror` job (assignments that start or end by date). HR and admin edits of the manager go through the assignment service; nothing else may write `manager_id`.
+  - **Deleting an account is refused** while the person is the manager in a live or future assignment, holds a post or is in an acting cover; their own scope rows go with the account and are audited. The same applies to deleting a department that still has live assignments or a head post.
   - Live approvals do not use the new resolver yet: behaviour is unchanged.
 - **D2 Rules and inbox:** jobs, fallbacks, versions, rule builder, adapters, override and the unified inbox for the seven chain types. Includes the direct-path (no chain) cases.
 - **A1 Access control** (after D2): matrix, scopes, effective-access view, sidebar driven by `/me/access`, parity test. Scope filters for employees, leave, attendance and expenses first; the remaining areas keep their current scope until their filter ships, and the screen marks them as such.
