@@ -1210,3 +1210,42 @@ async def test_remove_holder_accepts_empty_or_missing_body(api):
     r = await api.post(H + f"/posts/{p['id']}/holders/{hid}/remove",
                        headers=api.h, content=b"")         # empty body
     assert r.status_code == 200, r.text
+
+
+# ------------------------------------------------- leaving manager (managed_by)
+
+async def test_managed_by_filter_and_assignments_by_manager(api):
+    u = api.u
+    # reporting by user row, a limited-area row (functional kind) for another,
+    # and a department row that makes mgr everyone's manager in the dept
+    await api.post(H + "/assignments/bulk", headers=api.h,
+                   json=_bulk(api, [u["act"]], u["mgr"]))
+    async with SessionLocal() as db:
+        await A.lock_reporting(db)
+        await A.create(db, actor_id=u["admin"], kind_id=api.fun,
+                       scope_type="user", scope_user_id=u["hr"],
+                       manager_user_id=u["mgr"], subdomains=["leave"],
+                       starts_on=api.today)
+        await db.commit()
+    r = await api.get(H + "/managers", headers=api.h,
+                      params={"q": api.sfx, "managed_by": u["mgr"],
+                              "limit": 100})
+    assert r.status_code == 200, r.text
+    ids = {x["user_id"] for x in r.json()["items"]}
+    assert ids == {u["act"], u["hr"]}, ids          # limited-area row found
+    # item cells stay as they are: hr has no all-area functional manager
+    hr_row = next(x for x in r.json()["items"] if x["user_id"] == u["hr"])
+    assert hr_row["managers"]["functional"] is None
+    # combines with the other filters
+    r = await api.get(H + "/managers", headers=api.h,
+                      params={"q": "act", "managed_by": u["mgr"]})
+    assert {x["user_id"] for x in r.json()["items"]} == {u["act"]}
+    r = await api.get(H + "/managers", headers=api.h,
+                      params={"q": api.sfx, "managed_by": u["emp"]})
+    assert r.json()["items"] == []
+    # assignments filtered by manager
+    r = await api.get(H + "/assignments", headers=api.h,
+                      params={"manager_user_id": u["mgr"], "limit": 200})
+    rows = r.json()["items"]
+    assert rows and all(x["manager_user_id"] == u["mgr"] for x in rows)
+    assert {x["scope_user_id"] for x in rows} >= {u["act"], u["hr"]}

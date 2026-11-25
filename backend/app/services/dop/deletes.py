@@ -31,13 +31,30 @@ async def user_blockers(db, user_id) -> list:
         _open(ManagerAssignment, today)))).scalars().all()
     if rows:
         who: set = set()
+        shared: list = []
         for a in rows:
             who |= set(_matching(people, a, dnames.get(a.scope_department_id)))
+            if a.scope_type == "department":
+                shared.append(f"department {dnames.get(a.scope_department_id)}")
+            elif a.scope_type == "location":
+                shared.append(f"location {a.scope_location}")
+            elif a.scope_type == "company":
+                shared.append("company-wide")
         who.discard(user_id)
+        names = dict((await db.execute(
+            select(User.id, User.full_name))).all())
         n = len(who)
-        out.append({"type": "dop_manager",
-                    "message": f"manager of {n} employee"
-                               f"{'' if n == 1 else 's'} (assignment)"})
+        if n:
+            first = ", ".join(sorted((names.get(i) or f"#{i}") for i in who)[:5])
+            more = f", ... and {n - 5} more" if n > 5 else ""
+            msg = (f"manager of {n} employee{'' if n == 1 else 's'}: "
+                   f"{first}{more}")
+        else:
+            msg = (f"named as manager in {len(rows)} assignment"
+                   f"{'' if len(rows) == 1 else 's'}")
+        if shared:
+            msg += "; " + ", ".join(sorted(set(shared)))
+        out.append({"type": "dop_manager", "message": msg})
     held = (await db.execute(
         select(Post.title).join(PostHolder, PostHolder.post_id == Post.id)
         .where(PostHolder.user_id == user_id,
@@ -66,15 +83,54 @@ async def user_blockers(db, user_id) -> list:
     return out
 
 
+CAP = 200
+
+
+def _capped(items) -> dict:
+    return {"total": len(items), "rows": items[:CAP]}
+
+
 async def audit_user_rows_removed(db, actor_id, user_id) -> None:
-    """The user's own scope rows go with the account (FK cascade): record
-    them in one audit row first."""
-    rows = (await db.execute(select(ManagerAssignment).where(
-        ManagerAssignment.scope_user_id == user_id))).scalars().all()
-    if rows:
+    """Before an account delete: one audit row listing what goes with it.
+    `rows` = the person's own scope rows; `history` = ended or cancelled rows
+    where they were the manager, a post holder or in an acting cover (live
+    ones would have blocked the delete). Each list is capped at 200 with its
+    total."""
+    own = (await db.execute(select(ManagerAssignment).where(
+        ManagerAssignment.scope_user_id == user_id)
+        .order_by(ManagerAssignment.id))).scalars().all()
+    as_mgr = (await db.execute(select(ManagerAssignment).where(
+        ManagerAssignment.manager_user_id == user_id)
+        .order_by(ManagerAssignment.id))).scalars().all()
+    held = (await db.execute(select(PostHolder).where(
+        PostHolder.user_id == user_id).order_by(PostHolder.id))).scalars().all()
+    acts = (await db.execute(select(ActingAssignment).where(or_(
+        ActingAssignment.acting_user_id == user_id,
+        ActingAssignment.covers_user_id == user_id))
+        .order_by(ActingAssignment.id))).scalars().all()
+    history = {}
+    if as_mgr:
+        history["as_manager"] = _capped(
+            [{"id": a.id, **snapshot(a)} for a in as_mgr])
+    if held:
+        history["as_holder"] = _capped([
+            {"id": h.id, "post_id": h.post_id,
+             "starts_on": h.starts_on.isoformat(),
+             "ends_on": h.ends_on.isoformat() if h.ends_on else None}
+            for h in held])
+    if acts:
+        history["acting"] = _capped([
+            {"id": c.id, "covers_user_id": c.covers_user_id,
+             "covers_post_id": c.covers_post_id,
+             "acting_user_id": c.acting_user_id,
+             "starts_on": c.starts_on.isoformat(),
+             "ends_on": c.ends_on.isoformat() if c.ends_on else None}
+            for c in acts])
+    if own or history:
         audit(db, actor_id, "dop.assignment.removed", "user", user_id,
-              {"reason": "employee deleted",
-               "rows": [{"id": a.id, **snapshot(a)} for a in rows]})
+              {"reason": "employee deleted", "rows_total": len(own),
+               "rows": [{"id": a.id, **snapshot(a)} for a in own[:CAP]],
+               "history": history})
 
 
 async def department_blockers(db, dept_id) -> list:

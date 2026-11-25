@@ -401,6 +401,7 @@ async def _assignments_by_ids(db, ids) -> list:
 async def list_assignments(
         db: deps.DBDep, user_id: Optional[int] = Query(None, ge=1),
         kind_id: Optional[int] = Query(None, ge=1), history: bool = False,
+        manager_user_id: Optional[int] = Query(None, ge=1),
         limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0)):
     """Live and future rows (history=true: also ended and cancelled). With
     user_id: the rows that apply to that employee (their own, their
@@ -409,6 +410,13 @@ async def list_assignments(
     stmt = select(ManagerAssignment)
     if kind_id:
         stmt = stmt.where(ManagerAssignment.manager_kind_id == kind_id)
+    if manager_user_id:
+        posts = (await db.execute(select(PostHolder.post_id).where(
+            PostHolder.user_id == manager_user_id,
+            _live_or_future(PostHolder, today)))).scalars().all()
+        stmt = stmt.where(or_(
+            ManagerAssignment.manager_user_id == manager_user_id,
+            ManagerAssignment.manager_post_id.in_(posts or [-1])))
     if not history:
         stmt = stmt.where(ManagerAssignment.cancelled_at.is_(None),
                           _live_or_future(ManagerAssignment, today))
@@ -479,6 +487,7 @@ async def managers(
         db: deps.DBDep, q: str = Query("", max_length=100),
         department: str = Query("", max_length=100),
         missing: Optional[str] = Query(None, max_length=40),
+        managed_by: Optional[int] = Query(None, ge=1),
         include_inactive: bool = False,
         limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
     """Per employee, the base manager of every active kind today (all
@@ -500,6 +509,20 @@ async def managers(
         if post and post.is_active and R.live(h, today):
             holder.setdefault(h.post_id, h.user_id)
     qn, dn = _clean_q(q).strip().casefold(), R.norm(_clean_q(department))
+    named: set = set()          # people a live or future row of ANY areas
+    if managed_by:              # names `managed_by`, directly or by a post
+        posts = (await db.execute(select(PostHolder.post_id).where(
+            PostHolder.user_id == managed_by,
+            _live_or_future(PostHolder, today)))).scalars().all()
+        dn_by_id = await _dept_names(db)
+        for a in (await db.execute(select(ManagerAssignment).where(
+                ManagerAssignment.cancelled_at.is_(None),
+                _live_or_future(ManagerAssignment, today),
+                or_(ManagerAssignment.manager_user_id == managed_by,
+                    ManagerAssignment.manager_post_id.in_(posts or [-1])))
+                )).scalars().all():
+            named |= set(A._matching(
+                w.people, a, dn_by_id.get(a.scope_department_id)))
 
     def cell(kind, uid):
         a = lookup(kind, uid)
@@ -534,6 +557,12 @@ async def managers(
         if dn and R.norm(p.department) != dn:
             continue
         cells = {k.code: cell(k.code, uid) for k in kinds}
+        if managed_by and uid != managed_by and uid not in named and not any(
+                c and c["manager_user_id"] == managed_by
+                for c in cells.values()):
+            continue
+        if managed_by and uid == managed_by:
+            continue
         if missing and has_manager(cells[missing]):
             continue
         out.append({"user_id": uid, "name": name, "email": email,

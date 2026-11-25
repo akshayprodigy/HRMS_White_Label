@@ -7,7 +7,8 @@ import { Th } from '../biometric/shared';
 import { AssignDialog } from './assign-dialog';
 import { HistoryDialog } from './history-dialog';
 import { KindsDialog } from './kinds-dialog';
-import { Cell, ManagerRow, Meta, Notice, SOURCE_LABEL, dopErr, inputCls, labelCls } from './dop-utils';
+import { Assignment, Cell, ManagerRow, Meta, Notice, Person, SOURCE_LABEL, dopErr, inputCls, labelCls } from './dop-utils';
+import { PersonPicker } from './person-picker';
 
 const LIMIT = 50;
 const MAX_PICK = 200;
@@ -34,6 +35,8 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
   const [dq, setDq] = useState('');
   const [dept, setDept] = useState('');
   const [missing, setMissing] = useState('');
+  const [managedBy, setManagedBy] = useState<Person | null>(null);
+  const [shared, setShared] = useState<Assignment[]>([]);
   const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<ManagerRow[]>([]);
   const [kinds, setKinds] = useState<{ id: number; code: string; name: string }[]>([]);
@@ -63,6 +66,7 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
       if (dq) params.q = dq;
       if (dept) params.department = dept;
       if (missing) params.missing = missing;
+      if (managedBy) params.managed_by = managedBy.id;
       const r = await client.get(ENDPOINTS.DOP.MANAGERS, { params });
       if (n !== seq.current) return;
       setRows(r.data.items); setTotal(r.data.total); setKinds(r.data.kinds); setError(null);
@@ -71,8 +75,19 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
     } finally {
       if (n === seq.current) setLoading(false);
     }
-  }, [dq, dept, missing, offset]);
+  }, [dq, dept, missing, managedBy, offset]);
   useEffect(() => { load(); }, [load, refreshKey, bump]);
+
+  // Department / location / company rows naming the filtered manager are
+  // shared: they are not removed by Replace on individuals.
+  useEffect(() => {
+    if (!managedBy) { setShared([]); return; }
+    let live = true;
+    client.get(ENDPOINTS.DOP.ASSIGNMENTS, { params: { manager_user_id: managedBy.id, limit: 200 } })
+      .then((r) => { if (live) setShared((r.data.items as Assignment[]).filter((a) => a.scope_type !== 'user')); })
+      .catch(() => { if (live) setShared([]); });
+    return () => { live = false; };
+  }, [managedBy, refreshKey, bump]);
 
   useEffect(() => {
     if (!loading && total > 0 && offset >= total) setOffset(Math.floor((total - 1) / LIMIT) * LIMIT);
@@ -127,10 +142,28 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
             {kinds.map((k) => <option key={k.code} value={k.code}>{k.name}</option>)}
           </select>
         </div>
+        <div className="flex items-end gap-2">
+          <PersonPicker id="dm-by" label="Managed by" value={managedBy} onChange={(p) => { setManagedBy(p); setOffset(0); }} />
+          {managedBy && <button type="button" className="text-xs text-indigo-600 pb-2" onClick={() => { setManagedBy(null); setOffset(0); }}>Clear</button>}
+        </div>
         <Button variant="outline" size="sm" onClick={() => setKindsOpen(true)}><Settings2 className="w-4 h-4 mr-1" />Manager types</Button>
         <Button size="sm" onClick={() => setAssigning(true)}><UserPlus className="w-4 h-4 mr-1" />Assign managers</Button>
       </div>
 
+      <p className="text-xs text-gray-500">Someone leaving? Filter by them, select their people and assign a new manager with Replace.</p>
+      {managedBy && shared.length > 0 && (
+        <div className="text-xs text-gray-700 space-y-1" role="status">
+          <p className="font-medium">{managedBy.name} also manages whole groups. End these under History:</p>
+          <ul className="list-disc pl-6">
+            {shared.map((a) => (
+              <li key={a.id}>
+                {a.kind_name}: {a.scope_type === 'department' ? `everyone in ${a.scope_department_name ?? 'a department'}` : a.scope_type === 'location' ? `everyone at ${a.scope_location}` : 'everyone in the company'}
+                {' '}<span className="text-gray-500">(End under History)</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <p className="text-xs text-gray-500">This grid shows managers who cover everything. A manager limited to certain areas is listed under History (the clock icon).</p>
       {picked.size > 0 && (
         <div className="flex items-center gap-3 flex-wrap text-sm bg-indigo-50 text-indigo-800 rounded-lg px-3 py-2" role="status">

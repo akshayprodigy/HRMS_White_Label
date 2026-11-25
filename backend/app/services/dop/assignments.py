@@ -5,6 +5,9 @@ Transaction contract (callers: Tasks 5 and 7, inside retry_on_lock):
     takes the manager_kind lock (`lock_reporting` / `create` / `end` do) as
     its first statement, before any plain read and before any other write to
     user rows;
+  * lock order is always the reporting kind first, then the writer's own
+    kind (`_lock_kind` does both), so writers of any kind, mirror writers
+    and account deletes can never deadlock or interleave;
   * the kind row serialises all writers of a kind, so every plain read made
     after the lock sees the latest committed data (the snapshot starts after
     the lock is granted);
@@ -66,6 +69,10 @@ def subs_clash(a, b) -> bool:
 
 
 async def _lock_kind(db, kind_id) -> ManagerKind:
+    # ONE lock order everywhere: the reporting kind first, then this kind.
+    # Account deletes and mirror writers hold the reporting lock, so a
+    # non-reporting write cannot interleave with them.
+    await reporting_ready(db)
     kind = (await db.execute(
         select(ManagerKind).where(ManagerKind.id == kind_id)
         .with_for_update().execution_options(populate_existing=True)
@@ -558,7 +565,7 @@ async def set_reporting_manager(db, *, actor_id, user_id, manager_id) -> None:
     live = [r for r in rows if r.starts_on <= today]
     if manager_id is not None and any(
             r.manager_user_id == manager_id for r in live):
-        await sync_mirror(db, [user_id])
+        await sync_mirror(db, [user_id], "manager edit", actor_id)
         return
     future = [r for r in rows if r.starts_on > today]
     for r in sorted(live, key=lambda r: r.id):

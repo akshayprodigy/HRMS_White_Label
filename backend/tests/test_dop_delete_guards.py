@@ -49,7 +49,8 @@ async def test_manager_blocks_delete(dop, api):
     r = await _del(api, u["mgr"])
     assert r.status_code == 409, r.text
     msg = str(r.json())
-    assert "manager of 1 employee (assignment)" in msg
+    assert "manager of 1 employee: Dop emp" in msg
+    assert "0 employees" not in msg
     assert await _exists(u["mgr"])
     # preview shows the same
     r = await api.get(f"{HR}/employees/{await _eid(u['mgr'])}/delete-blockers",
@@ -57,7 +58,7 @@ async def test_manager_blocks_delete(dop, api):
     assert r.json()["deletable"] is False
     # admin endpoint too
     r = await api.delete(f"/api/v1/admin/users/{u['mgr']}", headers=api.h)
-    assert r.status_code == 409 and "manager of 1 employee" in r.text
+    assert r.status_code == 409 and "manager of 1 employee: Dop emp" in r.text
     assert await _exists(u["mgr"])
 
 
@@ -155,3 +156,68 @@ async def test_department_delete_guards(dop, api):
             await db.execute(delete(Department).where(
                 Department.id.in_(list(ids.values()))))
             await db.commit()
+
+
+async def test_message_names_first_five_and_shared_scopes(dop, api):
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        today = await local_today(db)
+        kind = (await A.lock_reporting(db)).id
+        await A.create(db, actor_id=u["admin"], kind_id=kind,
+                       scope_type="department",
+                       scope_department_id=dop["dept_id"],
+                       manager_user_id=u["mgr"], starts_on=today)
+        await db.commit()
+    r = await _del(api, u["mgr"])
+    assert r.status_code == 409, r.text
+    # 7 colleagues in the department besides mgr itself... mgr is excluded
+    assert "manager of 6 employees: " in r.text
+    assert "and 1 more" in r.text
+    assert f"department DOP{dop['sfx']}" in r.text
+
+
+async def test_non_reporting_create_waits_for_delete_lock_order(dop, api):
+    """A non-reporting create takes the reporting lock first, so it cannot
+    interleave with an account delete (same order everywhere)."""
+    u = dop["uid"]
+    import asyncio
+    async with SessionLocal() as db:
+        kid = (await db.execute(select(A.ManagerKind.id).where(
+            A.ManagerKind.code == "functional"))).scalar_one()
+        today = await local_today(db)
+    holder = SessionLocal()
+    await A.lock_reporting(holder)              # a delete holds the lock
+    done = []
+
+    async def other():
+        async with SessionLocal() as db2:
+            await db2.commit()
+            await A.create(db2, actor_id=u["admin"], kind_id=kid,
+                           scope_type="user", scope_user_id=u["emp"],
+                           manager_user_id=u["mgr"], starts_on=today)
+            await db2.commit()
+            done.append(1)
+    t = asyncio.create_task(other())
+    await asyncio.sleep(1.0)
+    assert not done                             # blocked on the reporting lock
+    await holder.commit()
+    await holder.close()
+    await asyncio.wait_for(t, 20)
+    assert done
+
+
+async def test_audit_lists_ended_history_with_totals(dop, api):
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        today = await local_today(db)
+    await _assign(dop, "emp", "mgr", starts_on=today - timedelta(days=10),
+                  ends_on=today - timedelta(days=2))
+    r = await _del(api, u["mgr"])
+    assert r.status_code == 200, r.text
+    async with SessionLocal() as db:
+        log = (await db.execute(select(AuditLog).where(
+            AuditLog.action == "dop.assignment.removed",
+            AuditLog.resource_id == str(u["mgr"])))).scalars().all()
+    assert len(log) == 1
+    h = log[0].details["history"]["as_manager"]
+    assert h["total"] == 1 and len(h["rows"]) == 1

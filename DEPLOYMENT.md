@@ -314,7 +314,7 @@ Several managers per employee, posts with holders, acting covers and a "who woul
 
 - `user.manager_id` follows the reporting assignments. **Do not edit it with SQL or scripts:** the next sync reverts it. Change managers in HR, in admin, or in the Managers tab.
 - It is updated when a manager or assignment is edited, when an employee's department or location changes (a manager from a department or location assignment can appear or drop away), when a post's holder changes, and by the daily job.
-- Every change not made by editing an assignment directly is audited as `dop.manager.sync` (reason, total, up to 200 changes).
+- Every change of `manager_id` not made by editing an assignment directly (the daily job, a department or location move, a post holder change, a new employee, an HR manager edit that finds the assignment already in place) is audited as `dop.manager.sync` (reason, total, up to 200 changes).
 - **Daily job `dop_manager_mirror`** (18:40 UTC) applies assignments and post holders that start or end that day. It needs **`ENABLE_SCHEDULER=1`** on one process. Without it, a dated assignment or holder change that starts or ends by date is not applied to `manager_id` until the next edit or a manual run from the scheduler screen; live approvals keep using the old manager until then. If the job fails, the run is recorded as failed in the scheduler screen.
 
 ### What HR will notice
@@ -322,7 +322,7 @@ Several managers per employee, posts with holders, acting covers and a "who woul
 - Setting a manager that would create a reporting loop, or naming an inactive person as manager, is refused (422). Existing loops from old data never block unrelated edits.
 - Changing an employee's department or location may change their manager, or clear it, when a department or location assignment applies.
 - An explicit "no manager" clears the manager, unless a department, location or company assignment applies; that manager then applies.
-- **Deleting an employee, user or department is refused (409)** while they are the manager in a live or future assignment, hold a post, are in an acting cover, or (for a department) have live assignments or a head post. The message says what to reassign first. Ended history does not block.
+- **Deleting an employee, user or department is refused (409)** while they are the manager in a live or future assignment, hold a post, are in an acting cover, or (for a department) have live assignments or a head post. The message names the first five people affected and the shared scopes. Ended history does not block: it is removed with the account, but listed (up to 200 rows per list, with totals) in the `dop.assignment.removed` audit row. Someone leaving: filter the Managers tab by them (*Managed by*), select their people and assign a new manager with Replace; end any department, location or company rows they hold under History.
 - The employee bulk import's `Manager Email` column applies to new users only, as before.
 
 ### Not used yet
