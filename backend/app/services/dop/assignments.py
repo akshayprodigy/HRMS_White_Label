@@ -86,6 +86,23 @@ async def lock_reporting(db) -> ManagerKind:
     return kind
 
 
+async def reporting_ready(db) -> bool:
+    """Take the reporting lock like lock_reporting, but answer False (instead
+    of 422) when the kind is missing or inactive. Edits that do not change a
+    manager use it to skip the mirror sync rather than fail."""
+    kind = (await db.execute(
+        select(ManagerKind).where(ManagerKind.code == "reporting")
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
+    return kind is not None and bool(kind.is_active)
+
+
+async def _user_exists(db, uid, what):
+    if (await db.execute(select(User.id).where(User.id == uid))
+            ).first() is None:
+        raise HTTPException(422, f"{what} not found")
+
+
 async def _active_user(db, uid, what):
     u = (await db.execute(select(User.id, User.is_active).where(
         User.id == uid))).first()
@@ -179,7 +196,8 @@ async def assert_no_new_loops(db, baseline, user_ids=None) -> dict:
 async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
                  scope_department_id=None, scope_location=None,
                  manager_user_id=None, manager_post_id=None, subdomains=(),
-                 starts_on, ends_on=None, note=None) -> ManagerAssignment:
+                 starts_on, ends_on=None, note=None,
+                 allow_inactive_employee=False) -> ManagerAssignment:
     if scope_type not in SCOPES:
         raise HTTPException(422, "Unknown scope")
     scope_location = (scope_location or "").strip() or None
@@ -198,7 +216,10 @@ async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
         raise HTTPException(422, str(e))
     kind = await _lock_kind(db, kind_id)
     if scope_user_id is not None:
-        await _active_user(db, scope_user_id, "Employee")
+        if allow_inactive_employee:       # HR edits an inactive employee
+            await _user_exists(db, scope_user_id, "Employee")
+        else:
+            await _active_user(db, scope_user_id, "Employee")
         if scope_user_id == manager_user_id:
             raise HTTPException(422, "An employee cannot be their own manager")
     dept_name = None
@@ -342,9 +363,24 @@ async def set_reporting_manager(db, *, actor_id, user_id, manager_id) -> None:
         await create(db, actor_id=actor_id, kind_id=kind.id,
                      scope_type="user", scope_user_id=user_id,
                      manager_user_id=manager_id, starts_on=today,
-                     ends_on=nxt - timedelta(days=1) if nxt else None)
-    else:
-        await sync_mirror(db, [user_id])
+                     ends_on=nxt - timedelta(days=1) if nxt else None,
+                     allow_inactive_employee=True)
+        return
+    # Clearing. A manager that no assignment governs (written by a seed or
+    # script) is cleared here too; a department/location/company row that
+    # applies wins, as designed.
+    await db.flush()
+    w = await load_world(db, today)
+    await _sync(db, w, today, [user_id])
+    if not _base_manager(w, user_id, today)[0]:
+        u = (await db.execute(
+            select(User).where(User.id == user_id).with_for_update()
+            .execution_options(populate_existing=True))).scalars().first()
+        if u is not None and u.manager_id is not None:
+            audit(db, actor_id, "dop.manager.clear", "user", user_id,
+                  {"before": u.manager_id})
+            u.manager_id = None
+            await db.flush()
 
 
 async def _sync(db, w, today, user_ids) -> int:
@@ -437,22 +473,26 @@ async def sync_post_users(db, post_id, baseline=None) -> int:
     return await _sync(db, await load_world(db, today), today, users)
 
 
-async def has_reporting_assignment(db, user_id) -> bool:
+async def has_reporting_assignment(db, user_id, w=None, today=None) -> bool:
     """Does an all-subdomain reporting assignment apply to the user today?
-    Call before moving the employee (department / location change)."""
-    await lock_reporting(db)
-    today = await local_today(db)
-    w = await load_world(db, today)
+    Call before moving the employee (department / location change). Pass a
+    world loaded under the lock (and its date) to skip loading another."""
+    if w is None:
+        await lock_reporting(db)
+        today = await local_today(db)
+        w = await load_world(db, today)
     return _base_manager(w, user_id, today)[0]
 
 
-async def resync_after_move(db, user_id, had_assignment: bool) -> int:
+async def resync_after_move(db, user_id, had_assignment: bool,
+                            w=None, today=None) -> int:
     """After a department/location change: when an assignment applied before
     and none applies now, manager_id becomes NULL; otherwise the normal sync."""
     await lock_reporting(db)
     await db.flush()
-    today = await local_today(db)
-    w = await load_world(db, today)
+    if w is None:       # only valid when nothing it was built from changed
+        today = await local_today(db)
+        w = await load_world(db, today)
     if had_assignment and not _base_manager(w, user_id, today)[0]:
         u = (await db.execute(
             select(User).where(User.id == user_id).with_for_update()

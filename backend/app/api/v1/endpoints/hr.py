@@ -744,13 +744,26 @@ async def process_employee_row(
     `role_map` maps lower-case role name -> role id."""
     row_num = index + 2
 
+    # Hash BEFORE the lock (slow), only for a row that will create a user.
+    pw_hash = None
+    cols = (COL_FULL_NAME, COL_EMAIL, COL_EMP_ID, COL_DEPT, COL_DESIG)
+    if all(pd.notnull(row.get(c)) and str(row.get(c)).strip() for c in cols):
+        email0 = str(row[COL_EMAIL]).strip()
+        pw = str(row[COL_PASSWORD]) if (
+            COL_PASSWORD in row.index and pd.notnull(row[COL_PASSWORD])
+            and row[COL_PASSWORD] != "") else DEFAULT_PASSWORD
+        if len(pw) >= 6 and (await db.execute(
+                select(User.id).where(User.email == email0).limit(1)
+        )).first() is None:
+            pw_hash = get_password_hash(pw)
+
     async def body():
         await db.commit()                       # fresh transaction
-        await DOP.lock_reporting(db)
+        await DE.sync_ready(db)                 # takes the lock
         sp = await db.begin_nested()
         try:
             err = await _process_employee_row(
-                db, index, row, current_user_id, request, role_map)
+                db, index, row, current_user_id, request, role_map, pw_hash)
         except BaseException:
             try:
                 await sp.rollback()
@@ -774,7 +787,8 @@ async def _process_employee_row(
     row: pd.Series,
     current_user_id: int,
     request: Request,
-    role_map: dict
+    role_map: dict,
+    pw_hash: Optional[str] = None,
 ) -> Optional[str]:
     """Process a single row: create user (if needed) + employee record."""
     row_num = index + 2  # Excel row (1-indexed header + 1-indexed data)  # Excel row (1-indexed header + 1-indexed data)
@@ -857,7 +871,7 @@ async def _process_employee_row(
 
         user = User(
             email=email,
-            hashed_password=get_password_hash(password),
+            hashed_password=pw_hash or get_password_hash(password),
             full_name=full_name,
             is_active=True,
         )
@@ -923,7 +937,7 @@ async def _process_employee_row(
             await DOP.set_reporting_manager(
                 db, actor_id=current_user_id, user_id=user.id,
                 manager_id=manager_id)
-        else:
+        elif await DOP.reporting_ready(db):
             await DOP.sync_mirror(db, [user.id])
     except HTTPException as e:
         return f"Row {row_num} ({full_name}): {e.detail}"
@@ -1134,14 +1148,14 @@ async def create_employee(
 
     async def create_row():
         await db.commit()                       # fresh transaction
-        await DOP.lock_reporting(db)
+        ready = await DE.sync_ready(db)         # takes the lock
         row = Employee(**data)
         db.add(row)
         await db.flush()
         if mgr_id is not None:
             await DOP.set_reporting_manager(
                 db, actor_id=actor_id, user_id=target_uid, manager_id=mgr_id)
-        else:
+        elif ready:
             await DOP.sync_mirror(db, [target_uid])
         return row.id
 
@@ -1197,7 +1211,7 @@ async def create_employee_with_user(
 
     async def create_rows():
         await db.commit()                       # fresh transaction
-        await DOP.lock_reporting(db)
+        ready = await DE.sync_ready(db)         # takes the lock
         new_user = User(
             email=email, hashed_password=pw_hash, full_name=full_name,
             is_active=True)
@@ -1210,7 +1224,7 @@ async def create_employee_with_user(
         if mgr_id is not None:
             await DOP.set_reporting_manager(
                 db, actor_id=actor_id, user_id=new_user.id, manager_id=mgr_id)
-        else:
+        elif ready:
             await DOP.sync_mirror(db, [new_user.id])
         return row.id
 
@@ -1278,7 +1292,7 @@ async def _update_profile_with_location(db, current_user, body) -> Any:
 
     async def apply():
         await db.commit()
-        await DOP.lock_reporting(db)            # before any plain read
+        ready = await DE.sync_ready(db)         # lock before any plain read
         user = (await db.execute(
             select(User).where(User.id == uid)
             .execution_options(populate_existing=True))).scalars().one()
@@ -1286,7 +1300,7 @@ async def _update_profile_with_location(db, current_user, body) -> Any:
             select(Employee).where(Employee.user_id == uid).limit(1)
             .execution_options(populate_existing=True))).scalars().first()
         target = emp if emp else user
-        moved = (target.location or "") != body.location
+        moved = ready and (target.location or "") != body.location
         had = (await DOP.has_reporting_assignment(db, uid)) if moved else False
         if body.full_name is not None:
             user.full_name = body.full_name
@@ -1528,46 +1542,43 @@ async def update_employee(
     if "employment_type" in update_data:
         await _validate_employment_type(db, update_data["employment_type"])
 
-    # Plain values only from here: the steps below commit and may roll back.
+    # Plain values only from here: the transaction below may roll back.
     actor_id = current_user.id
     target_uid = db_obj.user_id
     fields = {k: v for k, v in update_data.items() if k != "manager_id"}
-    cur_mgr = db_obj.user.manager_id if db_obj.user else None
+    has_user = db_obj.user is not None
+    mgr_sent = "manager_id" in update_data and has_user
     new_mgr = update_data.get("manager_id")
 
-    # 1) The manager change first, in its own transaction. Everything that
-    # can reject the request has already run, and a manager error (422/409)
-    # rejects the whole request with nothing changed.
-    if ("manager_id" in update_data and db_obj.user is not None
-            and new_mgr != cur_mgr):
-        await DE.change_manager(
-            db, actor_id=actor_id, user_id=target_uid, manager_id=new_mgr)
-        await DE.reload_actor(db, actor_id)
-
-    # 2) The other fields. A department change re-syncs the manager from the
-    # assignments, in the same locked transaction.
-    if fields:
-        async def apply_fields():
-            await db.commit()
-            moves = "department" in fields
-            if moves:
-                await DOP.lock_reporting(db)    # before any plain read
-            emp = (await db.execute(
-                select(Employee).where(Employee.id == emp_id)
-                .execution_options(populate_existing=True)
-            )).scalars().first()
-            if emp is None:
-                raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
-            moved = moves and emp.department != fields["department"]
-            had = (await DOP.has_reporting_assignment(db, target_uid)
-                   if moved else False)
-            for field, value in fields.items():
-                setattr(emp, field, value)
-            db.add(emp)
-            if moved:
-                await db.flush()
-                await DOP.resync_after_move(db, target_uid, had)
-        await retry_on_lock(db, apply_fields, commit=True)
+    # ONE retried transaction: manager change, move re-sync and the other
+    # fields commit together, so a failed request changes nothing.
+    async def apply():
+        await db.commit()
+        ready = await DE.sync_ready(db) if (
+            mgr_sent or "department" in fields) else False
+        emp = (await db.execute(
+            select(Employee).where(Employee.id == emp_id)
+            .execution_options(populate_existing=True)
+        )).scalars().first()
+        if emp is None:
+            raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
+        moved = ready and "department" in fields and \
+            emp.department != fields["department"]
+        had = (await DOP.has_reporting_assignment(db, target_uid)
+               if moved else False)
+        if mgr_sent:
+            cur = await DE.current_manager(db, target_uid)
+            if new_mgr != cur:
+                await DOP.set_reporting_manager(
+                    db, actor_id=actor_id, user_id=target_uid,
+                    manager_id=new_mgr)
+        for field, value in fields.items():
+            setattr(emp, field, value)
+        db.add(emp)
+        await DE.flush_raw(db)
+        if moved:
+            await DOP.resync_after_move(db, target_uid, had)
+    await DE.run_edit(db, apply)
 
     await log_audit(
         db,

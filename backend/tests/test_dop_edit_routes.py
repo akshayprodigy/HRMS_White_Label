@@ -484,3 +484,131 @@ async def test_scheduler_job_retries_and_never_raises(dop, monkeypatch):
         out = await S._job_dop_manager_mirror(db)     # must not raise
     assert out["changed"] == 0 and "boom" in out["error"]
     assert "dop_manager_mirror" in S.REGISTRY
+
+
+# ── review fixes ─────────────────────────────────────────────────────────
+async def test_inactive_employee_manager_can_be_set(dop, api):
+    u = dop["uid"]
+    r = await _patch(api, u["off"], {"manager_id": u["mgr"]})
+    assert r.status_code == 200, r.text
+    assert await _mgr(u["off"]) == u["mgr"]
+    r = await _patch(api, u["off"], {"manager_id": None})
+    assert r.status_code == 200 and await _mgr(u["off"]) is None
+    # admin: deactivate and set the manager in one request
+    r = await api.patch(f"/api/v1/admin/users/{u['emp']}", headers=api.h,
+                        json={"manager_id": u["mgr"], "is_active": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["manager_id"] == u["mgr"] and r.json()["is_active"] is False
+    # an inactive MANAGER is still refused
+    r = await _patch(api, u["act"], {"manager_id": u["off"]})
+    assert r.status_code == 422
+    # create for an inactive user
+    from app.core.security import get_password_hash
+    async with SessionLocal() as db:
+        usr = User(email=f"dop_ina_{dop['sfx']}@test.com", full_name="i",
+                   hashed_password=get_password_hash("x"), is_active=False)
+        db.add(usr)
+        await db.commit()
+        nid = usr.id
+    r = await api.post(f"{HR}/employees", headers=api.h, json={
+        **_emp_body(dop["sfx"], "ina"), "user_id": nid,
+        "manager_id": u["mgr"]})
+    assert r.status_code == 200, r.text
+    assert await _mgr(nid) == u["mgr"]
+
+
+async def test_null_clears_an_ungoverned_manager_and_is_audited(dop, api):
+    u = dop["uid"]
+    async with SessionLocal() as db:           # as a seed would write it
+        await db.execute(User.__table__.update().where(
+            User.id == u["emp"]).values(manager_id=u["mgr"]))
+        await db.commit()
+    r = await _patch(api, u["emp"], {"manager_id": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["manager_id"] is None
+    assert await _mgr(u["emp"]) is None
+    async with SessionLocal() as db:
+        assert (await db.execute(select(AuditLog.id).where(
+            AuditLog.action == "dop.manager.clear",
+            AuditLog.resource_id == str(u["emp"])))).first()
+    # a department row that applies wins over the clear
+    from app.services.org_time import local_today
+    async with SessionLocal() as db:
+        kind = (await A.lock_reporting(db)).id
+        await A.create(db, actor_id=u["admin"], kind_id=kind,
+                       scope_type="department",
+                       scope_department_id=dop["dept_id"],
+                       manager_user_id=u["hr"],
+                       starts_on=await local_today(db))
+        await db.commit()
+    assert (await _patch(api, u["emp"], {"manager_id": u["mgr"]})
+            ).status_code == 200
+    r = await _patch(api, u["emp"], {"manager_id": None})
+    assert r.json()["user"]["manager_id"] == u["hr"]
+
+
+async def test_failed_request_changes_nothing(dop, api):
+    """Unmapped DB errors keep their original form (a 500 on a real server;
+    the ASGI test client re-raises them)."""
+    from sqlalchemy.exc import DataError, IntegrityError
+    u = dop["uid"]
+    with pytest.raises(DataError):
+        await _patch(api, u["emp"], {"manager_id": u["mgr"],
+                                     "designation": "x" * 300})
+    assert await _mgr(u["emp"]) is None
+    assert await _live_rows(u["emp"]) == []
+    with pytest.raises(IntegrityError):
+        await api.patch(f"/api/v1/admin/users/{u['emp']}", headers=api.h,
+                        json={"manager_id": u["mgr"],
+                              "email": f"dop_hr_{dop['sfx']}@test.com"})
+    assert await _mgr(u["emp"]) is None
+    assert await _live_rows(u["emp"]) == []
+    # the session is healthy afterwards
+    assert (await _patch(api, u["emp"], {"manager_id": u["mgr"]})
+            ).status_code == 200
+
+
+async def test_missing_reporting_kind_does_not_break_other_edits(
+        dop, api, monkeypatch):
+    u = dop["uid"]
+    real = A.reporting_ready
+
+    async def not_ready(db):
+        await real(db)
+        return False
+    monkeypatch.setattr(A, "reporting_ready", not_ready)
+    n1 = await _new_user(dop, "n1")
+    r = await api.post(f"{HR}/employees", headers=api.h, json={
+        **_emp_body(dop["sfx"], "1"), "user_id": n1})
+    assert r.status_code == 200, r.text
+    r = await _patch(api, u["emp"], {"department": f"DOP{dop['sfx']}",
+                                     "designation": "Q"})
+    assert r.status_code == 200 and r.json()["designation"] == "Q"
+    c = await _client(dop["sfx"], "emp")
+    try:
+        r = await c.patch(f"{HR}/employees/me/profile", headers=c.h,
+                          json={"location": "Else" + dop["sfx"]})
+        assert r.status_code == 200, r.text
+    finally:
+        await c.aclose()
+
+
+async def test_bulk_hashes_only_creating_rows(dop, api, monkeypatch):
+    from app.api.v1.endpoints import hr as HRM
+    s = dop["sfx"]
+    calls = []
+    real = HRM.get_password_hash
+    monkeypatch.setattr(HRM, "get_password_hash",
+                        lambda p: calls.append(1) or real(p))
+    rows = [
+        ["G1", f"dop_h1_{s}@test.com", f"H1{s}", dop["dept"], "D", None],
+        ["NoDesig", f"dop_h2_{s}@test.com", f"H2{s}", dop["dept"], "", None],
+        ["Existing", f"dop_emp_{s}@test.com", f"H3{s}", dop["dept"], "D",
+         None],
+    ]
+    r = await api.post(
+        f"{HR}/employees/bulk-upload", headers=api.h,
+        files={"file": ("e.xlsx", _xlsx(rows), "application/vnd.openxmlformats"
+                        "-officedocument.spreadsheetml.sheet")})
+    assert r.status_code == 200, r.text
+    assert len(calls) == 1, calls

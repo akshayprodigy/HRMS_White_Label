@@ -12,6 +12,7 @@ from sqlalchemy import select, update as sql_update, func
 from sqlalchemy.orm import selectinload
 from app.api import deps
 from app.api.v1.endpoints import dop_edits as DE
+from app.services.dop import assignments as DOP
 from app.core.security import get_password_hash
 from app.models.audit import AuditLog
 from app.models.user import User, Role, Permission
@@ -540,36 +541,43 @@ async def update_user_admin(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # The manager change goes first, in its own transaction (nothing else
-    # can reject this request before it). A manager error rejects it all.
-    # None means "not sent" here.
-    if user_in.manager_id is not None and user_in.manager_id != user.manager_id:
-        actor_id = current_user.id
-        await DE.change_manager(
-            db, actor_id=actor_id, user_id=user_id,
-            manager_id=user_in.manager_id)
-        await DE.reload_actor(db, actor_id)
-        user = (await db.execute(
-            select(User).where(User.id == user_id)
-            .execution_options(populate_existing=True))).scalars().one()
+    # Plain values; ONE retried transaction (manager change + other fields),
+    # so a failed request changes nothing. None means "not sent" here.
+    actor_id = current_user.id
+    mgr_sent = user_in.manager_id is not None
+    new_mgr = user_in.manager_id
+    scalars = {k: getattr(user_in, k) for k in ("email", "full_name", "is_active")
+               if getattr(user_in, k) is not None}
+    pw_hash = (get_password_hash(user_in.password)
+               if user_in.password is not None else None)
+    role_ids = user_in.role_ids
 
-    if user_in.email is not None:
-        user.email = user_in.email
-    if user_in.full_name is not None:
-        user.full_name = user_in.full_name
-    if user_in.is_active is not None:
-        user.is_active = user_in.is_active
-    if user_in.password is not None:
-        user.hashed_password = get_password_hash(user_in.password)
-    if user_in.role_ids is not None:
-        result = await db.execute(
-            select(Role).where(Role.id.in_(user_in.role_ids))
-        )
-        user.roles = list(result.scalars().all())
-    
-    await db.commit()
-    await db.refresh(user)
+    async def apply():
+        await db.commit()
+        if mgr_sent:
+            await DE.sync_ready(db)             # takes the lock first
+        u = (await db.execute(
+            select(User).where(User.id == user_id)
+            .execution_options(populate_existing=True))).scalars().first()
+        if u is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        if mgr_sent and new_mgr != u.manager_id:
+            await DOP.set_reporting_manager(
+                db, actor_id=actor_id, user_id=user_id, manager_id=new_mgr)
+        for k, v in scalars.items():
+            setattr(u, k, v)
+        if pw_hash is not None:
+            u.hashed_password = pw_hash
+        if role_ids is not None:
+            u.roles = list((await db.execute(
+                select(Role).where(Role.id.in_(role_ids)))).scalars().all())
+        await DE.flush_raw(db)
+    await DE.run_edit(db, apply)
+    user = (await db.execute(
+        select(User).where(User.id == user_id)
+        .execution_options(populate_existing=True))).scalars().one()
     return user
+
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

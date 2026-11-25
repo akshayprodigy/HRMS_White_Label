@@ -1,6 +1,12 @@
 """Only the DOP service may write User.manager_id."""
 import ast
+import re
 from pathlib import Path
+
+# Only app/ is scanned. Two dev seed scripts also write manager_id directly
+# (they run once, before any assignment exists):
+#   scripts/seed_demo_users.py:482, scripts/seed_month_data.py:380
+RAW_SQL = re.compile(r"UPDATE\s+users?\b.*manager_id", re.I | re.S)
 
 APP = Path(__file__).resolve().parents[1] / "app"
 OK = {"services/dop/assignments.py"}
@@ -8,6 +14,9 @@ OK = {"services/dop/assignments.py"}
 
 def _writes(tree):
     for n in ast.walk(tree):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) \
+                and RAW_SQL.search(n.value):
+            yield n.lineno
         if isinstance(n, (ast.Assign, ast.AugAssign)):
             targets = n.targets if isinstance(n, ast.Assign) else [n.target]
             for t in targets:
@@ -17,7 +26,9 @@ def _writes(tree):
             continue
         kws = {k.arg for k in n.keywords}
         f = n.func
-        if isinstance(f, ast.Name) and f.id == "User" and "manager_id" in kws:
+        fname = f.id if isinstance(f, ast.Name) else (
+            f.attr if isinstance(f, ast.Attribute) else "")
+        if fname.endswith("User") and "manager_id" in kws:
             yield n.lineno
         # .values(manager_id=...) / .update(manager_id=...) style writes
         if isinstance(f, ast.Attribute) and f.attr in ("values", "update") \
