@@ -1,6 +1,6 @@
 # Delegation of Powers (DOP) — Design
 
-Date: 2026-11-25 · Branch: `feature/dop-approvals` (off main e4079c2) · Status: awaiting user review
+Date: 2026-11-25 · Branch: `feature/dop-approvals` (off main e4079c2) · Status: approved by user 2026-11-25
 
 ## Goal
 
@@ -171,7 +171,7 @@ With no configured rule, every type keeps its current route (D2–D5 each seed a
 - **Concurrency**, migration down/up on a cloned database with real rows, API end-to-end, browser, and Android checks for each slice.
 - Full backend suite run **live before each merge**.
 
-## Assumptions to confirm
+## Confirmed limits (user, 2026-11-25)
 
 0. Approve access and DOP routing are both required to decide; being a routed approver grants it unless denied.
 1. Admin cannot override their own request; another admin must.
