@@ -88,7 +88,7 @@ def test_acting_replaces_or_joins_original():
     assert go(world(**base, covers=[cover(1, 3, user=2)])).user_ids == [3]
     r = go(world(**base, covers=[cover(1, 3, user=2, original=True)]))
     assert sorted(r.user_ids) == [2, 3]
-    assert r.acting_for == {3: 2}
+    assert r.acting_for == {3: [2]}
 
 
 def test_acting_subdomain_and_no_chaining():
@@ -153,3 +153,129 @@ def test_unknown_type_raises():
 def test_explanation_is_readable():
     r = go(world(assignments=[asg(1, 2)], covers=[cover(1, 3, user=2)]))
     assert any("acting" in line for line in r.explanation)
+
+
+# ---- review fixes ----
+
+def test_dept_head_is_requester_falls_to_deputy():
+    w = world(heads={"eng": (1, 4)})
+    assert go(w, R.Approver("dept_head_of_requester")).user_ids == [4]
+
+
+def test_dept_head_post_unusable_falls_to_head():
+    heads = {"eng": (3, 4)}
+    posts = {7: R.Post(7, "Head", True, "eng")}
+    people = {i: P(i, i != 5, "Eng", "Mumbai") for i in range(1, 10)}
+    inactive = world(people=people, heads=heads, posts=posts,
+                     holders=[R.Holder(7, 5, D, None)])
+    assert go(inactive, R.Approver("dept_head_of_requester")).user_ids == [3]
+    mine = world(heads=heads, posts=posts, holders=[R.Holder(7, 1, D, None)])
+    assert go(mine, R.Approver("dept_head_of_requester")).user_ids == [3]
+
+
+@pytest.mark.parametrize("ap", [
+    R.Approver("post", "abc"), R.Approver("post", None),
+    R.Approver("specific_user", "abc"), R.Approver("specific_user", None)])
+def test_malformed_reference_yields_nobody(ap):
+    r = go(world(), ap)
+    assert r.via == "hr" and r.user_ids == [9]
+    assert any("invalid reference" in x for x in r.explanation)
+    f = go(world(assignments=[asg(1, 4, kind="functional")]), ap,
+           fallback=R.Approver("manager_kind", "functional"))
+    assert (f.user_ids, f.via) == ([4], "fallback")
+
+
+def test_blank_department_never_matches_blank_head():
+    people = {i: P(i, True, None, "Mumbai") for i in range(1, 10)}
+    w = world(people=people, heads={"": (3, 4)})
+    assert go(w, R.Approver("dept_head_of_requester")).via == "hr"
+
+
+def test_cover_does_not_apply_to_acting_persons_own_request():
+    w = world(assignments=[asg(3, 2, user=3)], covers=[cover(1, 3, user=2)])
+    assert go(w, requester=3).user_ids == [2]
+    # original unusable too: fallback / HR
+    people = {i: P(i, i != 2, "Eng", "Mumbai") for i in range(1, 10)}
+    w = world(people=people, assignments=[asg(3, 2, user=3)],
+              covers=[cover(1, 3, user=2)])
+    assert go(w, requester=3).via == "hr"
+    # a lower-ranked usable cover may still apply
+    w = world(assignments=[asg(3, 2, user=3)],
+              covers=[cover(1, 3, user=2, subs={"leave"}),
+                      cover(2, 5, user=2)])
+    assert go(w, requester=3).user_ids == [5]
+
+
+def test_cover_on_inactive_post_does_not_act():
+    w = world(posts={7: R.Post(7, "HR Mgr", False, None)},
+              covers=[cover(1, 5, post=7)])
+    assert go(w, R.Approver("post", "7")).via == "hr"
+
+
+def test_acting_for_lists_every_covered_user_sorted():
+    w = world(role_users={"Fin": [6, 5]},
+              covers=[cover(1, 3, user=6), cover(2, 3, user=5)])
+    r = go(w, R.Approver("role", "Fin"))
+    assert r.user_ids == [3] and r.acting_for == {3: [5, 6]}
+
+
+def test_seat_holder_in_own_right_is_not_acting():
+    w = world(role_users={"Fin": [5, 6]},
+              covers=[cover(1, 6, user=5, original=True)])
+    r = go(w, R.Approver("role", "Fin"))
+    assert sorted(r.user_ids) == [5, 6] and r.acting_for == {}
+
+
+def test_unknown_or_inactive_kind_yields_nobody():
+    w = world(assignments=[asg(1, 4, kind="matrix")])
+    r = go(w, R.Approver("manager_kind", "matrix"))
+    assert r.via == "hr"
+    assert any("unknown or inactive" in x for x in r.explanation)
+    r = go(world(kinds={"functional"}), REPORTING)
+    assert r.via == "hr"
+
+
+def test_user_scope_self_manager_stops_the_search():
+    w = world(assignments=[asg(1, 1), asg(2, 3, "company")])
+    r = go(w)
+    assert r.via == "hr" and r.user_ids == [9]
+
+
+def test_cover_date_window():
+    base = dict(assignments=[asg(1, 2)])
+    ended = cover(1, 3, user=2, start=date(2030, 6, 1), end=date(2030, 6, 9))
+    starts = cover(1, 3, user=2, start=date(2030, 6, 11), end=None)
+    assert go(world(**base, covers=[ended])).user_ids == [2]
+    assert go(world(**base, covers=[starts])).user_ids == [2]
+
+
+def test_post_cover_beats_user_cover_and_named_beats_all():
+    posts = {7: R.Post(7, "Mgr", True, None)}
+    hold = [R.Holder(7, 2, date(2020, 1, 1), None)]
+    w = world(assignments=[asg(1, None, post=7)], posts=posts, holders=hold,
+              covers=[cover(1, 3, user=2), cover(2, 4, post=7)])
+    assert go(w).user_ids == [4]
+    w = world(assignments=[asg(1, 2)],
+              covers=[cover(1, 3, user=2), cover(2, 4, user=2, subs={"leave"})])
+    assert go(w).user_ids == [4]
+
+
+def test_role_with_several_covered_users():
+    w = world(role_users={"Fin": [5, 6]},
+              covers=[cover(1, 7, user=5), cover(2, 8, user=6)])
+    r = go(w, R.Approver("role", "Fin"))
+    assert sorted(r.user_ids) == [7, 8]
+
+
+def test_via_post_id():
+    posts = {7: R.Post(7, "Mgr", True, None)}
+    hold = [R.Holder(7, 4, date(2020, 1, 1), None)]
+    assert go(world(posts=posts, holders=hold),
+              R.Approver("post", "7")).via_post_id == 7
+    assert go(world(), R.Approver("specific_user", "6")).via_post_id is None
+
+
+def test_hr_sorted_and_excludes_inactive():
+    people = {i: P(i, i != 3, "Eng", "Mumbai") for i in range(1, 10)}
+    r = go(world(people=people, hr_ids=[8, 3, 2, 8]))
+    assert r.via == "hr" and r.user_ids == [2, 8]

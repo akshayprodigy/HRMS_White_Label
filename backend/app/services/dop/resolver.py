@@ -78,7 +78,7 @@ class World:
 class Resolution:
     user_ids: list
     via: str                       # primary | fallback | hr | blocked
-    acting_for: dict = field(default_factory=dict)
+    acting_for: dict = field(default_factory=dict)  # user -> [users covered]
     via_post_id: Optional[int] = None
     explanation: list = field(default_factory=list)
 
@@ -126,82 +126,114 @@ def _active(w: World, uid) -> bool:
     return bool(p and p.active)
 
 
-def _cover_for(w, sub, on, user_id=None, post_id=None):
+def _cover_for(w, sub, on, requester, user_id=None, post_id=None):
+    """A cover never applies to the acting person's own request."""
+    post = w.posts.get(post_id) if post_id is not None else None
+    post_ok = post is not None and post.is_active
     rows = [c for c in w.covers if live(c, on)
             and (not c.subdomains or sub in c.subdomains)
+            and c.acting_user_id != requester
             and _active(w, c.acting_user_id)
-            and ((post_id is not None and c.covers_post_id == post_id)
+            and ((post_ok and c.covers_post_id == post_id)
                  or (user_id is not None and c.covers_user_id == user_id))]
     # a cover of the post beats a cover of its holder; named beats all
     rows.sort(key=lambda c: (c.covers_post_id is None, not c.subdomains, c.id))
     return rows[0] if rows else None
 
 
-def _seats(w: World, ap: Approver, requester: int, sub: str, on: date, log):
-    """[(user_id | None, post_id | None)] before acting cover."""
+def _ref_int(ap: Approver, log):
+    try:
+        return int(ap.ref)
+    except (TypeError, ValueError):
+        log.append(f"{ap.type}: invalid reference {ap.ref!r}")
+        return None
+
+
+def _candidates(w: World, ap: Approver, requester: int, sub: str, on: date,
+                log):
+    """Yield seat lists [(user_id | None, post_id | None)] before acting
+    cover, in the order they are tried; the first that yields someone wins."""
     if ap.type == "specific_user":
-        log.append(f"Named person #{ap.ref}")
-        return [(int(ap.ref), None)]
-    if ap.type == "role":
+        uid = _ref_int(ap, log)
+        if uid is not None:
+            log.append(f"Named person #{uid}")
+            yield [(uid, None)]
+    elif ap.type == "role":
         ids = sorted(w.role_users.get(ap.ref or "", []))
         log.append(f"Role {ap.ref}: {len(ids)} user(s)")
-        return [(u, None) for u in ids]
-    if ap.type == "post":
-        pid = int(ap.ref)
-        uid = holder_of(w, pid, on)
-        title = w.posts[pid].title if pid in w.posts else f"#{pid}"
-        log.append(f"Post {title}: {'vacant' if uid is None else f'held by #{uid}'}")
-        return [(uid, pid)]
-    if ap.type in ("manager_kind", "reporting_manager"):
+        yield [(u, None) for u in ids]
+    elif ap.type == "post":
+        pid = _ref_int(ap, log)
+        if pid is not None:
+            uid = holder_of(w, pid, on)
+            title = w.posts[pid].title if pid in w.posts else f"#{pid}"
+            log.append(f"Post {title}: "
+                       f"{'vacant' if uid is None else f'held by #{uid}'}")
+            yield [(uid, pid)]
+    elif ap.type in ("manager_kind", "reporting_manager"):
         kind = "reporting" if ap.type == "reporting_manager" else ap.ref
+        if kind not in w.kinds:
+            log.append(f"Manager kind {kind} is unknown or inactive")
+            return
         a = find_assignment(w, kind, requester, sub, on)
         if a is None:
             log.append(f"No {kind} manager assigned")
-            return []
+            return
         log.append(f"{kind} manager from the {a.scope} assignment #{a.id}")
         if a.manager_post_id is not None:
             uid = holder_of(w, a.manager_post_id, on)
             log.append("Post is vacant" if uid is None else f"Post held by #{uid}")
-            return [(uid, a.manager_post_id)]
-        return [(a.manager_user_id, None)]
-    if ap.type == "dept_head_of_requester":
+            yield [(uid, a.manager_post_id)]
+        else:
+            yield [(a.manager_user_id, None)]
+    elif ap.type == "dept_head_of_requester":
         p = w.people.get(requester)
         dept = norm(p.department) if p else ""
+        if not dept:
+            log.append("Requester has no department")
+            return
         for post in sorted(w.posts.values(), key=lambda x: x.id):
-            if dept and norm(post.heads_department) == dept and post.is_active:
+            if norm(post.heads_department) == dept and post.is_active:
                 uid = holder_of(w, post.id, on)
-                if uid is not None or _cover_for(w, sub, on, post_id=post.id):
+                if uid is not None or _cover_for(w, sub, on, requester,
+                                                 post_id=post.id):
                     log.append(f"Head post {post.title}")
-                    return [(uid, post.id)]
-        for uid in w.heads.get(dept, ()):
-            if uid and _active(w, uid):
-                log.append(f"Department head/deputy #{uid}")
-                return [(uid, None)]
-        log.append("Department has no active head")
-        return []
-    raise ValueError(f"Unknown approver type: {ap.type}")
+                    yield [(uid, post.id)]
+        for label, uid in zip(("head", "deputy"), w.heads.get(dept, ())):
+            if uid:
+                log.append(f"Department {label} #{uid}")
+                yield [(uid, None)]
+    else:
+        raise ValueError(f"Unknown approver type: {ap.type}")
 
 
 def _attempt(w, ap, requester, sub, on, log):
-    ids, acting, post_id = [], {}, None
-    for uid, pid in _seats(w, ap, requester, sub, on, log):
-        c = _cover_for(w, sub, on, user_id=uid, post_id=pid)
-        picked = [uid] if uid is not None else []
-        if c is not None:
-            log.append(f"#{c.acting_user_id} is acting for "
-                       + (f"#{uid}" if uid is not None else "the vacant post"))
-            if uid is not None:
-                acting[c.acting_user_id] = uid
-            picked = [c.acting_user_id] + (picked if c.original_can_act else [])
-        for x in picked:
-            if x == requester:
-                log.append(f"#{x} is the requester: skipped")
-            elif not _active(w, x):
-                log.append(f"#{x} is inactive: skipped")
-            elif x not in ids:
-                ids.append(x)
-        post_id = post_id or pid
-    return ids, {k: v for k, v in acting.items() if k in ids}, post_id
+    for seats in _candidates(w, ap, requester, sub, on, log):
+        ids, acting, post_id = [], {}, None
+        for uid, pid in seats:
+            c = _cover_for(w, sub, on, requester, user_id=uid, post_id=pid)
+            picked = [uid] if uid is not None else []
+            if c is not None:
+                log.append(f"#{c.acting_user_id} is acting for "
+                           + (f"#{uid}" if uid is not None
+                              else "the vacant post"))
+                if uid is not None:
+                    acting.setdefault(c.acting_user_id, set()).add(uid)
+                picked = [c.acting_user_id] + (picked if c.original_can_act
+                                               else [])
+            for x in picked:
+                if x == requester:
+                    log.append(f"#{x} is the requester: skipped")
+                elif not _active(w, x):
+                    log.append(f"#{x} is inactive: skipped")
+                elif x not in ids:
+                    ids.append(x)
+            post_id = post_id or pid
+        if ids:
+            own = {u for u, _ in seats if u is not None}
+            return (ids, {k: sorted(v) for k, v in acting.items()
+                          if k in ids and k not in own}, post_id)
+    return [], {}, None
 
 
 def resolve(w: World, approver: Approver, fallback: Optional[Approver],

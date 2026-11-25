@@ -213,6 +213,8 @@ def test_explanation_is_readable():
 
 - [ ] **Step 3: Implement**
 
+Note: after review the committed `resolver.py` supersedes the listing below.
+
 `subdomains.py`:
 
 ```python
@@ -664,7 +666,7 @@ async def test_loads_assignment_and_live_delegation(dop):
         r = R.resolve(w, R.Approver("manager_kind", "reporting"), None,
                       u["emp"], "leave", today)
     assert sorted(r.user_ids) == sorted([u["mgr"], u["act"]])
-    assert r.acting_for == {u["act"]: u["mgr"]}
+    assert r.acting_for == {u["act"]: [u["mgr"]]}
 
 
 async def test_cancelled_rows_are_ignored(dop):

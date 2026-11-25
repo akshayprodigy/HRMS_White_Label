@@ -63,7 +63,7 @@ Admin decides who verifies, recommends and approves every request, by person, po
    - reporting manager: kind `reporting`;
    - department head: head of the requester's department, else deputy;
    - role: active users holding it.
-2. **Acting:** if a cover is live for that person (or their post) and subdomain, use the acting user, plus the original when `original_can_act`.
+2. **Acting:** if a cover is live for that person (or their post) and subdomain, use the acting user, plus the original when `original_can_act`. A cover does not apply to the acting person's own request; the original decides.
 3. **Filter:** drop inactive users and the requester.
 4. **Fallback:** if empty, use the step's fallback, then HR (`hr employee write`). If still empty, the request is **blocked and flagged to admin**; it is never approved or skipped.
 5. **Repeat approver:** someone who already approved earlier in the same request is not asked again; the step is recorded as satisfied by their earlier approval. A person who **verified** cannot also approve: that step goes to its fallback.
