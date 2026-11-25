@@ -16,15 +16,29 @@ from app.services.dop import resolver as R
 HR_PERM = "hr employee write"
 
 
-async def load_world(db, on: date) -> R.World:
-    """Everything needed to resolve on date `on` (about 10 queries,
-    independent of employee count)."""
-    people = {
+def _fresh(stmt, fresh: bool):
+    return (stmt.with_for_update().execution_options(populate_existing=True)
+            if fresh else stmt)
+
+
+async def load_people(db) -> dict:
+    """Department and location exactly as the resolver sees them: the
+    employee's, falling back to the user's. Shared with the assignment
+    service so both agree on who a scope matches."""
+    return {
         i: R.Person(i, bool(act), dept, loc or uloc)
         for i, act, uloc, dept, loc in (await db.execute(
             select(User.id, User.is_active, User.location,
                    Employee.department, Employee.location)
             .outerjoin(Employee, Employee.user_id == User.id))).all()}
+
+
+async def load_world(db, on: date, fresh: bool = False) -> R.World:
+    """Everything needed to resolve on date `on` (about 10 queries,
+    independent of employee count). `fresh` reads manager assignments with a
+    locking read (latest committed, not the transaction snapshot): used by
+    writers that already hold the manager_kind lock."""
+    people = await load_people(db)
     depts = {d.id: d for d in (await db.execute(
         select(Department))).scalars().all()}
 
@@ -42,9 +56,9 @@ async def load_world(db, on: date) -> R.World:
         a.id, kinds[a.manager_kind_id], a.scope_type, a.scope_user_id,
         dname(a.scope_department_id), a.scope_location, a.manager_user_id,
         a.manager_post_id, a.starts_on, a.ends_on, frozenset(a.subdomains or ()))
-        for a in (await db.execute(select(ManagerAssignment).where(
+        for a in (await db.execute(_fresh(select(ManagerAssignment).where(
             *window(ManagerAssignment),
-            ManagerAssignment.cancelled_at.is_(None)))).scalars().all()
+            ManagerAssignment.cancelled_at.is_(None)), fresh))).scalars().all()
         if a.manager_kind_id in kinds]
     posts = {p.id: R.Post(p.id, p.title, p.is_active,
                           dname(p.heads_department_id))
