@@ -320,6 +320,199 @@ async def test_loop_through_holder_refused(dop):
             PostHolder.user_id == u["mgr"]))).first() is None
 
 
+async def test_handover_rules_and_truncation_audit(dop):
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        t = await local_today(db)
+        p = await _post(db, dop)
+        old = await _hold(db, dop, p.id, "mgr", t - timedelta(days=4))
+        # temporary holder must not cut the open-ended one short
+        e = await _raises(409, _hold(db, dop, p.id, "mgr2",
+                                     t + timedelta(days=2),
+                                     ends_on=t + timedelta(days=4)))
+        assert "acting cover" in e.detail
+        # a handover cannot start in the past; a past start is fine when
+        # it truncates nobody
+        await _raises(422, _hold(db, dop, p.id, "mgr2", t - timedelta(days=1)))
+        # same-day message depends on whether the holder can be removed
+        e = await _raises(409, _hold(db, dop, p.id, "mgr2",
+                                     t - timedelta(days=4)))
+        assert "end them" in e.detail and "remove" not in e.detail
+        new = await _hold(db, dop, p.id, "mgr2", t + timedelta(days=2))
+        await db.flush()
+        rows = (await db.execute(select(AuditLog).where(
+            AuditLog.resource_id == str(p.id),
+            AuditLog.action == "dop.post.holder_end"))).scalars().all()
+        assert len(rows) == 1
+        d = rows[0].details
+        json.dumps(d)
+        assert d["truncated_by"] == new.id
+        assert d["before"]["ends_on"] is None
+        assert d["after"]["ends_on"] == (t + timedelta(days=1)).isoformat()
+        assert d["before"]["holder_id"] == old.id
+        await db.rollback()
+    async with SessionLocal() as db:
+        t = await local_today(db)
+        p = await _post(db, dop, code="R")
+        h = await _hold(db, dop, p.id, "mgr", t - timedelta(days=9),
+                        ends_on=t - timedelta(days=5))
+        assert h.ends_on == t - timedelta(days=5)
+        await db.rollback()
+
+
+async def test_remove_holder_reopen_previous(dop):
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        t = await local_today(db)
+        p = await _post(db, dop)
+        await _to_post(db, dop, p.id, starts_on=t - timedelta(days=9))
+        a = await _hold(db, dop, p.id, "mgr", t - timedelta(days=9))
+        b = await _hold(db, dop, p.id, "mgr2", t + timedelta(days=3))
+        c = await _hold(db, dop, p.id, "act", t + timedelta(days=6))
+        # reopen the previous one only when the handover ended it
+        await PS.remove_holder(db, actor_id=u["admin"], post_id=p.id,
+                               holder_id=c.id, reopen_previous=True)
+        hist = await PS.history(db, p.id)
+        assert [(h.user_id, h.ends_on) for h in hist] == [
+            (u["mgr"], t + timedelta(days=2)), (u["mgr2"], None)]
+        # b was ended by nobody else: removing b reopens a to open-ended
+        await PS.remove_holder(db, actor_id=u["admin"], post_id=p.id,
+                               holder_id=b.id, reopen_previous=True)
+        hist = await PS.history(db, p.id)
+        assert [(h.id, h.ends_on) for h in hist] == [(a.id, None)]
+        await db.flush()
+        n = (await db.execute(select(AuditLog).where(
+            AuditLog.resource_id == str(p.id),
+            AuditLog.action == "dop.post.holder_end"))).scalars().all()
+        assert any(r.details.get("reopened_by_removal_of") == b.id
+                   for r in n)
+        await db.rollback()
+    async with SessionLocal() as db:        # not ended by this handover
+        t = await local_today(db)
+        p = await _post(db, dop, code="R")
+        a = await _hold(db, dop, p.id, "mgr", t - timedelta(days=9))
+        await PS.end_holder(db, actor_id=u["admin"], post_id=p.id,
+                            holder_id=a.id, ends_on=t + timedelta(days=1))
+        b = await _hold(db, dop, p.id, "mgr2", t + timedelta(days=2),
+                        ends_on=t + timedelta(days=5))
+        await _raises(409, PS.remove_holder(
+            db, actor_id=u["admin"], post_id=p.id, holder_id=b.id,
+            reopen_previous=True))
+        await db.rollback()
+
+
+async def test_fk_failure_is_422_not_409(dop, monkeypatch):
+    u = dop["uid"]
+
+    async def skip(*a, **k):
+        return None
+    async with SessionLocal() as db:
+        monkeypatch.setattr(PS, "_validate", skip)
+        await _raises(422, PS.create(
+            db, actor_id=u["admin"], code=f"F{dop['sfx']}", title="T",
+            department_id=999999999))
+        await db.rollback()
+
+
+async def test_acting_snapshot_and_bools(dop):
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        t = await local_today(db)
+        c = await AC.create(db, actor_id=u["admin"], covers_user_id=u["mgr"],
+                            acting_user_id=u["act"], starts_on=t,
+                            reason="trip")
+        snap = AC.snapshot(c)
+        for k in ("reason", "created_by_id", "revoked_at", "revoked_by_id"):
+            assert k in snap
+        await AC.revoke(db, actor_id=u["admin"], cover_id=c.id)
+        snap = AC.snapshot(c)
+        json.dumps(snap)
+        assert snap["revoked_by_id"] == u["admin"] and snap["revoked_at"]
+        for bad in ("yes", 1, None):
+            await _raises(422, AC.create(
+                db, actor_id=u["admin"], covers_user_id=u["mgr"],
+                acting_user_id=u["hr"], starts_on=t, original_can_act=bad))
+            await _raises(422, AC.create(
+                db, actor_id=u["admin"], covers_user_id=u["mgr"],
+                acting_user_id=u["hr"], starts_on=t, only_when_on_leave=bad))
+        c2 = await AC.create(db, actor_id=u["admin"], covers_user_id=u["mgr"],
+                             acting_user_id=u["hr"], starts_on=t)
+        await _raises(422, AC.update(db, actor_id=u["admin"], cover_id=c2.id,
+                                     original_can_act="yes"))
+        await db.rollback()
+
+
+async def test_acting_update_limits(dop):
+    from sqlalchemy import update as sa_update
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        t = await local_today(db)
+        c = await AC.create(db, actor_id=u["admin"], covers_user_id=u["mgr"],
+                            acting_user_id=u["act"], starts_on=t,
+                            ends_on=t + timedelta(days=3))
+        await _raises(422, AC.update(db, actor_id=u["admin"], cover_id=c.id,
+                                     ends_on=t - timedelta(days=1)))
+        # extending while the acting person is inactive
+        await db.execute(sa_update(User).where(User.id == u["act"])
+                         .values(is_active=False))
+        await _raises(422, AC.update(db, actor_id=u["admin"], cover_id=c.id,
+                                     ends_on=t + timedelta(days=9)))
+        await AC.update(db, actor_id=u["admin"], cover_id=c.id,
+                        ends_on=t + timedelta(days=1))      # shortening ok
+        await db.rollback()
+    async with SessionLocal() as db:
+        t = await local_today(db)
+        c = await AC.create(db, actor_id=u["admin"], covers_user_id=u["mgr"],
+                            acting_user_id=u["act"], starts_on=t,
+                            ends_on=t + timedelta(days=3))
+        await db.execute(sa_update(User).where(User.id == u["mgr"])
+                         .values(is_active=False))
+        await _raises(422, AC.update(db, actor_id=u["admin"], cover_id=c.id,
+                                     ends_on=None))
+        await db.rollback()
+    async with SessionLocal() as db:        # an ended cover is frozen
+        t = await local_today(db)
+        c = await AC.create(db, actor_id=u["admin"], covers_user_id=u["mgr"],
+                            acting_user_id=u["act"],
+                            starts_on=t - timedelta(days=5),
+                            ends_on=t + timedelta(days=1))
+        c.ends_on = t - timedelta(days=1)
+        await db.flush()
+        await _raises(409, AC.update(db, actor_id=u["admin"], cover_id=c.id,
+                                     reason="x"))
+        await db.rollback()
+
+
+async def test_acting_takes_reporting_lock_first(dop):
+    """Acting writers queue behind the reporting kind lock and hold no user
+    row while they wait (a deadlock with sync_mirror was reproduced)."""
+    from sqlalchemy import text
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        t = await local_today(db)
+    async with SessionLocal() as a:
+        await A.lock_reporting(a)
+        done = asyncio.Event()
+
+        async def other():
+            async with SessionLocal() as b:
+                async def body():
+                    return await AC.create(
+                        b, actor_id=u["admin"], covers_user_id=u["emp"],
+                        acting_user_id=u["act"], starts_on=t)
+                await retry_on_lock(b, body, commit=True)
+            done.set()
+        task = asyncio.create_task(other())
+        await asyncio.sleep(0.7)
+        assert not done.is_set()
+        # b holds no lock on the covered user yet
+        await a.execute(text("select id from user where id = :i "
+                             "for update nowait"), {"i": u["emp"]})
+        await a.commit()
+        await asyncio.wait_for(task, 20)
+        assert done.is_set()
+
+
 # ---- concurrency: real sessions, fresh-transaction contract ---------------
 
 async def _tx(fn):

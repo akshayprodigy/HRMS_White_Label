@@ -11,7 +11,7 @@ from app.models.dop import ActingAssignment, Post
 from app.models.user import User
 from app.services.dop import subdomains as S
 from app.services.dop.assignments import (
-    _active_user, audit, dates_overlap, subs_clash,
+    _active_user, audit, dates_overlap, lock_reporting, subs_clash,
 )
 from app.services.org_time import local_today
 
@@ -24,7 +24,10 @@ def snapshot(c) -> dict:
             "starts_on": c.starts_on.isoformat(),
             "ends_on": c.ends_on.isoformat() if c.ends_on else None,
             "original_can_act": c.original_can_act,
-            "only_when_on_leave": c.only_when_on_leave}
+            "only_when_on_leave": c.only_when_on_leave,
+            "reason": c.reason, "created_by_id": c.created_by_id,
+            "revoked_at": c.revoked_at.isoformat() if c.revoked_at else None,
+            "revoked_by_id": c.revoked_by_id}
 
 
 async def _lock_target(db, user_id, post_id) -> bool:
@@ -60,6 +63,12 @@ def _check_overlap(rows, subs, starts_on, ends_on):
             raise HTTPException(409, f"Overlaps acting cover #{r.id}")
 
 
+def _check_bools(**kw):
+    for k, v in kw.items():
+        if not isinstance(v, bool):
+            raise HTTPException(422, f"{k} must be true or false")
+
+
 def _check_reason(reason):
     if reason is not None and len(reason) > 255:
         raise HTTPException(422, "Reason is longer than 255")
@@ -76,10 +85,13 @@ async def create(db, *, actor_id, acting_user_id, starts_on, ends_on=None,
     if ends_on is not None and ends_on < starts_on:
         raise HTTPException(422, "End date is before the start date")
     _check_reason(reason)
+    _check_bools(original_can_act=original_can_act,
+                 only_when_on_leave=only_when_on_leave)
     try:
         subs = sorted(S.validate(subdomains))
     except ValueError as e:
         raise HTTPException(422, str(e))
+    await lock_reporting(db)          # same order as the mirror writers
     active = await _lock_target(db, covers_user_id, covers_post_id)
     if not active:
         raise HTTPException(
@@ -103,33 +115,53 @@ async def create(db, *, actor_id, acting_user_id, starts_on, ends_on=None,
     return c
 
 
-async def _locked(db, cover_id) -> ActingAssignment:
+async def _locked(db, cover_id):
+    """Reporting lock, then the covered row, then the cover. Returns
+    (cover, covered target is active)."""
+    await lock_reporting(db)
     row = (await db.execute(select(
         ActingAssignment.covers_user_id, ActingAssignment.covers_post_id)
         .where(ActingAssignment.id == cover_id))).first()
     if row is None:
         raise HTTPException(404, "Acting cover not found")
-    await _lock_target(db, row[0], row[1])
+    active = await _lock_target(db, row[0], row[1])
     c = (await db.execute(select(ActingAssignment).where(
         ActingAssignment.id == cover_id).with_for_update()
         .execution_options(populate_existing=True))).scalars().one()
     if c.revoked_at is not None:
         raise HTTPException(409, "Acting cover was already ended")
-    return c
+    return c, active
 
 
 async def update(db, *, actor_id, cover_id, **changes) -> ActingAssignment:
-    """Only original_can_act, ends_on and reason can change."""
-    c = await _locked(db, cover_id)
+    """Only original_can_act, ends_on and reason can change. An ended cover
+    cannot change; ends_on cannot move into the past (revoke instead) and
+    cannot be extended while the covered or acting person/post is inactive."""
+    c, target_active = await _locked(db, cover_id)
+    today = await local_today(db)
+    if c.ends_on is not None and c.ends_on < today:
+        raise HTTPException(
+            409, "The cover already ended: create a new cover")
     before = snapshot(c)
     changes = {k: v for k, v in changes.items()
                if k in ("original_can_act", "ends_on", "reason")}
+    if "original_can_act" in changes:
+        _check_bools(original_can_act=changes["original_can_act"])
     if "reason" in changes:
         _check_reason(changes["reason"])
     if "ends_on" in changes:
         e = changes["ends_on"]
         if e is not None and e < c.starts_on:
             raise HTTPException(422, "End date is before the start date")
+        if e is not None and e < today:
+            raise HTTPException(
+                422, "The end date is in the past: revoke the cover instead")
+        extends = c.ends_on is not None and (e is None or e > c.ends_on)
+        if extends:
+            if not target_active:
+                raise HTTPException(
+                    422, "The covered person or post is inactive")
+            await _active_user(db, c.acting_user_id, "Acting person")
         _check_overlap(await _siblings(db, c.covers_user_id,
                                        c.covers_post_id, c.id),
                        c.subdomains, c.starts_on, e)
@@ -142,7 +174,7 @@ async def update(db, *, actor_id, cover_id, **changes) -> ActingAssignment:
 
 
 async def revoke(db, *, actor_id, cover_id) -> ActingAssignment:
-    c = await _locked(db, cover_id)
+    c, _ = await _locked(db, cover_id)
     c.revoked_at = datetime.now(timezone.utc)
     c.revoked_by_id = actor_id
     await db.flush()

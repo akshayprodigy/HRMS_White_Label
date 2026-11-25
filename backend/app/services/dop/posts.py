@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.audit import AuditLog
 from app.models.department import Department
 from app.models.dop import ActingAssignment, ManagerAssignment, Post, PostHolder
 from app.services.dop.assignments import (
@@ -91,8 +92,15 @@ async def _unique_guard(db):
         async with db.begin_nested():
             yield
             await db.flush()
-    except IntegrityError:
-        raise HTTPException(409, "Post code or head department already used")
+    except IntegrityError as e:
+        code = e.orig.args[0] if getattr(e.orig, "args", None) else None
+        if code == 1062:
+            raise HTTPException(
+                409, "Post code or head department already used")
+        if code == 1452:
+            raise HTTPException(
+                422, "Department or parent post no longer exists")
+        raise
 
 
 async def create(db, *, actor_id, code, title, **kw) -> Post:
@@ -150,16 +158,17 @@ async def history(db, post_id) -> list:
         .execution_options(populate_existing=True))).scalars().all())
 
 
-async def _baseline(db, post_id, today, extra=None):
+async def _baseline(db, post_id, today, *extra):
     if not await post_governed_users(db, post_id):
         return None
-    return await loop_baseline(
-        db, [today] + ([extra] if extra and extra > today else []))
+    dates = [today] + sorted({d for d in extra if d and d > today})
+    return await loop_baseline(db, dates)
 
 
 async def assign_holder(db, *, actor_id, post_id, user_id, starts_on,
                         ends_on=None) -> PostHolder:
-    """Start a holder. The open-ended current holder ends the day before;
+    """Start a holder. The open-ended current holder ends the day before
+    (only for an open-ended new holder; temporary cover is an acting cover);
     a start in the future leaves today's mirror alone."""
     if ends_on is not None and ends_on < starts_on:
         raise HTTPException(422, "End date is before the start date")
@@ -177,11 +186,20 @@ async def assign_holder(db, *, actor_id, post_id, user_id, starts_on,
             to_end.append(h)
         elif h.starts_on == starts_on:
             raise HTTPException(
-                409, "A holder starts that same day: remove them first "
-                     "(a holder that starts today or later can be removed)")
+                409, "A holder starts that same day: " + (
+                    "remove them first" if h.starts_on >= today
+                    else "end them first"))
         else:
             raise HTTPException(409, "Someone already holds the post then")
-    base = await _baseline(db, post_id, today, starts_on)
+    if to_end and ends_on is not None:
+        raise HTTPException(
+            409, "Use an acting cover for temporary cover, or end the "
+                 "current holder first")
+    if to_end and starts_on < today:
+        raise HTTPException(422, "A handover cannot start in the past")
+    base = await _baseline(db, post_id, today, starts_on,
+                           ends_on + timedelta(days=1) if ends_on else None)
+    before = [(h, _holder_snapshot(h)) for h in to_end]
     for h in to_end:
         h.ends_on = starts_on - timedelta(days=1)
     h = PostHolder(post_id=post_id, user_id=user_id, starts_on=starts_on,
@@ -190,6 +208,10 @@ async def assign_holder(db, *, actor_id, post_id, user_id, starts_on,
     await db.flush()
     audit(db, actor_id, "dop.post.holder", "post", post_id,
           _holder_snapshot(h))
+    for old, snap in before:
+        audit(db, actor_id, "dop.post.holder_end", "post", post_id,
+              {"before": snap, "after": _holder_snapshot(old),
+               "truncated_by": h.id})
     await sync_post_users(db, post_id, base)
     return h
 
@@ -220,19 +242,58 @@ async def end_holder(db, *, actor_id, post_id, holder_id, ends_on):
     return h
 
 
-async def remove_holder(db, *, actor_id, post_id, holder_id) -> None:
-    """Delete a wrongly entered holder that starts today or later. The
-    holder it replaced stays ended: assign them again if needed."""
+async def _truncated_by(db, post_id, prev_id, holder_id) -> bool:
+    """Does the audit trail say holder `prev_id` was ended by `holder_id`'s
+    handover?"""
+    rows = (await db.execute(select(AuditLog.details).where(
+        AuditLog.action == "dop.post.holder_end",
+        AuditLog.resource_type == "post",
+        AuditLog.resource_id == str(post_id)))).scalars().all()
+    return any(isinstance(d, dict) and d.get("truncated_by") == holder_id
+               and (d.get("before") or {}).get("holder_id") == prev_id
+               for d in rows)
+
+
+async def remove_holder(db, *, actor_id, post_id, holder_id,
+                        reopen_previous=False) -> None:
+    """Delete a wrongly entered holder that starts today or later. By
+    default the holder it replaced stays ended; with reopen_previous that
+    holder is reopened (until the next later holder, else open-ended) when
+    this holder's handover is what ended them."""
     await lock_reporting(db)
-    await _lock(db, post_id)
-    h = await _holder(db, post_id, holder_id)
+    p = await _lock(db, post_id)
+    hist = await history(db, post_id)
+    h = next((x for x in hist if x.id == holder_id), None)
+    if h is None:
+        raise HTTPException(404, "Holder not found")
     today = await local_today(db)
     if h.starts_on < today:
         raise HTTPException(
             422, "That holder already started: end them instead")
+    prev = None
+    if reopen_previous:
+        day = h.starts_on - timedelta(days=1)
+        prev = next((x for x in hist if x.id != h.id and x.ends_on == day),
+                    None)
+        if prev is None or not await _truncated_by(
+                db, post_id, prev.id, h.id):
+            raise HTTPException(
+                409, "The previous holder was not ended by this handover")
+        if not p.is_active:
+            raise HTTPException(422, "Post is inactive")
+        await _active_user(db, prev.user_id, "Previous holder")
     snap = _holder_snapshot(h)
-    base = await _baseline(db, post_id, today)
+    base = await _baseline(db, post_id, today, h.starts_on)
     await db.delete(h)
     await db.flush()
     audit(db, actor_id, "dop.post.holder_remove", "post", post_id, snap)
+    if prev is not None:
+        before = _holder_snapshot(prev)
+        later = [x.starts_on for x in hist
+                 if x.id not in (h.id, prev.id) and x.starts_on > h.starts_on]
+        prev.ends_on = (min(later) - timedelta(days=1)) if later else None
+        await db.flush()
+        audit(db, actor_id, "dop.post.holder_end", "post", post_id,
+              {"before": before, "after": _holder_snapshot(prev),
+               "reopened_by_removal_of": holder_id})
     await sync_post_users(db, post_id, base)
