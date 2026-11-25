@@ -915,13 +915,177 @@ async def test_replace_department_scope_keeps_the_tail(api):
 
 async def test_replace_without_ends_on_has_no_tail(api):
     u, t = api.u, api.today
+    day = timedelta(days=1)
     await api.post(H + "/assignments/bulk", headers=api.h, json={
         **_bulk(api, [u["emp"]], u["mgr"]),
-        "starts_on": (t - 3 * timedelta(days=1)).isoformat()})
+        "starts_on": (t - 3 * day).isoformat()})
     r = await api.post(H + "/assignments/bulk", headers=api.h,
                        json=_bulk(api, [u["emp"]], u["mgr2"], replace=True))
     assert r.status_code == 200 and r.json()["continued"] == 0
-    assert len(await _live(u["emp"])) == 2
+    rows = await _live(u["emp"])
+    assert [(a, b, c) for a, b, c, *_ in rows] == [
+        (t - 3 * day, t - day, u["mgr"]), (t, None, u["mgr2"])]
+
+
+SUBS = ("leave", "expense", "asset", "roster")
+
+
+async def _by_day(uid, kind, first, last):
+    """{(day offset, sub): manager} from the resolver's own lookup."""
+    from app.services.dop import resolver as R
+    from app.services.dop.world import load_world
+    t = (await _today())
+    out = {}
+    async with SessionLocal() as db:
+        for off in range(first, last + 1):
+            d = t + timedelta(days=off)
+            w = await load_world(db, d)
+            for sub in SUBS:
+                a = R.find_assignment(w, kind, uid, sub, d)
+                out[(off, sub)] = a.manager_user_id if a else None
+    return out
+
+
+async def _today():
+    async with SessionLocal() as db:
+        return await local_today(db)
+
+
+def _expect(rule, first, last):
+    return {(o, sub): rule(o, sub) for o in range(first, last + 1)
+            for sub in SUBS}
+
+
+async def _put(api, who, mgr, subs, start, end=None, **kw):
+    t = api.today
+    r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+        "user_ids": [api.u[who]], "kind_id": api.fun,
+        "manager_user_id": mgr, "subdomains": subs, "starts_on":
+        (t + timedelta(days=start)).isoformat(), "ends_on":
+        (t + timedelta(days=end)).isoformat() if end is not None else None,
+        **kw})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_replace_keeps_areas_the_new_row_does_not_cover(api):
+    u = api.u
+    m1, m2 = u["mgr"], u["mgr2"]
+    # old {leave, expense}, new {leave} for 0..5: expense never loses m1
+    await _put(api, "emp", m1, ["leave", "expense"], -10)
+    r = await _put(api, "emp", m2, ["leave"], 0, 5, replace=True)
+    assert r["replaced"] == 1 and r["continued"] == 2    # rest + tail
+    got = await _by_day(u["emp"], "functional", -3, 9)
+    assert got == _expect(lambda o, s: (
+        m2 if s == "leave" and 0 <= o <= 5 else
+        m1 if s in ("leave", "expense") else None), -3, 9)
+    # same without ends_on: leave goes to m2 for good, expense stays m1
+    await _put(api, "act", m1, ["leave", "expense"], -10)
+    r = await _put(api, "act", m2, ["leave"], 0, replace=True)
+    assert r["replaced"] == 1 and r["continued"] == 1    # rest only
+    got = await _by_day(u["act"], "functional", -3, 9)
+    assert got == _expect(lambda o, s: (
+        m2 if s == "leave" and o >= 0 else
+        m1 if s in ("leave", "expense") else None), -3, 9)
+    rows = [x for x in await _live(u["act"])]
+    assert [(a, b) for a, b, *_ in rows if a >= api.today] == [
+        (api.today, None), (api.today, None)]       # new row + rest row
+
+
+async def test_replace_scheduled_old_row_keeps_its_rest(api):
+    u = api.u
+    m1, m2 = u["mgr"], u["mgr2"]
+    await _put(api, "emp", m1, ["leave", "expense"], 3)       # scheduled
+    r = await _put(api, "emp", m2, ["leave"], 0, 5, replace=True)
+    assert r["replaced"] == 1 and r["continued"] == 2
+    got = await _by_day(u["emp"], "functional", -1, 9)
+    assert got == _expect(lambda o, s: (
+        m2 if s == "leave" and 0 <= o <= 5 else
+        m1 if s in ("leave", "expense") and o >= 3 else None), -1, 9)
+
+
+async def test_replace_two_clashing_rows_each_keep_their_rest(api):
+    u = api.u
+    m1, m2 = u["mgr"], u["mgr2"]
+    await _put(api, "emp", m1, ["leave", "expense"], -10)
+    await _put(api, "emp", m1, ["asset", "roster"], -10)
+    r = await _put(api, "emp", m2, ["leave", "asset"], 0, 5, replace=True)
+    assert r["replaced"] == 2 and r["continued"] == 4
+    got = await _by_day(u["emp"], "functional", -2, 9)
+    assert got == _expect(lambda o, s: (
+        m2 if s in ("leave", "asset") and 0 <= o <= 5 else m1), -2, 9)
+
+
+async def test_replace_all_row_and_named_row_coexist_without_replace(api):
+    u = api.u
+    await _put(api, "emp", u["mgr"], [], -10)
+    r = await _put(api, "emp", u["mgr2"], ["leave"], 0, 5, replace=True)
+    assert r["replaced"] == 0 and r["continued"] == 0
+    got = await _by_day(u["emp"], "functional", -1, 7)
+    assert got == _expect(lambda o, s: (
+        u["mgr2"] if s == "leave" and 0 <= o <= 5 else u["mgr"]), -1, 7)
+
+
+async def test_replace_tail_next_to_a_scheduled_row(api):
+    u = api.u
+    m1, m2 = u["mgr"], u["mgr2"]
+    await _put(api, "emp", m1, ["leave"], -10, 20)
+    await _put(api, "emp", u["hr"], ["leave"], 30)            # scheduled
+    r = await _put(api, "emp", m2, ["leave"], 0, 5, replace=True)
+    assert r["replaced"] == 1 and r["continued"] == 1
+    got = await _by_day(u["emp"], "functional", -1, 33)
+    assert got == _expect(lambda o, s: None if s != "leave" else (
+        m1 if -10 <= o < 0 or 6 <= o <= 20 else
+        m2 if 0 <= o <= 5 else u["hr"] if o >= 30 else None), -1, 33)
+
+
+async def test_replace_tail_clashing_with_a_kept_row_is_409(api):
+    u = api.u
+    t = api.today
+    await _put(api, "emp", u["mgr"], ["leave"], -10, 20)
+    async with SessionLocal() as db:       # overlaps the old row: only a
+        db.add(ManagerAssignment(           # direct insert can do that
+            manager_kind_id=api.fun, scope_type="user",
+            scope_user_id=u["emp"], manager_user_id=u["hr"],
+            subdomains=["leave"], starts_on=t + timedelta(days=10),
+            ends_on=t + timedelta(days=15), created_by_id=u["admin"]))
+        await db.commit()
+    before = await _live(u["emp"])
+    r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+        "user_ids": [u["emp"]], "kind_id": api.fun,
+        "manager_user_id": u["mgr2"], "subdomains": ["leave"],
+        "starts_on": t.isoformat(),
+        "ends_on": (t + timedelta(days=5)).isoformat(), "replace": True})
+    assert r.status_code == 409, r.text
+    assert await _live(u["emp"]) == before
+
+
+async def test_replace_department_scope_keeps_its_rest(api):
+    u, t, day = api.u, api.today, timedelta(days=1)
+    dept = next(d["id"] for d in (await api.get(
+        H + "/meta", headers=api.h)).json()["departments"]
+        if d["name"] == f"DOP{api.sfx}")
+
+    async def put(mgr, subs, start, end=None, **kw):
+        r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+            "scope_type": "department", "scope_department_id": dept,
+            "kind_id": api.fun, "manager_user_id": mgr, "subdomains": subs,
+            "starts_on": (t + start * day).isoformat(),
+            "ends_on": (t + end * day).isoformat() if end is not None
+            else None, **kw})
+        assert r.status_code == 200, r.text
+        return r.json()
+    await put(u["mgr"], ["leave", "expense"], -10)
+    r = await put(u["mgr2"], ["leave"], 0, 5, replace=True)
+    assert r["replaced"] == 1 and r["continued"] == 2
+    got = await _by_day(u["emp"], "functional", -2, 8)
+    assert got == _expect(lambda o, s: (
+        u["mgr2"] if s == "leave" and 0 <= o <= 5 else
+        u["mgr"] if s in ("leave", "expense") else None), -2, 8)
+    async with SessionLocal() as db:
+        await db.execute(delete(ManagerAssignment).where(
+            ManagerAssignment.scope_department_id == dept))
+        await db.commit()
 
 
 async def test_managers_inactive_self_and_vacant(api):
