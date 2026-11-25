@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, update as sql_update, func
 from sqlalchemy.orm import selectinload
 from app.api import deps
+from app.api.v1.endpoints import dop_edits as DE
 from app.core.security import get_password_hash
 from app.models.audit import AuditLog
 from app.models.user import User, Role, Permission
@@ -538,7 +539,20 @@ async def update_user_admin(
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
+    # The manager change goes first, in its own transaction (nothing else
+    # can reject this request before it). A manager error rejects it all.
+    # None means "not sent" here.
+    if user_in.manager_id is not None and user_in.manager_id != user.manager_id:
+        actor_id = current_user.id
+        await DE.change_manager(
+            db, actor_id=actor_id, user_id=user_id,
+            manager_id=user_in.manager_id)
+        await DE.reload_actor(db, actor_id)
+        user = (await db.execute(
+            select(User).where(User.id == user_id)
+            .execution_options(populate_existing=True))).scalars().one()
+
     if user_in.email is not None:
         user.email = user_in.email
     if user_in.full_name is not None:
@@ -547,9 +561,6 @@ async def update_user_admin(
         user.is_active = user_in.is_active
     if user_in.password is not None:
         user.hashed_password = get_password_hash(user_in.password)
-    if user_in.manager_id is not None:
-        user.manager_id = user_in.manager_id
-    
     if user_in.role_ids is not None:
         result = await db.execute(
             select(Role).where(Role.id.in_(user_in.role_ids))
