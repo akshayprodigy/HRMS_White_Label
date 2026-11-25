@@ -22,7 +22,7 @@ Transaction contract (callers: Tasks 5 and 7, inside retry_on_lock):
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.models.audit import AuditLog
 from app.models.department import Department
@@ -399,6 +399,42 @@ async def sync_mirror(db, user_ids=None) -> int:
     await db.flush()
     today = await local_today(db)
     return await _sync(db, await load_world(db, today), today, user_ids)
+
+
+async def post_governed_users(db, post_id) -> list:
+    """Users whose all-subdomain reporting manager is the holder of `post_id`
+    (live or future rows). Needs the reporting kind lock (callers hold it)."""
+    today = await local_today(db)
+    dnames = dict((await db.execute(
+        select(Department.id, Department.name))).all())
+    people = await load_people(db)
+    users: set = set()
+    for a in (await db.execute(
+            select(ManagerAssignment).join(
+                ManagerKind, ManagerKind.id == ManagerAssignment.manager_kind_id)
+            .where(ManagerKind.code == "reporting",
+                   ManagerAssignment.manager_post_id == post_id,
+                   ManagerAssignment.cancelled_at.is_(None),
+                   or_(ManagerAssignment.ends_on.is_(None),
+                       ManagerAssignment.ends_on >= today)))).scalars().all():
+        if not a.subdomains:
+            users |= set(_matching(people, a, dnames.get(a.scope_department_id)))
+    return sorted(users)
+
+
+async def sync_post_users(db, post_id, baseline=None) -> int:
+    """After a holder or post change: refuse a new reporting loop (when a
+    `loop_baseline` taken after the lock is given) and resync the mirror of
+    the users governed by assignments to the post. Returns users changed."""
+    await lock_reporting(db)
+    await db.flush()
+    users = await post_governed_users(db, post_id)
+    if not users:
+        return 0
+    if baseline is not None:
+        await assert_no_new_loops(db, baseline, users)
+    today = await local_today(db)
+    return await _sync(db, await load_world(db, today), today, users)
 
 
 async def has_reporting_assignment(db, user_id) -> bool:
