@@ -284,6 +284,13 @@ const menuItems: MenuItem[] = [
     group: "Administration",
   },
   {
+    id: "dop-admin",
+    label: "Delegation of Powers",
+    icon: Network,
+    roles: ["admin", "super admin"],
+    group: "Administration",
+  },
+  {
     id: "emergency-broadcast",
     label: "Emergency Broadcast",
     icon: ShieldAlert,
