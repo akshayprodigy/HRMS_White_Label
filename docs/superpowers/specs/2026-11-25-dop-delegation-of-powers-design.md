@@ -39,7 +39,7 @@ Admin decides who verifies, recommends and approves every request, by person, po
 **Posts** `post`: id, code, title, department_id, location, parent_post_id, is_active. `post_holder`: post_id, user_id, starts_on, ends_on, with at most one holder on any date. Vacant posts are allowed. Department head is the existing `Department.head_user_id` / deputy; a post may be flagged `heads_department_id` (unique), in which case its holder is the head.
 
 **Acting assignments** `acting_assignment`: id, covers_user_id **or** covers_post_id, acting_user_id, subdomains (child table, as above), starts_on, ends_on, `original_can_act` (bool, default false), only_when_on_leave (bool), reason, created_by_id, revoked_at / revoked_by_id.
-- Replaces `ApproverDelegation`. Existing rows are migrated with `original_can_act=true`, which keeps today's behaviour. Self-service out-of-office stays and creates these rows with the same default.
+- Replaces `ApproverDelegation` in D2 (D1 only reads it). Existing rows are migrated with `original_can_act=true`, which keeps today's behaviour. Self-service out-of-office stays and creates these rows with the same default.
 - Acting does not chain: if A covers B and B covers C, A does not act for C.
 - Overlapping covers for the same user/post and subdomain are refused (409). A cycle is harmless because covers do not chain.
 
