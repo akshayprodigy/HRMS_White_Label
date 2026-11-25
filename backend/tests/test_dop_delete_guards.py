@@ -162,6 +162,9 @@ async def test_message_names_first_five_and_shared_scopes(dop, api):
     u = dop["uid"]
     async with SessionLocal() as db:
         today = await local_today(db)
+        # inactive people are not counted, so make all six others active
+        (await db.get(User, u["off"])).is_active = True
+        await db.commit()
         kind = (await A.lock_reporting(db)).id
         await A.create(db, actor_id=u["admin"], kind_id=kind,
                        scope_type="department",
@@ -221,3 +224,24 @@ async def test_audit_lists_ended_history_with_totals(dop, api):
     assert len(log) == 1
     h = log[0].details["history"]["as_manager"]
     assert h["total"] == 1 and len(h["rows"]) == 1
+
+
+async def test_inactive_reports_do_not_block(dop, api):
+    """Former employees keep old rows but must not pin their manager; the
+    removed rows are still listed in the audit."""
+    u = dop["uid"]
+    aid = await _assign(dop, "emp", "mgr")
+    async with SessionLocal() as db:
+        (await db.get(User, u["emp"])).is_active = False
+        await db.commit()
+    r = await _del(api, u["mgr"])
+    assert r.status_code == 200, r.text
+    assert not await _exists(u["mgr"])
+    async with SessionLocal() as db:
+        row = (await db.execute(select(AuditLog).where(
+            AuditLog.action == "dop.assignment.removed",
+            AuditLog.resource_id == str(u["mgr"])))).scalars().one()
+        assert [x["id"] for x in row.details["history"]["as_manager"]["rows"]
+                ] == [aid]
+        await db.delete(row)
+        await db.commit()

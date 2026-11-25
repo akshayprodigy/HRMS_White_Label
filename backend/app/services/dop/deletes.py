@@ -29,6 +29,9 @@ async def user_blockers(db, user_id) -> list:
         ManagerAssignment.manager_user_id == user_id,
         ManagerAssignment.cancelled_at.is_(None),
         _open(ManagerAssignment, today)))).scalars().all()
+    # a former (inactive) employee's own row does not pin the manager
+    rows = [a for a in rows if a.scope_type != "user" or (
+        a.scope_user_id in people and people[a.scope_user_id].active)]
     if rows:
         who: set = set()
         shared: list = []
@@ -40,7 +43,7 @@ async def user_blockers(db, user_id) -> list:
                 shared.append(f"location {a.scope_location}")
             elif a.scope_type == "company":
                 shared.append("company-wide")
-        who.discard(user_id)
+        who = {i for i in who if i != user_id and people[i].active}
         names = dict((await db.execute(
             select(User.id, User.full_name))).all())
         n = len(who)
@@ -92,9 +95,9 @@ def _capped(items) -> dict:
 
 async def audit_user_rows_removed(db, actor_id, user_id) -> None:
     """Before an account delete: one audit row listing what goes with it.
-    `rows` = the person's own scope rows; `history` = ended or cancelled rows
-    where they were the manager, a post holder or in an acting cover (live
-    ones would have blocked the delete). Each list is capped at 200 with its
+    `rows` = the person's own scope rows; `history` = rows where they were the
+    manager, a post holder or in an acting cover (ended, cancelled, or for an
+    inactive employee: other live ones would have blocked the delete). Each list is capped at 200 with its
     total."""
     own = (await db.execute(select(ManagerAssignment).where(
         ManagerAssignment.scope_user_id == user_id)
