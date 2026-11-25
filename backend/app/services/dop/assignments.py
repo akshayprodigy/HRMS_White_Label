@@ -1,5 +1,17 @@
-"""Manager assignment writes. Never commits. All writes of one kind are
-serialised by locking its manager_kind row (cheap: admin-only, rare)."""
+"""Manager assignment writes. Services never commit.
+
+Transaction contract (callers: Tasks 5 and 7, inside retry_on_lock):
+  * a DOP writer runs in a FRESH transaction (`await db.commit()` first) and
+    takes the manager_kind lock (`lock_reporting` / `create` / `end` do) as
+    its first statement, before any plain read and before any other write to
+    user rows;
+  * the kind row serialises all writers of a kind, so every plain read made
+    after the lock sees the latest committed data (the snapshot starts after
+    the lock is granted);
+  * MariaDB (REPEATABLE READ + innodb_snapshot_isolation) does not return the
+    latest row from a locking read of a row that changed after our snapshot:
+    it raises 1020. retry_on_lock catches that and retries on a new snapshot.
+"""
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
@@ -56,6 +68,17 @@ async def _lock_kind(db, kind_id) -> ManagerKind:
     return kind
 
 
+async def lock_reporting(db) -> ManagerKind:
+    """Take the reporting kind's lock in one statement (by code)."""
+    kind = (await db.execute(
+        select(ManagerKind).where(ManagerKind.code == "reporting")
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
+    if kind is None or not kind.is_active:
+        raise HTTPException(422, "Unknown or inactive manager kind")
+    return kind
+
+
 async def _active_user(db, uid, what):
     u = (await db.execute(select(User.id, User.is_active).where(
         User.id == uid))).first()
@@ -64,31 +87,68 @@ async def _active_user(db, uid, what):
 
 
 async def _same_scope(db, kind_id, scope_type, user_id, dept_id, loc):
+    """Live-or-future (not cancelled) rows of one kind at exactly one scope
+    target, locked. Location is compared normalised, in Python."""
+    q = select(ManagerAssignment).where(
+        ManagerAssignment.manager_kind_id == kind_id,
+        ManagerAssignment.scope_type == scope_type,
+        ManagerAssignment.cancelled_at.is_(None))
+    if scope_type == "user":
+        q = q.where(ManagerAssignment.scope_user_id == user_id)
+    elif scope_type == "department":
+        q = q.where(ManagerAssignment.scope_department_id == dept_id)
     rows = (await db.execute(
-        select(ManagerAssignment).where(
-            ManagerAssignment.manager_kind_id == kind_id,
-            ManagerAssignment.scope_type == scope_type,
-            ManagerAssignment.cancelled_at.is_(None))
-        # locking read: HR edits reach here mid-transaction, and a plain read
-        # would use their older snapshot (writers hold the kind row, so no
-        # gap-lock deadlock between them)
-        .with_for_update()
+        q.order_by(ManagerAssignment.id).with_for_update()
         .execution_options(populate_existing=True))).scalars().all()
-    return [r for r in rows
-            if r.scope_user_id == user_id and r.scope_department_id == dept_id
-            and R.norm(r.scope_location) == R.norm(loc)]
+    if scope_type == "location":
+        rows = [r for r in rows if R.norm(r.scope_location) == R.norm(loc)]
+    return rows
 
 
-async def _assert_no_cycle(db, user_id, manager_id):
-    seen, cur = {user_id}, manager_id
-    while cur is not None:
-        if cur in seen:
-            raise HTTPException(
-                422, "This would make a reporting loop (the manager reports "
-                     "to this employee)")
-        seen.add(cur)
-        cur = (await db.execute(select(User.manager_id).where(
-            User.id == cur))).scalar_one_or_none()
+def _base_manager(w, uid, on):
+    """(applies, manager) for the all-subdomain reporting manager on a date:
+    assignment plus post holder, no acting cover, never oneself."""
+    a = R.find_assignment(w, "reporting", uid, "", on)
+    if a is None:
+        return False, None
+    mgr = (R.holder_of(w, a.manager_post_id, on)
+           if a.manager_post_id else a.manager_user_id)
+    return True, (None if mgr == uid else mgr)
+
+
+def _loops(w, users, on):
+    memo: dict = {}
+
+    def mgr(x):
+        if x not in memo:
+            memo[x] = _base_manager(w, x, on)[1]
+        return memo[x]
+    for u in users:
+        seen, cur = {u}, mgr(u)
+        while cur is not None:
+            if cur == u:
+                return True
+            if cur in seen:        # a loop that does not include u
+                break
+            seen.add(cur)
+            cur = mgr(cur)
+    return False
+
+
+async def assert_no_reporting_loop(db, user_ids, on, w=None) -> None:
+    """422 when the base reporting managers on `on` form a loop through any
+    of `user_ids`. Pass `w` (a world for `on`) to avoid loading again."""
+    w = w if w is not None else await load_world(db, on)
+    if _loops(w, list(user_ids), on):
+        raise HTTPException(
+            422, "This would make a reporting loop (a manager would report "
+                 "to their own report)")
+
+
+async def _check_loops(db, w, today, users, starts_on=None):
+    await assert_no_reporting_loop(db, users, today, w)
+    if starts_on is not None and starts_on > today:
+        await assert_no_reporting_loop(db, users, starts_on)
 
 
 async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
@@ -116,17 +176,18 @@ async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
         await _active_user(db, scope_user_id, "Employee")
         if scope_user_id == manager_user_id:
             raise HTTPException(422, "An employee cannot be their own manager")
-    if scope_department_id is not None and (
-            await db.get(Department, scope_department_id)) is None:
-        raise HTTPException(422, "Department not found")
+    dept_name = None
+    if scope_department_id is not None:
+        dept_name = (await db.execute(select(Department.name).where(
+            Department.id == scope_department_id))).scalar_one_or_none()
+        if dept_name is None:
+            raise HTTPException(422, "Department not found")
     if manager_user_id is not None:
         await _active_user(db, manager_user_id, "Manager")
     else:
         post = await db.get(Post, manager_post_id)
         if post is None or not post.is_active:
             raise HTTPException(422, "Post not found or inactive")
-    if kind.code == "reporting" and scope_type == "user" and manager_user_id:
-        await _assert_no_cycle(db, scope_user_id, manager_user_id)
     for r in await _same_scope(db, kind_id, scope_type, scope_user_id,
                                scope_department_id, scope_location):
         if subs_clash(r.subdomains, subs) and dates_overlap(
@@ -145,29 +206,41 @@ async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
     audit(db, actor_id, "dop.assignment.create", "manager_assignment", a.id,
           snapshot(a))
     if kind.code == "reporting":
-        await sync_mirror(db, await affected_users(db, a))
+        today = await local_today(db)
+        w = await load_world(db, today)
+        users = _matching(w.people, a, dept_name)
+        await _check_loops(db, w, today, users, starts_on)
+        await _sync(db, w, today, users)
     return a
 
 
 async def end(db, *, actor_id, assignment_id, ends_on) -> ManagerAssignment:
+    rk = await lock_reporting(db)
     kind_id = (await db.execute(select(ManagerAssignment.manager_kind_id)
                .where(ManagerAssignment.id == assignment_id))
-               ).scalar_one_or_none()
+               ).scalar_one_or_none()      # immutable column
     if kind_id is None:
         raise HTTPException(404, "Assignment not found")
-    kind = (await db.execute(select(ManagerKind).where(
-        ManagerKind.id == kind_id).with_for_update())).scalars().one()
+    kind = rk if kind_id == rk.id else await _lock_kind(db, kind_id)
     a = (await db.execute(
         select(ManagerAssignment).where(ManagerAssignment.id == assignment_id)
         .with_for_update().execution_options(populate_existing=True)
     )).scalars().one()
     if a.cancelled_at is not None:
+        if ends_on < a.starts_on:
+            return a                       # same request again: nothing to do
         raise HTTPException(409, "Assignment was already removed")
+    if a.ends_on == ends_on:
+        return a
     if a.ends_on is not None and ends_on > a.ends_on:
         raise HTTPException(
             422, "It already ends earlier: create a new assignment instead")
+    today = await local_today(db)
     before = snapshot(a)
     if ends_on < a.starts_on:
+        if a.starts_on < today:
+            raise HTTPException(
+                422, "It already started: end it on or after its start date")
         a.cancelled_at = datetime.now(timezone.utc)
     else:
         a.ends_on = ends_on
@@ -176,7 +249,14 @@ async def end(db, *, actor_id, assignment_id, ends_on) -> ManagerAssignment:
           {"before": before, "ends_on": ends_on.isoformat(),
            "cancelled": a.cancelled_at is not None})
     if kind.code == "reporting":
-        await sync_mirror(db, await affected_users(db, a))
+        w = await load_world(db, today)
+        dept_name = None
+        if a.scope_type == "department":
+            dept_name = (await db.execute(select(Department.name).where(
+                Department.id == a.scope_department_id))).scalar_one_or_none()
+        users = _matching(w.people, a, dept_name)
+        await _check_loops(db, w, today, users)
+        await _sync(db, w, today, users)
     return a
 
 
@@ -204,70 +284,111 @@ async def affected_users(db, a) -> list:
 
 
 async def set_reporting_manager(db, *, actor_id, user_id, manager_id) -> None:
-    """HR/admin edits of one employee's manager: end the current user-scoped
-    all-subdomain reporting row and start a new one today."""
+    """HR/admin edits of one employee's manager. Does nothing when a live
+    all-subdomain row already names this manager. Otherwise ends the rows
+    live today and starts a new one today, ending it the day before the next
+    scheduled row; scheduled rows stay."""
+    kind = await lock_reporting(db)
     today = await local_today(db)
-    kind_id = (await db.execute(select(ManagerKind.id).where(
-        ManagerKind.code == "reporting"))).scalar_one()
-    await _lock_kind(db, kind_id)
-    for r in await _same_scope(db, kind_id, "user", user_id, None, None):
-        if r.subdomains or (r.ends_on is not None and r.ends_on < today):
-            continue
-        if r.manager_user_id == manager_id and manager_id is not None \
-                and r.starts_on <= today and r.ends_on is None:
-            await sync_mirror(db, [user_id])
-            return
+    rows = [r for r in await _same_scope(db, kind.id, "user", user_id,
+                                         None, None)
+            if not r.subdomains and (r.ends_on is None or r.ends_on >= today)]
+    live = [r for r in rows if r.starts_on <= today]
+    if manager_id is not None and any(
+            r.manager_user_id == manager_id for r in live):
+        await sync_mirror(db, [user_id])
+        return
+    future = [r for r in rows if r.starts_on > today]
+    for r in sorted(live, key=lambda r: r.id):
         await end(db, actor_id=actor_id, assignment_id=r.id,
                   ends_on=today - timedelta(days=1))
     if manager_id is not None:
-        await create(db, actor_id=actor_id, kind_id=kind_id,
+        nxt = min((r.starts_on for r in future), default=None)
+        await create(db, actor_id=actor_id, kind_id=kind.id,
                      scope_type="user", scope_user_id=user_id,
-                     manager_user_id=manager_id, starts_on=today)
+                     manager_user_id=manager_id, starts_on=today,
+                     ends_on=nxt - timedelta(days=1) if nxt else None)
     else:
         await sync_mirror(db, [user_id])
 
 
-async def sync_mirror(db, user_ids=None) -> int:
-    """Set User.manager_id to the base reporting manager (no acting cover).
-    Returns how many users changed. Only users the assignments govern are
-    touched: a manager set by a seed or script is never cleared."""
-    await db.flush()
-    today = await local_today(db)
-    # latest committed data: callers hold the kind lock, so nothing moves
-    w = await load_world(db, today, fresh=True)
-    q = (select(User).order_by(User.id).with_for_update()
-         .execution_options(populate_existing=True))
-    if user_ids is not None:
-        q = q.where(User.id.in_(list(user_ids)))
-    # A user is governed once any reporting assignment that has started (or
-    # was cancelled the day it started) applied to them. A future-dated row
-    # has not governed anyone yet.
-    governed: set = set()
-    rows = (await db.execute(
-        select(ManagerAssignment).join(
-            ManagerKind, ManagerKind.id == ManagerAssignment.manager_kind_id)
-        .where(ManagerKind.code == "reporting",
-               ManagerAssignment.starts_on <= today)
-        .with_for_update().execution_options(populate_existing=True)
-    )).scalars().all()
+async def _sync(db, w, today, user_ids) -> int:
+    """Mirror for `user_ids` from the world `w` (built for `today`). Plain
+    reads decide; only users whose manager_id differs are locked (id order)
+    and re-checked."""
     dnames = dict((await db.execute(
         select(Department.id, Department.name))).all())
-    for row in rows:
-        governed |= set(_matching(
-            w.people, row, dnames.get(row.scope_department_id)))
-    changed = 0
-    for u in (await db.execute(q)).scalars().all():
-        a = R.find_assignment(w, "reporting", u.id, "", today)
-        if a is None and u.id not in governed:
+    # Governed: an all-subdomain reporting row that has started applies (or
+    # applied, when ended or cancelled) to the user. A future row or a row
+    # limited to named subdomains never governs manager_id.
+    governed: set = set()
+    for row in (await db.execute(
+            select(ManagerAssignment).join(
+                ManagerKind, ManagerKind.id == ManagerAssignment.manager_kind_id)
+            .where(ManagerKind.code == "reporting",
+                   ManagerAssignment.starts_on <= today))).scalars().all():
+        if not row.subdomains:
+            governed |= set(_matching(
+                w.people, row, dnames.get(row.scope_department_id)))
+    want: dict = {}
+    for uid in (sorted(w.people) if user_ids is None else sorted(set(user_ids))):
+        if uid not in w.people:
             continue
-        mgr = None
-        if a is not None:
-            mgr = (R.holder_of(w, a.manager_post_id, today)
-                   if a.manager_post_id else a.manager_user_id)
-        if mgr == u.id:
-            mgr = None
-        if u.manager_id != mgr:
-            u.manager_id = mgr
-            changed += 1
-    await db.flush()
+        applies, mgr = _base_manager(w, uid, today)
+        if applies or uid in governed:
+            want[uid] = mgr
+    if not want:
+        return 0
+    cur = dict((await db.execute(select(User.id, User.manager_id).where(
+        User.id.in_(list(want))))).all())
+    diff = sorted(i for i in want if cur.get(i) != want[i] and i in cur)
+    changed = 0
+    if diff:
+        for u in (await db.execute(
+                select(User).where(User.id.in_(diff)).order_by(User.id)
+                .with_for_update().execution_options(populate_existing=True)
+        )).scalars().all():
+            if u.manager_id != want[u.id]:
+                u.manager_id = want[u.id]
+                changed += 1
+        await db.flush()
     return changed
+
+
+async def sync_mirror(db, user_ids=None) -> int:
+    """Set User.manager_id to the base reporting manager (no acting cover).
+    Returns how many users changed. Needs the reporting kind lock (taken
+    here; re-locking a held row is free). Only users the assignments govern
+    are touched: a manager set by a seed or script is never cleared."""
+    await lock_reporting(db)
+    await db.flush()
+    today = await local_today(db)
+    return await _sync(db, await load_world(db, today), today, user_ids)
+
+
+async def has_reporting_assignment(db, user_id) -> bool:
+    """Does an all-subdomain reporting assignment apply to the user today?
+    Call before moving the employee (department / location change)."""
+    await lock_reporting(db)
+    today = await local_today(db)
+    w = await load_world(db, today)
+    return _base_manager(w, user_id, today)[0]
+
+
+async def resync_after_move(db, user_id, had_assignment: bool) -> int:
+    """After a department/location change: when an assignment applied before
+    and none applies now, manager_id becomes NULL; otherwise the normal sync."""
+    await lock_reporting(db)
+    await db.flush()
+    today = await local_today(db)
+    w = await load_world(db, today)
+    if had_assignment and not _base_manager(w, user_id, today)[0]:
+        u = (await db.execute(
+            select(User).where(User.id == user_id).with_for_update()
+            .execution_options(populate_existing=True))).scalars().first()
+        if u is not None and u.manager_id is not None:
+            u.manager_id = None
+            await db.flush()
+            return 1
+        return 0
+    return await _sync(db, w, today, [user_id])
