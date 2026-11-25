@@ -5,6 +5,7 @@ from datetime import date
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from _appr_world import (  # noqa: F401
     client, login, mk_item, world,
@@ -263,10 +264,16 @@ async def test_benign_writer_does_not_cause_false_409(client, world):
 
         async def touch():
             for _i in range(5):
-                async with SessionLocal() as db:
-                    it = await db.get(ApprovalItem, iid)
-                    it.due_date = None if it.due_date else date(2031, 1, 1)
-                    await db.commit()
+                try:
+                    async with SessionLocal() as db:
+                        it = await db.get(ApprovalItem, iid)
+                        it.due_date = None if it.due_date else date(2031, 1, 1)
+                        await db.commit()
+                except OperationalError as e:
+                    # this writer may lose the race; only the approver's
+                    # result is under test
+                    if e.orig.args[0] not in (1020, 1213):
+                        raise
                 await asyncio.sleep(0.01)
 
         async def approve():
