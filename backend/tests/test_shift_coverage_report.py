@@ -265,7 +265,7 @@ async def test_department_filter_picks_requirements(world):
 
 async def test_org_wide_requirement_counts_whole_org_under_filter(world):
     w = world
-    await _add(_req_row(w), _att(w, 0, THU), _att(w, 1, THU), _att(w, 4, THU))
+    await _add(_req_row(w, max_headcount=2), _att(w, 0, THU), _att(w, 1, THU), _att(w, 4, THU))
     rows = await _run(w, THU, THU, department=w["da"])
     assert rows[0]["department"] is None and rows[0]["attended"] == 3
     assert rows[0]["status"] == "over"

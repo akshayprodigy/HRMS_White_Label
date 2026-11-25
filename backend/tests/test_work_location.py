@@ -675,7 +675,7 @@ async def test_approved_leave_blocks_work_location(api, world):
                 end_date=D(d), is_half_day=half, half_day_session=session,
                 reason="t", status=status, created_by_user_id=uid)
         db.add_all([lv(0, LeaveStatus.APPROVED),
-                    lv(2, LeaveStatus.PENDING),
+                    lv(2, LeaveStatus.SUBMITTED),
                     lv(4, LeaveStatus.APPROVED, True, HalfDaySession.MORNING),
                     lv(6, LeaveStatus.APPROVED, True, None)])
         await db.commit()

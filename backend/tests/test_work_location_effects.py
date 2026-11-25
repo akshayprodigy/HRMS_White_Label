@@ -429,7 +429,9 @@ async def test_muster_fetch_shift_filter_still_suffixes_punched(world):
         (i["full"], "P·OD")]
 
 
-async def test_muster_synthesis_clipped_by_leave_and_joining(world):
+async def test_muster_synthesis_clipped_by_leave_and_joining(
+        world, monkeypatch):
+    _org_today(monkeypatch, D)      # D is in the future; the muster skips those
     from app.api.v1.endpoints.reports import _fetch_muster_roll
     i = world["ids"]
     await _approve(i["full"], "wfh", "full", D)       # also on full leave

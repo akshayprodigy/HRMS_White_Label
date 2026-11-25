@@ -92,7 +92,10 @@ async def _chain_instance_id(db, rid: int) -> Optional[int]:
         db, ChainEntityType.WORK_LOCATION, rid)
 
 
-async def _detail(db, rid: int, viewer: Optional[User] = None) -> dict:
+async def _detail(db, rid: int, viewer, privileged: bool) -> dict:
+    """`viewer` is a plain_actor and `privileged` a bool, both captured before
+    the write: the ORM user is expired here (expire_all, retry rollback) and
+    reading it would attempt sync IO."""
     db.expire_all()
     r = (await db.execute(select(WorkLocationRequest).where(
         WorkLocationRequest.id == rid)
@@ -100,11 +103,9 @@ async def _detail(db, rid: int, viewer: Optional[User] = None) -> dict:
     name = (await db.execute(select(User.full_name).where(
         User.id == r.user_id))).scalar_one_or_none()
     via = "chain" if await _chain_instance_id(db, rid) else "direct"
-    cd = False
-    if viewer is not None:
-        mgr = (await db.execute(select(User.manager_id).where(
-            User.id == r.user_id))).scalar_one_or_none()
-        cd = _can_decide(viewer, _is_privileged(viewer), r, mgr, via)
+    mgr = (await db.execute(select(User.manager_id).where(
+        User.id == r.user_id))).scalar_one_or_none()
+    cd = _can_decide(viewer, privileged, r, mgr, via)
     return _out(r, name, via, cd)
 
 
@@ -120,6 +121,7 @@ async def create_request(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     uid, uname = current_user.id, current_user.full_name or current_user.email
+    actor, privileged = plain_actor(current_user), _is_privileged(current_user)
     reload = reload_user(db, current_user)
 
     async def body() -> int:
@@ -148,7 +150,7 @@ async def create_request(
         return req.id
 
     rid = await retry_on_lock(db, body, commit=True)
-    return await _detail(db, rid, current_user)
+    return await _detail(db, rid, actor, privileged)
 
 
 @router.get("/my")
@@ -181,6 +183,7 @@ async def cancel_request(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     hr = _is_hr(current_user)
+    privileged = _is_privileged(current_user)
     aid = current_user.id
     actor = plain_actor(current_user)
 
@@ -208,7 +211,7 @@ async def cancel_request(
         return request_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, request_id, current_user)
+    return await _detail(db, request_id, actor, privileged)
 
 
 @router.get("")
@@ -281,4 +284,4 @@ async def decide_request(
         return request_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, request_id, current_user)
+    return await _detail(db, request_id, actor, privileged)

@@ -333,7 +333,8 @@ async def test_holiday_endpoints_report_matching_count(world):
     try:
         assert made.matching_employee_count == 0
         upd = await hr.update_holiday(
-            db=db, current_user=None, holiday_id=made.id,
+            db=db, current_user=SimpleNamespace(id=world["mum"]),
+            holiday_id=made.id,
             obj_in=HolidayCalendarCreate(
                 name=made.name, date=D_NONE, location=" mumbai "))
         assert upd.matching_employee_count >= 3

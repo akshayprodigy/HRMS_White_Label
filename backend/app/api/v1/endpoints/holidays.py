@@ -83,18 +83,19 @@ async def _chain_instance_id(db, pick_id: int) -> Optional[int]:
         db, ChainEntityType.OPTIONAL_HOLIDAY, pick_id)
 
 
-async def _detail(db, pid: int, viewer: Optional[User] = None) -> dict:
+async def _detail(db, pid: int, viewer, privileged: bool) -> dict:
+    """`viewer` is a plain_actor and `privileged` a bool, both captured before
+    the write: the ORM user is expired here (expire_all, retry rollback) and
+    reading it would attempt sync IO."""
     db.expire_all()
     p = (await db.execute(select(OptionalHolidayPick).where(
         OptionalHolidayPick.id == pid)
         .execution_options(populate_existing=True))).scalars().one()
     hol = await db.get(HolidayCalendar, p.holiday_id)
     via = "chain" if await _chain_instance_id(db, p.id) else "direct"
-    cd = False
-    if viewer is not None:
-        mgr = (await db.execute(select(User.manager_id).where(
-            User.id == p.user_id))).scalar_one_or_none()
-        cd = _can_decide(viewer, _is_privileged(viewer), p, mgr, via)
+    mgr = (await db.execute(select(User.manager_id).where(
+        User.id == p.user_id))).scalar_one_or_none()
+    cd = _can_decide(viewer, privileged, p, mgr, via)
     return _pick_out(p, hol, None, via, cd)
 
 
@@ -144,6 +145,7 @@ async def create_pick(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     uid, uname = current_user.id, current_user.full_name or current_user.email
+    actor, privileged = plain_actor(current_user), _is_privileged(current_user)
     reload = reload_user(db, current_user)
 
     async def body() -> int:
@@ -175,7 +177,7 @@ async def create_pick(
         return pick.id
 
     pid = await retry_on_lock(db, body, commit=True)
-    return await _detail(db, pid, current_user)
+    return await _detail(db, pid, actor, privileged)
 
 
 @router.post("/picks/{pick_id}/cancel")
@@ -185,6 +187,7 @@ async def cancel_pick(
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     hr = _is_hr(current_user)
+    privileged = _is_privileged(current_user)
     aid = current_user.id
     actor = plain_actor(current_user)
 
@@ -212,7 +215,7 @@ async def cancel_pick(
         return pick_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, pick_id, current_user)
+    return await _detail(db, pick_id, actor, privileged)
 
 
 @router.get("/picks")
@@ -285,4 +288,4 @@ async def decide_pick(
         return pick_id
 
     await retry_on_lock(db, body, commit=True)
-    return await _detail(db, pick_id, current_user)
+    return await _detail(db, pick_id, actor, privileged)

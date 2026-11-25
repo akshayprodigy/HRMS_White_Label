@@ -884,7 +884,7 @@ async def test_can_decide_flag(api, world):
     r = await api.get(f"{P}/picks?year=2032", headers=api.mgr)
     assert rows(r)[pid]["can_decide"] is True       # direct report
     r = await api.get(f"{P}/picks?year=2032", headers=api.emp)
-    assert rows(r)[pid]["can_decide"] is False      # own pick
+    assert r.status_code == 403                     # no reports: no list
     r = await api.get(f"{P}/picks?year=2032", headers=api.ro)
     assert rows(r)[pid]["can_decide"] is False      # read-only HR
     r = await api.get(f"{P}/picks?year=2032", headers=api.hr)
