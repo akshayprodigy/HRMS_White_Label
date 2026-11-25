@@ -46,8 +46,8 @@ export const ActingTab: React.FC<{
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-600">An acting cover lets someone approve in place of a person or post for a while.</p>
-      <Notice tone="info">An acting cover takes priority over out-of-office cover. Out-of-office covers set by employees are listed here for reference and can only be changed by them.</Notice>
+      <p className="text-sm text-gray-600">An acting cover records who will approve in place of a person or post for a while. It is saved now and starts being used for approvals in the next release.</p>
+      <Notice tone="info">Out-of-office covers set by employees are the only covers used for approvals today. They are listed for reference and can only be changed by them. Once acting covers are in use, they take priority.</Notice>
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={ended} onChange={(e) => setEnded(e.target.checked)} />Show ended covers</label>
         <Button size="sm" onClick={() => setCreating(true)}><Plus className="w-4 h-4 mr-1" />New acting cover</Button>
@@ -79,7 +79,11 @@ export const ActingTab: React.FC<{
                       </button>
                     )}
                   </td>
-                  <td className="px-3 py-2"><Badge variant={STATUS_VARIANT[c.status] ?? 'neutral'}>{STATUS_TEXT[c.status] ?? c.status}</Badge></td>
+                  <td className="px-3 py-2">
+                    {c.status === 'live' && !c.read_only
+                      ? <><Badge variant="neutral">In place</Badge><span className="block text-xs text-gray-500">Not used for approvals yet</span></>
+                      : <Badge variant={STATUS_VARIANT[c.status] ?? 'neutral'}>{STATUS_TEXT[c.status] ?? c.status}</Badge>}
+                  </td>
                   <td className="px-3 py-2 text-right">
                     {!c.read_only && open && <Button size="sm" variant="outline" onClick={() => setStop(c)}>End</Button>}
                   </td>
@@ -98,15 +102,15 @@ export const ActingTab: React.FC<{
           onClose={() => setFlip(null)}
           onConfirm={async () => { await client.patch(ENDPOINTS.DOP.ACTING_ITEM(flip.id), { original_can_act: !flip.original_can_act }); toast.success('Saved'); setFlip(null); done(); }}
           body={flip.original_can_act
-            ? <p>{flip.acting_user_name} will be the only one who can approve for {who(flip)} while this cover is active.</p>
-            : <p>{who(flip)} will be able to approve as well as {flip.acting_user_name} while this cover is active.</p>}
+            ? <p>{flip.acting_user_name} will be the only one who can approve for {who(flip)} once acting covers are used. Nothing changes in live approvals today.</p>
+            : <p>{who(flip)} will be able to approve as well as {flip.acting_user_name}, once acting covers are used. Nothing changes in live approvals today.</p>}
         />
       )}
       {stop && (
         <ConfirmDialog
           title="End this acting cover" confirmText="End cover" danger onClose={() => setStop(null)}
           onConfirm={async () => { await client.post(ENDPOINTS.DOP.ACTING_REVOKE(stop.id)); toast.success('Cover ended'); setStop(null); done(); }}
-          body={<p>{stop.acting_user_name} will stop acting for {who(stop)} straight away.</p>}
+          body={<p>{stop.acting_user_name} will stop acting for {who(stop)} once acting covers are used. Nothing changes in live approvals today.</p>}
         />
       )}
     </div>

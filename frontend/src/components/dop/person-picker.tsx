@@ -13,12 +13,20 @@ export const PersonPicker: React.FC<{
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const seq = useRef(0);
+  const box = useRef<HTMLDivElement>(null);
 
   useEffect(() => { if (value) setQ(''); }, [value]);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
 
   useEffect(() => {
     if (!open || value) return;
     const n = ++seq.current;
+    setRows([]);
     setLoading(true);
     const t = window.setTimeout(async () => {
       try {
@@ -46,7 +54,10 @@ export const PersonPicker: React.FC<{
     );
   }
   return (
-    <div className="relative">
+    <div
+      className="relative" ref={box}
+      onBlur={(e) => { const n = e.relatedTarget as Node | null; if (n && !box.current?.contains(n)) setOpen(false); }}
+    >
       <label className={labelCls} htmlFor={id}>{label}{required ? ' *' : ''}</label>
       <input
         id={id} className={`${inputCls} w-full`} placeholder="Type a name or email" autoComplete="off"
@@ -63,7 +74,7 @@ export const PersonPicker: React.FC<{
           {loading && <li className="px-3 py-2 text-sm text-gray-500">Searching…</li>}
           {err && <li role="alert" className="px-3 py-2 text-sm text-red-700">{err}</li>}
           {!loading && !err && rows.length === 0 && <li className="px-3 py-2 text-sm text-gray-500">No one found.</li>}
-          {rows.map((p) => (
+          {!loading && rows.map((p) => (
             <li key={p.id} role="presentation">
               <button
                 type="button" role="option" aria-selected={false} className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"

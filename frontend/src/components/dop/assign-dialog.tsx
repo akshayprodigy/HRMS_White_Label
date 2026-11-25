@@ -4,16 +4,15 @@ import { Button, fmtDate } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { Modal } from '../assets/modal';
-import { orgToday } from '../../lib/org-time';
 import { PersonPicker } from './person-picker';
-import { Meta, Notice, Person, PostItem, SubdomainPicker, dopErr, inputCls, labelCls, useGuard } from './dop-utils';
+import { Meta, NO_TIME, Notice, Person, PostItem, SubdomainPicker, dopErr, inputCls, labelCls, subText, useGuard, useOrgDate } from './dop-utils';
 
 type Target = 'selected' | 'department' | 'location' | 'company';
 
 /** Give employees (selected, or a whole department/location/company) a manager of one type. */
 export const AssignDialog: React.FC<{
-  meta: Meta | null; picked: Map<number, string>; onClose: () => void; onDone: () => void;
-}> = ({ meta, picked, onClose, onDone }) => {
+  meta: Meta | null; picked: Map<number, string>; onClose: () => void; onDone: () => void; onDrop: (ids: number[]) => void;
+}> = ({ meta, picked, onClose, onDone, onDrop }) => {
   const kinds = (meta?.kinds ?? []).filter((k) => k.is_active);
   const [kindId, setKindId] = useState('');
   const [target, setTarget] = useState<Target>(picked.size > 0 ? 'selected' : 'department');
@@ -25,55 +24,78 @@ export const AssignDialog: React.FC<{
   const [postId, setPostId] = useState('');
   const [posts, setPosts] = useState<PostItem[]>([]);
   const [subs, setSubs] = useState<string[]>([]);
-  const [start, setStart] = useState(orgToday);
+  const { today, ready } = useOrgDate();
+  const [start, setStart] = useState('');
   const [endOn, setEndOn] = useState('');
   const [note, setNote] = useState('');
   const [err, setErr] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const [offer, setOffer] = useState<{ body: Record<string, unknown>; summary: string; sig: string } | null>(null);
+  const [missingIds, setMissingIds] = useState<number[]>([]);
   const { busy, run } = useGuard();
 
+  useEffect(() => { if (ready && !start) setStart(today); }, [ready, today, start]);
   useEffect(() => { if (!kindId && kinds[0]) setKindId(String((kinds.find((k) => k.code === 'reporting') ?? kinds[0]).id)); }, [kinds, kindId]);
   useEffect(() => {
     client.get<PostItem[]>(ENDPOINTS.DOP.POSTS, { params: { include_inactive: false } }).then((r) => setPosts(r.data)).catch(() => setPosts([]));
   }, []);
 
   const kind = kinds.find((k) => String(k.id) === kindId);
-  const submit = (replace: boolean) => run(async () => {
-    setErr(null); setConflict(false);
-    if (!kind) return setErr('Choose a manager type.');
-    if (mode === 'person' && !person) return setErr('Choose the manager.');
-    if (mode === 'post' && !postId) return setErr('Choose the post.');
-    if (target === 'department' && !deptId) return setErr('Choose a department.');
-    if (target === 'location' && !loc) return setErr('Choose a location.');
-    if (target === 'company' && !sure) return setErr('Tick the box to confirm this applies to the whole company.');
-    if (!start) return setErr('Choose a start date.');
-    if (endOn && endOn < start) return setErr('The end date is before the start date.');
-    const body: Record<string, unknown> = {
-      kind_id: kind.id, subdomains: subs, starts_on: start, ends_on: endOn || null, note: note.trim() || null, replace,
-    };
-    if (mode === 'person') body.manager_user_id = person!.id; else body.manager_post_id = Number(postId);
-    if (target === 'selected') body.user_ids = [...picked.keys()];
+  const sig = JSON.stringify([kindId, target, deptId, loc, mode, person?.id, postId, subs, start, endOn, note, [...picked.keys()]]);
+  const showOffer = offer;
+  useEffect(() => { setOffer(null); setMissingIds([]); }, [sig]);
+
+  const who = () => target === 'selected' ? `${picked.size} selected ${picked.size === 1 ? 'employee' : 'employees'}`
+    : target === 'department' ? `everyone in ${meta?.departments.find((d) => String(d.id) === deptId)?.name ?? 'the department'}`
+      : target === 'location' ? `everyone at ${loc}` : 'everyone in the company';
+  const summary = () => `${kind?.name}: ${mode === 'person' ? person?.name : posts.find((p) => String(p.id) === postId)?.title} for ${who()}, ${subText(subs, meta)}, from ${fmtDate(start)} ${endOn ? `to ${fmtDate(endOn)}` : 'with no end date'}.`;
+
+  const submit = (replace: boolean, snap?: { body: Record<string, unknown> }) => run(async () => {
+    setErr(null); setOffer(null); setMissingIds([]);
+    let body: Record<string, unknown>;
+    let sum = '';
+    if (snap) body = { ...snap.body, replace: true };
     else {
-      body.scope_type = target;
-      if (target === 'department') body.scope_department_id = Number(deptId);
-      if (target === 'location') body.scope_location = loc;
+      if (!ready) return setErr(NO_TIME);
+      if (!kind) return setErr('Choose a manager type.');
+      if (target === 'selected' && picked.size === 0) return setErr('No employees are selected any more. Choose another option or close and select again.');
+      if (mode === 'person' && !person) return setErr('Choose the manager.');
+      if (mode === 'post' && !postId) return setErr('Choose the post.');
+      if (target === 'department' && !deptId) return setErr('Choose a department.');
+      if (target === 'location' && !loc) return setErr('Choose a location.');
+      if (target === 'company' && !sure) return setErr('Tick the box to confirm this applies to the whole company.');
+      if (!start) return setErr('Choose a start date.');
+      if (endOn && endOn < start) return setErr('The end date is before the start date.');
+      body = { kind_id: kind.id, subdomains: subs, starts_on: start, ends_on: endOn || null, note: note.trim() || null, replace: false };
+      if (mode === 'person') body.manager_user_id = person!.id; else body.manager_post_id = Number(postId);
+      if (target === 'selected') body.user_ids = [...picked.keys()];
+      else {
+        body.scope_type = target;
+        if (target === 'department') body.scope_department_id = Number(deptId);
+        if (target === 'location') body.scope_location = loc;
+      }
+      sum = summary();
     }
     try {
       const r = await client.post(ENDPOINTS.DOP.ASSIGNMENTS_BULK, body);
       const d = r.data;
-      toast.success(`Manager set${target === 'selected' ? ` for ${d.created} ${d.created === 1 ? 'employee' : 'employees'}` : ''}${d.replaced ? `, ${d.replaced} replaced` : ''}${d.continued ? `, ${d.continued} earlier ${d.continued === 1 ? 'manager resumes' : 'managers resume'} afterwards` : ''}`);
+      toast.success(`Manager set${body.user_ids ? ` for ${d.created} ${d.created === 1 ? 'employee' : 'employees'}` : ''}${d.replaced ? `, ${d.replaced} replaced` : ''}${d.continued ? `. ${d.continued} earlier ${d.continued === 1 ? 'assignment continues' : 'assignments continue'} where the new one doesn't apply` : ''}`);
       onDone();
     } catch (e: any) {
       const m = dopErr(e, 'Could not save the assignment');
-      if (e?.response?.status === 409) setConflict(true);
-      if (!(e?.response?.status === 409 && /^Overlaps/.test(m))) setErr(m);
+      const st = e?.response?.status;
+      if (st === 409 && !body.replace && /^Overlaps/.test(m)) { setOffer({ body, summary: sum, sig }); return; }
+      const miss = /Employee not found or inactive: ([\d, ]+)/.exec(m);
+      if (miss) setMissingIds(miss[1].split(',').map((x) => Number(x.trim())).filter((x) => picked.has(x)));
+      setErr(miss ? 'Some selected employees are missing or inactive, so nothing was changed.' : m);
     }
   });
 
   return (
     <Modal title="Assign managers" label="Assign managers" onClose={onClose} busy={busy} wide>
       <form noValidate className="space-y-4" onSubmit={(e) => { e.preventDefault(); submit(false); }}>
-        {kind?.code === 'reporting' && <Notice tone="warn">Reporting managers take effect straight away for live approvals.</Notice>}
+        {kind && kind.code !== 'reporting' && <Notice tone="info">Saved for the next release; live approvals don't use this manager type yet.</Notice>}
+        {kind?.code === 'reporting' && subs.length === 0 && <Notice tone="warn">Reporting managers take effect straight away for live approvals.</Notice>}
+        {kind?.code === 'reporting' && subs.length > 0 && <Notice tone="info">Limited to these areas: the main reporting manager used by live approvals does not change.</Notice>}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className={labelCls} htmlFor="ad-kind">Type of manager *</label>
@@ -137,6 +159,7 @@ export const AssignDialog: React.FC<{
         </fieldset>
 
         <SubdomainPicker meta={meta} value={subs} onChange={setSubs} idp="ad-sub" />
+        {subs.length === 0 && <p className="text-xs text-gray-500">Managers already set for specific areas stay, and still win for those areas. End them under History first if that is not what you want.</p>}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -154,11 +177,18 @@ export const AssignDialog: React.FC<{
         </div>
 
         {err && <Notice>{err}</Notice>}
-        {conflict && (
+        {missingIds.length > 0 && (
           <Notice tone="warn">
-            Some of these employees already have a manager of this type for those dates. You can replace the existing one: it will end the day before the new one starts.
-            {endOn && <p className="mt-1">Because you set an end date ({fmtDate(endOn)}), the previous manager comes back the day after it.</p>}
-            <div className="mt-2"><Button size="sm" variant="danger" type="button" disabled={busy} onClick={() => submit(true)}>Replace existing</Button></div>
+            Missing or inactive: {missingIds.map((id) => picked.get(id)).join(', ')}.
+            <div className="mt-2"><Button size="sm" variant="outline" type="button" onClick={() => { onDrop(missingIds); setMissingIds([]); setErr(null); }}>Remove them from the selection</Button></div>
+          </Notice>
+        )}
+        {showOffer && (
+          <Notice tone="warn">
+            Someone already has a manager of this type for those dates. You asked for: {showOffer.summary}
+            <p className="mt-1">Replacing ends the existing manager the day before this one starts. Nothing changes unless you press the button.</p>
+            {showOffer.body.ends_on ? <p className="mt-1">Because there is an end date, the previous manager comes back the day after it.</p> : null}
+            <div className="mt-2"><Button size="sm" variant="danger" type="button" disabled={busy} onClick={() => submit(true, showOffer)}>Replace existing</Button></div>
           </Notice>
         )}
         <div className="flex justify-end gap-2">

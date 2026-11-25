@@ -32,6 +32,15 @@ export const DopAdmin: React.FC = () => {
   }, []);
   useEffect(() => { loadMeta(); }, [loadMeta]);
   const denied = error === NO_ACCESS;
+  const onKey = (e: React.KeyboardEvent, id: Tab) => {
+    const i = TABS.findIndex((t) => t.id === id);
+    const n = e.key === 'ArrowRight' ? (i + 1) % TABS.length : e.key === 'ArrowLeft' ? (i + TABS.length - 1) % TABS.length
+      : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1;
+    if (n < 0) return;
+    e.preventDefault();
+    setTab(TABS[n].id);
+    document.getElementById(`dop-tab-${TABS[n].id}`)?.focus();
+  };
   const bump = useCallback(() => { setRefreshKey((k) => k + 1); loadMeta(); }, [loadMeta]);
 
   return (
@@ -56,7 +65,8 @@ export const DopAdmin: React.FC = () => {
       <div role="tablist" aria-label="Delegation of Powers sections" className="flex gap-1 border-b border-gray-200 overflow-x-auto">
         {TABS.map((t) => (
           <button
-            key={t.id} type="button" role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}
+            key={t.id} type="button" role="tab" id={`dop-tab-${t.id}`} aria-controls="dop-panel" aria-selected={tab === t.id}
+            tabIndex={tab === t.id ? 0 : -1} onClick={() => setTab(t.id)} onKeyDown={(e) => onKey(e, t.id)}
             className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px ${
               tab === t.id ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-gray-500 hover:text-gray-800'
             }`}
@@ -69,10 +79,12 @@ export const DopAdmin: React.FC = () => {
 
       {error && <Notice>{error}</Notice>}
 
-      {!denied && tab === 'managers' && <ManagersTab meta={meta} refreshKey={refreshKey} onMetaChanged={loadMeta} />}
-      {!denied && tab === 'posts' && <PostsTab meta={meta} refreshKey={refreshKey} onActing={(p) => { setPrefill(p); setTab('acting'); }} />}
-      {!denied && tab === 'acting' && <ActingTab meta={meta} refreshKey={refreshKey} prefillPost={prefill} onPrefillUsed={() => setPrefill(null)} onChanged={() => setRefreshKey((k) => k + 1)} />}
-      {!denied && tab === 'check' && <CheckTab meta={meta} />}
+      {!denied && (<div role="tabpanel" id="dop-panel" aria-labelledby={`dop-tab-${tab}`}>
+      {tab === 'managers' && <ManagersTab meta={meta} refreshKey={refreshKey} onMetaChanged={loadMeta} />}
+      {tab === 'posts' && <PostsTab meta={meta} refreshKey={refreshKey} onActing={(p) => { setPrefill(p); setTab('acting'); }} />}
+      {tab === 'acting' && <ActingTab meta={meta} refreshKey={refreshKey} prefillPost={prefill} onPrefillUsed={() => setPrefill(null)} onChanged={() => setRefreshKey((k) => k + 1)} />}
+      {tab === 'check' && <CheckTab meta={meta} />}
+      </div>)}
     </div>
   );
 };

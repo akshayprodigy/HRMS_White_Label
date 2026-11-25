@@ -2,11 +2,10 @@ import React, { useRef, useState } from 'react';
 import { Button, Card } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
-import { orgToday } from '../../lib/org-time';
 import { ApproverBuilder, ApproverValue, approverBody, emptyApprover } from './approver-builder';
 import { CheckAll, CheckAllResult, CheckOne, CheckOneResult } from './check-result';
 import { PersonPicker } from './person-picker';
-import { Meta, Notice, Person, dopErr, inputCls, labelCls } from './dop-utils';
+import { Meta, Notice, Person, dopErr, inputCls, labelCls, useOrgDate } from './dop-utils';
 
 const capacity = (via: string, a: ApproverValue, meta: Meta | null): string => {
   if (via === 'hr') return 'As HR';
@@ -14,8 +13,9 @@ const capacity = (via: string, a: ApproverValue, meta: Meta | null): string => {
     case 'reporting_manager': return 'As their reporting manager';
     case 'dept_head_of_requester': return 'As head of their department';
     case 'specific_user': return 'Named directly';
-    case 'role': return `Because they have the ${a.ref ?? ''} role`;
-    case 'manager_kind': return `As their ${meta?.kinds.find((k) => k.code === a.ref)?.name.toLowerCase() ?? 'manager'}`;
+    case 'role': return `Because they have the ${a.label ?? a.ref ?? ''} role`;
+    case 'post': return `As holder of ${a.label ?? 'the post'}`;
+    case 'manager_kind': return `As their ${(a.label ?? meta?.kinds.find((k) => k.code === a.ref)?.name ?? 'manager').toLowerCase()}`;
     default: return 'As approver';
   }
 };
@@ -24,7 +24,9 @@ const capacity = (via: string, a: ApproverValue, meta: Meta | null): string => {
 export const CheckTab: React.FC<{ meta: Meta | null }> = ({ meta }) => {
   const [emp, setEmp] = useState<Person | null>(null);
   const [sub, setSub] = useState('leave');
-  const [on, setOn] = useState(orgToday);
+  const { today, ready } = useOrgDate();
+  const [on, setOn] = useState('');
+  React.useEffect(() => { if (ready && !on) setOn(today); }, [ready, today, on]);
   const [ap, setAp] = useState<ApproverValue>(emptyApprover());
   const [useFb, setUseFb] = useState(false);
   const [fb, setFb] = useState<ApproverValue>(emptyApprover('role'));
@@ -39,6 +41,7 @@ export const CheckTab: React.FC<{ meta: Meta | null }> = ({ meta }) => {
   const go = async (mode: 'one' | 'all') => {
     if (busy) return;
     setErr(null);
+    if (!ready) return setErr("The organisation's time zone has not loaded yet. Wait a moment and try again.");
     if (mode === 'one' && !emp) return setErr('Choose an employee to check.');
     const a = approverBody(ap, 'Approver');
     if (typeof a === 'string') return setErr(a);
@@ -65,7 +68,7 @@ export const CheckTab: React.FC<{ meta: Meta | null }> = ({ meta }) => {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-600">Try a route before you rely on it. This only answers "who would approve?" and changes nothing.</p>
+      <p className="text-sm text-gray-600">This shows what the new rules would decide. Live approvals do not use them yet. Nothing here changes anything.</p>
       <Card className="p-4 space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <PersonPicker id="ck-emp" label="Employee making the request" value={emp} onChange={setEmp} />

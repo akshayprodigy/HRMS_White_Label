@@ -4,8 +4,7 @@ import { Badge, Button, fmtDate } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { Modal } from '../assets/modal';
-import { orgToday } from '../../lib/org-time';
-import { Assignment, ManagerRow, Meta, Notice, STATUS_TEXT, STATUS_VARIANT, dopErr, inputCls, subText, useGuard } from './dop-utils';
+import { Assignment, ManagerRow, Meta, Notice, STATUS_TEXT, STATUS_VARIANT, dopErr, inputCls, subText, useGuard, useOrgDate } from './dop-utils';
 
 const who = (a: Assignment) =>
   a.scope_type === 'user' ? 'This employee'
@@ -17,7 +16,8 @@ export const HistoryDialog: React.FC<{ meta: Meta | null; user: ManagerRow; onCl
   const [rows, setRows] = useState<Assignment[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [ending, setEnding] = useState<number | null>(null);
-  const [endDate, setEndDate] = useState(orgToday);
+  const { today, ready } = useOrgDate();
+  const [endDate, setEndDate] = useState('');
   const { busy, run } = useGuard();
 
   const load = useCallback(async () => {
@@ -29,6 +29,8 @@ export const HistoryDialog: React.FC<{ meta: Meta | null; user: ManagerRow; onCl
   useEffect(() => { load(); }, [load]);
 
   const end = (a: Assignment) => run(async () => {
+    setErr(null);
+    if (!endDate) return setErr('Choose the last day.');
     try {
       await client.post(ENDPOINTS.DOP.ASSIGNMENT_END(a.id), { ends_on: endDate });
       toast.success('Assignment ended'); setEnding(null); onChanged(); await load();
@@ -50,14 +52,14 @@ export const HistoryDialog: React.FC<{ meta: Meta | null; user: ManagerRow; onCl
                 <Badge variant={STATUS_VARIANT[a.status] ?? 'neutral'}>{STATUS_TEXT[a.status] ?? a.status}</Badge>
               </div>
               <p className="text-xs text-gray-600">{who(a)} · {subText(a.subdomains, meta)} · {fmtDate(a.starts_on)} to {a.ends_on ? fmtDate(a.ends_on) : 'no end date'}{a.note ? ` · ${a.note}` : ''}</p>
-              {open && ending !== a.id && <Button size="sm" variant="outline" onClick={() => { setEnding(a.id); setEndDate(orgToday()); }}>End</Button>}
+              {open && ending !== a.id && <Button size="sm" variant="outline" disabled={!ready} onClick={() => { setEnding(a.id); setEndDate(today); }}>End</Button>}
               {ending === a.id && (
                 <div className="space-y-2 pt-1">
                   {a.scope_type !== 'user' && <Notice tone="warn">This one is shared. Ending it ends it for everyone it covers, not only {user.name}.</Notice>}
                   <div className="flex items-end gap-2 flex-wrap">
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor={`hd-end-${a.id}`}>Last day</label>
-                      <input id={`hd-end-${a.id}`} type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                      <input id={`hd-end-${a.id}`} type="date" min={a.status === 'scheduled' ? undefined : a.starts_on} className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
                     </div>
                     <Button size="sm" variant="danger" isLoading={busy} onClick={() => end(a)}>End it</Button>
                     <Button size="sm" variant="outline" disabled={busy} onClick={() => setEnding(null)}>Cancel</Button>

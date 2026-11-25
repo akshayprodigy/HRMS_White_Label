@@ -4,10 +4,9 @@ import { Badge, Button, fmtDate } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { Modal } from '../assets/modal';
-import { orgToday } from '../../lib/org-time';
 import { ConfirmDialog } from './confirm-dialog';
 import { PersonPicker } from './person-picker';
-import { Holder, Notice, Person, PostItem, addDays, dopErr, inputCls, labelCls, useGuard } from './dop-utils';
+import { Holder, NO_TIME, Notice, Person, PostItem, addDays, dopErr, inputCls, labelCls, useGuard, useOrgDate } from './dop-utils';
 
 /** Who holds a post: hand over, end a holding, remove a mistaken one, see the history. */
 export const HoldersDialog: React.FC<{
@@ -15,21 +14,23 @@ export const HoldersDialog: React.FC<{
 }> = ({ post, onClose, onChanged, onActing }) => {
   const [hist, setHist] = useState<Holder[] | null>(null);
   const [person, setPerson] = useState<Person | null>(null);
-  const [start, setStart] = useState(orgToday);
+  const { today, ready } = useOrgDate();
+  const [start, setStart] = useState('');
   const [endOn, setEndOn] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [suggest, setSuggest] = useState(false);
   const [ending, setEnding] = useState<number | null>(null);
-  const [endDate, setEndDate] = useState(orgToday);
+  const [endDate, setEndDate] = useState('');
+  const [listErr, setListErr] = useState<string | null>(null);
   const [removing, setRemoving] = useState<Holder | null>(null);
   const { busy, run } = useGuard();
-  const today = orgToday();
+  React.useEffect(() => { if (ready && !start) setStart(today); }, [ready, today, start]);
 
   const load = useCallback(async () => {
     try {
       const r = await client.get(ENDPOINTS.DOP.POST_HOLDERS(post.id));
       setHist([...(r.data.holders as Holder[])].sort((a, b) => (b.starts_on < a.starts_on ? -1 : 1)));
-    } catch (e: any) { setErr(dopErr(e, 'Could not load the history')); setHist((x) => x ?? []); }
+    } catch (e: any) { setListErr(dopErr(e, 'Could not load the history')); setHist((x) => x ?? []); }
   }, [post.id]);
   useEffect(() => { load(); }, [load]);
 
@@ -38,6 +39,7 @@ export const HoldersDialog: React.FC<{
     e.preventDefault();
     run(async () => {
       setErr(null); setSuggest(false);
+      if (!ready) return setErr(NO_TIME);
       if (!person) return setErr('Choose who takes over.');
       if (endOn && endOn < start) return setErr('The end date is before the start date.');
       try {
@@ -51,10 +53,12 @@ export const HoldersDialog: React.FC<{
     });
   };
   const endHolder = (h: Holder) => run(async () => {
+    setListErr(null);
+    if (!endDate) return setListErr('Choose the last day.');
     try {
       await client.post(ENDPOINTS.DOP.HOLDER_END(post.id, h.id), { ends_on: endDate });
       toast.success('Holding ended'); setEnding(null); onChanged(); await load();
-    } catch (ex: any) { setErr(dopErr(ex, 'Could not end it')); }
+    } catch (ex: any) { setListErr(dopErr(ex, 'Could not end it')); }
   });
   const remove = async (reopen: boolean) => {
     await client.post(ENDPOINTS.DOP.HOLDER_REMOVE(post.id, removing!.id), { reopen_previous: reopen });
@@ -69,7 +73,7 @@ export const HoldersDialog: React.FC<{
         <h4 className="text-sm font-medium text-gray-800">Hand the post over</h4>
         <PersonPicker id="hd-person" label="New holder" value={person} onChange={setPerson} required />
         <div className="grid grid-cols-2 gap-3">
-          <div><label className={labelCls} htmlFor="hd-start">Starts on</label><input id="hd-start" type="date" min={today} className={`${inputCls} w-full`} value={start} onChange={(e) => setStart(e.target.value)} /></div>
+          <div><label className={labelCls} htmlFor="hd-start">Starts on</label><input id="hd-start" type="date" min={today || undefined} className={`${inputCls} w-full`} value={start} onChange={(e) => setStart(e.target.value)} /></div>
           <div><label className={labelCls} htmlFor="hd-end">Ends on (optional)</label><input id="hd-end" type="date" className={`${inputCls} w-full`} value={endOn} onChange={(e) => setEndOn(e.target.value)} /></div>
         </div>
         {endOn && openEnded && (
@@ -83,24 +87,26 @@ export const HoldersDialog: React.FC<{
       </form>
 
       <h4 className="text-sm font-medium text-gray-800">History</h4>
+      {listErr && <Notice>{listErr}</Notice>}
+      {!ready && <p className="text-sm text-gray-500">Waiting for the organisation's time zone…</p>}
       {hist === null && <p className="text-sm text-gray-500">Loading…</p>}
       {hist?.length === 0 && <p className="text-sm text-gray-500">Nobody has held this post yet.</p>}
       <ul className="space-y-2">
-        {hist?.map((h) => (
+        {ready && hist?.map((h) => (
           <li key={h.id} className="border border-gray-100 rounded-lg p-3 text-sm space-y-2">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span><span className="font-medium">{h.user_name}</span> <span className="text-xs text-gray-600">{fmtDate(h.starts_on)} to {h.ends_on ? fmtDate(h.ends_on) : 'no end date'}</span></span>
               <span className="flex items-center gap-2">
                 <Badge variant={state(h) === 'Current' ? 'success' : state(h) === 'Past' ? 'neutral' : 'info'}>{state(h)}</Badge>
                 {h.starts_on <= today && !(h.ends_on && h.ends_on < today) && ending !== h.id && (
-                  <Button size="sm" variant="outline" onClick={() => { setEnding(h.id); setEndDate(orgToday()); }}>End</Button>
+                  <Button size="sm" variant="outline" onClick={() => { setEnding(h.id); setListErr(null); setEndDate(today); }}>End</Button>
                 )}
                 {h.starts_on >= today && <Button size="sm" variant="outline" onClick={() => setRemoving(h)}>Remove</Button>}
               </span>
             </div>
             {ending === h.id && (
               <div className="flex items-end gap-2 flex-wrap">
-                <div><label className={labelCls} htmlFor={`hd-e-${h.id}`}>Last day</label><input id={`hd-e-${h.id}`} type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div>
+                <div><label className={labelCls} htmlFor={`hd-e-${h.id}`}>Last day</label><input id={`hd-e-${h.id}`} type="date" min={h.starts_on} className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div>
                 <Button size="sm" variant="danger" isLoading={busy} onClick={() => endHolder(h)}>End holding</Button>
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => setEnding(null)}>Cancel</Button>
               </div>

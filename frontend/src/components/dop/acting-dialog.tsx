@@ -4,9 +4,8 @@ import { Button } from '../ui-elements';
 import { client } from '../../api/client';
 import { ENDPOINTS } from '../../api/endpoints';
 import { Modal } from '../assets/modal';
-import { orgToday } from '../../lib/org-time';
 import { PersonPicker } from './person-picker';
-import { Meta, Notice, Person, PostItem, SubdomainPicker, dopErr, inputCls, labelCls, useGuard } from './dop-utils';
+import { Meta, NO_TIME, Notice, Person, PostItem, SubdomainPicker, dopErr, inputCls, labelCls, useGuard, useOrgDate } from './dop-utils';
 
 /** Create an acting cover for a person or a post. */
 export const ActingDialog: React.FC<{
@@ -17,7 +16,9 @@ export const ActingDialog: React.FC<{
   const [postId, setPostId] = useState(prefillPost ? String(prefillPost.id) : '');
   const [acting, setActing] = useState<Person | null>(null);
   const [subs, setSubs] = useState<string[]>([]);
-  const [start, setStart] = useState(orgToday);
+  const { today, ready } = useOrgDate();
+  const [start, setStart] = useState('');
+  React.useEffect(() => { if (ready && !start) setStart(today); }, [ready, today, start]);
   const [endOn, setEndOn] = useState('');
   const [onLeave, setOnLeave] = useState(false);
   const [orig, setOrig] = useState(false);
@@ -35,6 +36,7 @@ export const ActingDialog: React.FC<{
     e.preventDefault();
     run(async () => {
       setErr(null);
+      if (!ready) return setErr(NO_TIME);
       if (mode === 'person' && !covered) return setErr('Choose the person being covered.');
       if (mode === 'post' && !postId) return setErr('Choose the post being covered.');
       if (!acting) return setErr('Choose who will act.');

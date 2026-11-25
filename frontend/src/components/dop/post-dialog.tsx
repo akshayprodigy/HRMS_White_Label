@@ -31,13 +31,24 @@ export const PostDialog: React.FC<{
         parent_post_id: parent ? Number(parent) : null, heads_department_id: heads ? Number(heads) : null, is_active: active,
       };
       try {
-        if (post) await client.patch(ENDPOINTS.DOP.POST(post.id), body); else await client.post(ENDPOINTS.DOP.POSTS, body);
+        if (post) {
+          const was: Record<string, unknown> = {
+            code: post.code, title: post.title, department_id: post.department_id, location: post.location,
+            parent_post_id: post.parent_post_id, heads_department_id: post.heads_department_id, is_active: post.is_active,
+          };
+          const ch = Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== was[k]));
+          if (Object.keys(ch).length === 0) { onClose(); return; }
+          await client.patch(ENDPOINTS.DOP.POST(post.id), ch);
+        } else  await client.post(ENDPOINTS.DOP.POSTS, body);
         toast.success(post ? 'Post saved' : 'Post created');
         onSaved();
       } catch (ex: any) { setErr(dopErr(ex, 'Could not save the post')); }
     });
   };
   const depts = meta?.departments ?? [];
+  const extraDept = (id: number | null | undefined, name: string | null | undefined) =>
+    id && !depts.some((d) => d.id === id) ? <option value={id}>{name ?? `Department ${id}`} (inactive)</option> : null;
+  const locs = meta?.locations ?? [];
   return (
     <Modal title={post ? `Edit ${post.title}` : 'New post'} label={post ? 'Edit post' : 'New post'} onClose={onClose} busy={busy}>
       <form className="space-y-3" onSubmit={submit}>
@@ -47,26 +58,27 @@ export const PostDialog: React.FC<{
           <div>
             <label className={labelCls} htmlFor="pd-dept">Department</label>
             <select id="pd-dept" className={`${inputCls} w-full`} value={dept} onChange={(e) => setDept(e.target.value)}>
-              <option value="">None</option>{depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              <option value="">None</option>{extraDept(post?.department_id, post?.department_name)}{depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </div>
           <div>
             <label className={labelCls} htmlFor="pd-loc">Location</label>
             <select id="pd-loc" className={`${inputCls} w-full`} value={loc} onChange={(e) => setLoc(e.target.value)}>
-              <option value="">None</option>{(meta?.locations ?? []).map((l) => <option key={l} value={l}>{l}</option>)}
+              <option value="">None</option>{post?.location && !locs.includes(post.location) && <option value={post.location}>{post.location}</option>}{locs.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </div>
           <div>
             <label className={labelCls} htmlFor="pd-parent">Reports to (post)</label>
             <select id="pd-parent" className={`${inputCls} w-full`} value={parent} onChange={(e) => setParent(e.target.value)}>
               <option value="">Top of the chart</option>
+              {post?.parent_post_id && !posts.some((p) => p.id === post.parent_post_id) && <option value={post.parent_post_id}>{post.parent_post_title ?? `Post ${post.parent_post_id}`} (switched off)</option>}
               {posts.filter((p) => p.id !== post?.id).map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
             </select>
           </div>
           <div>
             <label className={labelCls} htmlFor="pd-heads">Is the head of department</label>
             <select id="pd-heads" className={`${inputCls} w-full`} value={heads} onChange={(e) => setHeads(e.target.value)}>
-              <option value="">No</option>{depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              <option value="">No</option>{extraDept(post?.heads_department_id, post?.heads_department_name)}{depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </div>
         </div>

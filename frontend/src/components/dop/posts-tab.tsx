@@ -65,7 +65,7 @@ export const PostsTab: React.FC<{
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-600">A post is a seat such as "Head of Finance". People come and go, but managers set to a post always reach whoever holds it.</p>
+      <p className="text-sm text-gray-600">A post is a seat such as "Head of Finance". People come and go, but a reporting manager set to a post reaches whoever holds it, and live approvals follow that. Other manager types and acting covers use posts from the next release.</p>
       <div className="flex items-end gap-3 flex-wrap">
         <div className="flex-1">
           <label className={labelCls} htmlFor="dp-q">Search posts</label>

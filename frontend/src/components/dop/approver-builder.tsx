@@ -4,7 +4,7 @@ import { ENDPOINTS } from '../../api/endpoints';
 import { PersonPicker } from './person-picker';
 import { Meta, Person, PostItem, approverLabel, inputCls, labelCls } from './dop-utils';
 
-export interface ApproverValue { type: string; ref: string | null; person: Person | null }
+export interface ApproverValue { type: string; ref: string | null; person: Person | null; label?: string }
 export const emptyApprover = (type = 'reporting_manager'): ApproverValue => ({ type, ref: null, person: null });
 export const needsRef = (t: string) => !['reporting_manager', 'dept_head_of_requester'].includes(t);
 
@@ -36,17 +36,17 @@ export const ApproverBuilder: React.FC<{
         <PersonPicker id={`${idp}-person`} label="Person" value={value.person} onChange={(p) => onChange({ ...value, person: p })} required />
       )}
       {value.type === 'role' && (
-        <select aria-label="Role" className={`${inputCls} w-full`} value={value.ref ?? ''} onChange={(e) => onChange({ ...value, ref: e.target.value || null })}>
+        <select aria-label="Role" className={`${inputCls} w-full`} value={value.ref ?? ''} onChange={(e) => onChange({ ...value, ref: e.target.value || null, label: e.target.selectedOptions[0]?.text })}>
           <option value="">Choose a role…</option>{(meta?.roles ?? []).map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
       )}
       {value.type === 'post' && (
-        <select aria-label="Post" className={`${inputCls} w-full`} value={value.ref ?? ''} onChange={(e) => onChange({ ...value, ref: e.target.value || null })}>
+        <select aria-label="Post" className={`${inputCls} w-full`} value={value.ref ?? ''} onChange={(e) => onChange({ ...value, ref: e.target.value || null, label: e.target.selectedOptions[0]?.text })}>
           <option value="">Choose a post…</option>{posts.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
         </select>
       )}
       {value.type === 'manager_kind' && (
-        <select aria-label="Type of manager" className={`${inputCls} w-full`} value={value.ref ?? ''} onChange={(e) => onChange({ ...value, ref: e.target.value || null })}>
+        <select aria-label="Type of manager" className={`${inputCls} w-full`} value={value.ref ?? ''} onChange={(e) => onChange({ ...value, ref: e.target.value || null, label: e.target.selectedOptions[0]?.text })}>
           <option value="">Choose a type of manager…</option>{(meta?.kinds ?? []).filter((k) => k.is_active).map((k) => <option key={k.id} value={k.code}>{k.name}</option>)}
         </select>
       )}

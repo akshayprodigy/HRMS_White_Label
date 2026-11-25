@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { inputCls, labelCls } from '../assets/asset-utils';
+import { useOrgTime } from '../../lib/org-time';
 
 export { inputCls, labelCls };
 
@@ -115,6 +116,13 @@ export const STATUS_TEXT: Record<string, string> = {
   live: 'Active', scheduled: 'Starts later', ended: 'Ended', cancelled: 'Cancelled', revoked: 'Ended early',
 };
 
+/** The organisation's date, only once its time zone is known (never the browser's UTC date). */
+export const useOrgDate = () => {
+  const { today, ready } = useOrgTime();
+  return { today: ready ? today : '', ready };
+};
+export const NO_TIME = "The organisation's time zone has not loaded yet. Wait a moment and try again.";
+
 /** Blocks a second submit before React re-renders (double click, Enter + click). */
 export const useGuard = () => {
   const lock = useRef(false);
@@ -151,13 +159,19 @@ export const SubdomainPicker: React.FC<{
         </label>
       </div>
       {!all && (
-        <div className="grid grid-cols-2 gap-1.5 text-sm">
-          {(meta?.subdomains ?? []).map((s) => (
-            <label key={s.code} className="flex items-center gap-1.5">
-              <input type="checkbox" checked={value.includes(s.code)} onChange={() => toggle(s.code)} />{s.name}
-            </label>
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-2 gap-1.5 text-sm">
+            {(meta?.subdomains ?? []).map((s) => {
+              const last = value.length === 1 && value[0] === s.code;
+              return (
+                <label key={s.code} className="flex items-center gap-1.5">
+                  <input type="checkbox" checked={value.includes(s.code)} disabled={last} onChange={() => toggle(s.code)} />{s.name}
+                </label>
+              );
+            })}
+          </div>
+          {value.length === 1 && <p className="text-xs text-gray-500 mt-1">At least one area must stay ticked. To cover everything, choose Everything.</p>}
+        </>
       )}
     </fieldset>
   );
