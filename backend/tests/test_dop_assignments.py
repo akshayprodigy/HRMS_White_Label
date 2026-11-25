@@ -514,3 +514,90 @@ async def test_department_create_beside_unrelated_user_update(dop):
     assert _outcomes(res) == ["ok", "ok"]
     assert await _manager_of(u["emp"]) == u["mgr2"]
     assert await _manager_of(u["mgr2"]) is None
+
+
+async def _plant_loop(dop):
+    """A loop mgr -> mgr2 -> mgr, as legacy data could hold it (inserted
+    directly: the service refuses to create one)."""
+    u = dop["uid"]
+    today = None
+    async with SessionLocal() as db:
+        today = await local_today(db)
+        kid = await _kind(db)
+        for a, b in (("mgr", "mgr2"), ("mgr2", "mgr")):
+            db.add(ManagerAssignment(
+                manager_kind_id=kid, scope_type="user",
+                scope_user_id=u[a], manager_user_id=u[b], subdomains=[],
+                starts_on=today, created_by_id=u["admin"]))
+        await db.commit()
+
+
+async def test_preexisting_loop_does_not_block_unrelated_edits(dop):
+    u = dop["uid"]
+    await _plant_loop(dop)
+    async with SessionLocal() as db:               # unrelated user edit
+        await A.lock_reporting(db)
+        await A.set_reporting_manager(db, actor_id=u["admin"],
+                                      user_id=u["emp"], manager_id=u["act"])
+        await db.commit()
+    assert await _manager_of(u["emp"]) == u["act"]
+    async with SessionLocal() as db:               # wide-scope create
+        await A.lock_reporting(db)
+        await _mk(db, dop, mgr="hr", scope_type="department",
+                  scope_department_id=dop["dept_id"])
+        await db.commit()
+    # people with their own row keep it; the loop is untouched
+    assert await _manager_of(u["emp"]) == u["act"]
+
+
+async def test_loop_can_be_broken_but_not_extended(dop):
+    u = dop["uid"]
+    await _plant_loop(dop)
+    async with SessionLocal() as db:               # a third user joins the loop
+        await A.lock_reporting(db)
+        with pytest.raises(HTTPException) as e:
+            await A.set_reporting_manager(db, actor_id=u["admin"],
+                                          user_id=u["emp"], manager_id=u["mgr"])
+            await A.set_reporting_manager(db, actor_id=u["admin"],
+                                          user_id=u["mgr"], manager_id=u["emp"])
+        assert e.value.status_code == 422
+        await db.rollback()
+    async with SessionLocal() as db:               # breaking it works
+        await A.lock_reporting(db)
+        await A.set_reporting_manager(db, actor_id=u["admin"],
+                                      user_id=u["mgr"], manager_id=u["hr"])
+        await db.commit()
+    assert await _manager_of(u["mgr"]) == u["hr"]
+
+
+async def test_changed_user_staying_in_a_loop_is_refused(dop):
+    u = dop["uid"]
+    await _plant_loop(dop)
+    async with SessionLocal() as db:               # mgr -> emp -> mgr2 -> mgr
+        await A.lock_reporting(db)
+        with pytest.raises(HTTPException) as e:
+            await A.set_reporting_manager(db, actor_id=u["admin"],
+                                          user_id=u["mgr2"], manager_id=u["emp"])
+            await A.set_reporting_manager(db, actor_id=u["admin"],
+                                          user_id=u["emp"], manager_id=u["mgr"])
+        assert e.value.status_code == 422
+        await db.rollback()
+
+
+async def test_loop_baseline_api_for_holder_changes(dop):
+    """Task 6 pattern: baseline, change anything, then compare."""
+    u = dop["uid"]
+    async with SessionLocal() as db:
+        await A.lock_reporting(db)
+        today = await local_today(db)
+        await _mk(db, dop, mgr="mgr")
+        base = await A.loop_baseline(db, [today])
+        db.add(ManagerAssignment(           # a change made behind the service
+            manager_kind_id=await _kind(db), scope_type="user",
+            scope_user_id=u["mgr"], manager_user_id=u["emp"], subdomains=[],
+            starts_on=today, created_by_id=u["admin"]))
+        await db.flush()
+        with pytest.raises(HTTPException) as e:
+            await A.assert_no_new_loops(db, base)
+        assert e.value.status_code == 422
+        await db.rollback()

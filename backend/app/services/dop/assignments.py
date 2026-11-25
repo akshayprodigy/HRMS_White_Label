@@ -8,6 +8,13 @@ Transaction contract (callers: Tasks 5 and 7, inside retry_on_lock):
   * the kind row serialises all writers of a kind, so every plain read made
     after the lock sees the latest committed data (the snapshot starts after
     the lock is granted);
+  * EVERY caller (endpoints, scheduler job, Task 6/7 services) wraps the
+    whole transaction in retry_on_lock, never a bare commit;
+  * the loop check compares worlds before and after the change
+    (`loop_baseline` + `assert_no_new_loops`): only a loop through a user
+    whose base manager changed is refused, old loops never block. A change
+    that moves reporting managers by other means (post holders) takes the
+    baseline after the lock, changes, then calls assert_no_new_loops;
   * MariaDB (REPEATABLE READ + innodb_snapshot_isolation) does not return the
     latest row from a locking read of a row that changed after our snapshot:
     it raises 1020. retry_on_lock catches that and retries on a new snapshot.
@@ -116,39 +123,57 @@ def _base_manager(w, uid, on):
     return True, (None if mgr == uid else mgr)
 
 
-def _loops(w, users, on):
-    memo: dict = {}
+def _mgr_map(w, users, on) -> dict:
+    return {x: _base_manager(w, x, on)[1] for x in users}
 
-    def mgr(x):
-        if x not in memo:
-            memo[x] = _base_manager(w, x, on)[1]
-        return memo[x]
-    for u in users:
-        seen, cur = {u}, mgr(u)
-        while cur is not None:
-            if cur == u:
-                return True
-            if cur in seen:        # a loop that does not include u
-                break
-            seen.add(cur)
-            cur = mgr(cur)
+
+def _on_loop(mgr, u) -> bool:
+    """Is u on a reporting loop? `mgr` maps user -> base manager."""
+    seen, cur = {u}, mgr(u)
+    while cur is not None:
+        if cur == u:
+            return True
+        if cur in seen:                # a loop that does not include u
+            return False
+        seen.add(cur)
+        cur = mgr(cur)
     return False
 
 
-async def assert_no_reporting_loop(db, user_ids, on, w=None) -> None:
-    """422 when the base reporting managers on `on` form a loop through any
-    of `user_ids`. Pass `w` (a world for `on`) to avoid loading again."""
-    w = w if w is not None else await load_world(db, on)
-    if _loops(w, list(user_ids), on):
-        raise HTTPException(
-            422, "This would make a reporting loop (a manager would report "
-                 "to their own report)")
+async def loop_baseline(db, dates) -> dict:
+    """Worlds (date -> World) to compare against after a change. Take it
+    AFTER the lock and BEFORE the first write; works for any caller
+    (assignments, post holders, ...)."""
+    return {d: await load_world(db, d) for d in dates}
 
 
-async def _check_loops(db, w, today, users, starts_on=None):
-    await assert_no_reporting_loop(db, users, today, w)
-    if starts_on is not None and starts_on > today:
-        await assert_no_reporting_loop(db, users, starts_on)
+async def assert_no_new_loops(db, baseline, user_ids=None) -> dict:
+    """422 when the change made since `baseline` creates a reporting loop:
+    a loop (on any baseline date) through a user whose base reporting
+    manager changed. Loops that already existed, and loops that do not
+    contain a changed user, never block. `user_ids` limits who is looked at
+    (default: everyone). Returns the after-worlds (date -> World)."""
+    after = {}
+    for on, wb in baseline.items():
+        wa = await load_world(db, on)
+        after[on] = wa
+        users = (sorted(set(user_ids) & set(wa.people))
+                 if user_ids is not None else sorted(wa.people))
+        if not users:
+            continue
+        mb, ma = _mgr_map(wb, users, on), _mgr_map(wa, users, on)
+        memo: dict = {}
+
+        def mgr(x, wa=wa, on=on, memo=memo):
+            if x not in memo:
+                memo[x] = _base_manager(wa, x, on)[1]
+            return memo[x]
+        for u in users:
+            if mb[u] != ma[u] and _on_loop(mgr, u):
+                raise HTTPException(
+                    422, "This would make a reporting loop (a manager would "
+                         "report to their own report)")
+    return after
 
 
 async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
@@ -201,15 +226,18 @@ async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
         manager_post_id=manager_post_id, subdomains=subs,
         starts_on=starts_on, ends_on=ends_on, note=note,
         created_by_id=actor_id)
+    today = await local_today(db)
+    base = (await loop_baseline(db, _dates(today, starts_on))
+            if kind.code == "reporting" and not subs else None)
     db.add(a)
     await db.flush()
     audit(db, actor_id, "dop.assignment.create", "manager_assignment", a.id,
           snapshot(a))
     if kind.code == "reporting":
-        today = await local_today(db)
         w = await load_world(db, today)
         users = _matching(w.people, a, dept_name)
-        await _check_loops(db, w, today, users, starts_on)
+        if base is not None:
+            await assert_no_new_loops(db, base, users)
         await _sync(db, w, today, users)
     return a
 
@@ -237,6 +265,8 @@ async def end(db, *, actor_id, assignment_id, ends_on) -> ManagerAssignment:
             422, "It already ends earlier: create a new assignment instead")
     today = await local_today(db)
     before = snapshot(a)
+    base = (await loop_baseline(db, [today])
+            if kind.code == "reporting" and not a.subdomains else None)
     if ends_on < a.starts_on:
         if a.starts_on < today:
             raise HTTPException(
@@ -255,9 +285,14 @@ async def end(db, *, actor_id, assignment_id, ends_on) -> ManagerAssignment:
             dept_name = (await db.execute(select(Department.name).where(
                 Department.id == a.scope_department_id))).scalar_one_or_none()
         users = _matching(w.people, a, dept_name)
-        await _check_loops(db, w, today, users)
+        if base is not None:
+            await assert_no_new_loops(db, base, users)
         await _sync(db, w, today, users)
     return a
+
+
+def _dates(today, starts_on=None) -> list:
+    return [today] + ([starts_on] if starts_on and starts_on > today else [])
 
 
 def _matching(people: dict, a, dept_name) -> list:
