@@ -343,27 +343,103 @@ def _check_replaceable(rows, starts_on, today):
                      "replaced cleanly: end it first")
 
 
+def _plan_tails(clash, kept, new_ends_on) -> list:
+    """Clashing rows that run past the new assignment's end: they continue
+    the day after it (same everything, until their old end). 409 when such a
+    tail would itself clash with a row that stays."""
+    if new_ends_on is None:
+        return []
+    start = new_ends_on + timedelta(days=1)
+    tails = [r for r in clash if r.ends_on is None or r.ends_on > new_ends_on]
+    for r in tails:
+        for k in kept:
+            if k.scope_user_id == r.scope_user_id and subs_clash(
+                    k.subdomains, r.subdomains) and dates_overlap(
+                    k.starts_on, k.ends_on, start, r.ends_on):
+                raise HTTPException(
+                    409, f"The rest of assignment #{r.id} would overlap "
+                         f"assignment #{k.id}: end that one first")
+    return tails
+
+
+def _tail_rows(tails, new_ends_on, actor_id) -> list:
+    if not tails:
+        return []
+    start = new_ends_on + timedelta(days=1)
+    return [ManagerAssignment(
+        manager_kind_id=r.manager_kind_id, scope_type=r.scope_type,
+        scope_user_id=r.scope_user_id,
+        scope_department_id=r.scope_department_id,
+        scope_location=r.scope_location, manager_user_id=r.manager_user_id,
+        manager_post_id=r.manager_post_id, subdomains=list(r.subdomains or []),
+        starts_on=start, ends_on=r.ends_on, note=r.note,
+        created_by_id=actor_id) for r in tails]
+
+
+def _audit_tails(db, actor_id, tails, rows):
+    for old, t in zip(tails, rows):
+        audit(db, actor_id, "dop.assignment.create", "manager_assignment",
+              t.id, {**snapshot(t), "continues": old.id})
+
+
+def _tail_dates(today, starts_on, ends_on, tails) -> list:
+    d = _dates(today, starts_on)
+    if tails:
+        t = ends_on + timedelta(days=1)
+        if t > today and t not in d:
+            d.append(t)
+    return d
+
+
 async def replace_overlaps(db, *, actor_id, kind_id, scope_type, starts_on,
                            subdomains=(), scope_user_id=None,
                            scope_department_id=None, scope_location=None,
-                           ends_on=None, **_) -> int:
+                           ends_on=None, **_) -> tuple:
     """End the rows a new assignment would clash with, the day before it
     starts (rows that start on or after it are cancelled, only while they
-    have not started). Returns how many. When a clashing row cannot be ended
-    cleanly: 409 before any change."""
+    have not started). A row that runs past the new `ends_on` continues in a
+    new row after it. Returns (rows replaced, rows continued). When a
+    clashing row cannot be ended cleanly, or a continuation would clash:
+    409 before any change. One loop check and one sync for the scope."""
     try:
         subs = sorted(S.validate(subdomains))
     except ValueError as e:
         raise HTTPException(422, str(e))
-    await _lock_kind(db, kind_id)
-    rows = _clashing(await _same_scope(
+    kind = await _lock_kind(db, kind_id)
+    every = await _same_scope(
         db, kind_id, scope_type, scope_user_id, scope_department_id,
-        (scope_location or "").strip() or None), subs, starts_on, ends_on)
-    _check_replaceable(rows, starts_on, await local_today(db))
+        (scope_location or "").strip() or None)
+    rows = _clashing(every, subs, starts_on, ends_on)
+    if not rows:
+        return 0, 0
+    today = await local_today(db)
+    _check_replaceable(rows, starts_on, today)
+    ids = {r.id for r in rows}
+    tails = _plan_tails(rows, [r for r in every if r.id not in ids], ends_on)
+    base = (await loop_baseline(db, _tail_dates(today, starts_on, ends_on,
+                                                tails))
+            if kind.code == "reporting" and not subs else None)
+    new = _tail_rows(tails, ends_on, actor_id)         # before rows change
     for r in rows:
-        await end(db, actor_id=actor_id, assignment_id=r.id,
-                  ends_on=starts_on - timedelta(days=1))
-    return len(rows)
+        _do_end(db, actor_id, r, starts_on - timedelta(days=1), today)
+    db.add_all(new)
+    await db.flush()
+    _audit_tails(db, actor_id, tails, new)
+    await db.flush()
+    if kind.code == "reporting":
+        w = await load_world(db, today)
+        users = _matching(w.people, rows[0], await _dept_name(db, rows[0]))
+        if base is not None:
+            await assert_no_new_loops(db, base, users)
+        await _sync(db, w, today, users)
+    return len(rows), len(tails)
+
+
+async def _dept_name(db, a):
+    if a.scope_type != "department":
+        return None
+    return (await db.execute(select(Department.name).where(
+        Department.id == a.scope_department_id))).scalar_one_or_none()
 
 
 async def create_many(db, *, actor_id, kind_id, user_ids, manager_user_id=None,
@@ -373,7 +449,7 @@ async def create_many(db, *, actor_id, kind_id, user_ids, manager_user_id=None,
     caller's transaction. Loads the world twice (baseline, after) and syncs
     once, however many employees: a constant number of statements plus two
     inserts per employee (audit, assignment) and one update per changed
-    manager. Returns (assignment ids in user order, rows replaced)."""
+    manager. Returns (assignment ids in user order, rows replaced, rows continued)."""
     ids = sorted(set(user_ids))
     if not ids:
         raise HTTPException(422, "Choose at least one employee")
@@ -409,8 +485,12 @@ async def create_many(db, *, actor_id, kind_id, user_ids, manager_user_id=None,
         raise HTTPException(
             409, f"Overlaps assignment #{clash[0].id}: end that one first")
     _check_replaceable(clash, starts_on, today)
-    base = (await loop_baseline(db, _dates(today, starts_on))
+    cids = {r.id for r in clash}
+    tails = _plan_tails(clash, [r for r in rows if r.id not in cids], ends_on)
+    base = (await loop_baseline(db, _tail_dates(today, starts_on, ends_on,
+                                                tails))
             if kind.code == "reporting" and not subs else None)
+    tail_rows = _tail_rows(tails, ends_on, actor_id)   # before rows change
     for r in clash:
         _do_end(db, actor_id, r, starts_on - timedelta(days=1), today)
     new = [ManagerAssignment(
@@ -418,18 +498,19 @@ async def create_many(db, *, actor_id, kind_id, user_ids, manager_user_id=None,
         manager_user_id=manager_user_id, manager_post_id=manager_post_id,
         subdomains=subs, starts_on=starts_on, ends_on=ends_on, note=note,
         created_by_id=actor_id) for i in ids]
-    db.add_all(new)
+    db.add_all(new + tail_rows)
     await db.flush()
     for a in new:
         audit(db, actor_id, "dop.assignment.create", "manager_assignment",
               a.id, snapshot(a))
+    _audit_tails(db, actor_id, tails, tail_rows)
     await db.flush()
     if kind.code == "reporting":
         w = await load_world(db, today)
         if base is not None:
             await assert_no_new_loops(db, base, ids)
         await _sync(db, w, today, ids)
-    return [a.id for a in new], len(clash)
+    return [a.id for a in new], len(clash), len(tails)
 
 
 def _dates(today, starts_on=None) -> list:

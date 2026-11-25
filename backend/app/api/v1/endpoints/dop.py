@@ -13,7 +13,7 @@ from typing import Annotated, Literal, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import (
     AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StrictBool,
-    StrictInt, StrictStr, StringConstraints, model_validator,
+    StrictInt, StringConstraints, model_validator,
 )
 from sqlalchemy import or_, select
 
@@ -60,13 +60,30 @@ D = Annotated[date, BeforeValidator(_str_date), AfterValidator(_sane)]
 Id = Annotated[StrictInt, Field(ge=1, le=2**31 - 1)]
 
 
-def _text(n, min_length=0):
+def _no_ctl(v: str, keep="") -> str:
+    """Free text may not carry NUL or other control characters (a note may
+    keep newline, carriage return and tab)."""
+    if any((ord(c) < 32 or ord(c) == 127) and c not in keep for c in v):
+        raise ValueError("Control characters are not allowed")
+    return v
+
+
+def _text(n, min_length=0, keep=""):
     return Annotated[str, StringConstraints(
-        strip_whitespace=True, min_length=min_length, max_length=n)]
+        strip_whitespace=True, min_length=min_length, max_length=n),
+        AfterValidator(lambda v: _no_ctl(v, keep))]
 
 
-Note = Annotated[Optional[_text(255)], AfterValidator(_blank_none)]
-Sub = Annotated[str, StringConstraints(max_length=40)]
+def _clean_q(v: str) -> str:
+    try:
+        return _no_ctl(v)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+Note = Annotated[Optional[_text(255, keep="\n\r\t")],
+                 AfterValidator(_blank_none)]
+Sub = _text(40)
 
 
 class _M(BaseModel):
@@ -162,12 +179,12 @@ class ActingPatch(_M):
 
 
 class ApproverIn(_M):
-    type: str
-    ref: Optional[Union[StrictStr, StrictInt]] = None
+    type: _text(40)
+    ref: Optional[Union[_text(100), StrictInt]] = None
 
 
 class CheckAllIn(_M):
-    subdomain: str
+    subdomain: _text(40)
     on_date: Optional[D] = None
     approver: ApproverIn
     fallback: Optional[ApproverIn] = None
@@ -257,7 +274,7 @@ async def meta(db: deps.DBDep):
 async def people(db: deps.DBDep, q: str = Query("", max_length=100)):
     stmt = select(User.id, User.full_name, User.email).where(
         User.is_active.is_(True))
-    q = q.strip()
+    q = _clean_q(q).strip()
     if q:
         stmt = stmt.where(or_(User.full_name.contains(q, autoescape=True),
                               User.email.contains(q, autoescape=True)))
@@ -427,18 +444,19 @@ async def bulk_assign(payload: BulkIn, db: deps.DBDep,
 
     async def work() -> dict:
         if payload.user_ids is not None:
-            ids, replaced = await A.create_many(
+            ids, replaced, continued = await A.create_many(
                 db, actor_id=aid, user_ids=payload.user_ids,
                 replace=payload.replace,
                 **{k: v for k, v in kw.items()
                    if k not in ("scope_department_id", "scope_location")})
         else:
             t = {**kw, "scope_type": payload.scope_type}
-            replaced = (await A.replace_overlaps(db, actor_id=aid, **t)
-                        if payload.replace else 0)
+            replaced, continued = (
+                await A.replace_overlaps(db, actor_id=aid, **t)
+                if payload.replace else (0, 0))
             ids = [(await A.create(db, actor_id=aid, **t)).id]
         return {"created": len(ids), "replaced": replaced,
-                "assignment_ids": ids}
+                "continued": continued, "assignment_ids": ids}
     return await _tx(db, work)
 
 
@@ -481,23 +499,29 @@ async def managers(
         post = w.posts.get(h.post_id)
         if post and post.is_active and R.live(h, today):
             holder.setdefault(h.post_id, h.user_id)
-    qn, dn = q.strip().casefold(), R.norm(department)
+    qn, dn = _clean_q(q).strip().casefold(), R.norm(_clean_q(department))
 
     def cell(kind, uid):
         a = lookup(kind, uid)
         if a is None:
             return None
         post = w.posts.get(a.manager_post_id)
-        mgr = (holder.get(a.manager_post_id) if post else None) \
+        held = (holder.get(a.manager_post_id) if post else None) \
             if a.manager_post_id else a.manager_user_id
-        if mgr == uid:
-            mgr = None
+        own = held == uid
+        mgr = None if own else held
         return {"assignment_id": a.id, "source": a.scope,
                 "manager_user_id": mgr,
                 "manager_name": ident[mgr][0] if mgr in ident else None,
+                "manager_active": (bool(w.people[mgr].active)
+                                   if mgr in w.people else None),
                 "post_id": a.manager_post_id,
                 "post_title": post.title if post else None,
-                "vacant": a.manager_post_id is not None and mgr is None}
+                "vacant": a.manager_post_id is not None and held is None,
+                "self_managed": own}
+
+    def has_manager(c):
+        return bool(c and c["manager_user_id"] and c["manager_active"])
 
     out = []
     for uid, p in w.people.items():
@@ -510,7 +534,7 @@ async def managers(
         if dn and R.norm(p.department) != dn:
             continue
         cells = {k.code: cell(k.code, uid) for k in kinds}
-        if missing and (cells[missing] or {}).get("manager_user_id"):
+        if missing and has_manager(cells[missing]):
             continue
         out.append({"user_id": uid, "name": name, "email": email,
                     "is_active": p.active, "department": p.department,
@@ -532,7 +556,8 @@ def _holder_dict(h, names) -> dict:
 
 def _cover_dict(c, names, titles, today, source="acting") -> dict:
     return {
-        "id": c.id, "source": source, "read_only": False,
+        "id": c.id, "key": f"{source}-{c.id}", "source": source,
+        "read_only": False,
         "covers_user_id": c.covers_user_id,
         "covers_user_name": _nm(names, c.covers_user_id),
         "covers_post_id": c.covers_post_id,
@@ -678,14 +703,15 @@ async def end_holder(post_id: int, holder_id: int, payload: EndIn,
 @router.post("/posts/{post_id}/holders/{holder_id}/remove")
 @guard_conflicts
 async def remove_holder(post_id: int, holder_id: int,
-                        payload: RemoveHolderIn, db: deps.DBDep,
+                        db: deps.DBDep,
+                        payload: Optional[RemoveHolderIn] = None,
                         current_user: User = Depends(deps.get_current_user)):
     aid = current_user.id
 
     async def work() -> int:
         await PS.remove_holder(
             db, actor_id=aid, post_id=post_id, holder_id=holder_id,
-            reopen_previous=payload.reopen_previous)
+            reopen_previous=bool(payload and payload.reopen_previous))
         return post_id
     return await _holders_out(db, await _tx(db, work))
 
@@ -715,7 +741,8 @@ async def _acting_items(db, ids=None, include_ended=False) -> list:
     titles = await _post_titles(db, [c.covers_post_id for c in covers])
     out = [_cover_dict(c, names, titles, today) for c in covers]
     out += [{
-        "id": d.id, "source": "out_of_office", "read_only": True,
+        "id": d.id, "key": f"ooo-{d.id}", "source": "out_of_office",
+        "read_only": True,
         "covers_user_id": d.user_id,
         "covers_user_name": _nm(names, d.user_id),
         "covers_post_id": None, "covers_post_title": None,
@@ -813,7 +840,7 @@ async def _check_args(db, p: CheckAllIn):
     return ap, fb, on
 
 
-_REF = re.compile(r"@(\d+)")
+_REF = re.compile(r"\x02(\d+)\x03")
 
 
 def _ids_in(lines) -> set:

@@ -296,7 +296,8 @@ def test_base_index_matches_find_assignment():
             assert (got and got.id) == (want and want.id), (kind, uid)
 
 
-def test_explanation_names_users_with_at_and_assignments_with_hash():
+def test_explanation_tokens_for_users_and_hash_for_assignments():
     w = world(assignments=[asg(7, 2)], covers=[cover(1, 3, user=2)])
     text = " ".join(go(w).explanation)
-    assert "assignment #7" in text and "@3 is acting for @2" in text
+    assert "assignment #7" in text
+    assert R.user_ref(3) + " is acting for " + R.user_ref(2) in text

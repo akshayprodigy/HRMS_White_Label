@@ -80,13 +80,19 @@ class World:
 
 @dataclass
 class Resolution:
-    # explanation lines name users as "@<user id>" and assignments as
-    # "assignment #<id>": callers swap "@<id>" for the person's name.
+    # explanation lines name users as user_ref(<id>) and assignments as
+    # "assignment #<id>": callers swap the token for the name.
     user_ids: list
     via: str                       # primary | fallback | hr | blocked
     acting_for: dict = field(default_factory=dict)  # user -> [users covered]
     via_post_id: Optional[int] = None
     explanation: list = field(default_factory=list)
+
+
+def user_ref(uid) -> str:
+    """Token for a user in an explanation line; callers swap it for the
+    person's name. Control characters cannot occur in titles or names."""
+    return f"\x02{uid}\x03"
 
 
 def norm(text: Optional[str]) -> str:
@@ -190,7 +196,7 @@ def _candidates(w: World, ap: Approver, requester: int, sub: str, on: date,
     if ap.type == "specific_user":
         uid = _ref_int(ap, log)
         if uid is not None:
-            log.append(f"Named person @{uid}")
+            log.append(f"Named person {user_ref(uid)}")
             yield [(uid, None)]
     elif ap.type == "role":
         ids = sorted(w.role_users.get(ap.ref or "", []))
@@ -202,7 +208,7 @@ def _candidates(w: World, ap: Approver, requester: int, sub: str, on: date,
             uid = holder_of(w, pid, on)
             title = w.posts[pid].title if pid in w.posts else f"#{pid}"
             log.append(f"Post {title}: "
-                       f"{'vacant' if uid is None else f'held by @{uid}'}")
+                       f"{'vacant' if uid is None else f'held by {user_ref(uid)}'}")
             yield [(uid, pid)]
     elif ap.type in ("manager_kind", "reporting_manager"):
         kind = "reporting" if ap.type == "reporting_manager" else ap.ref
@@ -216,7 +222,7 @@ def _candidates(w: World, ap: Approver, requester: int, sub: str, on: date,
         log.append(f"{kind} manager from the {a.scope} assignment #{a.id}")
         if a.manager_post_id is not None:
             uid = holder_of(w, a.manager_post_id, on)
-            log.append("Post is vacant" if uid is None else f"Post held by @{uid}")
+            log.append("Post is vacant" if uid is None else f"Post held by {user_ref(uid)}")
             yield [(uid, a.manager_post_id)]
         else:
             yield [(a.manager_user_id, None)]
@@ -235,7 +241,7 @@ def _candidates(w: World, ap: Approver, requester: int, sub: str, on: date,
                     yield [(uid, post.id)]
         for label, uid in zip(("head", "deputy"), w.heads.get(dept, ())):
             if uid:
-                log.append(f"Department {label} @{uid}")
+                log.append(f"Department {label} {user_ref(uid)}")
                 yield [(uid, None)]
     else:
         raise ValueError(f"Unknown approver type: {ap.type}")
@@ -248,8 +254,8 @@ def _attempt(w, ap, requester, sub, on, log):
             c = _cover_for(w, sub, on, requester, user_id=uid, post_id=pid)
             picked = [uid] if uid is not None else []
             if c is not None:
-                log.append(f"@{c.acting_user_id} is acting for "
-                           + (f"@{uid}" if uid is not None
+                log.append(f"{user_ref(c.acting_user_id)} is acting for "
+                           + (f"{user_ref(uid)}" if uid is not None
                               else "the vacant post"))
                 if uid is not None:
                     acting.setdefault(c.acting_user_id, set()).add(uid)
@@ -257,9 +263,9 @@ def _attempt(w, ap, requester, sub, on, log):
                                                else [])
             for x in picked:
                 if x == requester:
-                    log.append(f"@{x} is the requester: skipped")
+                    log.append(f"{user_ref(x)} is the requester: skipped")
                 elif not _active(w, x):
-                    log.append(f"@{x} is inactive: skipped")
+                    log.append(f"{user_ref(x)} is inactive: skipped")
                 elif x not in ids:
                     ids.append(x)
             post_id = post_id or pid

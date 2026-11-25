@@ -736,7 +736,8 @@ async def test_bulk_200_users_query_count(api):
 
 # ------------------------------------------------------------ concurrency
 
-async def test_two_identical_bulks_no_5xx(api):
+@pytest.mark.parametrize("rep", range(5))
+async def test_two_identical_bulks_no_5xx(api, rep):
     u = api.u
     body = _bulk(api, [u["emp"], u["act"]], u["mgr"])
     r1, r2 = await asyncio.gather(
@@ -831,3 +832,217 @@ async def test_dev_users_untouched(api):
             User.id, User.manager_id).where(
             User.id.in_([135, 70898, 70900, 72360, 173062])))).all())
     assert before == after
+
+
+# ------------------------------------------------------ review fixes
+
+async def _live(uid):
+    return sorted(
+        [(x.starts_on, x.ends_on, x.manager_user_id, x.note, x.id)
+         for x in await _rows([uid]) if x.cancelled_at is None])
+
+
+async def test_replace_with_ends_on_keeps_the_tail(api):
+    u, t = api.u, api.today
+    day = timedelta(days=1)
+    # open-ended row, bounded row, scheduled row: one employee each
+    for who, start, end in (("emp", t - 10 * day, None),
+                            ("act", t - 10 * day, t + 20 * day),
+                            ("mgr2", t + 3 * day, None)):
+        r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+            **_bulk(api, [u[who]], u["mgr"], note=f"n-{who}"),
+            "starts_on": start.isoformat(),
+            "ends_on": end.isoformat() if end else None})
+        assert r.status_code == 200, r.text
+    r = await api.post(H + "/assignments/bulk", headers=api.h, json=_bulk(
+        api, [u["emp"], u["act"], u["mgr2"]], u["hr"],
+        replace=True, ends_on=(t + 5 * day).isoformat()))
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 3 and r.json()["replaced"] == 3
+    assert r.json()["continued"] == 3
+    new_end = t + 5 * day
+    tails = {"emp": (new_end + day, None),
+             "act": (new_end + day, t + 20 * day),
+             "mgr2": (new_end + day, None)}
+    for who, (ts, te) in tails.items():
+        rows = await _live(u[who])
+        assert (t, new_end, u["hr"]) in [(a, b, c) for a, b, c, *_ in rows]
+        tail = [x for x in rows if x[0] == ts]
+        assert len(tail) == 1 and tail[0][1] == te, (who, rows)
+        assert tail[0][2] == u["mgr"] and tail[0][3] == f"n-{who}"
+        # no gap and no overlap across the live rows
+        cover = sorted((a, b) for a, b, *_ in rows if a >= t)
+        assert cover[0][1] + day == cover[1][0]
+    assert await _mgr(u["emp"]) == u["hr"]
+    # audited with the row it continues
+    async with SessionLocal() as db:
+        det = [d for d in (await db.execute(select(AuditLog.details).where(
+            AuditLog.action == "dop.assignment.create",
+            AuditLog.user_id == u["admin"]))).scalars().all()
+            if isinstance(d, dict) and "continues" in d]
+    assert len(det) == 3
+
+
+async def test_replace_department_scope_keeps_the_tail(api):
+    t, day = api.today, timedelta(days=1)
+    dept = next(d["id"] for d in (await api.get(
+        H + "/meta", headers=api.h)).json()["departments"]
+        if d["name"] == f"DOP{api.sfx}")
+    base = {"scope_type": "department", "scope_department_id": dept,
+            "kind_id": api.fun, "manager_user_id": api.u["mgr"]}
+    r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+        **base, "starts_on": (t - 10 * day).isoformat()})
+    assert r.status_code == 200, r.text
+    r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+        **base, "manager_user_id": api.u["mgr2"], "replace": True,
+        "starts_on": t.isoformat(), "ends_on": (t + 3 * day).isoformat()})
+    assert r.status_code == 200, r.text
+    assert r.json()["replaced"] == 1 and r.json()["continued"] == 1
+    r = await api.get(H + "/assignments", headers=api.h, params={
+        "kind_id": api.fun, "history": "true", "limit": 200})
+    mine = [x for x in r.json()["items"]
+            if x["scope_department_id"] == dept]
+    assert sorted((x["starts_on"], x["ends_on"], x["manager_user_id"])
+                  for x in mine) == sorted([
+        ((t - 10 * day).isoformat(), (t - day).isoformat(), api.u["mgr"]),
+        (t.isoformat(), (t + 3 * day).isoformat(), api.u["mgr2"]),
+        ((t + 4 * day).isoformat(), None, api.u["mgr"])])
+    async with SessionLocal() as db:       # the department rows are not
+        await db.execute(delete(ManagerAssignment).where(    # user scoped
+            ManagerAssignment.scope_department_id == dept))
+        await db.commit()
+
+
+async def test_replace_without_ends_on_has_no_tail(api):
+    u, t = api.u, api.today
+    await api.post(H + "/assignments/bulk", headers=api.h, json={
+        **_bulk(api, [u["emp"]], u["mgr"]),
+        "starts_on": (t - 3 * timedelta(days=1)).isoformat()})
+    r = await api.post(H + "/assignments/bulk", headers=api.h,
+                       json=_bulk(api, [u["emp"]], u["mgr2"], replace=True))
+    assert r.status_code == 200 and r.json()["continued"] == 0
+    assert len(await _live(u["emp"])) == 2
+
+
+async def test_managers_inactive_self_and_vacant(api):
+    u = api.u
+    # inactive manager counts as missing
+    r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+        **_bulk(api, [u["act"]], u["mgr"]), "kind_id": api.fun})
+    assert r.status_code == 200
+    async with SessionLocal() as db:
+        (await db.get(User, u["mgr"])).is_active = False
+        await db.commit()
+    q = {"q": api.sfx, "include_inactive": "true"}
+    r = await api.get(H + "/managers", headers=api.h, params=q)
+    row = next(x for x in r.json()["items"] if x["user_id"] == u["act"])
+    cell = row["managers"]["functional"]
+    assert cell["manager_user_id"] == u["mgr"]
+    assert cell["manager_active"] is False and cell["self_managed"] is False
+    r = await api.get(H + "/managers", headers=api.h,
+                      params={**q, "missing": "functional"})
+    assert u["act"] in {x["user_id"] for x in r.json()["items"]}
+    # a post: vacant, then held by the employee themself
+    p = await _post(api, "S")
+    r = await api.post(H + "/assignments/bulk", headers=api.h, json={
+        "user_ids": [u["emp"]], "kind_id": api.fun,
+        "manager_post_id": p["id"], "starts_on": api.today.isoformat()})
+    assert r.status_code == 200, r.text
+    items = (await api.get(H + "/managers", headers=api.h,
+                           params=q)).json()["items"]
+    cell = next(x for x in items if x["user_id"] == u["emp"]
+                )["managers"]["functional"]
+    assert cell["vacant"] is True and cell["self_managed"] is False
+    assert cell["manager_active"] is None
+    r = await api.post(H + f"/posts/{p['id']}/holders", headers=api.h,
+                       json={"user_id": u["emp"]})
+    assert r.status_code == 200, r.text
+    items = (await api.get(H + "/managers", headers=api.h,
+                           params={**q, "missing": "functional"})).json()["items"]
+    cell = next(x for x in items if x["user_id"] == u["emp"]
+                )["managers"]["functional"]
+    assert cell["vacant"] is False and cell["self_managed"] is True
+    assert cell["manager_user_id"] is None and cell["manager_name"] is None
+
+
+async def test_acting_rows_have_unique_keys(api):
+    u = api.u
+    from app.models.approver_delegation import ApproverDelegation
+    r = await api.post(H + "/acting", headers=api.h, json={
+        "covers_user_id": u["mgr"], "acting_user_id": u["act"]})
+    cid = r.json()["id"]
+    assert r.json()["key"] == f"acting-{cid}"
+    async with SessionLocal() as db:
+        d = ApproverDelegation(user_id=u["mgr2"], delegate_id=u["emp"],
+                               starts_on=api.today)
+        db.add(d)
+        await db.commit()
+        did = d.id
+    items = (await api.get(H + "/acting", headers=api.h)).json()
+    keys = [x["key"] for x in items]
+    assert len(keys) == len(set(keys))
+    assert f"acting-{cid}" in keys and f"ooo-{did}" in keys
+    # revoke accepts no body and an empty one
+    assert (await api.post(H + f"/acting/{cid}/revoke",
+                           headers=api.h)).status_code == 200
+    async with SessionLocal() as db:
+        await db.execute(delete(ApproverDelegation).where(
+            ApproverDelegation.id == did))
+        await db.commit()
+
+
+async def test_titles_with_at_signs_are_left_alone(api):
+    u = api.u
+    r = await api.post(H + "/posts", headers=api.h, json={
+        "code": f"AT{api.sfx}", "title": f"Chief @{u['mgr']} #7"})
+    pid = r.json()["id"]
+    await api.post(H + f"/posts/{pid}/holders", headers=api.h,
+                   json={"user_id": u["mgr2"]})
+    r = await api.post(H + "/check", headers=api.h, json={
+        "user_id": u["emp"], "subdomain": "leave",
+        "approver": {"type": "post", "ref": str(pid)}})
+    text = "\n".join(r.json()["explanation"])
+    assert f"Chief @{u['mgr']} #7" in text and "Dop mgr2" in text
+
+
+async def test_control_characters_rejected(api):
+    u = api.u
+    for body in ({"code": f"C{api.sfx}", "title": "a\x00b"},
+                 {"code": f"C{api.sfx}", "title": "a\x07b"},
+                 {"code": f"C{api.sfx}", "title": "ok", "location": "x\x1fy"},
+                 {"code": f"C{api.sfx}\x01", "title": "ok"}):
+        assert (await api.post(H + "/posts", headers=api.h,
+                               json=body)).status_code == 422, body
+    ok = _bulk(api, [u["emp"]], u["mgr"])
+    for note in ("a\x00", "a\x01b", "a\x7f"):
+        assert (await api.post(H + "/assignments/bulk", headers=api.h,
+                               json={**ok, "note": note})).status_code == 422
+    assert (await api.post(H + "/acting", headers=api.h, json={
+        "covers_user_id": u["mgr"], "acting_user_id": u["act"],
+        "reason": "x\x00"})).status_code == 422
+    assert (await api.post(H + "/kinds", headers=api.h, json={
+        "code": f"z_{api.sfx}", "name": "n\x00"})).status_code == 422
+    for path in ("/people", "/managers"):
+        assert (await api.get(H + path, headers=api.h,
+                              params={"q": "a\x00"})).status_code == 422
+    # newline and tab are fine in a note
+    r = await api.post(H + "/assignments/bulk", headers=api.h,
+                       json={**ok, "note": "line1\n\tline2"})
+    assert r.status_code == 200, r.text
+
+
+async def test_remove_holder_accepts_empty_or_missing_body(api):
+    u, t = api.u, api.today
+    p = await _post(api, "E")
+    r = await api.post(H + f"/posts/{p['id']}/holders", headers=api.h, json={
+        "user_id": u["mgr"], "starts_on": (t + timedelta(days=4)).isoformat()})
+    hid = r.json()["holders"][0]["id"]
+    r = await api.post(H + f"/posts/{p['id']}/holders/{hid}/remove",
+                       headers=api.h)                      # no body at all
+    assert r.status_code == 200 and r.json()["holders"] == []
+    r = await api.post(H + f"/posts/{p['id']}/holders", headers=api.h, json={
+        "user_id": u["mgr"], "starts_on": (t + timedelta(days=4)).isoformat()})
+    hid = r.json()["holders"][0]["id"]
+    r = await api.post(H + f"/posts/{p['id']}/holders/{hid}/remove",
+                       headers=api.h, content=b"")         # empty body
+    assert r.status_code == 200, r.text
