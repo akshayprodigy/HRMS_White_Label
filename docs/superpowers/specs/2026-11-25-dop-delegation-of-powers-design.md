@@ -13,7 +13,8 @@ Admin decides who verifies, recommends and approves every request, by person, po
 3. Whether the original holder may still act while someone acts for them is **an admin choice per acting assignment**, changeable at any time (2026-11-25).
 4. **Admin can approve or cancel anything**, with a mandatory note that goes to the audit log (2026-11-25).
 5. Requests have no effect until a person approves them; nothing auto-approves (2026-11-23).
-6. With no rule: reporting manager, then HR. Rule scope: department and amount bands (2026-11-23).
+6. Admin sets **read / write / approve** access for every area, per user (2026-11-25).
+7. With no rule: reporting manager, then HR. Rule scope: department and amount bands (2026-11-23).
 
 ## Today
 
@@ -112,6 +113,32 @@ Each request type registers one adapter (`services/dop/adapters/`): subdomain, a
 
 **Approvals inbox:** one list on the web Approvals Center and the Expo app for every request type, with job-specific buttons and "acting for" labels. Override actions appear on the web only. Request detail shows the route and who acted in which capacity.
 
+## 6A. Access control (read / write / approve)
+
+**Today:** about 80 free-form permissions ("hr employee read", "leave approve") attach to roles only, with no per-user setting and no data scope. The sidebar is hard-coded by role name, so a permission change does not always change what a user sees.
+
+**Levels**, set independently for each area: **View**, **Create/Edit**, **Approve**. Edit and Approve each imply View; Approve does not imply Edit. Areas without approvals do not show Approve; delete follows Create/Edit plus today's delete rules.
+
+**Areas:** employees, leave, attendance, roster, holidays, expenses and travel, assets, payroll, tax and statutory, performance, recruitment, projects, business development, reports (by category), administration. Each existing permission maps to one area and level in a single registry (`services/access/registry.py`); permissions that do not fit (e.g. `hr payroll run`, `dop override`) appear as named special rights.
+
+**Scope per area and level:** own, direct reports, department(s), location(s), company. "Direct reports" uses manager assignments, so a functional manager sees only their subdomains.
+
+**Where access is granted:** role → post → user. Grants from roles and posts add up. A user-level entry is an explicit **Allow** (optionally dated) or **Deny**; Deny wins. Super Admin cannot be denied, and the last Super Admin cannot lose that role.
+
+**Own data:** employees always see and submit their own records (leave, attendance, payslip). This matrix controls other people's data.
+
+**Approve access and DOP are two locks:** a user may decide a request only when DOP routed it to them **and** they hold Approve for that area and the request's owner falls within their scope.
+- Approve access alone never lets someone decide a request not routed to them.
+- A manager kind, post or acting cover named by a rule carries Approve for the requests it is routed, unless the user has an explicit Deny. Admins do not have to set both for every manager.
+- A denied approver is treated as unavailable: the resolver uses the fallback, and Check shows why.
+- The override right is separate (section 4).
+
+**Enforcement:** server side through one function `can(user, area, level, target_user)`. `user_has_permission` delegates to it for mapped permissions, so existing endpoint checks keep working; list endpoints add the scope filter area by area. The UI reads `GET /me/access` to show, disable or hide menus and buttons. Access changes take effect on the next request.
+
+**Screens:** *Administration → Access*: matrix (areas × View / Edit / Approve, with scope) for a role, post or user; "Effective access" for a user showing where each right came from; compare two users; copy from user or role. Permission `access manage` (Super Admin). Admins cannot raise their own access. Every change is audited with before, after and an optional note.
+
+**Migration:** current role permissions become the starting matrix with today's effective scope, so nobody gains or loses access. A parity test compares every seeded role against every mapped permission before and after.
+
 ## 7. Delivery slices
 
 Each is planned, built, tested and merged separately.
@@ -120,6 +147,7 @@ Each is planned, built, tested and merged separately.
   - `User.manager_id` rows are copied to `reporting` assignments. `manager_id` remains as a **synced mirror** of the user-scoped or inherited reporting manager, so existing readers keep working; HR edits of the manager go through the assignment service.
   - Live approvals do not use the new resolver yet: behaviour is unchanged.
 - **D2 Rules and inbox:** jobs, fallbacks, versions, rule builder, adapters, override and the unified inbox for the seven chain types. Includes the direct-path (no chain) cases.
+- **A1 Access control** (after D2): matrix, scopes, effective-access view, sidebar driven by `/me/access`, parity test. Scope filters for employees, leave, attendance and expenses first; the remaining areas keep their current scope until their filter ships, and the screen marks them as such.
 - **D3 Attendance and overtime:** regularization, overtime, comp-off.
 - **D4 Leave:** moved off the legacy engine. In-flight legacy requests finish on the legacy path. Ledger parity tests on seed data before and after.
 - **D5 Remaining:** requisition, estimate, swaps / drops / claims, resignation, salary advance. Legacy engine becomes read-only history.
@@ -145,6 +173,7 @@ With no configured rule, every type keeps its current route (D2–D5 each seed a
 
 ## Assumptions to confirm
 
+0. Approve access and DOP routing are both required to decide; being a routed approver grants it unless denied.
 1. Admin cannot override their own request; another admin must.
 2. Override does not bypass a payroll lock or reverse money already paid.
 3. "Admin" means Super Admin; the two permissions can be granted to other roles later.
