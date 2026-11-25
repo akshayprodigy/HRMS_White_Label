@@ -193,11 +193,9 @@ async def assert_no_new_loops(db, baseline, user_ids=None) -> dict:
     return after
 
 
-async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
-                 scope_department_id=None, scope_location=None,
-                 manager_user_id=None, manager_post_id=None, subdomains=(),
-                 starts_on, ends_on=None, note=None,
-                 allow_inactive_employee=False) -> ManagerAssignment:
+def _prepare(scope_type, scope_user_id, scope_department_id, scope_location,
+             manager_user_id, manager_post_id, starts_on, ends_on, subdomains):
+    """Argument checks that need no DB. Returns (scope_location, subdomains)."""
     if scope_type not in SCOPES:
         raise HTTPException(422, "Unknown scope")
     scope_location = (scope_location or "").strip() or None
@@ -214,6 +212,17 @@ async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
         subs = sorted(S.validate(subdomains))
     except ValueError as e:
         raise HTTPException(422, str(e))
+    return scope_location, subs
+
+
+async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
+                 scope_department_id=None, scope_location=None,
+                 manager_user_id=None, manager_post_id=None, subdomains=(),
+                 starts_on, ends_on=None, note=None,
+                 allow_inactive_employee=False) -> ManagerAssignment:
+    scope_location, subs = _prepare(
+        scope_type, scope_user_id, scope_department_id, scope_location,
+        manager_user_id, manager_post_id, starts_on, ends_on, subdomains)
     kind = await _lock_kind(db, kind_id)
     if scope_user_id is not None:
         if allow_inactive_employee:       # HR edits an inactive employee
@@ -263,6 +272,22 @@ async def create(db, *, actor_id, kind_id, scope_type, scope_user_id=None,
     return a
 
 
+def _do_end(db, actor_id, a, ends_on, today) -> None:
+    """End (or, when it has not started, cancel) a live row and audit it.
+    The caller flushes and syncs."""
+    before = snapshot(a)
+    if ends_on < a.starts_on:
+        if a.starts_on < today:
+            raise HTTPException(
+                422, "It already started: end it on or after its start date")
+        a.cancelled_at = datetime.now(timezone.utc)
+    else:
+        a.ends_on = ends_on
+    audit(db, actor_id, "dop.assignment.end", "manager_assignment", a.id,
+          {"before": before, "ends_on": ends_on.isoformat(),
+           "cancelled": a.cancelled_at is not None})
+
+
 async def end(db, *, actor_id, assignment_id, ends_on) -> ManagerAssignment:
     rk = await lock_reporting(db)
     kind_id = (await db.execute(select(ManagerAssignment.manager_kind_id)
@@ -285,20 +310,10 @@ async def end(db, *, actor_id, assignment_id, ends_on) -> ManagerAssignment:
         raise HTTPException(
             422, "It already ends earlier: create a new assignment instead")
     today = await local_today(db)
-    before = snapshot(a)
     base = (await loop_baseline(db, [today])
             if kind.code == "reporting" and not a.subdomains else None)
-    if ends_on < a.starts_on:
-        if a.starts_on < today:
-            raise HTTPException(
-                422, "It already started: end it on or after its start date")
-        a.cancelled_at = datetime.now(timezone.utc)
-    else:
-        a.ends_on = ends_on
+    _do_end(db, actor_id, a, ends_on, today)
     await db.flush()
-    audit(db, actor_id, "dop.assignment.end", "manager_assignment", a.id,
-          {"before": before, "ends_on": ends_on.isoformat(),
-           "cancelled": a.cancelled_at is not None})
     if kind.code == "reporting":
         w = await load_world(db, today)
         dept_name = None
@@ -310,6 +325,111 @@ async def end(db, *, actor_id, assignment_id, ends_on) -> ManagerAssignment:
             await assert_no_new_loops(db, base, users)
         await _sync(db, w, today, users)
     return a
+
+
+def _clashing(rows, subs, starts_on, ends_on) -> list:
+    return [r for r in rows if subs_clash(r.subdomains, subs)
+            and dates_overlap(r.starts_on, r.ends_on, starts_on, ends_on)]
+
+
+def _check_replaceable(rows, starts_on, today):
+    """A clashing row ends the day before the new start; one that starts on
+    or after the new start is cancelled, which only works while it has not
+    started. Otherwise 409, before anything is changed."""
+    for r in rows:
+        if starts_on - timedelta(days=1) < r.starts_on and r.starts_on < today:
+            raise HTTPException(
+                409, f"Assignment #{r.id} already started and cannot be "
+                     "replaced cleanly: end it first")
+
+
+async def replace_overlaps(db, *, actor_id, kind_id, scope_type, starts_on,
+                           subdomains=(), scope_user_id=None,
+                           scope_department_id=None, scope_location=None,
+                           ends_on=None, **_) -> int:
+    """End the rows a new assignment would clash with, the day before it
+    starts (rows that start on or after it are cancelled, only while they
+    have not started). Returns how many. When a clashing row cannot be ended
+    cleanly: 409 before any change."""
+    try:
+        subs = sorted(S.validate(subdomains))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    await _lock_kind(db, kind_id)
+    rows = _clashing(await _same_scope(
+        db, kind_id, scope_type, scope_user_id, scope_department_id,
+        (scope_location or "").strip() or None), subs, starts_on, ends_on)
+    _check_replaceable(rows, starts_on, await local_today(db))
+    for r in rows:
+        await end(db, actor_id=actor_id, assignment_id=r.id,
+                  ends_on=starts_on - timedelta(days=1))
+    return len(rows)
+
+
+async def create_many(db, *, actor_id, kind_id, user_ids, manager_user_id=None,
+                      manager_post_id=None, subdomains=(), starts_on,
+                      ends_on=None, note=None, replace=False):
+    """One user-scope assignment per employee, all or nothing, in the
+    caller's transaction. Loads the world twice (baseline, after) and syncs
+    once, however many employees: a constant number of statements plus two
+    inserts per employee (audit, assignment) and one update per changed
+    manager. Returns (assignment ids in user order, rows replaced)."""
+    ids = sorted(set(user_ids))
+    if not ids:
+        raise HTTPException(422, "Choose at least one employee")
+    _, subs = _prepare("user", ids[0], None, None, manager_user_id,
+                       manager_post_id, starts_on, ends_on, subdomains)
+    if manager_user_id in ids:
+        raise HTTPException(422, "An employee cannot be their own manager")
+    kind = await _lock_kind(db, kind_id)
+    found = dict((await db.execute(select(User.id, User.is_active).where(
+        User.id.in_(ids)))).all())
+    bad = [i for i in ids if not found.get(i)]
+    if bad:
+        raise HTTPException(
+            422, "Employee not found or inactive: "
+                 + ", ".join(map(str, bad[:10])))
+    if manager_user_id is not None:
+        await _active_user(db, manager_user_id, "Manager")
+    else:
+        post = await db.get(Post, manager_post_id)
+        if post is None or not post.is_active:
+            raise HTTPException(422, "Post not found or inactive")
+    today = await local_today(db)
+    rows = (await db.execute(
+        select(ManagerAssignment).where(
+            ManagerAssignment.manager_kind_id == kind_id,
+            ManagerAssignment.scope_type == "user",
+            ManagerAssignment.scope_user_id.in_(ids),
+            ManagerAssignment.cancelled_at.is_(None))
+        .order_by(ManagerAssignment.id).with_for_update()
+        .execution_options(populate_existing=True))).scalars().all()
+    clash = _clashing(rows, subs, starts_on, ends_on)
+    if clash and not replace:
+        raise HTTPException(
+            409, f"Overlaps assignment #{clash[0].id}: end that one first")
+    _check_replaceable(clash, starts_on, today)
+    base = (await loop_baseline(db, _dates(today, starts_on))
+            if kind.code == "reporting" and not subs else None)
+    for r in clash:
+        _do_end(db, actor_id, r, starts_on - timedelta(days=1), today)
+    new = [ManagerAssignment(
+        manager_kind_id=kind_id, scope_type="user", scope_user_id=i,
+        manager_user_id=manager_user_id, manager_post_id=manager_post_id,
+        subdomains=subs, starts_on=starts_on, ends_on=ends_on, note=note,
+        created_by_id=actor_id) for i in ids]
+    db.add_all(new)
+    await db.flush()
+    for a in new:
+        audit(db, actor_id, "dop.assignment.create", "manager_assignment",
+              a.id, snapshot(a))
+    await db.flush()
+    if kind.code == "reporting":
+        w = await load_world(db, today)
+        if base is not None:
+            await assert_no_new_loops(db, base, ids)
+        await _sync(db, w, today, ids)
+    return [a.id for a in new], len(clash)
 
 
 def _dates(today, starts_on=None) -> list:

@@ -279,3 +279,24 @@ def test_hr_sorted_and_excludes_inactive():
     people = {i: P(i, i != 3, "Eng", "Mumbai") for i in range(1, 10)}
     r = go(world(people=people, hr_ids=[8, 3, 2, 8]))
     assert r.via == "hr" and r.user_ids == [2, 8]
+
+
+def test_base_index_matches_find_assignment():
+    a = [asg(1, 2, "company"), asg(2, 3, "location", loc=" mumbai "),
+         asg(3, 4, "department", dept="ENG"), asg(4, 5, user=1),
+         asg(5, 6, user=1, subs={"leave"}), asg(6, 7, user=2),
+         asg(7, 8, "company", kind="functional"),
+         asg(8, 8, user=3, end=date(2030, 1, 1))]
+    w = world(assignments=a)
+    look = R.base_index(w, D)
+    for kind in ("reporting", "functional"):
+        for uid in list(range(1, 10)) + [99]:
+            got = look(kind, uid)
+            want = R.find_assignment(w, kind, uid, "", D)
+            assert (got and got.id) == (want and want.id), (kind, uid)
+
+
+def test_explanation_names_users_with_at_and_assignments_with_hash():
+    w = world(assignments=[asg(7, 2)], covers=[cover(1, 3, user=2)])
+    text = " ".join(go(w).explanation)
+    assert "assignment #7" in text and "@3 is acting for @2" in text
