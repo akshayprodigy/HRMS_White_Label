@@ -77,11 +77,11 @@ export const HoldersDialog: React.FC<{
           <div><label className={labelCls} htmlFor="hd-end">Ends on (optional)</label><input id="hd-end" type="date" className={`${inputCls} w-full`} value={endOn} onChange={(e) => setEndOn(e.target.value)} /></div>
         </div>
         {endOn && openEnded && (
-          <Notice tone="info">The current holder has no end date, so a handover with an end date is refused. For a short stand-in, use an acting cover instead.</Notice>
+          <Notice tone="info">The current holder has no end date, so a handover with an end date is refused. For a short stand-in, use an acting cover instead (used for approvals from the next release).</Notice>
         )}
         {err && <Notice>{err}</Notice>}
         {(suggest || (endOn && openEnded && err)) && (
-          <Button size="sm" type="button" variant="outline" onClick={() => onActing(post)}>Set up an acting cover for {post.title}</Button>
+          <Button size="sm" type="button" variant="outline" onClick={() => onActing(post)}>Set up an acting cover for {post.title} (used for approvals from the next release)</Button>
         )}
         <div className="flex justify-end"><Button type="submit" isLoading={busy}>Hand over</Button></div>
       </form>

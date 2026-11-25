@@ -58,6 +58,7 @@ export const ActingDialog: React.FC<{
   return (
     <Modal title="New acting cover" label="New acting cover" onClose={onClose} busy={busy} wide>
       <form noValidate className="space-y-4" onSubmit={submit}>
+        <Notice tone="info">The cover is saved now and used for approvals from the next release.</Notice>
         <fieldset className="space-y-2">
           <legend className={labelCls}>Who is being covered</legend>
           <div className="flex gap-4 text-sm">

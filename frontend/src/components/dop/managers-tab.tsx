@@ -40,16 +40,15 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [picked, setPicked] = useState<Map<number, { name: string; sig: string }>>(new Map());
+  const [picked, setPicked] = useState<Map<number, string>>(new Map());
   const [limitMsg, setLimitMsg] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [kindsOpen, setKindsOpen] = useState(false);
   const [hist, setHist] = useState<ManagerRow | null>(null);
   const [bump, setBump] = useState(0);
   const seq = useRef(0);
-  const fsig = `${dq}|${dept}|${missing}`;
-  const names = new Map([...picked].map(([id, v]) => [id, v.name] as [number, string]));
-  const hidden = [...picked].filter(([, v]) => v.sig !== fsig).map(([id]) => id);
+  const onPage = new Set(rows.map((r) => r.user_id));
+  const hidden = loading || error ? [] : [...picked.keys()].filter((id) => !onPage.has(id));
 
   useEffect(() => {
     const t = window.setTimeout(() => { setDq(q.trim()); setOffset(0); }, 300);
@@ -85,7 +84,7 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
       const next = new Map(m);
       if (next.has(r.user_id)) next.delete(r.user_id);
       else if (next.size >= MAX_PICK) { setLimitMsg(true); return m; }
-      else next.set(r.user_id, { name: r.name, sig: fsig });
+      else next.set(r.user_id, r.name);
       return next;
     });
   };
@@ -98,7 +97,7 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
       else {
         for (const r of rows) {
           if (next.size >= MAX_PICK && !next.has(r.user_id)) { setLimitMsg(true); break; }
-          next.set(r.user_id, { name: r.name, sig: fsig });
+          next.set(r.user_id, r.name);
         }
       }
       return next;
@@ -135,8 +134,8 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
       <p className="text-xs text-gray-500">This grid shows managers who cover everything. A manager limited to certain areas is listed under History (the clock icon).</p>
       {picked.size > 0 && (
         <div className="flex items-center gap-3 flex-wrap text-sm bg-indigo-50 text-indigo-800 rounded-lg px-3 py-2" role="status">
-          <span><strong>{picked.size}</strong> selected{hidden.length > 0 ? `, ${hidden.length} not shown by the current filters` : ''} (up to {MAX_PICK})</span>
-          {hidden.length > 0 && <button type="button" className="underline" onClick={() => setPicked((m) => { const n = new Map(m); hidden.forEach((id) => n.delete(id)); return n; })}>Clear the hidden ones</button>}
+          <span><strong>{picked.size}</strong> selected{hidden.length > 0 ? `, ${hidden.length} not on this page` : ''} (up to {MAX_PICK})</span>
+          {hidden.length > 0 && <button type="button" className="underline" onClick={() => setPicked((m) => { const n = new Map(m); hidden.forEach((id) => n.delete(id)); return n; })}>Keep only this page</button>}
           <button type="button" className="underline" onClick={() => { setPicked(new Map()); setLimitMsg(false); }}>Clear selection</button>
           <Button size="sm" onClick={() => setAssigning(true)}>Assign a manager to them</Button>
         </div>
@@ -184,7 +183,7 @@ export const ManagersTab: React.FC<{ meta: Meta | null; refreshKey: number; onMe
       </div>
 
       {assigning && (
-        <AssignDialog meta={meta} picked={names} onDrop={(ids) => setPicked((m) => { const n = new Map(m); ids.forEach((id) => n.delete(id)); return n; })} onClose={() => setAssigning(false)}
+        <AssignDialog meta={meta} picked={picked} onDrop={(ids) => setPicked((m) => { const n = new Map(m); ids.forEach((id) => n.delete(id)); return n; })} onClose={() => setAssigning(false)}
           onDone={() => { setAssigning(false); setPicked(new Map()); setBump((b) => b + 1); }} />
       )}
       {hist && <HistoryDialog meta={meta} user={hist} onClose={() => setHist(null)} onChanged={() => setBump((b) => b + 1)} />}

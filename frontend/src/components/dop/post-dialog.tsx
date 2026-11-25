@@ -37,7 +37,7 @@ export const PostDialog: React.FC<{
             parent_post_id: post.parent_post_id, heads_department_id: post.heads_department_id, is_active: post.is_active,
           };
           const ch = Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== was[k]));
-          if (Object.keys(ch).length === 0) { onClose(); return; }
+          if (Object.keys(ch).length === 0) { setErr('No changes to save.'); return; }
           await client.patch(ENDPOINTS.DOP.POST(post.id), ch);
         } else  await client.post(ENDPOINTS.DOP.POSTS, body);
         toast.success(post ? 'Post saved' : 'Post created');
