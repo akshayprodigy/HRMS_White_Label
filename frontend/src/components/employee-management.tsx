@@ -62,7 +62,7 @@ import type { AssetDetail as RegAsset } from './assets/asset-utils';
 import { errMsg as assetErrMsg } from './schedule-delegations-utils';
 
 const errMsg = (err: any, fallback = 'Something went wrong'): string => {
-  const detail = err?.response?.data?.detail;
+  const detail = err?.response?.data?.detail ?? err?.response?.data?.error?.message;
   if (!detail) return err?.message || fallback;
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) return detail.map((d: any) => d?.msg || JSON.stringify(d)).join('; ');
@@ -219,7 +219,7 @@ export const EmployeeManagement = ({ userRole = 'employee' }: { userRole?: UserR
       setConfirmAction(null);
       fetchEmployees();
     } catch (error: any) {
-      const detail = error?.response?.data?.detail;
+      const detail = error?.response?.data?.detail ?? error?.response?.data?.error?.message;
       if (type === 'delete' && error?.response?.status === 409 && detail && typeof detail === 'object') {
         if (Array.isArray(detail.blockers)) setDeleteBlockers(detail.blockers);
         toast.error(detail.message || 'Cannot delete: employee still tied to active work', { duration: 6000 });
@@ -1125,6 +1125,15 @@ export const EmployeeManagement = ({ userRole = 'employee' }: { userRole?: UserR
                           )}
                           {(b.type === 'allocated_assets' || b.type === 'open_asset_requests') && (
                             <span className="text-slate-700">{b.message}</span>
+                          )}
+                          {typeof b.type === 'string' && b.type.startsWith('dop_') && (
+                            <>
+                              <span className="text-slate-700">{b.message}</span>
+                              <span className="block text-slate-500">Reassign them under Administration → Delegation of Powers</span>
+                            </>
+                          )}
+                          {!['project_member', 'lead_owner', 'allocated_assets', 'open_asset_requests', 'task_assignee'].includes(b.type) && !(typeof b.type === 'string' && b.type.startsWith('dop_')) && (
+                            <span className="text-slate-700">{b.message || b.title || String(b.type)}</span>
                           )}
                           {b.type === 'task_assignee' && (
                             <>

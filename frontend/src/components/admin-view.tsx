@@ -168,8 +168,9 @@ export const AdminView = () => {
       await client.delete(ENDPOINTS.ADMIN.DEPARTMENT_DETAIL(id));
       fetchData();
       toast.success('Department deleted');
-    } catch (e) {
-      toast.error('Delete failed');
+    } catch (e: any) {
+      const m = e?.response?.data?.error?.message ?? e?.response?.data?.detail;
+      toast.error(typeof m === 'string' && m ? m : 'Delete failed', { duration: 8000 });
     }
   };
 

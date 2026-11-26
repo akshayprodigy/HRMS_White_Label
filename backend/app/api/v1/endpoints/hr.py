@@ -82,6 +82,10 @@ from app.api.v1.endpoints.roster_common import (
     commit_or_409, guard_conflicts, plain_actor, retry_on_lock,
 )
 
+from app.api.v1.endpoints import dop_edits as DE
+from app.services.dop import assignments as DOP
+from app.services.dop import deletes as DELETES
+
 router = APIRouter()
 
 EMP_NOT_FOUND = "Employee not found"
@@ -735,6 +739,58 @@ async def process_employee_row(
     request: Request,
     role_map: dict
 ) -> Optional[str]:
+    """One row = one retried transaction (reporting lock first, then the row
+    inside a savepoint, then commit). A failing row rolls back to the
+    savepoint, so it leaves nothing behind and cannot poison later rows.
+    `role_map` maps lower-case role name -> role id."""
+    row_num = index + 2
+
+    # Hash BEFORE the lock (slow), only for a row that will create a user.
+    pw_hash = None
+    cols = (COL_FULL_NAME, COL_EMAIL, COL_EMP_ID, COL_DEPT, COL_DESIG)
+    if all(pd.notnull(row.get(c)) and str(row.get(c)).strip() for c in cols):
+        email0 = str(row[COL_EMAIL]).strip()
+        pw = str(row[COL_PASSWORD]) if (
+            COL_PASSWORD in row.index and pd.notnull(row[COL_PASSWORD])
+            and row[COL_PASSWORD] != "") else DEFAULT_PASSWORD
+        if len(pw) >= 6 and (await db.execute(
+                select(User.id).where(User.email == email0).limit(1)
+        )).first() is None:
+            pw_hash = get_password_hash(pw)
+
+    async def body():
+        await db.commit()                       # fresh transaction
+        await DE.sync_ready(db)                 # takes the lock
+        sp = await db.begin_nested()
+        try:
+            err = await _process_employee_row(
+                db, index, row, current_user_id, request, role_map, pw_hash)
+        except BaseException:
+            try:
+                await sp.rollback()
+            except Exception:
+                pass
+            raise
+        if err:
+            await sp.rollback()
+        else:
+            await sp.commit()
+        return err
+    try:
+        return await retry_on_lock(db, body, commit=True)
+    except HTTPException as e:
+        return f"Row {row_num}: {e.detail}"
+
+
+async def _process_employee_row(
+    db: deps.DBDep,
+    index: int,
+    row: pd.Series,
+    current_user_id: int,
+    request: Request,
+    role_map: dict,
+    pw_hash: Optional[str] = None,
+) -> Optional[str]:
     """Process a single row: create user (if needed) + employee record."""
     row_num = index + 2  # Excel row (1-indexed header + 1-indexed data)
 
@@ -779,12 +835,13 @@ async def process_employee_row(
     # Resolve role
     role_name = str(col_val(COL_ROLE) or "employee").strip()
     role_name_lower = role_name.lower()
-    matched_role = role_map.get(role_name_lower)
-    if not matched_role:
+    matched_role_id = role_map.get(role_name_lower)
+    if not matched_role_id:
         available = ", ".join(sorted(role_map.keys()))
         return f"Row {row_num} ({full_name}): Role '{role_name}' not found. Available roles: {available}"
 
     # Find or create user
+    manager_id = None
     user = (await db.execute(
         select(User).where(User.email == email).limit(1)
     )).scalar_one_or_none()
@@ -803,7 +860,6 @@ async def process_employee_row(
             return f"Row {row_num} ({full_name}): Password must be at least 6 characters"
 
         # Resolve manager
-        manager_id = None
         manager_email = col_val(COL_MANAGER_EMAIL)
         if manager_email:
             mgr_email_str = str(manager_email).strip()
@@ -816,12 +872,11 @@ async def process_employee_row(
 
         user = User(
             email=email,
-            hashed_password=get_password_hash(password),
+            hashed_password=pw_hash or get_password_hash(password),
             full_name=full_name,
             is_active=True,
-            manager_id=manager_id
         )
-        user.roles = [matched_role]
+        user.roles = [await db.get(Role, matched_role_id)]
         db.add(user)
         await db.flush()
 
@@ -877,11 +932,25 @@ async def process_employee_row(
     db.add(employee)
     await db.flush()
 
-    await log_audit(
-        db, current_user_id, "CREATE_BULK", "employee", str(employee.id),
-        {"email": email, "employee_id": emp_id, "full_name": full_name,
-         "role": role_name}, request
-    )
+    # Manager through the DOP service (the reporting lock is already held).
+    try:
+        if manager_id is not None:
+            await DOP.set_reporting_manager(
+                db, actor_id=current_user_id, user_id=user.id,
+                manager_id=manager_id)
+        elif await DOP.reporting_ready(db):
+            await DOP.sync_mirror(db, [user.id], "new employee",
+                                      current_user_id)
+    except HTTPException as e:
+        return f"Row {row_num} ({full_name}): {e.detail}"
+
+    db.add(AuditLog(
+        user_id=current_user_id, action="CREATE_BULK",
+        resource_type="employee", resource_id=str(employee.id),
+        details={"email": email, "employee_id": emp_id,
+                 "full_name": full_name, "role": role_name},
+        ip_address=request.client.host if request.client else None))
+    await db.flush()
     return None
 
 
@@ -923,16 +992,17 @@ async def bulk_upload_employees(
 
     # Build role lookup map (lowercase name -> Role object)
     all_roles = (await db.execute(select(Role))).scalars().all()
-    role_map = {r.name.lower(): r for r in all_roles}
+    role_map = {r.name.lower(): r.id for r in all_roles}
     if "employee" not in role_map:
         raise HTTPException(status_code=500, detail="Employee role not configured in system")
 
     results = {"success": 0, "failed": 0, "errors": []}
+    actor_id = current_user.id      # rows commit and roll back: read it once
 
     for index, row in df.iterrows():
         try:
             error = await process_employee_row(
-                db, index, row, current_user.id, request, role_map
+                db, index, row, actor_id, request, role_map
             )
             if error:
                 results["failed"] += 1
@@ -1076,27 +1146,35 @@ async def create_employee(
     await _validate_employment_type(db, getattr(obj_in, "employment_type", None))
 
     data = obj_in.model_dump(exclude={"manager_id"})
-    db_obj = Employee(**data)
+    actor_id, target_uid, mgr_id = current_user.id, user.id, obj_in.manager_id
 
-    if obj_in.manager_id is not None:
-        user.manager_id = obj_in.manager_id
-        db.add(user)
+    async def create_row():
+        await db.commit()                       # fresh transaction
+        ready = await DE.sync_ready(db)         # takes the lock
+        row = Employee(**data)
+        db.add(row)
+        await db.flush()
+        if mgr_id is not None:
+            await DOP.set_reporting_manager(
+                db, actor_id=actor_id, user_id=target_uid, manager_id=mgr_id)
+        elif ready:
+            await DOP.sync_mirror(db, [target_uid], "new employee",
+                                  actor_id)
+        return row.id
 
-    db.add(db_obj)
-    await db.commit()
-    await db.refresh(db_obj)
-    
+    new_id = await retry_on_lock(db, create_row, commit=True)
+
     await log_audit(
-        db, current_user.id, "CREATE", "employee", str(db_obj.id),
+        db, actor_id, "CREATE", "employee", str(new_id),
         obj_in.model_dump(mode="json"), request
     )
-    
+
     result = await db.execute(
-        select(Employee).where(Employee.id == db_obj.id).options(
+        select(Employee).where(Employee.id == new_id).options(
             selectinload(Employee.user)
             .selectinload(User.roles)
             .selectinload(Role.permissions)
-        ).limit(1)
+        ).limit(1).execution_options(populate_existing=True)
     )
     return result.scalars().first()
 
@@ -1128,29 +1206,40 @@ async def create_employee_with_user(
     if not employee_role:
         raise HTTPException(status_code=500, detail="Employee role not configured")
 
-    new_user = User(
-        email=obj_in.user.email,
-        hashed_password=get_password_hash(obj_in.user.password),
-        full_name=obj_in.user.full_name,
-        is_active=True,
-        manager_id=obj_in.user.manager_id
-    )
-    new_user.roles = [employee_role]
-    db.add(new_user)
-    await db.flush()
-
+    actor_id, role_id = current_user.id, employee_role.id
+    mgr_id = obj_in.user.manager_id
+    pw_hash = get_password_hash(obj_in.user.password)
     emp_payload = obj_in.model_dump(mode="json", exclude={"user"})
-    db_obj = Employee(**emp_payload, user_id=new_user.id)
-    db.add(db_obj)
-    await db.commit()
-    await db.refresh(db_obj)
+    email, full_name = obj_in.user.email, obj_in.user.full_name
+
+    async def create_rows():
+        await db.commit()                       # fresh transaction
+        ready = await DE.sync_ready(db)         # takes the lock
+        new_user = User(
+            email=email, hashed_password=pw_hash, full_name=full_name,
+            is_active=True)
+        new_user.roles = [await db.get(Role, role_id)]
+        db.add(new_user)
+        await db.flush()
+        row = Employee(**emp_payload, user_id=new_user.id)
+        db.add(row)
+        await db.flush()
+        if mgr_id is not None:
+            await DOP.set_reporting_manager(
+                db, actor_id=actor_id, user_id=new_user.id, manager_id=mgr_id)
+        elif ready:
+            await DOP.sync_mirror(db, [new_user.id], "new employee",
+                                  actor_id)
+        return row.id
+
+    new_id = await retry_on_lock(db, create_rows, commit=True)
 
     await log_audit(
         db,
-        current_user.id,
+        actor_id,
         "CREATE",
         "employee",
-        str(db_obj.id),
+        str(new_id),
         {
             **emp_payload,
             "user": {
@@ -1162,11 +1251,11 @@ async def create_employee_with_user(
     )
 
     result = await db.execute(
-        select(Employee).where(Employee.id == db_obj.id).options(
+        select(Employee).where(Employee.id == new_id).options(
             selectinload(Employee.user)
             .selectinload(User.roles)
             .selectinload(Role.permissions)
-        ).limit(1)
+        ).limit(1).execution_options(populate_existing=True)
     )
     return result.scalars().first()
 
@@ -1199,6 +1288,38 @@ async def get_my_employee_profile(
     }
 
 
+async def _update_profile_with_location(db, current_user, body) -> Any:
+    """Profile edit that includes a location: a location change can move the
+    employee into or out of a location-scoped manager assignment, so it runs
+    as one locked, retried transaction with a re-sync."""
+    uid = current_user.id
+
+    async def apply():
+        await db.commit()
+        ready = await DE.sync_ready(db)         # lock before any plain read
+        user = (await db.execute(
+            select(User).where(User.id == uid)
+            .execution_options(populate_existing=True))).scalars().one()
+        emp = (await db.execute(
+            select(Employee).where(Employee.user_id == uid).limit(1)
+            .execution_options(populate_existing=True))).scalars().first()
+        target = emp if emp else user
+        moved = ready and (target.location or "") != body.location
+        had = (await DOP.has_reporting_assignment(db, uid)) if moved else False
+        if body.full_name is not None:
+            user.full_name = body.full_name
+        if body.phone is not None:
+            target.phone = body.phone
+        target.location = body.location
+        await db.flush()
+        if moved:
+            await DOP.resync_after_move(db, uid, had, actor_id=uid)
+        return {"status": "success", "user_id": uid,
+                "full_name": user.full_name, "phone": target.phone,
+                "location": target.location}
+    return await retry_on_lock(db, apply, commit=True)
+
+
 @router.patch("/employees/me/profile")
 async def update_my_profile(
     *,
@@ -1212,6 +1333,9 @@ async def update_my_profile(
     record exists; otherwise they fall back to User (admin-only case). The
     full_name always lives on User since it's the auth identity.
     """
+    if body.location is not None:
+        return await _update_profile_with_location(db, current_user, body)
+
     # full_name is always on the User row.
     if body.full_name is not None:
         current_user.full_name = body.full_name
@@ -1422,20 +1546,48 @@ async def update_employee(
     if "employment_type" in update_data:
         await _validate_employment_type(db, update_data["employment_type"])
 
-    for field, value in update_data.items():
-        if field == "manager_id" and db_obj.user:
-            db_obj.user.manager_id = value
-            db.add(db_obj.user)
-        else:
-            setattr(db_obj, field, value)
-    
-    db.add(db_obj)
-    await db.commit()
-    await db.refresh(db_obj)
-    
+    # Plain values only from here: the transaction below may roll back.
+    actor_id = current_user.id
+    target_uid = db_obj.user_id
+    fields = {k: v for k, v in update_data.items() if k != "manager_id"}
+    has_user = db_obj.user is not None
+    mgr_sent = "manager_id" in update_data and has_user
+    new_mgr = update_data.get("manager_id")
+
+    # ONE retried transaction: manager change, move re-sync and the other
+    # fields commit together, so a failed request changes nothing.
+    async def apply():
+        await db.commit()
+        ready = await DE.sync_ready(db) if (
+            mgr_sent or "department" in fields) else False
+        emp = (await db.execute(
+            select(Employee).where(Employee.id == emp_id)
+            .execution_options(populate_existing=True)
+        )).scalars().first()
+        if emp is None:
+            raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
+        moved = ready and "department" in fields and \
+            emp.department != fields["department"]
+        had = (await DOP.has_reporting_assignment(db, target_uid)
+               if moved else False)
+        if mgr_sent:
+            cur = await DE.current_manager(db, target_uid)
+            if new_mgr != cur:
+                await DOP.set_reporting_manager(
+                    db, actor_id=actor_id, user_id=target_uid,
+                    manager_id=new_mgr)
+        for field, value in fields.items():
+            setattr(emp, field, value)
+        db.add(emp)
+        await DE.flush_raw(db)
+        if moved:
+            await DOP.resync_after_move(db, target_uid, had,
+                                        actor_id=actor_id)
+    await DE.run_edit(db, apply)
+
     await log_audit(
         db,
-        current_user.id,
+        actor_id,
         "UPDATE",
         "employee",
         str(emp_id),
@@ -1447,7 +1599,7 @@ async def update_employee(
             selectinload(Employee.user)
             .selectinload(User.roles)
             .selectinload(Role.permissions)
-        ).limit(1)
+        ).limit(1).execution_options(populate_existing=True)
     )
     return result.scalars().first()
 
@@ -1691,6 +1843,9 @@ async def _gather_employee_delete_blockers(db, user_id: int) -> list[dict]:
             "message": f"{open_reqs} open asset request(s)",
         })
 
+    for b in await DELETES.user_blockers(db, user_id):
+        blockers.append({**b, "message": "Reassign first: " + b["message"]})
+
     return blockers
 
 
@@ -1758,16 +1913,36 @@ async def delete_employee(
             },
         )
 
-    await log_audit(
-        db, current_user.id, "DELETE", "employee",
-        str(emp_id),
-        {"employee_id": emp_id_str, "email": email},
-        request
-    )
+    actor_id, uid, full_name = current_user.id, user.id, user.full_name
+    ip = request.client.host if request.client else None
 
-    await db.delete(db_obj)
-    await db.delete(user)
-    await db.commit()
+    async def remove():
+        await db.commit()
+        await DE.sync_ready(db)                 # reporting lock first
+        again = await DELETES.user_blockers(db, uid)    # under the lock
+        if again:
+            raise HTTPException(status_code=409, detail={
+                "message": (f"Cannot delete {full_name}: still tied to "
+                            "delegation of powers. Reassign first."),
+                "blockers": [{**b, "message": "Reassign first: " + b["message"]}
+                             for b in again]})
+        emp = (await db.execute(
+            select(Employee).where(Employee.id == emp_id)
+            .options(selectinload(Employee.user))
+            .execution_options(populate_existing=True))).scalars().first()
+        if emp is None:
+            raise HTTPException(status_code=404, detail=EMP_NOT_FOUND)
+        await DELETES.audit_user_rows_removed(db, actor_id, uid)
+        db.add(AuditLog(
+            user_id=actor_id, action="DELETE", resource_type="employee",
+            resource_id=str(emp_id),
+            details={"employee_id": emp_id_str, "email": email},
+            ip_address=ip))
+        await db.flush()
+        usr = emp.user
+        await db.delete(emp)
+        await db.delete(usr)
+    await retry_on_lock(db, remove, commit=True)
 
     # DB rows are gone via cascade; clean up the on-disk document folder so
     # we don't leave orphan files. Best-effort — if it fails we still return

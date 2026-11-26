@@ -268,3 +268,6 @@ from .asset import (
     AssetCategory, Asset, AssetMaintenance, AssetRequest,
     AssetStatus, AssetRequestStatus,
 )
+from .dop import (
+    ManagerKind, Post, PostHolder, ManagerAssignment, ActingAssignment,
+)

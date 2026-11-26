@@ -912,3 +912,38 @@ register_job(JobSpec(
     default_cadence_cron="5 * * * *",
     fn=_job_approval_escalation,
 ))
+
+
+async def _job_dop_manager_mirror(session: AsyncSession) -> Dict[str, Any]:
+    """Dated manager assignments start and end by themselves. Runs under the
+    reporting lock and is retried. On failure: log, roll back and re-raise,
+    so run_job_once records a failed run (it never lets a job crash the
+    scheduler)."""
+    from app.api.v1.endpoints.roster_common import retry_on_lock
+    from app.services.dop import assignments as A
+
+    async def body():
+        await session.commit()
+        await A.lock_reporting(session)
+        return await A.sync_mirror(session, None, "daily job")
+    try:
+        return {"changed": await retry_on_lock(session, body, commit=True)}
+    except Exception:
+        log.exception("dop_manager_mirror failed")
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        raise
+
+
+register_job(JobSpec(
+    name="dop_manager_mirror",
+    display_name="Reporting manager refresh",
+    description=(
+        "Daily at 18:40 UTC: applies manager assignments and post holders "
+        "that start or end today to each employee's reporting manager."
+    ),
+    default_cadence_cron="40 18 * * *",
+    fn=_job_dop_manager_mirror,
+))

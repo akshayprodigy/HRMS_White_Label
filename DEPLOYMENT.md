@@ -288,6 +288,47 @@ Onam,2026-08-26,Kochi,true
 - HR, CEO and Admin see every department. Department heads **and deputies** see only the departments they head or deputise. Other users see no rows.
 - Org-wide requirements (no department) are shown to those scoped viewers as org-wide headcounts (aggregates only, no names).
 
+## Delegation of Powers (D1)
+
+Several managers per employee, posts with holders, acting covers and a "who would act" check, under *Administration → Delegation of Powers*. **Live approvals are unchanged:** leave, expenses and every other request still route exactly as before. The new resolver is only used by the Check tab until the next release (D2).
+
+### Before you upgrade: backup and stop the backend
+
+- **Take a database backup**, then **stop the backend** (all workers) before `alembic upgrade head`, and start it again afterwards.
+- The migration copies each user's `manager_id` into a reporting assignment. A manager edited in HR **while the migration runs** is missed by that copy, and the new code would later revert it to the old value.
+
+### Migration `b7d9f1a3c5e8`
+
+- Creates `manager_kind`, `manager_assignment`, `post`, `post_holder` and `acting_assignment`.
+- Seeds three manager kinds: `reporting` (system), `functional` and `project`.
+- Copies every `user.manager_id` (except a user who is their own manager) into one `reporting` assignment starting 2000-01-01 with the note "Copied from reporting manager".
+- Adds the **`dop manage`** permission and grants it to **Super Admin**.
+- **Half-failure:** MariaDB DDL is not transactional. If the upgrade fails partway, drop whichever of `acting_assignment`, `manager_assignment`, `post_holder`, `post`, `manager_kind` exist, and delete the `dop manage` permission and its `role_permissions` rows if they were inserted. `alembic_version` stays at `a6b8d0f2c4e7`. Then retry.
+- **Downgrade drops the tables, so all assignment, post and acting history is lost.** `user.manager_id` keeps its current (mirrored) values.
+
+### Access
+
+- *Administration → Delegation of Powers* needs `dop manage`, which only Super Admin has. The sidebar entry is shown to Super Admin only; grant `dop manage` to another role for API access, not for the menu.
+
+### `manager_id` is now a mirror
+
+- `user.manager_id` follows the reporting assignments. **Do not edit it with SQL or scripts:** the next sync reverts it. Change managers in HR, in admin, or in the Managers tab.
+- It is updated when a manager or assignment is edited, when an employee's department or location changes (a manager from a department or location assignment can appear or drop away), when a post's holder changes, and by the daily job.
+- Every change of `manager_id` not made by editing an assignment directly (the daily job, a department or location move, a post holder change, a new employee, an HR manager edit that finds the assignment already in place) is audited as `dop.manager.sync` (reason, total, up to 200 changes).
+- **Daily job `dop_manager_mirror`** (18:40 UTC) applies assignments and post holders that start or end that day. It needs **`ENABLE_SCHEDULER=1`** on one process. Without it, a dated assignment or holder change that starts or ends by date is not applied to `manager_id` until the next edit or a manual run from the scheduler screen; live approvals keep using the old manager until then. If the job fails, the run is recorded as failed in the scheduler screen.
+
+### What HR will notice
+
+- Setting a manager that would create a reporting loop, or naming an inactive person as manager, is refused (422). Existing loops from old data never block unrelated edits.
+- Changing an employee's department or location may change their manager, or clear it, when a department or location assignment applies.
+- An explicit "no manager" clears the manager, unless a department, location or company assignment applies; that manager then applies.
+- **Deleting an employee, user or department is refused (409)** while they are the manager in a live or future assignment, hold a post, are in an acting cover, or (for a department) have live assignments or a head post. The message names the first five people affected and the shared scopes. Ended history and assignments of inactive employees do not block: they are removed with the account, but listed (up to 200 rows per list, with totals) in the `dop.assignment.removed` audit row. Someone leaving: filter the Managers tab by them (*Managed by*), select their people and assign a new manager with Replace; end any department, location or company rows they hold under History.
+- The employee bulk import's `Manager Email` column applies to new users only, as before.
+
+### Not used yet
+
+Acting covers, posts and the other manager kinds (`functional`, `project`) can be recorded now but no live approval reads them until D2. Out-of-office cover still works through the existing delegation screens.
+
 ## Resource Usage (Hostinger KVM 4)
 - **CPU**: 4 vCPU allows ~9 Gunicorn workers. Each worker handles dozens of concurrent requests.
 - **RAM**: 16 GB is extremely generous for this stack. MariaDB can be tuned for high performance with this headroom.

@@ -18,7 +18,7 @@ from app.api.v1.endpoints import (
     devices, notification_actions, attendance_offline, tracking, biometric,
     asset_maintenance,
     asset_requests,
-    assets, meta, holidays, work_location,
+    assets, meta, holidays, work_location, dop,
 )
 
 api_router = APIRouter()
@@ -61,6 +61,8 @@ api_router.include_router(assets.router, prefix="/assets", tags=["assets"])
 # After assets: /assets/by-tag/{tag} etc. must win over /{asset_id}/maintenance.
 api_router.include_router(
     asset_maintenance.router, prefix="/assets", tags=["assets"])
+# Delegation of Powers admin: needs 'dop manage', NOT attendance-gated.
+api_router.include_router(dop.router, prefix="/dop", tags=["dop"])
 # Employee asset requests: employee routes need only login, manager routes
 # 'asset manage'; NOT attendance-gated.
 api_router.include_router(

@@ -41,6 +41,9 @@ const BiometricDevices = React.lazy(() =>
 const AssetManagement = React.lazy(() =>
   import('./components/assets/asset-management').then((m) => ({ default: m.AssetManagement }))
 );
+const DopAdmin = React.lazy(() =>
+  import('./components/dop/dop-admin').then((m) => ({ default: m.DopAdmin }))
+);
 const FieldTeam = React.lazy(() =>
   import('./components/field-team').then((m) => ({ default: m.FieldTeam }))
 );
@@ -460,6 +463,12 @@ const App = () => {
             <AssetManagement />
           </Suspense>
         );
+      case 'dop-admin':
+        return (
+          <Suspense fallback={<p className="p-8 text-sm text-gray-500">Loading…</p>}>
+            <DopAdmin />
+          </Suspense>
+        );
       case 'biometric-devices':
         return (
           <Suspense fallback={<p className="p-8 text-sm text-gray-500">Loading…</p>}>
@@ -627,6 +636,7 @@ const App = () => {
       'field-team': 'Field Team',
       'biometric-devices': 'Biometric Devices',
       'asset-management': 'Asset Management',
+      'dop-admin': 'Delegation of Powers',
       'emergency-broadcast': 'Emergency Broadcast',
       'geo-workspace': 'Geo Attendance',
       'overtime-admin': 'Overtime Administration',
